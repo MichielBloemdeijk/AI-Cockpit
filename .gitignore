@@ -1,0 +1,71 @@
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+*.env.local
+*.secret
+*.secrets
+*.key
+*.pem
+*.p12
+*.crt
+*.cer
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv
+.uv/
+
+# Node
+node_modules/
+.next/
+out/
+.npm/
+
+# Logs and local reports
+*.log
+
+# Local runtime data
+.cockpit/
+backend/data/
+backend/chroma_data/
+
+# Knowledge base (keep structure, ignore generated)
+knowledge/.chroma/
+knowledge/preferences.yaml
+!knowledge/preferences.example.yaml
+
+# Local verifier and scratch harness files
+backend/.tmp/
+backend/scripts/verify_agent_model.py
+backend/tests/test_agent_model_verifier.py
+.tmp_*.py
+
+# Generated app scaffolds and asset roots
+frontend/app/apps/*/
+!frontend/app/apps/layout.tsx
+!frontend/app/apps/page.tsx
+frontend/public/apps/*/
+frontend/generated-apps/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/settings.json
+.vscode/launch.json

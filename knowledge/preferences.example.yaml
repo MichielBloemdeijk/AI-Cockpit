@@ -1,0 +1,24 @@
+# Optional local reviewed preferences example.
+# Copy this file to knowledge/preferences.yaml if you want to seed preferences manually.
+# The app can also create knowledge/preferences.yaml automatically when approved preferences are saved.
+
+user:
+  name: ""
+  timezone: ""
+  language: ""
+
+projects:
+  root: ""
+  active: []
+
+llm:
+  default_temperature: 0.7
+  council_mode_default: false
+  preferred_model: ""
+
+style:
+  response_format: markdown
+  verbosity: concise
+  code_style: python_first
+
+reviewed_preferences: []

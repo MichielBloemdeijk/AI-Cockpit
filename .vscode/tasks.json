@@ -1,0 +1,156 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    // ─── Backend ────────────────────────────────────────────────────────────
+    {
+      "label": "Start Backend",
+      "type": "shell",
+      "command": "uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "env": {
+          "PATH": "${workspaceFolder}/backend/.venv/Scripts;${env:PATH}"
+        }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^ERROR.*$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Started reloader process",
+          "endsPattern": "Application startup complete"
+        }
+      },
+      "presentation": {
+        "label": "Backend",
+        "group": "cockpit",
+        "reveal": "always",
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    },
+
+    // ─── Frontend ────────────────────────────────────────────────────────────
+    {
+      "label": "Start Frontend",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^ERROR.*$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "\\$ next dev",
+          "endsPattern": "Ready in"
+        }
+      },
+      "presentation": {
+        "label": "Frontend",
+        "group": "cockpit",
+        "reveal": "always",
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    },
+
+    // ─── Start All ───────────────────────────────────────────────────────────
+    {
+      "label": "Start All",
+      "dependsOn": ["Start Backend", "Start Frontend"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "never"
+      },
+      "problemMatcher": []
+    },
+
+    // ─── Install ─────────────────────────────────────────────────────────────
+    {
+      "label": "Install Backend Dependencies",
+      "type": "shell",
+      "command": "uv pip install -e \".[dev]\"",
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "presentation": {
+        "label": "Install Backend",
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Install Frontend Dependencies",
+      "type": "shell",
+      "command": "npm install",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "presentation": {
+        "label": "Install Frontend",
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Install All Dependencies",
+      "dependsOn": ["Install Backend Dependencies", "Install Frontend Dependencies"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+
+    // ─── Utilities ───────────────────────────────────────────────────────────
+    {
+      "label": "Generate Password Hash",
+      "type": "shell",
+      "command": "uv run python -c \"from passlib.hash import bcrypt; import getpass; pw=getpass.getpass('Password: '); print('\\nAUTH_PASSWORD_HASH=' + bcrypt.hash(pw))\"",
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "presentation": {
+        "label": "Password Hash",
+        "panel": "dedicated",
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Open API Docs",
+      "type": "shell",
+      "command": "Start-Process 'http://localhost:8000/docs'",
+      "presentation": {
+        "reveal": "never"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
