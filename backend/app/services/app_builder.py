@@ -9,7 +9,7 @@ import re
 from app.config import settings
 from app.models.chat import Message
 from app.services.chat_settings import chat_settings_service
-from app.services.app_registry import GeneratedAppRecord, app_registry_service, generated_app_contract
+from app.services.app_registry import GeneratedAppRecord, app_registry_service, resolve_generated_app_contract
 from app.services.llm import PromptSegment, chat_completion_structured
 
 
@@ -399,6 +399,7 @@ async def bootstrap_generated_app(
     description: str | None = None,
     source_conversation_id: str | None = None,
     source_task_run_id: str | None = None,
+  contract_override: dict[str, str] | None = None,
 ) -> AppBootstrapResult:
   if title and title.strip():
     derived_title = title.strip()
@@ -419,6 +420,7 @@ async def bootstrap_generated_app(
         status="building",
         source_conversation_id=source_conversation_id,
         source_task_run_id=source_task_run_id,
+        contract_override=contract_override,
       )
       created = True
     else:
@@ -440,10 +442,11 @@ async def bootstrap_generated_app(
       status="building",
       source_conversation_id=source_conversation_id,
       source_task_run_id=source_task_run_id,
+      contract_override=contract_override,
     )
     created = True
 
-  contract = generated_app_contract(existing.slug)
+  contract = resolve_generated_app_contract(existing.slug, existing.manifest_json)
   frontend_root = _repo_root() / contract.frontend_root
   asset_root = _repo_root() / contract.asset_root
   components_dir = frontend_root / "components"

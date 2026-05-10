@@ -1,5 +1,10 @@
 import type { CouncilResponse, UsageStats } from "./api";
 
+export interface ChatActionError {
+  scope: "send" | "tool" | "archive" | "branch";
+  message: string;
+}
+
 export interface ChatMessage {
   id: string;
   runId?: string | null;

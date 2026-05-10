@@ -18,9 +18,9 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - durable conversation history with runs, events, transcript messages, artifacts, branches, archive state, and reviewed memory items
 - configurable defaults for new chat sessions, including tool flags and council settings
 - limited chat tools for workspace search and Python execution, with per-conversation workspace boundaries
-- planning-first durable agent tasks with tool execution inside per-conversation workspaces, resumable pauses, and durable task trace artifacts
+- a chat-first agent loop with provider-native tool use, plan-first product behavior, resumable question states, and durable run trace artifacts inside per-conversation workspaces
 - durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
-- chat-started app-builder task bootstrap plus app-scoped write-root expansion for generated app work
+- chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
 
 ## Required App-Builder Direction
@@ -34,7 +34,7 @@ The required product direction for generated apps is a chat-resident agent loop:
 5. the agent reads and writes files inside the app write roots from the same chat session
 6. the agent returns to the user in that same chat thread when the work is complete
 
-Background tasks may remain available for separate asynchronous workflows, but they are not the desired primary control plane for generated app work.
+This is now the primary control plane for interactive generated-app work. Background runs remain intentionally disabled in the current product surface.
 
 The product is currently split into a FastAPI backend, a Next.js frontend, a local SQLite database for durable conversation state, and a file-backed knowledge directory.
 
@@ -57,7 +57,7 @@ Next.js frontend  ->  FastAPI backend  ->  OpenRouter
 
 - Runs as a Next.js app during development on port 3000.
 - Uses cookie-authenticated fetch requests to the backend.
-- Maintains client-side UI state for the active conversation, conversation list, and task views.
+- Maintains client-side UI state for the active conversation, recent conversation list, transient live agent status, and generated-app management surfaces.
 - Supports phone-first use through responsive layouts and the existing PWA shell.
 
 ### Backend
@@ -71,7 +71,8 @@ Next.js frontend  ->  FastAPI backend  ->  OpenRouter
 
 - Durable conversational state lives in SQLite through SQLAlchemy async and Alembic-managed schema.
 - Per-conversation generated files live under the configured conversation workspace root.
-- Generated app runtime files live under `frontend/app/apps/<slug>`, with public assets under `frontend/public/apps/<slug>`.
+- Generated app runtime files for durable app surfaces live under `frontend/app/apps/<slug>`, with public assets under `frontend/public/apps/<slug>`.
+- Verifier scenarios exercise the same generated-app builder path but clean any transient `verifier-*` scaffold and asset roots after each run so the route tree stays reserved for durable surfaces.
 - Approved memory is written into markdown files under `knowledge/notes/` or structured entries in `knowledge/preferences.yaml`.
 - Approved knowledge is browsable in-app and readable by chat tools, without a separate retrieval index yet.
 
@@ -123,7 +124,7 @@ Handles cookie-based session auth. If `AUTH_PASSWORD_HASH` is empty, the app beh
 
 Acts as the compatibility-facing chat endpoint.
 
-- Agent-mode chat uses the existing single-model streaming pipeline
+- Agent-mode compatibility chat resolves through the same conversation-aware orchestration and agent runtime used by the conversation-first APIs
 - council mode runs multiple models in parallel and returns a synthesized result
 - both paths are conversation-aware and persist work through the conversation store
 - chat settings can be read and updated for future conversations
@@ -147,10 +148,6 @@ Implemented responsibilities:
 - execute limited chat tools within the active conversation workspace
 - create proposed memory items for a conversation span
 - approve or reject memory items and write approved items into the durable knowledge directory
-
-Current architectural gap:
-
-- remaining legacy task modules still exist in the repo, but the active product path now runs app work through the chat-resident agent loop
 
 #### `backend/app/api/apps.py`
 
@@ -213,13 +210,11 @@ Implemented responsibilities:
 - carries branch metadata and parent event references through resend flows
 - marks runs as completed or failed
 
-This is the main orchestration seam for chat behavior.
-
-For the target generated-app flow, this service is also the primary seam that needs to absorb the current chat-to-task bridge for app work.
+This is the main orchestration seam for compatibility chat requests and council execution. Interactive multi-step agent work continues inside the shared `agent_runner` runtime.
 
 #### `backend/app/services/conversation_store.py`
 
-Provides the high-level persistence API used by the orchestrator, task runner, and conversation endpoints.
+Provides the high-level write-path persistence API used by the orchestrator, agent runner, and conversation endpoints.
 
 Implemented responsibilities:
 
@@ -230,12 +225,47 @@ Implemented responsibilities:
 - start runs and update run status
 - append immutable events
 - project user and assistant messages into transcript rows
-- assemble branch-specific transcript views from the stored lineage
 - attach artifacts
+- expose low-level list and fetch operations consumed by the read-model and memory-review seams
 - create, list, fetch, approve, reject, and delete memory items
 - mark abandoned running work as interrupted on startup
 
 This service wraps the repository layer and keeps write-path transaction boundaries narrow.
+
+#### `backend/app/services/conversation_read_model.py`
+
+Provides the branch-aware read projection for transcript, event, artifact, and summary presentation.
+
+Implemented responsibilities:
+
+- assemble branch-visible transcript rows from stored lineage
+- assemble branch-visible events and artifacts
+- present conversation summaries and detail payloads through the presenter layer
+- keep branch filtering aligned across messages, events, and artifacts
+
+This is the main read seam for conversation detail APIs and runtime consumers that need branch-aware transcript facts.
+
+#### `backend/app/services/memory_review_store.py`
+
+Provides the review-oriented memory operations separately from the main runtime write path.
+
+Implemented responsibilities:
+
+- create proposed memory items
+- list conversation-scoped and global reviewed memory items
+- approve, reject, and delete memory items
+
+This seam keeps knowledge-review operations out of the agent and conversation lifecycle orchestration paths.
+
+#### `backend/app/services/conversation_compaction.py`
+
+Provides shared conversation-compaction helpers reused by both the chat orchestrator and the agent runner.
+
+Implemented responsibilities:
+
+- microcompact older tool-heavy transcript content
+- apply shared truncation rules for compaction summaries and guardrails
+- keep cold-cache and normal compaction behavior aligned across chat and agent flows
 
 #### `backend/app/services/conversation_workspace.py`
 
@@ -255,9 +285,8 @@ Current tools:
 
 - workspace search over allowed roots
 - Python execution with reads from allowed roots and writes constrained to the active conversation workspace
-- task-agent app initialization that bootstraps or attaches a generated app and expands write roots for the current task run
 
-This is the main tool surface that must change for the target app flow. The current `app_initialize` path still requires an active task run to acquire the app lease. To support chat-resident app editing, the tool context and lease acquisition model need to be keyed to the active conversation chat session instead.
+The broader agent tool surface now lives under `backend/app/services/agent_tools/`, including generated-app bootstrap and app-aware execution tools used by the chat-first agent runtime.
 
 #### `backend/app/services/app_registry.py`
 
@@ -267,9 +296,7 @@ Current behavior:
 
 - persists generated app metadata, contract paths, verification state, manifest JSON, and provenance
 - maps each app to a real runtime route under `/apps/<slug>`
-- stores the current app lease against `task_run_id` and `conversation_id`
-
-This service already contains most of the generated-app substrate. The main missing change for the desired flow is lease ownership: it currently treats the task run as the lease holder of record, which prevents the normal chat agent loop from owning the app directly.
+- treats `lease_conversation_id` as the authoritative active owner for interactive chat editing while keeping `lease_task_run_id` as provenance or active-holder detail
 - exposes explicit write roots for frontend code and public assets
 
 #### `backend/app/services/app_builder.py`
@@ -288,16 +315,28 @@ Implements the durable single-agent execution loop used directly by chat turns.
 
 Implemented responsibilities:
 
-- drafts a structured execution plan before tool execution begins
+- drives a transcript-based native tool loop over the shared agent tool registry
+- preserves the product's plan-first behavior through native plan/finalize/ask-user tool semantics rather than a bespoke decision-envelope hot path
 - pauses for plan feedback by default, with an explicit skip-feedback path at task creation time
-- decides one structured action per turn: tool call, ask-user pause, or final completion
 - compacts older task history into durable summary artifacts for later decisions
 - records prompt metrics, raw `llm.response.visible_output` artifacts, streamed thought text, progress summaries, tool events, plan artifacts, and run-summary artifacts into the conversation store
 - prefers provider-exposed reasoning for transcript thought rows when available, and falls back to visible assistant text only when no reasoning blocks were returned
 - derives short progress summaries separately from transcript thought text so the UI can show status without depending on raw tool-call narration
-- falls back to a dedicated summary-model pass when the native tool decision returns no useful visible progress text
+- falls back to a dedicated summary-model pass when the native tool loop returns no useful visible progress text
 - uses a larger progress-summary response budget and explicitly disables summary-model reasoning so fallback progress rows are less likely to be clipped by hidden thinking tokens
 - enforces workspace boundaries through the shared tool context
+
+#### `backend/app/presenters/`
+
+Provides response mapping for conversation, app, and knowledge APIs.
+
+Implemented responsibilities:
+
+- convert conversation records into summary, detail, event, artifact, branch, and memory DTOs
+- convert generated app records into API-facing view models
+- convert reviewed knowledge records into API-facing view models
+
+This presenter layer keeps route modules thin and avoids repeating record-to-response mapping across endpoints.
 
 #### `backend/app/services/knowledge_memory.py`
 
@@ -463,11 +502,10 @@ The frontend uses the Next.js app router.
 Current route groups:
 
 - `frontend/app/login` for authentication
-- `frontend/app/apps` for runtime generated app routes
+- `frontend/app/apps` for durable generated app routes
 - `frontend/app/(app)/chat` for the main chat surface
 - `frontend/app/(app)/workspace/apps` for cockpit app management and app detail pages
 - `frontend/app/(app)/background` for the background run dashboard
-- `frontend/app/(app)/tasks` for legacy redirects into the background routes
 - `frontend/app/(app)/settings` for editable model and task-agent defaults for future sessions
 - `frontend/app/(app)/knowledge` for the review queue, approved knowledge list, and file-backed document browser
 
@@ -486,10 +524,20 @@ It currently provides typed functions for:
 - knowledge review and approved document browsing
 - model discovery
 
-`frontend/lib/hooks.ts` contains the main frontend stateful hooks:
+`frontend/lib/hooks.ts` contains the public composed hooks:
 
 - `useAuth` for session status
-- `useChat` for conversation list, transcript loading, branch selection, archive filtering, send flow, tool execution, active conversation selection, and the dedicated agent status state
+- `useChat` as a composition layer over narrower helpers for conversation-list ownership, detail loading, polling, transient stream state, and action handlers
+
+Supporting chat-state modules now include:
+
+- `frontend/lib/use-conversation-list.ts`
+- `frontend/lib/use-conversation-detail.ts`
+- `frontend/lib/use-conversation-polling.ts`
+- `frontend/lib/use-conversation-actions.ts`
+- `frontend/lib/chat-history.ts` for durable persisted timeline projection
+- `frontend/lib/agent-stream-state.ts` for the transient live overlay path
+- `frontend/lib/chat-state-types.ts` for explicit UI state models
 
 ### Chat UI Flow
 
@@ -505,6 +553,8 @@ Current behavior:
 - supports council mode with synthesized output and model metadata
 - keeps detailed model defaults in the dedicated settings page instead of the new-chat surface
 - renders a dedicated live agent-status surface for progress updates while keeping thought rows, tool rows, and final answers in the transcript
+- composes shared `ConversationListPanel` and `ConversationDetailsPanel` components for mobile and desktop detail surfaces
+- routes transcript rendering through a thin `ChatMessage` dispatcher with dedicated renderer modules for user, assistant, council, and timeline rows
 - shows archive controls, archived conversation filtering, and branch switching
 - exposes the limited tool surface and the active conversation workspace file list
 - offers recent conversation navigation in desktop sidebar and mobile chips
@@ -513,15 +563,13 @@ Artifacts and durable transcript events are mapped into UI-ready message data vi
 
 ### Background UI Flow
 
-The background page currently supports:
+The background page is currently a placeholder shell.
 
-- listing durable agent background runs
-- showing the background index as a read-only run history
-- live task updates through SSE plus targeted refreshes after important task events
-- presenting compact background run cards that route directly into the dedicated transcript view
-- allowing deletion of terminal runs from the background index
-- handling transcript browsing and detailed run evidence on the per-run transcript page
-- surfacing generated app task metadata and final task results inside the normal durable transcript flow
+Current behavior:
+
+- shows that background runs are intentionally disabled in the current product mode
+- directs the user back to the main chat surface for all active agent work
+- keeps the route surface available without reintroducing a second active control plane
 
 ### Generated Apps UI Flow
 
@@ -535,8 +583,8 @@ Current behavior:
 - the cockpit apps page lists generated apps, their status, verification state, and route path
 - the cockpit app detail page shows contract paths, provenance, write roots, and manifest data
 - the runtime app route renders the scaffolded app page directly from the generated app directory
-
-Task state is now durably rebuilt from conversation runs. What remains process-local is only the active asyncio execution handle and cancellation primitive.
+- verifier runs clean up any transient `verifier-*` app scaffold after the scenario completes instead of leaving scratch routes behind
+- interactive edits to generated apps are tracked through conversation runs and app lease metadata rather than a separate task-first control plane
 
 ### Knowledge UI State
 
@@ -585,16 +633,15 @@ Current behavior:
 4. Workspace search reads across allowed roots, while Python execution can only write inside the active conversation workspace.
 5. Tool outputs are stored as transcript-visible assistant messages so the result survives reloads.
 
-### Chat-Started App Builder Bootstrap
+### Chat-Started App Editing Flow
 
 1. The user asks for app creation or app edits in the main chat flow.
-2. The backend bootstraps or attaches a generated app, scaffolds the app contract if needed, and stores the app context in the active agent run.
-3. The generated app is available in the registry, in `/workspace/apps`, and at `/apps/<slug>` immediately.
-4. The active agent run carries explicit write roots for the generated app so later edits stay inside the app boundary.
-3. The agent runner generates a structured execution plan and either pauses for plan feedback or proceeds immediately when the caller explicitly skipped feedback.
-4. The agent loop executes one structured step at a time, persisting thought summaries, tool events, question pauses, compaction summaries, prompt metrics, and final run summaries into the conversation trace.
-5. The UI observes task progress through SSE state updates and can answer questions, cancel execution, or resume interrupted work.
-6. After a backend restart, previously running task runs are marked interrupted and can be manually resumed because the durable run metadata, events, and artifacts remain in SQLite.
+2. The agent runtime acquires or refreshes the generated app lease through the app registry using the active conversation context.
+3. The backend bootstraps or attaches the generated app, scaffolds the app contract if needed, and stores the app context in the active agent run metadata.
+4. The generated app is available in the registry, in `/workspace/apps`, and at `/apps/<slug>` immediately.
+5. The active agent run carries explicit write roots for the generated app so later edits stay inside the app boundary.
+6. The agent loop persists plan events, thought summaries, tool events, question pauses, compaction summaries, prompt metrics, and final run summaries into the conversation trace.
+7. After a backend restart, previously running runs are marked interrupted and can be resumed manually because the durable run metadata, events, and artifacts remain in SQLite.
 
 ### Reviewed Memory Approval
 
@@ -612,18 +659,23 @@ Current behavior:
 - `backend/app/config.py`: environment-backed settings and path helpers
 - `backend/app/api/`: route definitions
 - `backend/app/models/`: Pydantic request and response models
-- `backend/app/services/`: orchestration, auth, LLM access, generated apps, tasks, knowledge bridge
+- `backend/app/services/`: orchestration, auth, LLM access, agent tools, generated apps, conversation read/write seams, and knowledge bridge
+- `backend/app/presenters/`: API response mapping for conversation, apps, and knowledge
 - `backend/app/db/`: SQLAlchemy base, tables, sessions, repositories
 - `backend/alembic/`: schema migrations
-- `backend/tests/`: backend coverage for persistence, conversations, generated apps, tasks, and reviewed memory
+- `backend/tests/`: backend coverage for persistence, conversations, generated apps, compaction, runtime behavior, and reviewed memory
 
 ### Frontend
 
 - `frontend/app/`: route entrypoints and layouts
-- `frontend/components/`: chat, sidebar, input, and task presentation components
+- `frontend/components/`: chat, sidebar, app-management, and shared presentation components
+- `frontend/components/chat/`: shared chat page panels and formatting helpers
+- `frontend/components/chat-message/`: dedicated per-kind chat renderers
 - `frontend/lib/api.ts`: typed backend client
-- `frontend/lib/hooks.ts`: main auth and chat hooks
-- `frontend/lib/chat-history.ts`: UI mapping for persisted transcript and artifact data
+- `frontend/lib/hooks.ts`: public auth and composed chat hooks
+- `frontend/lib/use-conversation-*.ts`: narrower chat state ownership hooks
+- `frontend/lib/chat-history.ts`: durable persisted timeline projection
+- `frontend/lib/agent-stream-state.ts`: transient live overlay state
 
 ### Knowledge and Planning
 
@@ -638,28 +690,29 @@ Current backend test coverage lives under `backend/tests/` and includes:
 
 - conversation store behavior
 - conversation API behavior
+- conversation compaction behavior
 - generated app registry behavior and explicit write-root enforcement
-- chat-started app task bootstrap behavior
-- task and reviewed memory behavior
+- chat-started app bootstrap behavior inside the chat-first agent runtime
+- agent runtime and reviewed memory behavior
 - workspace and limited-tool boundaries
 - slashless collection route coverage for the frontend rewrite path
 
-The frontend also includes API and chat history mapping tests, while production `next build` validates the route tree and TypeScript surfaces.
+The frontend also includes API, chat-history, hook, stream-state, and chat-component tests, while production `next build` validates the route tree and TypeScript surfaces.
 
 ## Current Gaps and Intentional Incompleteness
 
 These are not accidental omissions; they are the main boundaries of the current implementation.
 
-- The trace and artifact panels are still conversation-wide rather than branch-filtered after a resend.
-- The background agent runtime is now implemented as a single durable agent loop, but it is still intentionally single-agent and does not yet include subagents, MCP integration, or plugin loading.
+- The background route remains intentionally disabled while the product stays chat-first for active agent work.
+- The current durable agent runtime is intentionally single-agent and does not yet include subagents, MCP integration, or plugin loading.
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
-- Task execution state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
+- Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
 
 ## Architectural Direction
 
-The codebase has already crossed the main persistence boundary and productized it into configurable chat sessions, review-first knowledge capture, limited chat tools, per-conversation workspaces, and branch/archive controls. The next architectural step is not more persistence refactoring. It is to extend that model into background agent workflows and deeper knowledge operations without introducing a second trace system.
+The codebase has already crossed the main runtime, persistence, and frontend decomposition boundaries for the current architecture. The next architectural step is not another large chat/runtime rewrite. It is to extend the generated-app substrate into stronger verification and cleaner generated-app storage without introducing a second trace system.
 
-For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus a safe background-agent substrate, not advanced retrieval infrastructure.
+For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 
 That direction is reflected in `PLAN.md` and should remain the default assumption for future changes unless the underlying architecture changes materially.

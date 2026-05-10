@@ -12,15 +12,15 @@ from app.models.chat import ChatResponse, Message, ModelResponse, PromptMetrics
 from app.models.settings import ConversationSessionMetadata
 from app.services.agent_tools import build_tool_context
 from app.services.agent_runner import agent_runner
-from app.services.app_registry import app_registry_service, generated_app_contract
+from app.services.app_registry import app_registry_service, resolve_generated_app_contract
 from app.services.chat_settings import chat_settings_service
+from app.services.conversation_compaction import build_conversation_prompt_context
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import EventRecord, MessageRecord, RunRecord, conversation_store
 from app.services.conversation_workspace import MAIN_BRANCH_KEY
-from app.services.llm import PromptSegment, aggregate_usage, chat_completion, chat_completion_stream, ensure_prompt_metrics, get_session_prompt_cache_status
+from app.services.llm import PromptSegment, aggregate_usage, chat_completion, chat_completion_stream, ensure_prompt_metrics
 
 
-CONTEXT_COMPACTION_TOOL_TOMBSTONE = "[Old tool result content cleared; see the conversation trace for the full output.]"
 _APP_CONTEXT_HINT_RE = re.compile(r"(?:/apps/|started app task|app root:|entry page:|allowed write roots:|app has been updated)", re.IGNORECASE)
 STREAMED_AGENT_EVENT_TYPES = {
     "conversation.task.started",
@@ -277,7 +277,7 @@ class ChatOrchestrator:
         write_roots = list(default_write_roots)
         recent_app = await app_registry_service.get_recent_app_for_conversation(conversation_id)
         if recent_app is not None:
-            contract = generated_app_contract(recent_app.slug)
+            contract = resolve_generated_app_contract(recent_app.slug, recent_app.manifest_json)
             app_payload = {
                 "app_id": recent_app.id,
                 "slug": recent_app.slug,
@@ -360,183 +360,6 @@ class ChatOrchestrator:
             content_json=payload,
         )
 
-    def _is_tool_like_message(self, message: MessageRecord) -> bool:
-        return message.role == "assistant" and bool(message.author_label) and "/" not in str(message.author_label)
-
-    def _microcompact_message_records(self, messages: list[MessageRecord], *, aggressive: bool = False) -> list[Message]:
-        preserve_recent = max(
-            0,
-            settings.conversation_cache_cold_keep_recent_messages if aggressive else settings.conversation_microcompact_keep_recent_messages,
-        )
-        microcompact_limit = max(1, settings.conversation_microcompact_max_chars)
-        guardrail_limit = max(microcompact_limit, settings.conversation_compaction_guardrail_max_chars)
-        compact_before_index = max(0, len(messages) - preserve_recent)
-        compacted: list[Message] = []
-        for index, message in enumerate(messages):
-            content = message.content
-            if (
-                index < compact_before_index
-                and self._is_tool_like_message(message)
-                and (aggressive or len(content) > microcompact_limit or len(content) > guardrail_limit)
-            ):
-                content = CONTEXT_COMPACTION_TOOL_TOMBSTONE
-            elif len(content) > guardrail_limit:
-                content = content[:guardrail_limit] + "\n...[truncated]"
-            compacted.append(Message(role=message.role, content=content))
-        return compacted
-
-    def _format_compaction_source(self, messages: list[MessageRecord]) -> str:
-        max_chars = max(200, settings.conversation_compaction_guardrail_max_chars)
-        lines: list[str] = []
-        for message in messages:
-            content = message.content.strip()
-            if self._is_tool_like_message(message) and len(content) > max_chars:
-                content = CONTEXT_COMPACTION_TOOL_TOMBSTONE
-            elif len(content) > max_chars:
-                content = content[:max_chars] + "\n...[truncated]"
-            author = f" ({message.author_label})" if message.author_label else ""
-            lines.append(f"{message.role}{author}: {content}")
-        return "\n\n".join(lines)
-
-    async def _load_cached_compaction_summary(
-        self,
-        *,
-        conversation_id: str,
-        branch_key: str,
-        through_message_id: str,
-    ) -> str | None:
-        artifacts = await conversation_read_model.list_artifacts_for_branch(conversation_id, branch_key=branch_key)
-        summary_candidates = [
-            artifact
-            for artifact in artifacts
-            if artifact.artifact_type == "context.compaction.summary"
-            and isinstance(artifact.content_json, dict)
-            and artifact.content_json.get("branch_key") == branch_key
-            and artifact.content_json.get("through_message_id") == through_message_id
-        ]
-        if not summary_candidates:
-            return None
-        latest = max(summary_candidates, key=lambda item: item.created_at)
-        payload = latest.content_json or {}
-        summary = payload.get("summary")
-        return None if not isinstance(summary, str) or not summary.strip() else summary.strip()
-
-    async def _generate_compaction_summary(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        branch_key: str,
-        model: str,
-        source_messages: list[MessageRecord],
-        through_message_id: str,
-        tail_message_count: int,
-    ) -> str | None:
-        system_prompt = (
-            "You are the AI-Cockpit conversation compactor. Summarize earlier conversation turns faithfully so later model calls can keep working context without replaying the full transcript. "
-            "Keep concrete requirements, decisions, constraints, file paths, tool findings, and unresolved questions. Omit repetition and low-value chatter."
-        )
-        user_prompt = (
-            "Summarize the following earlier conversation history for continued work. "
-            "Write a concise but information-dense summary that can replace the original turns.\n\n"
-            f"Transcript:\n{self._format_compaction_source(source_messages)}"
-        )
-        summary_messages = [
-            Message(role="system", content=system_prompt),
-            Message(role="user", content=user_prompt),
-        ]
-        response = await chat_completion(
-            summary_messages,
-            model,
-            temperature=0.2,
-            max_tokens=settings.conversation_compaction_summary_max_tokens,
-            session_id=f"{_message_session_id(conversation_id, branch_key)}:compact",
-            prompt_segments=[
-                PromptSegment(role="system", text=system_prompt, cache_candidate=True, stable=True),
-                PromptSegment(role="user", text=user_prompt),
-            ],
-        )
-        prompt_metrics = ensure_prompt_metrics(
-            messages=summary_messages,
-            model=model,
-            session_id=f"{_message_session_id(conversation_id, branch_key)}:compact",
-            usage=getattr(response, "usage", None),
-            prompt_metrics=getattr(response, "prompt_metrics", None),
-        )
-        await self._record_llm_metrics(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            branch_key=branch_key,
-            model=model,
-            metrics=prompt_metrics,
-            request_kind="context.compaction.summary",
-        )
-        if response.error:
-            return None
-
-        summary_text = response.content.strip()
-        if not summary_text:
-            return None
-
-        compaction_event = await conversation_store.append_event(
-            conversation_id,
-            run_id=run_id,
-            actor_kind="system",
-            event_type="context.compacted",
-            payload_json={
-                "branch_key": branch_key,
-                "through_message_id": through_message_id,
-                "source_message_count": len(source_messages),
-                "tail_message_count": tail_message_count,
-            },
-            branch_key=branch_key,
-        )
-        await conversation_store.attach_artifact(
-            conversation_id,
-            run_id=run_id,
-            source_event_id=compaction_event.id,
-            artifact_type="context.compaction.summary",
-            mime_type="application/json",
-            content_json={
-                "branch_key": branch_key,
-                "through_message_id": through_message_id,
-                "source_message_count": len(source_messages),
-                "tail_message_count": tail_message_count,
-                "summary": summary_text,
-            },
-        )
-        return summary_text
-
-    async def _ensure_compaction_summary(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        branch_key: str,
-        model: str,
-        prefix_messages: list[MessageRecord],
-        tail_message_count: int,
-    ) -> str | None:
-        if not prefix_messages:
-            return None
-        through_message_id = prefix_messages[-1].id
-        cached = await self._load_cached_compaction_summary(
-            conversation_id=conversation_id,
-            branch_key=branch_key,
-            through_message_id=through_message_id,
-        )
-        if cached is not None:
-            return cached
-        return await self._generate_compaction_summary(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            branch_key=branch_key,
-            model=model,
-            source_messages=prefix_messages,
-            through_message_id=through_message_id,
-            tail_message_count=tail_message_count,
-        )
-
     async def _build_model_prompt(
         self,
         *,
@@ -557,68 +380,26 @@ class ChatOrchestrator:
             for message in stored_messages
             if message.role in {"system", "user", "assistant"}
         ]
-        cache_status = get_session_prompt_cache_status(_message_session_id(conversation_id, branch_key), model)
-
-        if cache_status.cache_cold and persisted_records:
-            persisted_messages = self._microcompact_message_records(persisted_records, aggressive=True)
-            cold_limit = max(1, settings.conversation_cache_cold_message_limit)
-            if cold_limit > 0 and len(persisted_messages) > cold_limit:
-                persisted_messages = persisted_messages[-cold_limit:]
-            messages = [*transient_system_messages, *persisted_messages]
-            prompt_segments = [
-                *[
-                    self._message_to_segment(message, cache_candidate=True, stable=True)
-                    for message in transient_system_messages
-                ],
-                *[self._message_to_segment(message) for message in persisted_messages],
-            ]
-            return PromptBuildResult(
-                messages=messages,
-                prompt_segments=prompt_segments,
-                time_based_microcompact_applied=True,
-            )
-
-        if (
-            settings.conversation_compaction_enabled
-            and settings.conversation_compaction_trigger_messages > 0
-            and len(persisted_records) > settings.conversation_compaction_trigger_messages
-        ):
-            keep_tail = min(max(1, settings.conversation_compaction_keep_tail_messages), len(persisted_records))
-            prefix_records = persisted_records[:-keep_tail]
-            tail_records = persisted_records[-keep_tail:]
-            summary = await self._ensure_compaction_summary(
-                conversation_id=conversation_id,
-                run_id=run_id,
+        async def _record_compaction_metrics(**kwargs) -> None:
+            await self._record_llm_metrics(
+                conversation_id=kwargs["conversation_id"],
+                run_id=kwargs["run_id"],
                 branch_key=branch_key,
-                model=model,
-                prefix_messages=prefix_records,
-                tail_message_count=len(tail_records),
+                model=kwargs["model"],
+                metrics=kwargs["metrics"],
+                request_kind=kwargs["request_kind"],
             )
-            if summary:
-                tail_messages = self._microcompact_message_records(tail_records)
-                messages = [
-                    *transient_system_messages,
-                    Message(role="system", content="Conversation summary for earlier turns:\n" + summary),
-                    *tail_messages,
-                ]
-                prompt_segments = [
-                    *[
-                        self._message_to_segment(message, cache_candidate=True, stable=True)
-                        for message in transient_system_messages
-                    ],
-                    PromptSegment(
-                        role="system",
-                        text="Conversation summary for earlier turns:\n" + summary,
-                        cache_candidate=True,
-                        stable=True,
-                    ),
-                    *[self._message_to_segment(message) for message in tail_messages],
-                ]
-                return PromptBuildResult(messages=messages, prompt_segments=prompt_segments)
 
-        persisted_messages = self._microcompact_message_records(persisted_records)
-        if settings.conversation_context_message_limit > 0 and len(persisted_messages) > settings.conversation_context_message_limit:
-            persisted_messages = persisted_messages[-settings.conversation_context_message_limit :]
+        prompt_context = await build_conversation_prompt_context(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            branch_key=branch_key,
+            model=model,
+            persisted_records=persisted_records,
+            record_llm_metrics=_record_compaction_metrics,
+            chat_completion_fn=chat_completion,
+        )
+        persisted_messages = prompt_context.messages
         messages = [*transient_system_messages, *persisted_messages]
         prompt_segments = [
             *[
@@ -627,7 +408,11 @@ class ChatOrchestrator:
             ],
             *[self._message_to_segment(message) for message in persisted_messages],
         ]
-        return PromptBuildResult(messages=messages, prompt_segments=prompt_segments)
+        return PromptBuildResult(
+            messages=messages,
+            prompt_segments=prompt_segments,
+            time_based_microcompact_applied=prompt_context.time_based_microcompact_applied,
+        )
 
     async def _record_prompt_snapshot(
         self,

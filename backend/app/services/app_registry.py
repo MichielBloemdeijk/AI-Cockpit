@@ -85,6 +85,73 @@ class GeneratedAppContract:
     allowed_write_roots: list[str]
 
 
+def _normalize_route_path_prefix(value: str | None) -> str:
+    normalized = str(value or "").strip().strip("/")
+    if not normalized:
+        return "/apps"
+    return f"/{normalized}"
+
+
+def _normalize_contract_override(contract_override: object) -> dict[str, str] | None:
+    if not isinstance(contract_override, dict):
+        return None
+
+    frontend_root_base = str(contract_override.get("frontend_root_base") or "").strip().replace("\\", "/")
+    asset_root_base = str(contract_override.get("asset_root_base") or "").strip().replace("\\", "/")
+    if not frontend_root_base or not asset_root_base:
+        return None
+
+    return {
+        "route_path_prefix": _normalize_route_path_prefix(str(contract_override.get("route_path_prefix") or "/apps")),
+        "frontend_root_base": frontend_root_base,
+        "asset_root_base": asset_root_base,
+    }
+
+
+def _contract_payload(contract: GeneratedAppContract) -> dict[str, object]:
+    return {
+        "route_path": contract.route_path,
+        "frontend_root": contract.frontend_root,
+        "frontend_entry_path": contract.frontend_entry_path,
+        "frontend_layout_path": contract.frontend_layout_path,
+        "manifest_path": contract.manifest_path,
+        "asset_root": contract.asset_root,
+        "allowed_write_roots": contract.allowed_write_roots,
+    }
+
+
+def _contract_from_payload(payload: object) -> GeneratedAppContract | None:
+    contract_payload = payload.get("contract") if isinstance(payload, dict) else None
+    if not isinstance(contract_payload, dict):
+        return None
+
+    route_path = str(contract_payload.get("route_path") or "").strip()
+    frontend_root = str(contract_payload.get("frontend_root") or "").strip()
+    frontend_entry_path = str(contract_payload.get("frontend_entry_path") or "").strip()
+    frontend_layout_path = str(contract_payload.get("frontend_layout_path") or "").strip()
+    manifest_path = str(contract_payload.get("manifest_path") or "").strip()
+    asset_root = str(contract_payload.get("asset_root") or "").strip()
+    allowed_write_roots = [
+        str(value).strip()
+        for value in (contract_payload.get("allowed_write_roots") or [])
+        if str(value).strip()
+    ]
+    if not all((route_path, frontend_root, frontend_entry_path, frontend_layout_path, manifest_path, asset_root)):
+        return None
+    if not allowed_write_roots:
+        allowed_write_roots = [frontend_root, asset_root]
+
+    return GeneratedAppContract(
+        route_path=route_path,
+        frontend_root=frontend_root,
+        frontend_entry_path=frontend_entry_path,
+        frontend_layout_path=frontend_layout_path,
+        manifest_path=manifest_path,
+        asset_root=asset_root,
+        allowed_write_roots=allowed_write_roots,
+    )
+
+
 def _record(model: GeneratedApp) -> GeneratedAppRecord:
     return GeneratedAppRecord(
         id=model.id,
@@ -114,15 +181,19 @@ def _repo_root() -> Path:
     return settings.backend_root.parent.resolve()
 
 
-def generated_app_contract(slug: str) -> GeneratedAppContract:
+def generated_app_contract(slug: str, *, contract_override: dict[str, str] | None = None) -> GeneratedAppContract:
     normalized_slug = _slugify(slug)
-    frontend_root = (Path("frontend") / "app" / "apps" / normalized_slug).as_posix()
+    override = _normalize_contract_override(contract_override)
+    route_path_prefix = override["route_path_prefix"] if override is not None else "/apps"
+    frontend_root_base = Path(override["frontend_root_base"]) if override is not None else Path("frontend") / "app" / "apps"
+    asset_root_base = Path(override["asset_root_base"]) if override is not None else Path("frontend") / "public" / "apps"
+    frontend_root = (frontend_root_base / normalized_slug).as_posix()
     frontend_entry_path = (Path(frontend_root) / "page.tsx").as_posix()
     frontend_layout_path = (Path(frontend_root) / "layout.tsx").as_posix()
     manifest_path = (Path(frontend_root) / "cockpit-app.json").as_posix()
-    asset_root = (Path("frontend") / "public" / "apps" / normalized_slug).as_posix()
+    asset_root = (asset_root_base / normalized_slug).as_posix()
     return GeneratedAppContract(
-        route_path=f"/apps/{normalized_slug}",
+        route_path=f"{route_path_prefix}/{normalized_slug}",
         frontend_root=frontend_root,
         frontend_entry_path=frontend_entry_path,
         frontend_layout_path=frontend_layout_path,
@@ -130,6 +201,18 @@ def generated_app_contract(slug: str) -> GeneratedAppContract:
         asset_root=asset_root,
         allowed_write_roots=[frontend_root, asset_root],
     )
+
+
+def resolve_generated_app_contract(
+    slug: str,
+    manifest_json: dict[str, object] | None = None,
+    *,
+    contract_override: dict[str, str] | None = None,
+) -> GeneratedAppContract:
+    stored_contract = _contract_from_payload(manifest_json)
+    if stored_contract is not None:
+        return stored_contract
+    return generated_app_contract(slug, contract_override=contract_override)
 
 
 class AppRegistryService:
@@ -194,27 +277,17 @@ class AppRegistryService:
         source_task_run_id: str | None = None,
         source_conversation_id: str | None = None,
         manifest_json: dict | None = None,
+        contract_override: dict[str, str] | None = None,
     ) -> GeneratedAppRecord:
         normalized_slug = _slugify(slug or title)
         if await self.get_app_by_slug(normalized_slug):
             raise ValueError("An app with that slug already exists")
 
-        contract = generated_app_contract(normalized_slug)
+        contract = generated_app_contract(normalized_slug, contract_override=contract_override)
         payload = dict(manifest_json or {})
         payload.setdefault("kind", "frontend_generated_app")
         payload.setdefault("version", 1)
-        payload.setdefault(
-            "contract",
-            {
-                "route_path": contract.route_path,
-                "frontend_root": contract.frontend_root,
-                "frontend_entry_path": contract.frontend_entry_path,
-                "frontend_layout_path": contract.frontend_layout_path,
-                "manifest_path": contract.manifest_path,
-                "asset_root": contract.asset_root,
-                "allowed_write_roots": contract.allowed_write_roots,
-            },
-        )
+        payload.setdefault("contract", _contract_payload(contract))
 
         async with session_scope() as session:
             item = GeneratedApp(
@@ -248,6 +321,14 @@ class AppRegistryService:
                 return None
             item = await session.get(GeneratedApp, app_id)
             return None if item is None else _record(item)
+
+    async def delete_app(self, app_id: str) -> bool:
+        async with session_scope() as session:
+            item = await session.get(GeneratedApp, app_id)
+            if item is None:
+                return False
+            await session.delete(item)
+            return True
 
     async def acquire_lease(
         self,
@@ -349,7 +430,7 @@ class AppRegistryService:
         return None
 
     def get_allowed_write_roots(self, record: GeneratedAppRecord) -> list[str]:
-        return generated_app_contract(record.slug).allowed_write_roots
+        return resolve_generated_app_contract(record.slug, record.manifest_json).allowed_write_roots
 
     def get_absolute_write_roots(self, record: GeneratedAppRecord) -> list[str]:
         return [(_repo_root() / path).resolve().as_posix() for path in self.get_allowed_write_roots(record)]

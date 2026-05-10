@@ -25,6 +25,7 @@ class ToolExecutionContext:
     workspace_root: Path
     read_roots: list[Path]
     write_roots: list[Path]
+    generated_app_contract_override: dict[str, str] | None = None
 
 
 ToolExecutor = Callable[[ToolExecutionContext, dict[str, Any]], Awaitable[ToolExecutionResult]]
@@ -162,7 +163,13 @@ def _resolve_write_path(path_value: str, *, context: ToolExecutionContext) -> Pa
     return _resolve_under_roots(path_value, context.write_roots, base=context.workspace_root)
 
 
-def build_tool_context(conversation_id: str, workspace_path: str, *, run_id: str | None = None) -> ToolExecutionContext:
+def build_tool_context(
+    conversation_id: str,
+    workspace_path: str,
+    *,
+    run_id: str | None = None,
+    generated_app_contract_override: dict[str, str] | None = None,
+) -> ToolExecutionContext:
     workspace_root = Path(workspace_path)
     if not workspace_root.is_absolute():
         workspace_root = (_workspace_root() / workspace_root).resolve()
@@ -173,6 +180,7 @@ def build_tool_context(conversation_id: str, workspace_path: str, *, run_id: str
         workspace_root=workspace_root,
         read_roots=_search_roots(),
         write_roots=[workspace_root],
+        generated_app_contract_override=generated_app_contract_override,
     )
 
 

@@ -29,6 +29,7 @@ async def run_app_initialize(
         description=description,
         source_conversation_id=context.conversation_id,
         source_task_run_id=context.run_id,
+        contract_override=context.generated_app_contract_override,
     )
     bootstrap.app = await app_registry_service.acquire_lease(
         app_id=bootstrap.app.id,

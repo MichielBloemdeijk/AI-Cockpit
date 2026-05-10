@@ -18,6 +18,7 @@ async def configured_database(tmp_path: Path):
     original_conversation_workspaces_dir = settings.conversation_workspaces_dir
     original_knowledge_notes_dir = settings.knowledge_notes_dir
     original_knowledge_preferences_file = settings.knowledge_preferences_file
+    original_verifier_generated_apps_dir = settings.verifier_generated_apps_dir
     database_path = tmp_path / "test.db"
 
     await close_engine()
@@ -26,6 +27,7 @@ async def configured_database(tmp_path: Path):
     settings.conversation_workspaces_dir = str(tmp_path / ".cockpit" / "conversations")
     settings.knowledge_notes_dir = str(tmp_path / "knowledge" / "notes")
     settings.knowledge_preferences_file = str(tmp_path / "knowledge" / "preferences.yaml")
+    settings.verifier_generated_apps_dir = str(tmp_path / "verifier-runs")
 
     await ensure_database_ready()
     initialize_engine(settings.database_url)
@@ -43,3 +45,4 @@ async def configured_database(tmp_path: Path):
         settings.conversation_workspaces_dir = original_conversation_workspaces_dir
         settings.knowledge_notes_dir = original_knowledge_notes_dir
         settings.knowledge_preferences_file = original_knowledge_preferences_file
+        settings.verifier_generated_apps_dir = original_verifier_generated_apps_dir

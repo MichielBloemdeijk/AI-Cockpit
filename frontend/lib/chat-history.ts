@@ -32,6 +32,8 @@ interface TimelineEntry extends ChatHistoryMessage {
   sortOrder: number;
 }
 
+const MUTATING_TOOLS = new Set(["file_write", "python_execution", "shell_command", "app_initialize"]);
+
 function isRenderableChatMessage(
   message: ConversationDetail["messages"][number],
 ): message is ConversationDetail["messages"][number] & { role: "user" | "assistant" } {
@@ -86,6 +88,35 @@ function toSortTime(value: string | null | undefined): number {
   }
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
+}
+
+function conversationHasUnsafeMutations(events: ConversationEventView[]): boolean {
+  return events.some((event) => {
+    const payload = event.payload_json ?? {};
+    const eventToolName = typeof payload.tool === "string"
+      ? payload.tool
+      : event.event_type.startsWith("tool.")
+        ? event.event_type.split(".")[1] ?? ""
+        : "";
+
+    if (MUTATING_TOOLS.has(eventToolName)) {
+      return true;
+    }
+
+    if (event.event_type === "agent.run.completed") {
+      const runSummary = payload.run_summary;
+      if (
+        runSummary
+        && typeof runSummary === "object"
+        && Array.isArray((runSummary as { changed_files?: unknown }).changed_files)
+        && ((runSummary as { changed_files?: unknown[] }).changed_files?.length ?? 0) > 0
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  });
 }
 
 function isLowSignalToolIntentSummary(content: string): boolean {
@@ -429,6 +460,7 @@ export function mapConversationMessages(
 ): ChatHistoryMessage[] {
   const councilDataByRun = buildCouncilData(artifacts);
   const usageByEventId = parseUsageByEventId(events);
+  const hasUnsafeBranchMutations = conversationHasUnsafeMutations(events);
 
   const messageEntries: TimelineEntry[] = detail.messages
     .filter(isRenderableChatMessage)
@@ -445,7 +477,10 @@ export function mapConversationMessages(
         kind: "message",
         content: message.content,
         createdAt: message.created_at,
-        branchable: message.role === "user",
+        branchable: message.role === "user" ? !hasUnsafeBranchMutations : undefined,
+        branchBlockReason: message.role === "user" && hasUnsafeBranchMutations
+          ? "Branching is disabled because this conversation already contains mutating actions."
+          : undefined,
         councilData,
         usage:
           message.role === "assistant"

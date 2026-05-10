@@ -1,76 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Archive, Clock3, FileStack, FolderOpen, GitBranch, History, Layers3, Loader2, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
+import { Archive, GitBranch, Layers3, Loader2, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import clsx from "clsx";
 import { AgentStatusCard } from "@/components/AgentStatusCard";
+import { ChatActionErrorBanner } from "@/components/chat/ChatActionErrorBanner";
+import { ConversationDetailsPanel } from "@/components/chat/ConversationDetailsPanel";
+import { ConversationListPanel } from "@/components/chat/ConversationListPanel";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput, type ChatComposerMode } from "@/components/ChatInput";
-import { summarizeAgentEvent } from "@/lib/agent-event-presenter";
-import { useChat, type ChatMessage as ChatTranscriptMessage } from "@/lib/hooks";
-import { type ConversationEventView, ConversationSessionMetadata, getChatSettings } from "@/lib/api";
+import { formatConversationModeLabel } from "@/components/chat/formatters";
+import { useChat } from "@/lib/hooks";
+import { ConversationSessionMetadata, getChatSettings } from "@/lib/api";
 import { formatTokenCount, formatUsageCost, summarizeConversationUsage } from "@/lib/usage";
 
 function buildNewConversationMetadata(defaults: ConversationSessionMetadata): ConversationSessionMetadata {
   return { ...defaults, mode: "single" };
-}
-
-function formatConversationModeLabel(mode: ConversationSessionMetadata["mode"] | string | null | undefined): string {
-  if (mode === "council") {
-    return "Council";
-  }
-  if (mode === "single" || mode === "agent") {
-    return "Agent";
-  }
-  return String(mode || "Agent");
-}
-
-function formatConversationLabel(isoTimestamp: string): string {
-  const date = new Date(isoTimestamp);
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function formatTraceLabel(eventType: string): string {
-  return eventType
-    .split(".")
-    .map((part) => part.replace(/_/g, " "))
-    .join(" / ");
-}
-
-const MUTATING_TOOLS = new Set(["file_write", "python_execution", "shell_command", "app_initialize"]);
-
-function branchHasUnsafeMutations(events: ConversationEventView[]): boolean {
-  return events.some((event) => {
-    const payload = event.payload_json ?? {};
-    const eventToolName = typeof payload.tool === "string"
-      ? payload.tool
-      : event.event_type.startsWith("tool.")
-        ? event.event_type.split(".")[1] ?? ""
-        : "";
-
-    if (MUTATING_TOOLS.has(eventToolName)) {
-      return true;
-    }
-
-    if (event.event_type === "agent.run.completed") {
-      const runSummary = payload.run_summary;
-      if (
-        runSummary
-        && typeof runSummary === "object"
-        && Array.isArray((runSummary as { changed_files?: unknown }).changed_files)
-        && ((runSummary as { changed_files?: unknown[] }).changed_files?.length ?? 0) > 0
-      ) {
-        return true;
-      }
-    }
-
-    return false;
-  });
 }
 
 export default function ChatPage() {
@@ -84,6 +29,7 @@ export default function ChatPage() {
   const [showDesktopDetails, setShowDesktopDetails] = useState(false);
   const {
     messages,
+    actionError,
     agentStatus,
     conversations,
     activeConversationId,
@@ -98,6 +44,7 @@ export default function ChatPage() {
     sendMessage,
     runTool,
     archiveActiveConversation,
+    clearActionError,
     resendFromMessage,
     stopStreaming,
     clearMessages,
@@ -132,20 +79,7 @@ export default function ChatPage() {
   const sessionCostLabel = formatUsageCost(usageSummary.totalUsage?.cost);
   const sessionTokenLabel = formatTokenCount(usageSummary.totalUsage?.total_tokens);
   const hasUsageSummary = usageSummary.requestCount > 0;
-  const hasUnsafeBranchMutations = branchHasUnsafeMutations(events);
   const hasConversationDetails = Boolean(activeConversationId && (events.length > 0 || artifacts.length > 0 || activeConversation?.workspace?.files.length));
-  const renderedMessages = messages.map((message) => {
-    if (message.role !== "user" || (message.kind ?? "message") !== "message") {
-      return message;
-    }
-    if (!hasUnsafeBranchMutations) {
-      return message;
-    }
-    return {
-      ...message,
-      branchable: false,
-    };
-  });
 
   const handleSend = async (payload: { mode: ChatComposerMode; value: string }) => {
     if (!activeSessionMetadata) return;
@@ -189,64 +123,14 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0">
-      <aside className="hidden md:flex md:w-80 md:flex-col border-r border-zinc-800 bg-zinc-950/80 backdrop-blur-sm">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
-          <div className="flex items-center gap-2 text-zinc-200">
-            <History size={16} className="text-zinc-500" />
-            <span className="text-sm font-medium">Recent Conversations</span>
-          </div>
-          <button
-            onClick={() => setShowArchived(!showArchived)}
-            className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
-          >
-            <Archive size={12} />
-            {showArchived ? "Hide Archived" : "Show Archived"}
-          </button>
-        </div>
-
-        <div className="px-4 pt-3">
-          <button
-            onClick={handleNewConversation}
-            className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
-          >
-            <Plus size={12} />
-            New
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {conversations.map((conversation) => (
-            <button
-              key={conversation.id}
-              onClick={() => selectConversation(conversation.id)}
-              className={clsx(
-                "w-full rounded-2xl border px-3 py-3 text-left transition-colors",
-                activeConversationId === conversation.id
-                  ? "border-blue-500/40 bg-blue-500/10"
-                  : "border-zinc-800 bg-zinc-900/80 hover:border-zinc-700 hover:bg-zinc-900"
-              )}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="truncate text-sm font-medium text-zinc-100">
-                  {conversation.title || "Untitled conversation"}
-                </div>
-                <div className="text-[11px] uppercase tracking-wide text-zinc-500">
-                  {formatConversationModeLabel(conversation.mode_hint || conversation.session_metadata?.mode)}
-                </div>
-              </div>
-              <div className="mt-2 line-clamp-2 text-xs text-zinc-400">
-                {conversation.last_message_preview || "No messages yet."}
-              </div>
-              <div className="mt-3 text-[11px] text-zinc-500">
-                {formatConversationLabel(conversation.updated_at)}
-              </div>
-              {conversation.archived_at && (
-                <div className="mt-2 text-[11px] text-amber-400">Archived</div>
-              )}
-            </button>
-          ))}
-        </div>
-      </aside>
+      <ConversationListPanel
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        showArchived={showArchived}
+        onNewConversation={handleNewConversation}
+        onSelectConversation={selectConversation}
+        onToggleShowArchived={() => setShowArchived(!showArchived)}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="border-b border-zinc-700 bg-zinc-900 flex-shrink-0">
@@ -344,181 +228,40 @@ export default function ChatPage() {
               </div>
 
               {mobileDrawer === "conversations" ? (
-                <div className="flex-1 overflow-y-auto p-3">
-                  <button
-                    onClick={handleNewConversation}
-                    className="mb-3 inline-flex items-center gap-2 rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100"
-                  >
-                    <Plus size={14} />
-                    New conversation
-                  </button>
-                  <div className="space-y-2">
-                    {conversations.map((conversation) => (
-                      <button
-                        key={conversation.id}
-                        onClick={() => {
-                          selectConversation(conversation.id);
-                          closeMobileDrawer();
-                        }}
-                        className={clsx(
-                          "w-full rounded-2xl border px-3 py-3 text-left transition-colors",
-                          activeConversationId === conversation.id
-                            ? "border-blue-500/40 bg-blue-500/10"
-                            : "border-zinc-800 bg-zinc-900/80"
-                        )}
-                      >
-                        <div className="truncate text-sm font-medium text-zinc-100">
-                          {conversation.title || "Untitled conversation"}
-                        </div>
-                        <div className="mt-2 line-clamp-2 text-xs text-zinc-400">
-                          {conversation.last_message_preview || "No messages yet."}
-                        </div>
-                        <div className="mt-3 text-[11px] text-zinc-500">
-                          {formatConversationLabel(conversation.updated_at)}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <ConversationListPanel
+                  mobile
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  showArchived={showArchived}
+                  onNewConversation={() => {
+                    handleNewConversation();
+                    closeMobileDrawer();
+                  }}
+                  onSelectConversation={(conversationId) => {
+                    selectConversation(conversationId);
+                    closeMobileDrawer();
+                  }}
+                  onToggleShowArchived={() => setShowArchived(!showArchived)}
+                />
               ) : (
-                <div className="flex-1 space-y-4 overflow-y-auto p-4">
-                  {activeConversation && activeConversation.branches.length > 1 && (
-                    <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
-                      <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                        <GitBranch size={15} className="text-zinc-500" />
-                        Branches
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          onClick={() => setShowArchived(!showArchived)}
-                          className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300"
-                        >
-                          {showArchived ? "Hide archived" : "Show archived"}
-                        </button>
-                        {activeConversationId && (
-                          <button
-                            onClick={() => {
-                              archiveActiveConversation();
-                              closeMobileDrawer();
-                            }}
-                            className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300"
-                          >
-                            Archive chat
-                          </button>
-                        )}
-                        {activeConversation.branches.map((branch) => (
-                          <button
-                            key={branch.branch_key}
-                            onClick={() => {
-                              selectBranch(branch.branch_key);
-                              closeMobileDrawer();
-                            }}
-                            className={clsx(
-                              "rounded-full border px-3 py-1 text-xs transition-colors",
-                              activeBranchKey === branch.branch_key
-                                ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
-                                : "border-zinc-700 bg-zinc-950 text-zinc-400"
-                            )}
-                          >
-                            {branch.label || branch.branch_key}
-                          </button>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  {activeConversationId && hasUsageSummary && (
-                    <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
-                      <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                        <Layers3 size={15} className="text-zinc-500" />
-                        Usage
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Session total</div>
-                          <div className="mt-1 text-sm text-zinc-100">{sessionCostLabel ? `${sessionCostLabel} credits` : "Unavailable"}</div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Requests</div>
-                          <div className="mt-1 text-sm text-zinc-100">{usageSummary.requestCount}</div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2 col-span-2">
-                          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Tokens</div>
-                          <div className="mt-1 text-sm text-zinc-100">{sessionTokenLabel ?? "Unavailable"}</div>
-                        </div>
-                      </div>
-                    </section>
-                  )}
-
-                  {activeConversationId && (events.length > 0 || artifacts.length > 0) && (
-                    <>
-                      <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
-                        <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                          <Clock3 size={15} className="text-zinc-500" />
-                          Recent Trace
-                        </div>
-                        <div className="mt-3 space-y-2">
-                          {events.slice(-6).reverse().map((event) => (
-                            <div key={event.id} className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-xs text-zinc-200">{formatTraceLabel(event.event_type)}</div>
-                                <div className="text-[11px] text-zinc-500">{formatConversationLabel(event.created_at)}</div>
-                              </div>
-                              {summarizeAgentEvent(event.event_type, event.payload_json) && (
-                                <div className="mt-1 line-clamp-2 text-xs text-zinc-500">
-                                  {summarizeAgentEvent(event.event_type, event.payload_json)}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </section>
-
-                      <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
-                        <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                          <FolderOpen size={15} className="text-zinc-500" />
-                          Workspace
-                        </div>
-                        {hasUsageSummary && (
-                          <div className="mt-3 grid grid-cols-2 gap-2">
-                            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Session total</div>
-                              <div className="mt-1 text-sm text-zinc-100">{sessionCostLabel ? `${sessionCostLabel} credits` : "Unavailable"}</div>
-                            </div>
-                            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                              <div className="text-[11px] uppercase tracking-wide text-zinc-500">Requests</div>
-                              <div className="mt-1 text-sm text-zinc-100">{usageSummary.requestCount}</div>
-                            </div>
-                          </div>
-                        )}
-                        <div className="mt-2 text-xs text-zinc-500">{activeConversation?.workspace?.path || "No workspace yet"}</div>
-                        <div className="mt-3 space-y-2">
-                          {activeConversation?.workspace?.files.length ? activeConversation.workspace.files.map((file) => (
-                            <div key={file.path} className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300">
-                              <div>{file.path}</div>
-                              <div className="mt-1 text-zinc-500">{file.size} bytes</div>
-                            </div>
-                          )) : (
-                            <div className="text-xs text-zinc-500">No workspace files yet.</div>
-                          )}
-                        </div>
-                        <div className="mt-4 border-t border-zinc-800 pt-4">
-                          <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                            <FileStack size={15} className="text-zinc-500" />
-                            Artifacts
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {artifacts.slice(-6).reverse().map((artifact) => (
-                              <span key={artifact.id} className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300">
-                                {artifact.artifact_type}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </section>
-                    </>
-                  )}
-                </div>
+                <ConversationDetailsPanel
+                  mobile
+                  activeConversation={activeConversation}
+                  activeConversationId={activeConversationId}
+                  activeBranchKey={activeBranchKey}
+                  events={events}
+                  artifacts={artifacts}
+                  showArchived={showArchived}
+                  onArchiveConversation={() => {
+                    archiveActiveConversation();
+                    closeMobileDrawer();
+                  }}
+                  onSelectBranch={(branchKey) => {
+                    selectBranch(branchKey);
+                    closeMobileDrawer();
+                  }}
+                  onToggleShowArchived={() => setShowArchived(!showArchived)}
+                />
               )}
             </div>
           </div>
@@ -634,76 +377,22 @@ export default function ChatPage() {
                 </div>
               )}
 
-              {activeConversationId && showDesktopDetails && (events.length > 0 || artifacts.length > 0) && (
-                <div className="mb-4 hidden gap-4 px-4 lg:grid lg:grid-cols-[1.1fr_0.9fr]">
-                  <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
-                    <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                      <Clock3 size={15} className="text-zinc-500" />
-                      Recent Trace
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      {events.slice(-6).reverse().map((event) => (
-                        <div key={event.id} className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="text-xs text-zinc-200">{formatTraceLabel(event.event_type)}</div>
-                            <div className="text-[11px] text-zinc-500">{formatConversationLabel(event.created_at)}</div>
-                          </div>
-                          {summarizeAgentEvent(event.event_type, event.payload_json) && (
-                            <div className="mt-1 line-clamp-2 text-xs text-zinc-500">
-                              {summarizeAgentEvent(event.event_type, event.payload_json)}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
-                    <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                      <FolderOpen size={15} className="text-zinc-500" />
-                      Workspace
-                    </div>
-                    {hasUsageSummary && (
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Session total</div>
-                          <div className="mt-1 text-sm text-zinc-100">{sessionCostLabel ? `${sessionCostLabel} credits` : "Unavailable"}</div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2">
-                          <div className="text-[11px] uppercase tracking-wide text-zinc-500">Requests</div>
-                          <div className="mt-1 text-sm text-zinc-100">{usageSummary.requestCount}</div>
-                        </div>
-                      </div>
-                    )}
-                    <div className="mt-2 text-xs text-zinc-500">{activeConversation?.workspace?.path || "No workspace yet"}</div>
-                    <div className="mt-3 space-y-2">
-                      {activeConversation?.workspace?.files.length ? activeConversation.workspace.files.map((file) => (
-                        <div key={file.path} className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300">
-                          <div>{file.path}</div>
-                          <div className="mt-1 text-zinc-500">{file.size} bytes</div>
-                        </div>
-                      )) : (
-                        <div className="text-xs text-zinc-500">No workspace files yet.</div>
-                      )}
-                    </div>
-                    <div className="mt-4 border-t border-zinc-800 pt-4">
-                      <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
-                        <FileStack size={15} className="text-zinc-500" />
-                        Artifacts
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {artifacts.slice(-6).reverse().map((artifact) => (
-                          <span key={artifact.id} className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300">
-                            {artifact.artifact_type}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </section>
-                </div>
+              {activeConversationId && showDesktopDetails && (
+                <ConversationDetailsPanel
+                  activeConversation={activeConversation}
+                  activeConversationId={activeConversationId}
+                  activeBranchKey={activeBranchKey}
+                  events={events}
+                  artifacts={artifacts}
+                  showArchived={showArchived}
+                  onArchiveConversation={archiveActiveConversation}
+                  onSelectBranch={selectBranch}
+                  onToggleShowArchived={() => setShowArchived(!showArchived)}
+                />
               )}
+              {actionError && <ChatActionErrorBanner error={actionError} onDismiss={clearActionError} />}
               {agentStatus && <AgentStatusCard status={agentStatus} />}
-              {renderedMessages.map((msg) => (
+              {messages.map((msg) => (
                 <ChatMessage
                   key={msg.id}
                   message={msg}

@@ -448,4 +448,54 @@ describe("mapConversationMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].title).toBe("Plan ready");
   });
+
+  it("marks persisted user messages as non-branchable after unsafe mutations", () => {
+    const detail: ConversationDetail = {
+      id: "conversation-7",
+      title: "Unsafe branch thread",
+      mode_hint: "single",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      archived_at: null,
+      last_message_preview: "Changed files",
+      latest_run_status: "completed",
+      messages: [
+        {
+          id: "message-1",
+          run_id: "run-7",
+          source_event_id: "event-1",
+          role: "user",
+          author_label: "You",
+          content: "Please update the file",
+          content_format: "markdown",
+          is_final: true,
+          created_at: "2026-05-01T00:00:00Z",
+        },
+      ],
+    };
+
+    const events: ConversationEventView[] = [
+      {
+        id: "event-complete-1",
+        run_id: "run-7",
+        sequence: 1,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.run.completed",
+        created_at: "2026-05-01T00:00:01Z",
+        schema_version: 1,
+        payload_json: {
+          run_summary: {
+            changed_files: ["frontend/app/page.tsx"],
+          },
+        },
+      },
+    ];
+
+    const messages = mapConversationMessages(detail, [], events);
+
+    expect(messages[0].branchable).toBe(false);
+    expect(messages[0].branchBlockReason).toContain("mutating actions");
+  });
 });

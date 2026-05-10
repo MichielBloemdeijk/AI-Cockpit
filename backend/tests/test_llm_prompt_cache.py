@@ -214,6 +214,32 @@ def test_session_cache_status_reports_cold_after_ttl():
     assert status.seconds_since_last_request >= 301
 
 
+def test_prompt_session_tracking_prunes_oldest_entries_when_limit_exceeded(monkeypatch):
+    llm_module.reset_prompt_session_tracking()
+    monkeypatch.setattr(llm_module, "_PROMPT_SESSION_STATE_LIMIT", 2)
+
+    llm_module.ensure_prompt_metrics(
+        messages=[Message(role="user", content="First")],
+        model="openai/gpt-4.1",
+        session_id="session-1",
+    )
+    llm_module.ensure_prompt_metrics(
+        messages=[Message(role="user", content="Second")],
+        model="openai/gpt-4.1",
+        session_id="session-2",
+    )
+    llm_module._PROMPT_SESSION_STATES["session-1"].recorded_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    llm_module._PROMPT_SESSION_STATES["session-2"].recorded_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+
+    llm_module.ensure_prompt_metrics(
+        messages=[Message(role="user", content="Third")],
+        model="openai/gpt-4.1",
+        session_id="session-3",
+    )
+
+    assert set(llm_module._PROMPT_SESSION_STATES) == {"session-2", "session-3"}
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_retries_retryable_http_errors(monkeypatch):
     llm_module.reset_prompt_session_tracking()

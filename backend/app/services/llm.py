@@ -65,6 +65,7 @@ class _PromptSessionState:
 
 
 _PROMPT_SESSION_STATES: dict[str, _PromptSessionState] = {}
+_PROMPT_SESSION_STATE_LIMIT = 256
 
 
 def _prompt_content_chars(messages: List[Message]) -> int:
@@ -79,6 +80,32 @@ def _estimate_prompt_tokens(prompt_bytes: int) -> int:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _prune_prompt_session_states(*, now: datetime | None = None) -> None:
+    if not _PROMPT_SESSION_STATES:
+        return
+
+    current = now or _utc_now()
+    expired_session_ids = [
+        session_id
+        for session_id, state in _PROMPT_SESSION_STATES.items()
+        if prompt_cache_ttl_seconds(state.model) > 0
+        and (current - state.recorded_at).total_seconds() >= prompt_cache_ttl_seconds(state.model)
+    ]
+    for session_id in expired_session_ids:
+        _PROMPT_SESSION_STATES.pop(session_id, None)
+
+    overflow = len(_PROMPT_SESSION_STATES) - _PROMPT_SESSION_STATE_LIMIT
+    if overflow <= 0:
+        return
+
+    oldest_sessions = sorted(
+        _PROMPT_SESSION_STATES.items(),
+        key=lambda item: item[1].recorded_at,
+    )
+    for session_id, _state in oldest_sessions[:overflow]:
+        _PROMPT_SESSION_STATES.pop(session_id, None)
 
 
 def _fingerprint_text(text: str) -> str:
@@ -165,6 +192,7 @@ def _remember_prompt_session(
 ) -> None:
     if not session_id or not prompt_fingerprint or not prompt_prefix_fingerprint:
         return
+    _prune_prompt_session_states()
     _PROMPT_SESSION_STATES[session_id] = _PromptSessionState(
         model=model,
         cache_strategy=cache_strategy,
@@ -172,6 +200,7 @@ def _remember_prompt_session(
         prompt_prefix_fingerprint=prompt_prefix_fingerprint,
         recorded_at=_utc_now(),
     )
+    _prune_prompt_session_states()
 
 
 def _is_retryable_http_status(status_code: int) -> bool:
@@ -500,6 +529,50 @@ def model_provider_prefix(model: str) -> str:
 def supports_native_tool_calls(model: str) -> bool:
     normalized = str(model or "").strip().lower()
     return any(normalized.startswith(prefix) for prefix in settings.native_tool_model_prefix_list)
+
+
+def native_agent_request_overrides(model: str) -> dict[str, Any] | None:
+    normalized = str(model or "").strip().lower()
+    overrides: dict[str, Any] = {"parallel_tool_calls": False}
+    if normalized.startswith("anthropic/"):
+        overrides["reasoning"] = {"max_tokens": 1024}
+    elif normalized.startswith("google/"):
+        overrides["reasoning"] = {"effort": "low", "exclude": False}
+    elif normalized.startswith("moonshotai/kimi-k2.6"):
+        overrides["reasoning"] = {"enabled": True, "exclude": False}
+        overrides["provider"] = {
+            "require_parameters": True,
+            "sort": "throughput",
+        }
+    return overrides or None
+
+
+def summary_request_overrides(model: str) -> dict[str, Any] | None:
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith(("anthropic/", "google/", "moonshotai/", "openai/", "x-ai/")):
+        return {"reasoning": {"exclude": True, "effort": "none"}}
+    return None
+
+
+def use_streaming_native_decision(model: str) -> bool:
+    return supports_native_tool_calls(model)
+
+
+def native_plan_max_tokens(model: str) -> int:
+    return 1200
+
+
+def native_decision_max_tokens(model: str) -> int:
+    if str(model or "").strip().lower().startswith("anthropic/"):
+        return 2500
+    return 1200
+
+
+def native_decision_attempt_max_tokens(model: str, attempt: int) -> int:
+    base = native_decision_max_tokens(model)
+    if attempt <= 0:
+        return base
+    return max(base * 4, 4096)
 
 
 def resolve_prompt_cache_policy(model: str) -> PromptCachePolicy:

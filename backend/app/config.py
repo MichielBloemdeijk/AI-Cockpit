@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     conversation_workspaces_dir: str = "../.cockpit/conversations"
     knowledge_notes_dir: str = "../knowledge/notes"
     knowledge_preferences_file: str = "../knowledge/preferences.yaml"
+    verifier_generated_apps_dir: str = "data/verifier-runs"
     conversation_context_message_limit: int = 24
     conversation_compaction_enabled: bool = True
     conversation_compaction_trigger_messages: int = 18
@@ -120,6 +121,13 @@ class Settings(BaseSettings):
     @property
     def knowledge_preferences_path(self) -> Path:
         configured_path = Path(self.knowledge_preferences_file)
+        if configured_path.is_absolute():
+            return configured_path
+        return self.backend_root / configured_path
+
+    @property
+    def verifier_generated_apps_path(self) -> Path:
+        configured_path = Path(self.verifier_generated_apps_dir)
         if configured_path.is_absolute():
             return configured_path
         return self.backend_root / configured_path

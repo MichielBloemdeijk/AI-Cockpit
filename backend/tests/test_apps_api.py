@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 from httpx import ASGITransport, AsyncClient
 import pytest
+import pytest_asyncio
 import app.services.agent_runner as agent_runner_module
 import app.services.app_builder as app_builder_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
@@ -18,8 +20,73 @@ from app.services.agent_tools import (
     get_agent_tool_definitions,
     get_agent_tool_provider_definitions,
 )
-from app.services.app_registry import AppLeaseConflictError, app_registry_service
+from app.services.app_registry import AppLeaseConflictError, app_registry_service, generated_app_contract, resolve_generated_app_contract
 from app.services.conversation_store import conversation_store
+
+
+_DURABLE_APP_SLUGS = {"app", "launchpad", "leaseable-launch-dashboard", "release-dashboard"}
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def cleanup_generated_app_scaffolds():
+    try:
+        yield
+    finally:
+        repo_root = app_builder_module._repo_root()
+        for record in await app_registry_service.list_apps():
+            if record.slug in _DURABLE_APP_SLUGS:
+                continue
+            contract = resolve_generated_app_contract(record.slug, record.manifest_json)
+            for relative_root in (contract.frontend_root, contract.asset_root):
+                shutil.rmtree(repo_root / relative_root, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_generated_app_uses_contract_override_roots():
+    bootstrap = await bootstrap_generated_app(
+        goal="create verifier app",
+        title="Verifier App",
+        contract_override={
+            "route_path_prefix": "/apps",
+            "frontend_root_base": "backend/data/verifier-runs/test-run/app/apps",
+            "asset_root_base": "backend/data/verifier-runs/test-run/public/apps",
+        },
+    )
+
+    assert bootstrap.route_path == "/apps/verifier-app"
+    assert bootstrap.frontend_root == "backend/data/verifier-runs/test-run/app/apps/verifier-app"
+    assert bootstrap.asset_root == "backend/data/verifier-runs/test-run/public/apps/verifier-app"
+    assert bootstrap.allowed_write_roots == [
+        "backend/data/verifier-runs/test-run/app/apps/verifier-app",
+        "backend/data/verifier-runs/test-run/public/apps/verifier-app",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_generated_app_contract_prefers_manifest_contract_payload():
+    record = await app_registry_service.create_app(
+        title="Manifest Contract App",
+        slug="manifest-contract-app",
+        manifest_json={
+            "contract": {
+                "route_path": "/apps/manifest-contract-app",
+                "frontend_root": "backend/data/verifier-runs/contract/app/apps/manifest-contract-app",
+                "frontend_entry_path": "backend/data/verifier-runs/contract/app/apps/manifest-contract-app/page.tsx",
+                "frontend_layout_path": "backend/data/verifier-runs/contract/app/apps/manifest-contract-app/layout.tsx",
+                "manifest_path": "backend/data/verifier-runs/contract/app/apps/manifest-contract-app/cockpit-app.json",
+                "asset_root": "backend/data/verifier-runs/contract/public/apps/manifest-contract-app",
+                "allowed_write_roots": [
+                    "backend/data/verifier-runs/contract/app/apps/manifest-contract-app",
+                    "backend/data/verifier-runs/contract/public/apps/manifest-contract-app",
+                ],
+            }
+        },
+    )
+
+    resolved = resolve_generated_app_contract(record.slug, record.manifest_json)
+
+    assert resolved.frontend_root == "backend/data/verifier-runs/contract/app/apps/manifest-contract-app"
+    assert resolved.asset_root == "backend/data/verifier-runs/contract/public/apps/manifest-contract-app"
 
 
 def _native_tool_response(*, model: str, name: str, arguments: dict[str, object], content: str) -> ModelResponse:

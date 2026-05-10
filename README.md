@@ -1,6 +1,6 @@
 # AI Cockpit
 
-A locally-hosted personal AI command center. Use a configurable LLM council from the web UI, keep durable conversation history, review promoted knowledge, and grow toward background agent sessions that can build and verify local tools while staying reachable from your phone via Tailscale.
+A locally-hosted personal AI command center. Use a configurable LLM council from the web UI, keep durable conversation history, review promoted knowledge, and run chat-first agent sessions that can build and verify local tools while staying reachable from your phone via Tailscale.
 
 ## Related Docs
 
@@ -127,16 +127,20 @@ AI-Cockpit/
 │   │   │   ├── conversations.py # Durable conversation DTOs
 │   │   │   ├── knowledge.py  # Knowledge and memory DTOs
 │   │   │   └── apps.py       # Generated app DTOs
+│   │   ├── presenters/      # API response mappers for conversations, apps, knowledge
 │   │   └── services/
 │   │       ├── app_builder.py # Generated app scaffolding + app contract helpers
 │   │       ├── app_registry.py # Durable generated app registry
-│   │       ├── agent_runner.py # Planning-first agent loop
-│   │       ├── llm.py        # OpenRouter client, council logic
+│   │       ├── agent_runner.py # Chat-first native-tool agent loop
+│   │       ├── conversation_compaction.py # Shared compaction helpers
+│   │       ├── conversation_read_model.py # Branch-aware transcript/event/artifact reads
+│   │       ├── llm.py        # OpenRouter client, prompt cache + native-tool helpers
 │   │       ├── chat_orchestrator.py # Conversation-aware chat execution
 │   │       ├── chat_settings.py # Chat defaults resolution and persistence
 │   │       ├── chat_tools.py # Workspace search + Python execution
-│   │       ├── conversation_store.py # Durable conversation writes and reads
+│   │       ├── conversation_store.py # Durable conversation writes and low-level persistence access
 │   │       ├── conversation_workspace.py # Per-conversation workspaces
+│   │       ├── memory_review_store.py # Review-first memory operations
 │   │       ├── knowledge_extractor.py # Proposed memory extraction from conversations
 │   │       ├── knowledge_memory.py # File-backed knowledge promotion/deletion
 │   │       └── auth.py       # Password verify, session tokens
@@ -155,7 +159,10 @@ AI-Cockpit/
 │   ├── components/           # Reusable UI components
 │   └── lib/
 │       ├── api.ts            # Typed API client
-│       └── hooks.ts          # useChat, useAuth hooks
+│       ├── hooks.ts          # Public useChat, useAuth composition hooks
+│       ├── chat-history.ts   # Durable transcript projection
+│       ├── agent-stream-state.ts # Transient live agent overlay state
+│       └── use-conversation-*.ts # Narrower chat state ownership hooks
 │
 ├── knowledge/                # File-backed approved knowledge + local preferences
 │   ├── notes/
@@ -196,8 +203,8 @@ Paste the output into `.env` as `AUTH_PASSWORD_HASH=...`.
 
 ## Features (current)
 
-- **Conversation-first chat** — Durable conversations persist runs, events, transcript messages, and council artifacts across reloads and restarts
-- **Agent and council chat modes** — Agent chats now use a full multi-step in-chat agent loop, while council mode fans out to multiple models and stores the synthesized answer plus per-model artifacts
+- **Conversation-first chat** — Durable conversations persist runs, events, transcript messages, branch lineage, and council artifacts across reloads and restarts
+- **Agent and council chat modes** — Agent chats use a full multi-step native-tool loop in the main chat surface, while council mode fans out to multiple models and stores the synthesized answer plus per-model artifacts
 - **Chat-first execution timeline** — New conversations start in Agent mode, can be switched to Council before the first turn, and render tool calls, wait states, thought rows, and final results inline in the main transcript
 - **Dedicated live agent status + inline progress** — Agent conversations keep a separate live status surface for what the agent is doing now, while durable thought and progress rows still appear inline in the transcript where they help explain the run history
 - **Reasoning-aware agent traces** — Agent-side model requests now persist `llm.response.visible_output` artifacts, including visible content, provider-exposed reasoning when available, streamed visible deltas, and tool-call payloads for later debugging
@@ -205,7 +212,7 @@ Paste the output into `.env` as `AUTH_PASSWORD_HASH=...`.
 - **Branching resend flow** — Editing and resending an earlier user turn creates a durable branch instead of overwriting history
 - **Archive controls** — Conversations can be archived and restored from the chat UI
 - **Per-conversation workspaces** — Each conversation has an isolated workspace folder that chat tools can write into safely
-- **Chat tools + app bootstrap** — Workspace search and Python execution remain available in chat, and app work runs directly through the in-chat agent loop with app bootstrap and lease handling
+- **Chat tools + app bootstrap** — Workspace search and Python execution remain available in chat, and generated app work runs directly through the in-chat agent loop with app bootstrap and conversation-owned lease handling
 - **Reviewed knowledge workflow** — Conversations can produce proposed memory items that are reviewed, approved into `knowledge/`, and deleted later with tombstoned metadata; local preference approvals can also populate `knowledge/preferences.yaml`
 - **Generated app registry** — Apps are tracked durably, exposed in the cockpit at `/workspace/apps`, and hosted as real product routes at `/apps/<slug>`
 - **Session auth** — Cookie-based auth with bcrypt password
@@ -235,7 +242,7 @@ The intended steady-state product flow for generated apps is:
 5. The agent returns in the same chat when the change is done.
 6. On later turns, the agent fetches or refreshes the app lease if needed, makes further edits, and returns in that same chat again.
 
-Current behavior: app work runs through the same in-chat full agent loop used for Agent mode. The lease is fetched and persisted in agent context, and can be taken over by another actively running agent when the current run is no longer active.
+Current behavior: app work runs through the same in-chat full agent loop used for Agent mode. The lease is fetched and persisted in agent context, with conversation ownership as the authoritative holder and run metadata retained for provenance.
 
 ## Roadmap
 

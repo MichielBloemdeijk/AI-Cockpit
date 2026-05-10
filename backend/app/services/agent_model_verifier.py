@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -12,6 +14,8 @@ from uuid import uuid4
 from app.config import settings
 from app.models.chat import Message
 from app.models.settings import ConversationSessionMetadata
+from app.services.app_registry import app_registry_service
+from app.services.app_registry import resolve_generated_app_contract
 from app.services.agent_tools import get_agent_tool_provider_definitions
 from app.services.agent_runner import agent_runner
 from app.services.agent_runner import _native_control_tool_definitions, _native_plan_tool_definition
@@ -139,7 +143,7 @@ def _build_harness_snapshot() -> HarnessSnapshot:
         notes=[
             "Verifier runs the real chat orchestrator and native agent runner.",
             "Plan and action turns both come from the same phase-aware native loop used by the product flow.",
-            "Provider tool definitions are taken from chat_tools plus the native control tools.",
+            "Provider tool definitions are taken from agent_tools plus the native control tools.",
             "Only the user task message is synthetic; system prompts, context formatting, and tool schemas come from production code.",
         ],
     )
@@ -147,6 +151,38 @@ def _build_harness_snapshot() -> HarnessSnapshot:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _repo_root() -> Path:
+    return settings.backend_root.parent.resolve()
+
+
+def _repo_relative(path: Path) -> str:
+    return path.resolve().relative_to(_repo_root()).as_posix()
+
+
+def _verifier_generated_app_contract_override(conversation_id: str) -> dict[str, str]:
+    verifier_root = settings.verifier_generated_apps_path / conversation_id
+    return {
+        "route_path_prefix": "/apps",
+        "frontend_root_base": _repo_relative(verifier_root / "app" / "apps"),
+        "asset_root_base": _repo_relative(verifier_root / "public" / "apps"),
+    }
+
+
+async def _cleanup_verifier_generated_app(conversation_id: str | None) -> None:
+    if not conversation_id:
+        return
+
+    record = await app_registry_service.get_recent_app_for_conversation(conversation_id)
+    if record is None or not record.slug.startswith("verifier-"):
+        return
+
+    contract = resolve_generated_app_contract(record.slug, record.manifest_json)
+    repo_root = _repo_root()
+    for relative_root in (contract.frontend_root, contract.asset_root):
+        shutil.rmtree(repo_root / relative_root, ignore_errors=True)
+    await app_registry_service.delete_app(record.id)
 
 
 def _compact_messages(messages: Sequence[Any], *, run_id: str) -> list[str]:
@@ -524,102 +560,108 @@ async def _run_single_scenario(
     started = time.perf_counter()
     async def _execute() -> ScenarioResult:
         effective_defaults = defaults.model_copy(update={"single_model": model})
-        conversation = await conversation_store.create_conversation(
-            mode_hint=effective_defaults.mode,
-            session_metadata_json=effective_defaults.model_dump(),
-        )
-        agent_metadata = await chat_orchestrator._build_agent_metadata(
-            conversation_id=conversation.id,
-            goal=prompt,
-            session_metadata=effective_defaults,
-        )
-        agent_metadata["model"] = model
-        prepared = await chat_orchestrator.prepare_turn(
-            messages=[Message(role="user", content=prompt)],
-            conversation_id=conversation.id,
-            run_kind="assistant",
-            session_metadata=effective_defaults,
-            metadata_json=agent_metadata,
-        )
+        conversation_id: str | None = None
         try:
-            await agent_runner.continue_run(prepared.run.id)
-        except Exception as exc:
-            error_text = str(exc) or "Agent run failed."
-            await conversation_store.complete_message(
-                prepared.conversation_id,
-                run_id=prepared.run.id,
-                role="assistant",
-                content=error_text,
-                actor_kind="assistant",
-                event_type="conversation.assistant.message.completed",
-                author_label="agent",
-                payload_json={"model": model, "content": error_text},
+            conversation = await conversation_store.create_conversation(
+                mode_hint=effective_defaults.mode,
+                session_metadata_json=effective_defaults.model_dump(),
             )
-
-        duration_seconds = time.perf_counter() - started
-        run = await conversation_store.get_run(prepared.run.id)
-        if run is None:
-            raise ValueError(f"Run not found for scenario {spec.name}: {prepared.run.id}")
-
-        branch_messages = await conversation_read_model.list_messages_for_branch(
-            prepared.conversation_id,
-            branch_key="main",
-            final_only=True,
-        )
-        assistant_message = next(
-            (
-                message
-                for message in reversed(branch_messages)
-                if message.run_id == prepared.run.id and message.role == "assistant"
-            ),
-            None,
-        )
-        run_metadata = dict(run.metadata_json or {}) if run is not None else {}
-        pending_question = run_metadata.get("pending_question") if isinstance(run_metadata.get("pending_question"), dict) else None
-        if assistant_message is None and pending_question:
-            question_text = str(pending_question.get("question") or "Please clarify how to proceed.").strip()
-            _, assistant_message = await conversation_store.complete_message(
-                prepared.conversation_id,
-                run_id=prepared.run.id,
-                role="assistant",
-                content=question_text,
-                actor_kind="assistant",
-                event_type="conversation.assistant.message.completed",
-                author_label="agent",
-                payload_json={"model": model, "content": question_text},
+            conversation_id = conversation.id
+            agent_metadata = await chat_orchestrator._build_agent_metadata(
+                conversation_id=conversation.id,
+                goal=prompt,
+                session_metadata=effective_defaults,
             )
-        if assistant_message is None:
-            fallback = "Agent run completed with no final message."
-            if str(run.status or "").lower() == "failed":
-                fallback = str(run.error or "Agent run failed.")
-            _, assistant_message = await conversation_store.complete_message(
-                prepared.conversation_id,
-                run_id=prepared.run.id,
-                role="assistant",
-                content=fallback,
-                actor_kind="assistant",
-                event_type="conversation.assistant.message.completed",
-                author_label="agent",
-                payload_json={"model": model, "content": fallback},
+            agent_metadata["model"] = model
+            agent_metadata["generated_app_contract_override"] = _verifier_generated_app_contract_override(conversation.id)
+            prepared = await chat_orchestrator.prepare_turn(
+                messages=[Message(role="user", content=prompt)],
+                conversation_id=conversation.id,
+                run_kind="assistant",
+                session_metadata=effective_defaults,
+                metadata_json=agent_metadata,
             )
+            try:
+                await agent_runner.continue_run(prepared.run.id)
+            except Exception as exc:
+                error_text = str(exc) or "Agent run failed."
+                await conversation_store.complete_message(
+                    prepared.conversation_id,
+                    run_id=prepared.run.id,
+                    role="assistant",
+                    content=error_text,
+                    actor_kind="assistant",
+                    event_type="conversation.assistant.message.completed",
+                    author_label="agent",
+                    payload_json={"model": model, "content": error_text},
+                )
 
-        events = await conversation_store.list_events_for_run(prepared.conversation_id, prepared.run.id)
-        messages = await conversation_store.list_messages(prepared.conversation_id, final_only=True)
-        trace = ScenarioTrace(
-            scenario=spec.name,
-            prompt=prompt,
-            conversation_id=prepared.conversation_id,
-            run_id=prepared.run.id,
-            run_status=str(run.status or "unknown"),
-            run_error=None if run.error in (None, "") else str(run.error),
-            duration_seconds=duration_seconds,
-            final_message=assistant_message.content,
-            raw_tool_calls=[event.payload_json or {} for event in events if event.event_type == "agent.response.tool_call"],
-            external_tool_calls=[event.payload_json or {} for event in events if event.event_type == "agent.tool.called"],
-            tool_completions=[event.payload_json or {} for event in events if event.event_type == "agent.tool.completed"],
-            messages=_compact_messages(messages, run_id=prepared.run.id),
-        )
-        return spec.evaluator(trace)
+            duration_seconds = time.perf_counter() - started
+            run = await conversation_store.get_run(prepared.run.id)
+            if run is None:
+                raise ValueError(f"Run not found for scenario {spec.name}: {prepared.run.id}")
+
+            branch_messages = await conversation_read_model.list_messages_for_branch(
+                prepared.conversation_id,
+                branch_key="main",
+                final_only=True,
+            )
+            assistant_message = next(
+                (
+                    message
+                    for message in reversed(branch_messages)
+                    if message.run_id == prepared.run.id and message.role == "assistant"
+                ),
+                None,
+            )
+            run_metadata = dict(run.metadata_json or {}) if run is not None else {}
+            pending_question = run_metadata.get("pending_question") if isinstance(run_metadata.get("pending_question"), dict) else None
+            if assistant_message is None and pending_question:
+                question_text = str(pending_question.get("question") or "Please clarify how to proceed.").strip()
+                _, assistant_message = await conversation_store.complete_message(
+                    prepared.conversation_id,
+                    run_id=prepared.run.id,
+                    role="assistant",
+                    content=question_text,
+                    actor_kind="assistant",
+                    event_type="conversation.assistant.message.completed",
+                    author_label="agent",
+                    payload_json={"model": model, "content": question_text},
+                )
+            if assistant_message is None:
+                fallback = "Agent run completed with no final message."
+                if str(run.status or "").lower() == "failed":
+                    fallback = str(run.error or "Agent run failed.")
+                _, assistant_message = await conversation_store.complete_message(
+                    prepared.conversation_id,
+                    run_id=prepared.run.id,
+                    role="assistant",
+                    content=fallback,
+                    actor_kind="assistant",
+                    event_type="conversation.assistant.message.completed",
+                    author_label="agent",
+                    payload_json={"model": model, "content": fallback},
+                )
+
+            events = await conversation_store.list_events_for_run(prepared.conversation_id, prepared.run.id)
+            messages = await conversation_store.list_messages(prepared.conversation_id, final_only=True)
+            trace = ScenarioTrace(
+                scenario=spec.name,
+                prompt=prompt,
+                conversation_id=prepared.conversation_id,
+                run_id=prepared.run.id,
+                run_status=str(run.status or "unknown"),
+                run_error=None if run.error in (None, "") else str(run.error),
+                duration_seconds=duration_seconds,
+                final_message=assistant_message.content,
+                raw_tool_calls=[event.payload_json or {} for event in events if event.event_type == "agent.response.tool_call"],
+                external_tool_calls=[event.payload_json or {} for event in events if event.event_type == "agent.tool.called"],
+                tool_completions=[event.payload_json or {} for event in events if event.event_type == "agent.tool.completed"],
+                messages=_compact_messages(messages, run_id=prepared.run.id),
+            )
+            return spec.evaluator(trace)
+        finally:
+            await _cleanup_verifier_generated_app(conversation_id)
 
     try:
         return await asyncio.wait_for(_execute(), timeout=SCENARIO_TIMEOUT_SECONDS)
