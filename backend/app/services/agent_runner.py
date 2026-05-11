@@ -69,7 +69,7 @@ from app.services.llm import (
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_STEPS = 8
+MAX_AGENT_STEPS = 50
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -426,7 +426,19 @@ class AgentRunner:
 
                 current_step = int(metadata.get("current_step", 0) or 0)
                 if current_step >= MAX_AGENT_STEPS:
-                    raise ValueError(f"Agent step limit reached ({MAX_AGENT_STEPS})")
+                    await _pause_for_question(
+                        conversation_id=run.conversation_id,
+                        run_id=run.id,
+                        metadata=metadata,
+                        question=(
+                            f"I've reached {MAX_AGENT_STEPS} steps in this run. "
+                            f"Reply with 'continue' if you want me to keep going for another {MAX_AGENT_STEPS} steps, "
+                            "or send new instructions if you want to redirect the work."
+                        ),
+                        kind="continue_confirmation",
+                        current_action="Waiting to continue past the step limit",
+                    )
+                    return
 
                 action = await self._request_native_turn(
                     metadata=metadata,

@@ -141,6 +141,98 @@ describe("mapConversationMessages", () => {
     expect(messages[0].code).toContain("mapConversationMessages");
   });
 
+  it("keeps repeated tool calls in the same step as separate rows", () => {
+    const detail: ConversationDetail = {
+      id: "conversation-2b",
+      title: "Agent thread",
+      mode_hint: "single",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      archived_at: null,
+      last_message_preview: "Done",
+      latest_run_status: "completed",
+      messages: [],
+    };
+
+    const events: ConversationEventView[] = [
+      {
+        id: "event-1",
+        run_id: "run-2b",
+        sequence: 1,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.tool.called",
+        created_at: "2026-05-01T00:00:01Z",
+        schema_version: 1,
+        payload_json: {
+          step: 4,
+          tool: "file_read",
+          arguments: { path: "frontend/lib/chat-history.ts" },
+        },
+      },
+      {
+        id: "event-2",
+        run_id: "run-2b",
+        sequence: 2,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.tool.completed",
+        created_at: "2026-05-01T00:00:02Z",
+        schema_version: 1,
+        payload_json: {
+          step: 4,
+          tool: "file_read",
+          ok: true,
+          output: "first result",
+        },
+      },
+      {
+        id: "event-3",
+        run_id: "run-2b",
+        sequence: 3,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.tool.called",
+        created_at: "2026-05-01T00:00:03Z",
+        schema_version: 1,
+        payload_json: {
+          step: 4,
+          tool: "file_read",
+          arguments: { path: "frontend/lib/agent-event-presenter.ts" },
+        },
+      },
+      {
+        id: "event-4",
+        run_id: "run-2b",
+        sequence: 4,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.tool.completed",
+        created_at: "2026-05-01T00:00:04Z",
+        schema_version: 1,
+        payload_json: {
+          step: 4,
+          tool: "file_read",
+          ok: true,
+          output: "second result",
+        },
+      },
+    ];
+
+    const messages = mapConversationMessages(detail, [], events);
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0].kind).toBe("tool_result");
+    expect(messages[1].kind).toBe("tool_result");
+    expect(messages[0].id).not.toBe(messages[1].id);
+    expect(messages[0].content).toBe("lib/chat-history.ts");
+    expect(messages[1].content).toBe("lib/agent-event-presenter.ts");
+  });
+
   it("keeps thought summaries separate from the final tool result row", () => {
     const detail: ConversationDetail = {
       id: "conversation-3",

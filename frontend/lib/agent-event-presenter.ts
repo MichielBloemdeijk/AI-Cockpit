@@ -13,6 +13,10 @@ function ellipsize(value: string, maxLength = 96): string {
   return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
 }
 
+function normalizeText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
 export function humanizeToolName(toolName: string): string {
   return toolName.replace(/_/g, " ");
 }
@@ -26,11 +30,12 @@ function compactPath(value: string, maxLength = 88): string {
   return ellipsize(segments[0] ?? normalized, maxLength);
 }
 
-function quoted(value: string | null | undefined, maxLength = 72): string | null {
+function quoted(value: string | null | undefined, maxLength: number | null = 72): string | null {
   if (!value || !value.trim()) {
     return null;
   }
-  return `"${ellipsize(value, maxLength)}"`;
+  const normalized = normalizeText(value);
+  return `"${maxLength == null ? normalized : ellipsize(normalized, maxLength)}"`;
 }
 
 function shortOutputPreview(value: unknown, maxLength = 88): string | null {
@@ -78,7 +83,7 @@ function describeToolTarget(toolName: string, args: Record<string, unknown> | nu
       const goal = typeof args?.goal === "string" ? args.goal : null;
       const title = typeof args?.title === "string" ? args.title : null;
       const appSlug = typeof args?.app_slug === "string" ? args.app_slug : null;
-      return quoted(goal || title || appSlug, 72);
+      return quoted(goal || title || appSlug, null);
     }
     case "app_list":
       return "registered apps";
@@ -160,19 +165,19 @@ export function summarizeAgentEvent(eventType: string, payloadValue: unknown): s
   switch (eventType) {
     case "agent.run.started":
       return typeof payload.goal === "string" && payload.goal.trim()
-        ? ellipsize(payload.goal, 120)
+        ? normalizeText(payload.goal)
         : "The agent started working.";
     case "agent.plan.created":
       return typeof payload.summary === "string" && payload.summary.trim()
-        ? ellipsize(payload.summary, 120)
+        ? normalizeText(payload.summary)
         : "The agent prepared a plan.";
     case "agent.thought.summary":
       return typeof payload.thought === "string" && payload.thought.trim()
-        ? ellipsize(payload.thought, 120)
+        ? normalizeText(payload.thought)
         : undefined;
     case "agent.progress.summary":
       return typeof payload.summary === "string" && payload.summary.trim()
-        ? ellipsize(payload.summary, 120)
+        ? normalizeText(payload.summary)
         : undefined;
     case "agent.tool.called":
       return summarizeToolCall(typeof payload.tool === "string" ? payload.tool : "tool", payload.arguments);
@@ -186,15 +191,15 @@ export function summarizeAgentEvent(eventType: string, payloadValue: unknown): s
       );
     case "agent.question.asked":
       return typeof payload.question === "string" && payload.question.trim()
-        ? ellipsize(payload.question, 120)
+        ? normalizeText(payload.question)
         : "The agent is waiting for input.";
     case "agent.run.completed":
       return typeof payload.summary === "string" && payload.summary.trim()
-        ? ellipsize(payload.summary, 120)
+        ? normalizeText(payload.summary)
         : "The agent completed the run.";
     case "agent.run.failed":
       return typeof payload.error === "string" && payload.error.trim()
-        ? ellipsize(payload.error, 120)
+        ? normalizeText(payload.error)
         : "The agent run failed.";
     default:
       return undefined;

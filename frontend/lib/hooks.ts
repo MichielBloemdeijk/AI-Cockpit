@@ -58,7 +58,9 @@ export function useChat() {
 
   const activeConversationSummary = conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
   const shouldPollActiveConversation = Boolean(activeConversationId)
-    && (loading || canStop || activeConversationSummary?.latest_run_status === "running");
+    && !loading
+    && !canStop
+    && activeConversationSummary?.latest_run_status === "running";
 
   useConversationPolling({
     activeConversationId,

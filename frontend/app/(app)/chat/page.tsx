@@ -52,7 +52,7 @@ export default function ChatPage() {
     selectBranch,
     setShowArchived,
   } = useChat();
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesViewportRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getChatSettings().then((response) => {
@@ -63,10 +63,26 @@ export default function ChatPage() {
     }).catch(() => setSettingsLoaded(true));
   }, []);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const viewport = messagesViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      const shouldStickToBottom = distanceFromBottom < 160 || loading || canStop;
+      if (!shouldStickToBottom) {
+        return;
+      }
+      viewport.scrollTo({
+        top: viewport.scrollHeight,
+        behavior: loading || canStop ? "auto" : "smooth",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [messages, loading, canStop]);
 
   const activeSessionMetadata = activeConversation?.session_metadata ?? draftSessionMetadata;
   const councilMode = activeSessionMetadata?.mode === "council";
@@ -267,7 +283,7 @@ export default function ChatPage() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto py-3 md:py-4">
+        <div ref={messagesViewportRef} className="flex-1 overflow-y-auto py-3 md:py-4">
           {loadingConversation ? (
             <div className="flex h-full items-center justify-center text-sm text-zinc-500">
               Loading conversation...
@@ -399,7 +415,6 @@ export default function ChatPage() {
                   onEdit={msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
                 />
               ))}
-              <div ref={bottomRef} />
             </>
           )}
         </div>

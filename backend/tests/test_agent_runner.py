@@ -24,7 +24,7 @@ APPROVED_PLAN = {
 }
 
 
-async def _create_agent_run(model: str = "anthropic/claude-sonnet-4-5"):
+async def _create_agent_run(model: str = "anthropic/claude-sonnet-4-5", *, current_step: int = 0):
     conversation = await conversation_store.create_conversation(mode_hint="single")
     run = await conversation_store.start_run(
         conversation.id,
@@ -36,6 +36,7 @@ async def _create_agent_run(model: str = "anthropic/claude-sonnet-4-5"):
             "plan": dict(APPROVED_PLAN),
             "skip_plan_feedback": True,
             "model": model,
+            "current_step": current_step,
             "history": [],
             "payload": {},
             "branch_key": "main",
@@ -98,6 +99,27 @@ def _finalize_response(result: str = "Finished") -> ModelResponse:
         ],
         finish_reason="tool_calls",
     )
+
+
+@pytest.mark.asyncio
+async def test_continue_run_pauses_for_confirmation_after_fifty_steps():
+    _, run = await _create_agent_run(current_step=50)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    stored_run = await conversation_store.get_run(run.id)
+    assert stored_run is not None
+    assert stored_run.status == "paused"
+    metadata = dict(stored_run.metadata_json or {})
+    pending_question = metadata.get("pending_question")
+    assert isinstance(pending_question, dict)
+    assert pending_question.get("kind") == "continue_confirmation"
+    assert "50 steps" in str(pending_question.get("question") or "")
+
+    events = await conversation_store.list_events_for_run(run.conversation_id, run.id)
+    question_events = [event for event in events if event.event_type == "agent.question.asked"]
+    assert len(question_events) == 1
+    assert question_events[0].payload_json == pending_question
 
 
 @pytest.mark.asyncio

@@ -163,13 +163,36 @@ function buildTaskStartedContent(payload: Record<string, unknown> | null): { tit
 
 function buildEventTimelineEntries(events: ConversationEventView[]): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
-  const lastToolArgumentsByKey = new Map<string, unknown>();
+  const pendingToolRowIdsByMatchKey = new Map<string, string[]>();
+  const lastToolArgumentsByRowId = new Map<string, unknown>();
+
+  const enqueuePendingToolRowId = (matchKey: string, rowId: string) => {
+    const existing = pendingToolRowIdsByMatchKey.get(matchKey) ?? [];
+    existing.push(rowId);
+    pendingToolRowIdsByMatchKey.set(matchKey, existing);
+  };
+
+  const dequeuePendingToolRowId = (matchKey: string): string | null => {
+    const existing = pendingToolRowIdsByMatchKey.get(matchKey);
+    if (!existing || existing.length === 0) {
+      return null;
+    }
+    const [rowId, ...remaining] = existing;
+    if (remaining.length === 0) {
+      pendingToolRowIdsByMatchKey.delete(matchKey);
+    } else {
+      pendingToolRowIdsByMatchKey.set(matchKey, remaining);
+    }
+    return rowId;
+  };
 
   events.forEach((event) => {
     const payload = asRecord(event.payload_json);
     const step = typeof payload?.step === "number" ? payload.step : null;
     const toolName = typeof payload?.tool === "string" ? payload.tool : "tool";
-    const toolKey = `${step ?? "na"}:${toolName}`;
+    const toolCallId = typeof payload?.tool_call_id === "string" ? payload.tool_call_id.trim() : "";
+    const toolCallEventId = typeof payload?.tool_call_event_id === "string" ? payload.tool_call_event_id.trim() : "";
+    const toolMatchKey = [event.run_id ?? "run", step ?? "na", toolName, toolCallId || toolCallEventId || "match"].join(":");
 
     const pushEntry = (entry: Omit<TimelineEntry, "sortTime" | "sortOrder">) => {
       entries.push({
@@ -270,14 +293,16 @@ function buildEventTimelineEntries(events: ConversationEventView[]): TimelineEnt
         }
         return;
       case "agent.tool.called":
-        if (payload?.arguments !== undefined) {
-          lastToolArgumentsByKey.set(toolKey, payload.arguments);
-        }
         {
+          const toolRowId = `toolrow:${event.run_id ?? "run"}:${step ?? "na"}:${toolName}:${toolCallId || toolCallEventId || event.id}`;
+          if (payload?.arguments !== undefined) {
+            lastToolArgumentsByRowId.set(toolRowId, payload.arguments);
+          }
+          enqueuePendingToolRowId(toolMatchKey, toolRowId);
           // Emit a placeholder row; replace any existing placeholder with the same key.
-          const existingIndex = entries.findIndex((entry) => entry.id === `toolrow:${toolKey}`);
+          const existingIndex = entries.findIndex((entry) => entry.id === toolRowId);
           const callEntry: TimelineEntry = {
-            id: `toolrow:${toolKey}`,
+            id: toolRowId,
             role: "assistant",
             kind: "tool_call",
             label: "Tool call",
@@ -300,11 +325,12 @@ function buildEventTimelineEntries(events: ConversationEventView[]): TimelineEnt
         return;
       case "agent.tool.completed": {
         const ok = payload?.ok !== false;
-        const resolvedArguments = payload?.arguments ?? lastToolArgumentsByKey.get(toolKey);
+        const toolRowId = dequeuePendingToolRowId(toolMatchKey) ?? `toolrow:${event.run_id ?? "run"}:${step ?? "na"}:${toolName}:${toolCallId || toolCallEventId || event.id}`;
+        const resolvedArguments = payload?.arguments ?? lastToolArgumentsByRowId.get(toolRowId);
         // Replace the placeholder tool_call row (same id) with the result.
-        const existingIndex = entries.findIndex((e) => e.id === `toolrow:${toolKey}`);
+        const existingIndex = entries.findIndex((e) => e.id === toolRowId);
         const resultEntry: TimelineEntry = {
-          id: `toolrow:${toolKey}`,
+          id: toolRowId,
           role: "assistant",
           kind: "tool_result",
           label: ok ? "Tool result" : "Tool failure",

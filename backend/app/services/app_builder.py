@@ -245,16 +245,17 @@ export default function Error({ error, reset }: { error: Error; reset: () => voi
 def _styles_template() -> str:
     return '''.generated-app-shell {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background:
     radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 40%),
     linear-gradient(180deg, #0f172a 0%, #09090b 100%);
   color: #f8fafc;
-  padding: 24px;
 }
 
 .generated-app-header {
-  max-width: 960px;
-  margin: 0 auto 24px;
+  width: 100%;
+  padding: 24px 24px 0;
 }
 
 .generated-app-kicker {
@@ -271,16 +272,22 @@ def _styles_template() -> str:
 }
 
 .generated-app-main {
-  max-width: 960px;
-  margin: 0 auto;
+  flex: 1;
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  padding: 24px;
 }
 
 .generated-app-card {
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  flex: 1;
+  width: 100%;
+  min-height: 100%;
+  border: none;
   background: rgba(15, 23, 42, 0.82);
-  border-radius: 28px;
+  border-radius: 32px;
   padding: 28px;
-  box-shadow: 0 24px 80px rgba(2, 6, 23, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
 }
 
 .generated-app-card h2 {
@@ -348,6 +355,14 @@ def _styles_template() -> str:
 
 @media (max-width: 640px) {
   .generated-app-shell {
+    min-height: 100dvh;
+  }
+
+  .generated-app-header {
+    padding: 16px 16px 0;
+  }
+
+  .generated-app-main {
     padding: 16px;
   }
 
