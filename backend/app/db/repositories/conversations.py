@@ -343,7 +343,7 @@ class ConversationRepository:
         stmt = (
             select(ConversationEvent)
             .where(ConversationEvent.conversation_id == conversation_id)
-            .order_by(ConversationEvent.created_at.asc(), ConversationEvent.id.asc())
+            .order_by(ConversationEvent.sequence.asc(), ConversationEvent.created_at.asc(), ConversationEvent.id.asc())
             .limit(limit)
         )
         result = await self.session.execute(stmt)
@@ -354,7 +354,7 @@ class ConversationRepository:
             select(ConversationEvent)
             .where(ConversationEvent.conversation_id == conversation_id)
             .where(ConversationEvent.run_id == run_id)
-            .order_by(ConversationEvent.created_at.asc(), ConversationEvent.id.asc())
+            .order_by(ConversationEvent.sequence.asc(), ConversationEvent.created_at.asc(), ConversationEvent.id.asc())
             .limit(limit)
         )
         result = await self.session.execute(stmt)

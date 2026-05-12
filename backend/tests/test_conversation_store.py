@@ -109,3 +109,83 @@ async def test_branch_messages_keep_turn_order_across_multiple_turns():
         ("user", "Not much"),
         ("assistant", "Fair enough"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_record_agent_tool_result_persists_full_success_lifecycle():
+    initialize_engine()
+
+    conversation = await conversation_store.create_conversation(mode_hint="single")
+    run = await conversation_store.start_run(conversation.id, kind="assistant")
+
+    record = await conversation_store.record_agent_tool_result(
+        conversation.id,
+        run_id=run.id,
+        step=1,
+        tool_name="file_read",
+        arguments={"path": "frontend/lib/hooks.ts"},
+        ok=True,
+        output="hooks inspected",
+        result_metadata={"path": "frontend/lib/hooks.ts"},
+        artifact_type="agent.tool.file_read.output",
+        artifact_content_text="full hooks content",
+        artifact_content_json={"metadata": {"path": "frontend/lib/hooks.ts"}},
+        run_metadata_json={"agent_status": "running", "active_step_index": 1},
+    )
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    artifacts = await conversation_store.list_artifacts_for_run(conversation.id, run.id)
+    stored_run = await conversation_store.get_run(run.id)
+
+    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert events[0].payload_json == {
+        "step": 1,
+        "tool": "file_read",
+        "arguments": {"path": "frontend/lib/hooks.ts"},
+    }
+    assert events[1].payload_json == {
+        "step": 1,
+        "tool": "file_read",
+        "ok": True,
+        "output": "hooks inspected",
+        "artifact_id": record.artifact.id,
+        "metadata": {"path": "frontend/lib/hooks.ts"},
+    }
+    assert record.started_event.id == events[0].id
+    assert record.completed_event.id == events[1].id
+    assert record.artifact is not None
+    assert artifacts[0].id == record.artifact.id
+    assert artifacts[0].source_event_id == record.started_event.id
+    assert stored_run is not None
+    assert stored_run.metadata_json == {"agent_status": "running", "active_step_index": 1}
+
+
+@pytest.mark.asyncio
+async def test_record_agent_tool_result_persists_failure_without_artifact():
+    initialize_engine()
+
+    conversation = await conversation_store.create_conversation(mode_hint="single")
+    run = await conversation_store.start_run(conversation.id, kind="assistant")
+
+    record = await conversation_store.record_agent_tool_result(
+        conversation.id,
+        run_id=run.id,
+        step=2,
+        tool_name="file_write",
+        arguments={"path": "frontend/lib/hooks.ts", "content": "x"},
+        ok=False,
+        error="permission denied",
+    )
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    artifacts = await conversation_store.list_artifacts_for_run(conversation.id, run.id)
+
+    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert events[1].payload_json == {
+        "step": 2,
+        "tool": "file_write",
+        "ok": False,
+        "error": "permission denied",
+    }
+    assert record.artifact is None
+    assert artifacts == []

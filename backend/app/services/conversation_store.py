@@ -104,6 +104,13 @@ class ArtifactRecord:
 
 
 @dataclass(slots=True)
+class AgentToolPersistenceRecord:
+    started_event: EventRecord
+    completed_event: EventRecord
+    artifact: ArtifactRecord | None
+
+
+@dataclass(slots=True)
 class MemoryItemRecord:
     id: str
     scope: str
@@ -719,6 +726,75 @@ class ConversationStore:
             )
             await repo.touch_conversation(conversation_id)
             return _artifact_record(artifact)
+
+    async def record_agent_tool_result(
+        self,
+        conversation_id: str,
+        *,
+        run_id: str,
+        step: int,
+        tool_name: str,
+        arguments: dict,
+        ok: bool,
+        output: str | None = None,
+        error: str | None = None,
+        result_metadata: dict | None = None,
+        artifact_type: str | None = None,
+        artifact_mime_type: str = "text/plain",
+        artifact_content_text: str | None = None,
+        artifact_content_json: dict | None = None,
+        run_metadata_json: dict | None = None,
+    ) -> AgentToolPersistenceRecord:
+        async with session_scope() as session:
+            repo = ConversationRepository(session)
+            started_event = await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                actor_kind=ActorKind.task.value,
+                event_type="agent.tool.called",
+                payload_json={"step": step, "tool": tool_name, "arguments": arguments},
+            )
+
+            artifact = None
+            if artifact_type is not None:
+                artifact = await repo.create_artifact(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    source_event_id=started_event.id,
+                    artifact_type=artifact_type,
+                    mime_type=artifact_mime_type,
+                    content_text=artifact_content_text,
+                    content_json=artifact_content_json,
+                )
+
+            completed_payload: dict[str, object] = {
+                "step": step,
+                "tool": tool_name,
+                "ok": ok,
+            }
+            if ok:
+                completed_payload["output"] = output or ""
+                completed_payload["metadata"] = result_metadata
+                if artifact is not None:
+                    completed_payload["artifact_id"] = artifact.id
+            else:
+                completed_payload["error"] = error or "Tool failed"
+
+            completed_event = await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                actor_kind=ActorKind.task.value,
+                event_type="agent.tool.completed",
+                payload_json=completed_payload,
+            )
+            if run_metadata_json is not None:
+                await repo.update_run_metadata(run_id, run_metadata_json)
+            await repo.touch_conversation(conversation_id)
+            return AgentToolPersistenceRecord(
+                started_event=_event_record(started_event),
+                completed_event=_event_record(completed_event),
+                artifact=_artifact_record(artifact) if artifact is not None else None,
+            )
 
     async def mark_run_completed(self, run_id: str) -> None:
         async with session_scope() as session:

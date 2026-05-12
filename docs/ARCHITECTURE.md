@@ -226,11 +226,12 @@ Implemented responsibilities:
 - append immutable events
 - project user and assistant messages into transcript rows
 - attach artifacts
+- batch agent tool lifecycle writes so `agent.tool.called`, tool artifacts, `agent.tool.completed`, and due run-metadata checkpoints can persist together
 - expose low-level list and fetch operations consumed by the read-model and memory-review seams
 - create, list, fetch, approve, reject, and delete memory items
 - mark abandoned running work as interrupted on startup
 
-This service wraps the repository layer and keeps write-path transaction boundaries narrow.
+This service wraps the repository layer and uses a mix of narrow write paths and batched write paths. The notable hot-path optimization is the agent tool lifecycle batch, which reduces per-tool write amplification without changing the durable event and artifact model.
 
 #### `backend/app/services/conversation_read_model.py`
 
@@ -320,10 +321,12 @@ Implemented responsibilities:
 - pauses for plan feedback by default, with an explicit skip-feedback path at task creation time
 - compacts older task history into durable summary artifacts for later decisions
 - records prompt metrics, raw `llm.response.visible_output` artifacts, streamed thought text, progress summaries, tool events, plan artifacts, and run-summary artifacts into the conversation store
+- batches tool-call durability and only checkpoints active-run metadata on forced lifecycle boundaries, every 10 tool steps, or after 5 seconds of active execution time
 - prefers provider-exposed reasoning for transcript thought rows when available, and falls back to visible assistant text only when no reasoning blocks were returned
 - derives short progress summaries separately from transcript thought text so the UI can show status without depending on raw tool-call narration
 - falls back to a dedicated summary-model pass when the native tool loop returns no useful visible progress text
 - uses a larger progress-summary response budget and explicitly disables summary-model reasoning so fallback progress rows are less likely to be clipped by hidden thinking tokens
+- restores deferred tool-step history and step counters from persisted events before resuming a run, so resume does not depend on every live progress change having been checkpointed
 - enforces workspace boundaries through the shared tool context
 
 #### `backend/app/presenters/`
@@ -490,6 +493,8 @@ Additional metadata tracked on approved or deleted items includes:
 - The event log is the richest trace surface.
 - Transcript messages are a read-optimized projection for chat UX.
 - Artifacts hold larger structured or textual payloads that do not fit cleanly in transcript rows.
+- Run metadata is now a checkpointed projection of live runtime state rather than an every-step source of truth for agent execution.
+- Agent resume can reconstruct deferred tool-step state from persisted events, which lets the runtime checkpoint less aggressively without losing durable continuity.
 - Memory promotion is manual and review-driven.
 - SQLite is the canonical local durable store today.
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 import inspect
 import json
@@ -38,6 +39,7 @@ from app.services.agent_prompt_builder import (
 )
 from app.services.agent_run_support import (
     AgentStreamCallback,
+    _build_metadata_checkpoint_state,
     _build_context,
     _build_step_presentation,
     _cancel_run,
@@ -46,6 +48,7 @@ from app.services.agent_run_support import (
     _fail_run,
     _handle_plan_action,
     _handle_tool_action,
+    _maybe_checkpoint_run_metadata,
     _pause_for_question,
     _record_llm_metrics,
     _record_llm_visible_output,
@@ -77,6 +80,81 @@ def utc_now() -> datetime:
 
 def iso_now() -> str:
     return utc_now().isoformat()
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+async def _restore_runtime_metadata_from_events(
+    *,
+    conversation_id: str,
+    run_id: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    events = await conversation_store.list_events_for_run(conversation_id, run_id, limit=5000)
+    if not events:
+        return metadata
+
+    pending_tool_arguments: dict[tuple[int, str], deque[dict[str, Any]]] = defaultdict(deque)
+    restored_tool_entries: list[dict[str, Any]] = []
+    latest_completed_action: str | None = None
+    latest_completed_step = _safe_int(metadata.get("current_step"), 0)
+    started_event_recorded = bool(metadata.get("started_event_recorded"))
+
+    for event in events:
+        payload = event.payload_json if isinstance(event.payload_json, dict) else {}
+        if event.event_type == "agent.run.started":
+            started_event_recorded = True
+            continue
+        if event.event_type == "agent.tool.called":
+            step = _safe_int(payload.get("step"), 0)
+            tool_name = str(payload.get("tool") or "").strip()
+            arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+            if step > 0 and tool_name:
+                pending_tool_arguments[(step, tool_name)].append(dict(arguments))
+            continue
+        if event.event_type != "agent.tool.completed":
+            continue
+
+        step = _safe_int(payload.get("step"), 0)
+        tool_name = str(payload.get("tool") or "").strip()
+        if step <= 0 or not tool_name:
+            continue
+        arguments_queue = pending_tool_arguments[(step, tool_name)]
+        arguments = arguments_queue.popleft() if arguments_queue else {}
+        ok = bool(payload.get("ok"))
+        entry = {
+            "kind": "tool",
+            "tool": tool_name,
+            "arguments": arguments,
+            "ok": ok,
+            "output": payload.get("output") if ok else payload.get("error"),
+        }
+        artifact_id = payload.get("artifact_id")
+        if artifact_id:
+            entry["artifact_id"] = artifact_id
+        restored_tool_entries.append(entry)
+        if step >= latest_completed_step:
+            latest_completed_step = step
+            latest_completed_action = f"Completed {tool_name}" if ok else f"Tool failed: {tool_name}"
+
+    existing_history = list(metadata.get("history", [])) if isinstance(metadata.get("history"), list) else []
+    existing_tool_count = sum(1 for item in existing_history if isinstance(item, dict) and item.get("kind") == "tool")
+    if len(restored_tool_entries) > existing_tool_count:
+        metadata["history"] = existing_history + restored_tool_entries[existing_tool_count:]
+
+    if latest_completed_step > _safe_int(metadata.get("current_step"), 0):
+        metadata["current_step"] = latest_completed_step
+        if latest_completed_action and not isinstance(metadata.get("pending_question"), dict):
+            metadata["current_action"] = latest_completed_action
+
+    if started_event_recorded:
+        metadata["started_event_recorded"] = True
+    return metadata
 
 
 class AgentRunner:
@@ -122,6 +200,7 @@ class AgentRunner:
             conversation_id=conversation_id,
             run_id=run_id,
             metadata=metadata,
+            checkpoint_state=None,
             action=await self._request_native_turn(
                 metadata=metadata,
                 context=context,
@@ -363,10 +442,16 @@ class AgentRunner:
             raise ValueError(f"Task run not found: {run_id}")
 
         metadata = _normalize_task_metadata(run.metadata_json)
+        metadata = await _restore_runtime_metadata_from_events(
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+            metadata=metadata,
+        )
         conversation = await conversation_store.get_conversation(run.conversation_id)
         if conversation is None or not conversation.workspace_path:
             raise ValueError(f"Conversation not found for task run: {run_id}")
 
+        checkpoint_state = _build_metadata_checkpoint_state(metadata)
         context = _build_context(run.conversation_id, run.id, conversation.workspace_path, metadata)
         if not metadata.get("started_event_recorded"):
             await conversation_store.append_event(
@@ -387,14 +472,13 @@ class AgentRunner:
 
         metadata["task_status"] = "running"
         metadata["current_action"] = metadata.get("current_action") or "Planning next step"
-        metadata["updated_at"] = iso_now()
-        await _update_run_metadata(run.id, metadata)
+        await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state, force=True)
         await conversation_store.update_run_status(run.id, status="running", error=None, finished_at=None)
 
         try:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
-                    await _cancel_run(run.conversation_id, run.id, metadata)
+                    await _cancel_run(run.conversation_id, run.id, metadata, checkpoint_state=checkpoint_state)
                     return
 
                 if not self._plan_exists(metadata):
@@ -402,6 +486,7 @@ class AgentRunner:
                         conversation_id=run.conversation_id,
                         run_id=run.id,
                         metadata=metadata,
+                        checkpoint_state=checkpoint_state,
                         action=await self._request_native_turn(
                             metadata=metadata,
                             context=context,
@@ -419,8 +504,7 @@ class AgentRunner:
                 if plan and not bool(plan.get("approved")) and not metadata.get("skip_plan_feedback"):
                     metadata["task_status"] = "paused"
                     metadata["current_action"] = "Waiting for plan feedback"
-                    metadata["updated_at"] = iso_now()
-                    await _update_run_metadata(run.id, metadata)
+                    await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state, force=True)
                     await conversation_store.update_run_status(run.id, status="paused", error=None, finished_at=None)
                     return
 
@@ -437,6 +521,7 @@ class AgentRunner:
                         ),
                         kind="continue_confirmation",
                         current_action="Waiting to continue past the step limit",
+                        checkpoint_state=checkpoint_state,
                     )
                     return
 
@@ -459,8 +544,7 @@ class AgentRunner:
                 )
                 if presentation.progress_summary:
                     metadata["current_action"] = presentation.progress_summary
-                    metadata["updated_at"] = iso_now()
-                    await _update_run_metadata(run.id, metadata)
+                    await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state)
                     await _emit_agent_stream_update(
                         stream_callback,
                         {
@@ -504,6 +588,7 @@ class AgentRunner:
                         action=action,
                         context=context,
                         tool_executor=execute_agent_tool,
+                        checkpoint_state=checkpoint_state,
                     )
                     continue
 
@@ -513,6 +598,7 @@ class AgentRunner:
                         run_id=run.id,
                         metadata=metadata,
                         question=str(action.get("question", "")).strip(),
+                        checkpoint_state=checkpoint_state,
                     )
                     return
 
@@ -523,13 +609,14 @@ class AgentRunner:
                         metadata=metadata,
                         summary=str(action.get("summary", "")).strip(),
                         result=str(action.get("result", "")).strip(),
+                        checkpoint_state=checkpoint_state,
                     )
                     return
 
                 raise ValueError(f"Unsupported agent action kind: {action_kind or '<missing>'}")
         except Exception as exc:
             logger.exception("Agent run %s failed", run_id)
-            await _fail_run(run.conversation_id, run.id, metadata, str(exc))
+            await _fail_run(run.conversation_id, run.id, metadata, str(exc), checkpoint_state=checkpoint_state)
             raise
 
 

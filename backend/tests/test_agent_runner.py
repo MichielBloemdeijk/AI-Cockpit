@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 import app.services.agent_runner as agent_runner_module
+import app.services.agent_run_support as agent_run_support_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 from app.services.agent_tools import ToolExecutionContext
 from app.services.agent_tools import ToolExecutionResult
+from app.services.agent_tools import build_tool_context
 from app.services.conversation_store import conversation_store
 
 
@@ -602,3 +604,123 @@ async def test_continue_run_writes_agent_metadata_aliases(monkeypatch):
     assert "current_action" not in metadata
     assert "current_step" not in metadata
     assert "run_summary" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_handle_tool_action_persists_metadata_once_per_tool(monkeypatch):
+    conversation, run = await _create_agent_run()
+    metadata = dict(run.metadata_json or {})
+    context = build_tool_context(conversation.id, ".", run_id=run.id)
+    metadata_updates: list[dict[str, object]] = []
+    original_update_run_metadata = agent_run_support_module._update_run_metadata
+
+    async def _counting_update_run_metadata(run_id: str, next_metadata: dict[str, object]) -> None:
+        metadata_updates.append(dict(next_metadata))
+        await original_update_run_metadata(run_id, next_metadata)
+
+    async def _fake_execute(*, context, tool, arguments):
+        return ToolExecutionResult(tool=tool, output="hooks inspected", metadata={"path": arguments["path"]})
+
+    monkeypatch.setattr(agent_run_support_module, "_update_run_metadata", _counting_update_run_metadata)
+
+    next_metadata = await agent_run_support_module._handle_tool_action(
+        conversation_id=conversation.id,
+        run_id=run.id,
+        metadata=metadata,
+        action={"tool": "file_read", "arguments": {"path": "frontend/lib/hooks.ts"}},
+        context=context,
+        tool_executor=_fake_execute,
+    )
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    artifacts = await conversation_store.list_artifacts_for_run(conversation.id, run.id)
+
+    stored_run = await conversation_store.get_run(run.id)
+
+    assert len(metadata_updates) == 0
+    assert next_metadata["current_step"] == 1
+    assert next_metadata["current_action"] == "Completed file_read"
+    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert len(artifacts) == 1
+    assert stored_run is not None
+    assert stored_run.metadata_json["active_step_index"] == 1
+    assert stored_run.metadata_json["active_step"] == "Completed file_read"
+
+
+@pytest.mark.asyncio
+async def test_handle_tool_action_can_defer_metadata_checkpoint(monkeypatch):
+    conversation, run = await _create_agent_run()
+    metadata = dict(run.metadata_json or {})
+    context = build_tool_context(conversation.id, ".", run_id=run.id)
+    checkpoint_state = agent_run_support_module._build_metadata_checkpoint_state(metadata)
+
+    async def _fake_execute(*, context, tool, arguments):
+        return ToolExecutionResult(tool=tool, output="hooks inspected", metadata={"path": arguments["path"]})
+
+    next_metadata = await agent_run_support_module._handle_tool_action(
+        conversation_id=conversation.id,
+        run_id=run.id,
+        metadata=metadata,
+        action={"tool": "file_read", "arguments": {"path": "frontend/lib/hooks.ts"}},
+        context=context,
+        tool_executor=_fake_execute,
+        checkpoint_state=checkpoint_state,
+    )
+
+    stored_run = await conversation_store.get_run(run.id)
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+
+    assert next_metadata["current_step"] == 1
+    assert stored_run is not None
+    assert stored_run.metadata_json["current_step"] == 0
+    assert stored_run.metadata_json["history"] == []
+    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+
+
+@pytest.mark.asyncio
+async def test_restore_runtime_metadata_from_events_recovers_deferred_tools():
+    conversation, run = await _create_agent_run(current_step=0)
+    metadata = dict(run.metadata_json or {})
+
+    await conversation_store.record_agent_tool_result(
+        conversation.id,
+        run_id=run.id,
+        step=1,
+        tool_name="file_read",
+        arguments={"path": "frontend/lib/hooks.ts"},
+        ok=True,
+        output="hooks inspected",
+        result_metadata={"path": "frontend/lib/hooks.ts"},
+        artifact_type="agent.tool.file_read.output",
+        artifact_content_text="hooks inspected",
+        artifact_content_json={"metadata": {"path": "frontend/lib/hooks.ts"}},
+        run_metadata_json=None,
+    )
+    await conversation_store.record_agent_tool_result(
+        conversation.id,
+        run_id=run.id,
+        step=2,
+        tool_name="workspace_search",
+        arguments={"query": "active_step"},
+        ok=True,
+        output="found matches",
+        result_metadata={"query": "active_step"},
+        artifact_type="agent.tool.workspace_search.output",
+        artifact_content_text="found matches",
+        artifact_content_json={"metadata": {"query": "active_step"}},
+        run_metadata_json=None,
+    )
+
+    restored = await agent_runner_module._restore_runtime_metadata_from_events(
+        conversation_id=conversation.id,
+        run_id=run.id,
+        metadata=metadata,
+    )
+
+    tool_history = [item for item in restored["history"] if item.get("kind") == "tool"]
+    assert restored["current_step"] == 2
+    assert restored["current_action"] == "Completed workspace_search"
+    assert not restored.get("started_event_recorded")
+    assert len(tool_history) == 2
+    assert tool_history[0]["arguments"] == {"path": "frontend/lib/hooks.ts"}
+    assert tool_history[1]["arguments"] == {"query": "active_step"}

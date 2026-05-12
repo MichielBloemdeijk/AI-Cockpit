@@ -28,6 +28,8 @@ from app.services.llm import PromptSegment, chat_completion, ensure_prompt_metri
 
 AGENT_PROGRESS_SUMMARY_INTERVAL_STEPS = 3
 AGENT_PROGRESS_SUMMARY_MAX_TOKENS = 192
+AGENT_METADATA_CHECKPOINT_INTERVAL_SECONDS = 5
+AGENT_METADATA_CHECKPOINT_STEP_INTERVAL = 10
 AgentStreamCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
@@ -37,12 +39,60 @@ class AgentStepPresentation:
     progress_summary: str
 
 
+@dataclass(slots=True)
+class AgentMetadataCheckpointState:
+    last_persisted_step: int
+    last_persisted_at: datetime
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _iso_now() -> str:
     return _utc_now().isoformat()
+
+
+def _parse_metadata_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_metadata_checkpoint_state(metadata: dict[str, Any]) -> AgentMetadataCheckpointState:
+    return AgentMetadataCheckpointState(
+        last_persisted_step=int(metadata.get("current_step", 0) or 0),
+        last_persisted_at=_parse_metadata_timestamp(metadata.get("updated_at")) or _utc_now(),
+    )
+
+
+def _mark_metadata_checkpoint_persisted(
+    metadata: dict[str, Any],
+    checkpoint_state: AgentMetadataCheckpointState,
+) -> None:
+    checkpoint_state.last_persisted_step = int(metadata.get("current_step", 0) or 0)
+    checkpoint_state.last_persisted_at = _parse_metadata_timestamp(metadata.get("updated_at")) or _utc_now()
+
+
+def _should_checkpoint_run_metadata(
+    metadata: dict[str, Any],
+    checkpoint_state: AgentMetadataCheckpointState,
+    *,
+    force: bool = False,
+) -> bool:
+    if force:
+        return True
+    current_step = int(metadata.get("current_step", 0) or 0)
+    if current_step >= checkpoint_state.last_persisted_step + AGENT_METADATA_CHECKPOINT_STEP_INTERVAL:
+        return True
+    elapsed_seconds = (_utc_now() - checkpoint_state.last_persisted_at).total_seconds()
+    return elapsed_seconds >= AGENT_METADATA_CHECKPOINT_INTERVAL_SECONDS
 
 
 async def _emit_agent_stream_update(
@@ -159,6 +209,22 @@ def _normalize_tool_arguments(metadata: dict[str, Any], tool_name: str, argument
 
 async def _update_run_metadata(run_id: str, metadata: dict[str, Any]) -> None:
     await conversation_store.update_run_metadata(run_id, _serialize_agent_metadata(metadata))
+
+
+async def _maybe_checkpoint_run_metadata(
+    run_id: str,
+    metadata: dict[str, Any],
+    checkpoint_state: AgentMetadataCheckpointState | None,
+    *,
+    force: bool = False,
+) -> bool:
+    if checkpoint_state is not None and not _should_checkpoint_run_metadata(metadata, checkpoint_state, force=force):
+        return False
+    metadata["updated_at"] = _iso_now()
+    await _update_run_metadata(run_id, metadata)
+    if checkpoint_state is not None:
+        _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
+    return True
 
 
 async def _record_llm_metrics(
@@ -413,6 +479,7 @@ async def _pause_for_question(
     question: str,
     kind: str = "question",
     current_action: str = "Waiting for user input",
+    checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> None:
     if not question:
         raise ValueError("Question action requires a question")
@@ -426,8 +493,7 @@ async def _pause_for_question(
     metadata["pending_question"] = pending_question
     metadata["task_status"] = "paused"
     metadata["current_action"] = current_action
-    metadata["updated_at"] = _iso_now()
-    await _update_run_metadata(run_id, metadata)
+    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
     await conversation_store.update_run_status(run_id, status="paused", error=None, finished_at=None)
     await conversation_store.append_event(
         conversation_id,
@@ -444,6 +510,7 @@ async def _handle_plan_action(
     run_id: str,
     metadata: dict[str, Any],
     action: dict[str, Any],
+    checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> dict[str, Any]:
     plan = dict(action.get("plan") or {})
     if not plan:
@@ -455,8 +522,7 @@ async def _handle_plan_action(
     plan["approved_at"] = _iso_now() if plan["approved"] else None
     metadata["plan"] = plan
     metadata["current_action"] = "Plan ready"
-    metadata["updated_at"] = _iso_now()
-    await _update_run_metadata(run_id, metadata)
+    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
 
     plan_event = await conversation_store.append_event(
         conversation_id,
@@ -477,8 +543,7 @@ async def _handle_plan_action(
     if metadata.get("skip_plan_feedback"):
         metadata["current_action"] = "Plan approved; starting execution"
         metadata["task_status"] = "running"
-        metadata["updated_at"] = _iso_now()
-        await _update_run_metadata(run_id, metadata)
+        await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
         await conversation_store.append_event(
             conversation_id,
             run_id=run_id,
@@ -495,6 +560,7 @@ async def _handle_plan_action(
         question=_plan_feedback_question(plan),
         kind="plan_feedback",
         current_action="Waiting for plan feedback",
+        checkpoint_state=checkpoint_state,
     )
     return metadata
 
@@ -507,6 +573,7 @@ async def _handle_tool_action(
     action: dict[str, Any],
     context: ToolExecutionContext,
     tool_executor: Callable[..., Awaitable[Any]] = execute_agent_tool,
+    checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> dict[str, Any]:
     tool_name = str(action.get("tool", "")).strip()
     arguments = action.get("arguments") or {}
@@ -517,14 +584,6 @@ async def _handle_tool_action(
     next_step = int(metadata.get("current_step", 0) or 0) + 1
     metadata["current_action"] = f"Running {tool_name}"
     metadata["updated_at"] = _iso_now()
-    await _update_run_metadata(run_id, metadata)
-    started_event = await conversation_store.append_event(
-        conversation_id,
-        run_id=run_id,
-        actor_kind="task",
-        event_type="agent.tool.called",
-        payload_json={"step": next_step, "tool": tool_name, "arguments": arguments},
-    )
 
     try:
         result = await tool_executor(context=context, tool=tool_name, arguments=arguments)
@@ -536,53 +595,41 @@ async def _handle_tool_action(
                 context=context,
                 tool_metadata=result.metadata,
             )
-        artifact = await conversation_store.attach_artifact(
-            conversation_id,
-            run_id=run_id,
-            source_event_id=started_event.id,
-            artifact_type=f"agent.tool.{tool_name}.output",
-            mime_type="text/plain",
-            content_text=result.output,
-            content_json={"metadata": result.metadata},
-        )
         snippet = _result_snippet(tool_name, result.output, result.metadata)
-        await conversation_store.append_event(
-            conversation_id,
-            run_id=run_id,
-            actor_kind="task",
-            event_type="agent.tool.completed",
-            payload_json={
-                "step": next_step,
-                "tool": tool_name,
-                "ok": True,
-                "output": snippet,
-                "artifact_id": artifact.id,
-                "metadata": result.metadata,
-            },
-        )
         history_entry = {
             "kind": "tool",
             "tool": tool_name,
             "arguments": arguments,
             "ok": True,
             "output": snippet,
-            "artifact_id": artifact.id,
         }
+        history = list(metadata.get("history", []))
+        history.append(history_entry)
+        metadata["history"] = history
+        metadata["current_step"] = next_step
+        metadata["task_status"] = "running"
         metadata["current_action"] = f"Completed {tool_name}"
-    except Exception as exc:
-        error_text = str(exc)
-        await conversation_store.append_event(
+        metadata["updated_at"] = _iso_now()
+        should_persist_metadata = checkpoint_state is None or tool_name == "app_initialize" or _should_checkpoint_run_metadata(metadata, checkpoint_state)
+        persisted_tool_result = await conversation_store.record_agent_tool_result(
             conversation_id,
             run_id=run_id,
-            actor_kind="task",
-            event_type="agent.tool.completed",
-            payload_json={
-                "step": next_step,
-                "tool": tool_name,
-                "ok": False,
-                "error": error_text,
-            },
+            step=next_step,
+            tool_name=tool_name,
+            arguments=arguments,
+            ok=True,
+            output=snippet,
+            result_metadata=result.metadata,
+            artifact_type=f"agent.tool.{tool_name}.output",
+            artifact_content_text=result.output,
+            artifact_content_json={"metadata": result.metadata},
+            run_metadata_json=_serialize_agent_metadata(metadata) if should_persist_metadata else None,
         )
+        if should_persist_metadata and checkpoint_state is not None:
+            _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
+        history_entry["artifact_id"] = persisted_tool_result.artifact.id if persisted_tool_result.artifact is not None else None
+    except Exception as exc:
+        error_text = str(exc)
         history_entry = {
             "kind": "tool",
             "tool": tool_name,
@@ -590,15 +637,25 @@ async def _handle_tool_action(
             "ok": False,
             "output": error_text,
         }
+        history = list(metadata.get("history", []))
+        history.append(history_entry)
+        metadata["history"] = history
+        metadata["current_step"] = next_step
+        metadata["task_status"] = "running"
         metadata["current_action"] = f"Tool failed: {tool_name}"
-
-    history = list(metadata.get("history", []))
-    history.append(history_entry)
-    metadata["history"] = history
-    metadata["current_step"] = next_step
-    metadata["task_status"] = "running"
-    metadata["updated_at"] = _iso_now()
-    await _update_run_metadata(run_id, metadata)
+        metadata["updated_at"] = _iso_now()
+        await conversation_store.record_agent_tool_result(
+            conversation_id,
+            run_id=run_id,
+            step=next_step,
+            tool_name=tool_name,
+            arguments=arguments,
+            ok=False,
+            error=error_text,
+            run_metadata_json=_serialize_agent_metadata(metadata),
+        )
+        if checkpoint_state is not None:
+            _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
     return metadata
 
 
@@ -609,6 +666,7 @@ async def _complete_run(
     metadata: dict[str, Any],
     summary: str,
     result: str,
+    checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> None:
     final_text = result or summary or "Task completed."
     final_summary = summary or final_text
@@ -651,7 +709,7 @@ async def _complete_run(
         verification_status="not_started",
         last_error=None,
     )
-    await _update_run_metadata(run_id, metadata)
+    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
     await conversation_store.mark_run_completed(run_id)
 
 
@@ -660,12 +718,12 @@ async def _fail_run(
     run_id: str,
     metadata: dict[str, Any],
     error: str,
+    checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> None:
     metadata["task_status"] = "failed"
     metadata["error"] = error
     metadata["current_action"] = "Failed"
-    metadata["updated_at"] = _iso_now()
-    await _update_run_metadata(run_id, metadata)
+    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
     await conversation_store.append_event(
         conversation_id,
         run_id=run_id,
@@ -687,11 +745,11 @@ async def _cancel_run(
     conversation_id: str,
     run_id: str,
     metadata: dict[str, Any],
+    checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> None:
     metadata["task_status"] = "cancelled"
     metadata["current_action"] = "Cancelled"
-    metadata["updated_at"] = _iso_now()
-    await _update_run_metadata(run_id, metadata)
+    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
     await conversation_store.append_event(
         conversation_id,
         run_id=run_id,
