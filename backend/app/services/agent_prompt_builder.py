@@ -312,6 +312,7 @@ def _app_context_block(metadata: dict[str, Any]) -> str:
         f"Manifest file: {app.get('manifest_path', '')}",
         f"Asset root: {app.get('asset_root', '')}",
         f"Allowed write roots: {json.dumps(app.get('allowed_write_roots', []), ensure_ascii=True)}",
+        "Styling rule: prefer the app's existing styles.css. If you add a CSS Module, every selector must include a local class or id; bare element selectors like h1 and keyframe percentages such as 0% or 100% inside module files are invalid and can break the frontend build. Keep animations and @keyframes in styles.css.",
         "To add more pages for this app, create nested page.tsx files under the app directory.",
     ]
     if scaffolded_files:

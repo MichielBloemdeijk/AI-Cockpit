@@ -136,9 +136,9 @@ async def test_generated_app_registry_crud_and_contract():
         payload = created.json()
         assert payload["slug"] == "hello-world"
         assert payload["route_path"] == "/apps/hello-world"
-        assert payload["frontend_root"] == "frontend/app/apps/hello-world"
+        assert payload["frontend_root"] == "frontend/generated-apps/hello-world"
         assert payload["allowed_write_roots"] == [
-            "frontend/app/apps/hello-world",
+            "frontend/generated-apps/hello-world",
             "frontend/public/apps/hello-world",
         ]
 
@@ -157,6 +157,96 @@ async def test_generated_app_registry_crud_and_contract():
         by_slug = await client.get("/api/apps/slug/hello-world")
         assert by_slug.status_code == 200
         assert by_slug.json()["id"] == payload["id"]
+
+
+@pytest.mark.asyncio
+async def test_generated_app_detail_derives_css_module_error_from_isolated_source():
+    bootstrap = await bootstrap_generated_app(goal="create broken tic tac toe clone", title="Broken CSS App")
+    repo_root = app_builder_module._repo_root()
+    app_root = repo_root / bootstrap.frontend_root
+    entry_path = app_root / "page.tsx"
+    css_module_path = app_root / "page.module.css"
+
+    entry_path.write_text(
+        'import styles from "./page.module.css";\n\nexport default function Page() {\n  return <main className={styles.container}><h1>Broken</h1></main>;\n}\n',
+        encoding="utf-8",
+    )
+    css_module_path.write_text(
+        '.container {\n  display: block;\n}\n\nh1 {\n  color: red;\n}\n',
+        encoding="utf-8",
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": "dev"})
+        detail = await client.get(f"/api/apps/slug/{bootstrap.app.slug}")
+
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["last_error"] is not None
+    assert "Transforming CSS failed" in payload["last_error"]
+    assert 'Selector "h1" is not pure.' in payload["last_error"]
+    assert f"./generated-apps/{bootstrap.app.slug}/page.module.css" in payload["last_error"]
+    assert "Client Component Browser:" in payload["last_error"]
+    assert "Client Component SSR:" in payload["last_error"]
+    assert not (repo_root / "frontend" / "app" / "apps" / bootstrap.app.slug).exists()
+
+
+@pytest.mark.asyncio
+async def test_generated_app_reads_promote_healthy_apps_into_live_route_tree():
+    bootstrap = await bootstrap_generated_app(goal="create live route app", title="Healthy Live Route App")
+    repo_root = app_builder_module._repo_root()
+
+    live_route_root = repo_root / "frontend" / "app" / "apps" / bootstrap.app.slug
+    assert not live_route_root.exists()
+
+    record = await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+
+    assert record is not None
+    assert (live_route_root / "page.tsx").exists()
+    assert (live_route_root / "layout.tsx").exists()
+
+
+@pytest.mark.asyncio
+async def test_generated_app_reads_ignore_stale_stored_errors_after_recovery():
+    bootstrap = await bootstrap_generated_app(goal="create live route app", title="Recovered Live Route App")
+    repo_root = app_builder_module._repo_root()
+    live_route_root = repo_root / "frontend" / "app" / "apps" / bootstrap.app.slug
+
+    await app_registry_service.update_app(
+        bootstrap.app.id,
+        status="ready_for_test",
+        last_error="Agent step limit reached (8)",
+    )
+
+    record = await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+
+    assert record is not None
+    assert app_registry_service.get_display_error(record) is None
+    assert (live_route_root / "page.tsx").exists()
+    assert (live_route_root / "layout.tsx").exists()
+
+
+@pytest.mark.asyncio
+async def test_update_app_allows_clearing_last_error_for_recovered_apps():
+    bootstrap = await bootstrap_generated_app(goal="create live route app", title="Clear Error App")
+
+    failed = await app_registry_service.update_app(
+        bootstrap.app.id,
+        status="failed",
+        last_error="Agent step limit reached (8)",
+    )
+    assert failed is not None
+    assert failed.last_error == "Agent step limit reached (8)"
+
+    recovered = await app_registry_service.update_app(
+        bootstrap.app.id,
+        status="ready_for_test",
+        last_error=None,
+    )
+
+    assert recovered is not None
+    assert recovered.last_error is None
 
 
 @pytest.mark.asyncio
@@ -182,11 +272,11 @@ async def test_generated_app_write_roots_are_explicit_and_enforced():
         context=context,
         tool="file_write",
         arguments={
-            "path": "frontend/app/apps/flappy-bird/app.tsx",
+            "path": "frontend/generated-apps/flappy-bird/app.tsx",
             "content": "export function App() { return null; }",
         },
     )
-    assert result.metadata["path"] == "frontend/app/apps/flappy-bird/app.tsx"
+    assert result.metadata["path"] == "frontend/generated-apps/flappy-bird/app.tsx"
     assert (Path(app_registry_service.get_absolute_write_roots(app_record)[0]) / "app.tsx").exists()
 
     with pytest.raises(ValueError):
@@ -707,7 +797,7 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
         {
             "tool": "file_write",
             "arguments": {
-                "path": "frontend/app/apps/leaseable-launch-dashboard/page.tsx",
+                "path": "frontend/generated-apps/leaseable-launch-dashboard/page.tsx",
                 "content": "export default function Page() { return <main>v2</main>; }",
             },
             "content": "Write directly using retained app context.",

@@ -57,10 +57,13 @@ backend/tests/test_agent_model_verifier.py
 
 # Generated app scaffolds and asset roots
 frontend/app/apps/*/
+!frontend/app/apps/[[]slug]/
+!frontend/app/apps/[[]slug]/**
+!frontend/app/apps/[[]slug]/page.tsx
 !frontend/app/apps/layout.tsx
 !frontend/app/apps/page.tsx
-frontend/public/apps/*/
 frontend/generated-apps/
+frontend/public/apps/*/
 
 # OS
 .DS_Store

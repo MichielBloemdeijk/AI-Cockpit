@@ -179,17 +179,7 @@ def _root_layout_template(app: GeneratedAppRecord) -> str:
     return f'''import "./styles.css";
 
 export default function {app.slug.replace("-", " ").title().replace(" ", "")}Layout({{ children }}: {{ children: React.ReactNode }}) {{
-  return (
-    <div className="generated-app-shell">
-      <header className="generated-app-header">
-        <div>
-          <p className="generated-app-kicker">AI Cockpit Generated App</p>
-          <h1>{app.title}</h1>
-        </div>
-      </header>
-      <main className="generated-app-main">{{children}}</main>
-    </div>
-  );
+  return children;
 }}
 '''
 
@@ -244,7 +234,7 @@ export default function Error({ error, reset }: { error: Error; reset: () => voi
 
 def _styles_template() -> str:
     return '''.generated-app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   background:
@@ -276,7 +266,7 @@ def _styles_template() -> str:
   display: flex;
   width: 100%;
   min-height: 0;
-  padding: 24px;
+  padding: 0;
 }
 
 .generated-app-card {
@@ -284,10 +274,10 @@ def _styles_template() -> str:
   width: 100%;
   min-height: 100%;
   border: none;
-  background: rgba(15, 23, 42, 0.82);
-  border-radius: 32px;
+  background: transparent;
+  border-radius: 0;
   padding: 28px;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+  box-shadow: none;
 }
 
 .generated-app-card h2 {
@@ -354,21 +344,12 @@ def _styles_template() -> str:
 }
 
 @media (max-width: 640px) {
-  .generated-app-shell {
-    min-height: 100dvh;
-  }
-
   .generated-app-header {
     padding: 16px 16px 0;
   }
 
-  .generated-app-main {
-    padding: 16px;
-  }
-
   .generated-app-card {
     padding: 20px;
-    border-radius: 24px;
   }
 }
 '''
@@ -390,6 +371,7 @@ Suggested organization:
 - Put shared app UI in `components/`
 - Put app-specific helpers in `lib/`
 - Add nested routes by creating more `page.tsx` files inside subfolders under this app root
+- Prefer the existing `styles.css`; if you add a CSS Module, every selector must include a local class or id instead of bare elements like `h1`, and keep `@keyframes` plus selectors like `0%` or `100%` in `styles.css` rather than the module file
 - Put public assets under `{bootstrap.asset_root}`
 '''
 

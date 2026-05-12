@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.models.apps import GeneratedAppDetail, GeneratedAppSummary
-from app.services.app_registry import app_registry_service
+from app.services.app_registry import app_registry_service, resolve_generated_app_contract
 
 
 def present_generated_app_summary(record) -> GeneratedAppSummary:
@@ -24,13 +24,14 @@ def present_generated_app_summary(record) -> GeneratedAppSummary:
 
 
 def present_generated_app_detail(record) -> GeneratedAppDetail:
+    contract = resolve_generated_app_contract(record.slug, record.manifest_json)
     return GeneratedAppDetail(
         **present_generated_app_summary(record).model_dump(),
-        frontend_root=record.frontend_root,
-        frontend_entry_path=record.frontend_entry_path,
+        frontend_root=contract.frontend_root,
+        frontend_entry_path=contract.frontend_entry_path,
         icon_asset_path=record.icon_asset_path,
         cover_asset_path=record.cover_asset_path,
         manifest_json=record.manifest_json,
-        last_error=record.last_error,
-        allowed_write_roots=app_registry_service.get_allowed_write_roots(record),
+        last_error=app_registry_service.get_display_error(record),
+        allowed_write_roots=contract.allowed_write_roots,
     )

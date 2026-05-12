@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import shutil
 
 from sqlalchemy import select, update
 
@@ -85,6 +86,10 @@ class GeneratedAppContract:
     allowed_write_roots: list[str]
 
 
+LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE = (Path("frontend") / "app" / "apps").as_posix()
+ISOLATED_GENERATED_APP_FRONTEND_ROOT_BASE = (Path("frontend") / "generated-apps").as_posix()
+
+
 def _normalize_route_path_prefix(value: str | None) -> str:
     normalized = str(value or "").strip().strip("/")
     if not normalized:
@@ -108,6 +113,18 @@ def _normalize_contract_override(contract_override: object) -> dict[str, str] | 
     }
 
 
+def _remap_legacy_frontend_path(value: str | None) -> str:
+    normalized = str(value or "").strip().replace("\\", "/")
+    if not normalized:
+        return ""
+    legacy_prefix = f"{LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE}/"
+    if normalized == LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE:
+        return ISOLATED_GENERATED_APP_FRONTEND_ROOT_BASE
+    if normalized.startswith(legacy_prefix):
+        return f"{ISOLATED_GENERATED_APP_FRONTEND_ROOT_BASE}/{normalized[len(legacy_prefix):]}"
+    return normalized
+
+
 def _contract_payload(contract: GeneratedAppContract) -> dict[str, object]:
     return {
         "route_path": contract.route_path,
@@ -126,13 +143,13 @@ def _contract_from_payload(payload: object) -> GeneratedAppContract | None:
         return None
 
     route_path = str(contract_payload.get("route_path") or "").strip()
-    frontend_root = str(contract_payload.get("frontend_root") or "").strip()
-    frontend_entry_path = str(contract_payload.get("frontend_entry_path") or "").strip()
-    frontend_layout_path = str(contract_payload.get("frontend_layout_path") or "").strip()
-    manifest_path = str(contract_payload.get("manifest_path") or "").strip()
+    frontend_root = _remap_legacy_frontend_path(contract_payload.get("frontend_root"))
+    frontend_entry_path = _remap_legacy_frontend_path(contract_payload.get("frontend_entry_path"))
+    frontend_layout_path = _remap_legacy_frontend_path(contract_payload.get("frontend_layout_path"))
+    manifest_path = _remap_legacy_frontend_path(contract_payload.get("manifest_path"))
     asset_root = str(contract_payload.get("asset_root") or "").strip()
     allowed_write_roots = [
-        str(value).strip()
+        _remap_legacy_frontend_path(value)
         for value in (contract_payload.get("allowed_write_roots") or [])
         if str(value).strip()
     ]
@@ -181,11 +198,93 @@ def _repo_root() -> Path:
     return settings.backend_root.parent.resolve()
 
 
+def _live_generated_app_root(slug: str) -> Path:
+    return _repo_root() / LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE / _slugify(slug)
+
+
+def _live_generated_app_root_base() -> Path:
+    return _repo_root() / LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE
+
+
+def _find_invalid_css_module_selector(app_root: Path) -> tuple[Path, str] | None:
+    if not app_root.exists() or not app_root.is_dir():
+        return None
+
+    for css_path in sorted(app_root.rglob("*.module.css")):
+        try:
+            content = css_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for raw_match in re.finditer(r"(^|\n)\s*([^@\n][^{}\n]*)\{", content):
+            selector_group = raw_match.group(2).strip()
+            if not selector_group:
+                continue
+            for selector in selector_group.split(","):
+                normalized_selector = " ".join(selector.strip().split())
+                if not normalized_selector:
+                    continue
+                if "." not in normalized_selector and "#" not in normalized_selector:
+                    return css_path, normalized_selector
+
+    return None
+
+
+def _derived_app_error(record: GeneratedAppRecord) -> str | None:
+    contract = resolve_generated_app_contract(record.slug, record.manifest_json)
+    app_root = _repo_root() / contract.frontend_root
+    invalid_css_module = _find_invalid_css_module_selector(app_root)
+    if invalid_css_module is None:
+        return None
+
+    css_path, selector = invalid_css_module
+    frontend_root = _repo_root() / "frontend"
+    if css_path.is_relative_to(frontend_root):
+        relative_css_path = css_path.relative_to(frontend_root).as_posix()
+    else:
+        relative_css_path = css_path.relative_to(_repo_root()).as_posix()
+
+    entry_path = contract.frontend_entry_path
+    if entry_path.startswith("frontend/"):
+        import_entry_path = f"./{entry_path.removeprefix('frontend/')}"
+    else:
+        import_entry_path = f"./{entry_path}"
+
+    import_css_path = f"./{relative_css_path}"
+    lines = [
+        import_css_path,
+        "Transforming CSS failed",
+        f'Selector "{selector}" is not pure. Pure selectors must contain at least one local class or id.',
+    ]
+    if entry_path:
+        lines.extend(
+            [
+                "",
+                "Import traces:",
+                "  Client Component Browser:",
+                f"    {import_css_path} [Client Component Browser]",
+                f"    {import_entry_path} [Client Component Browser]",
+                f"    {import_entry_path} [Server Component]",
+                "",
+                "  Client Component SSR:",
+                f"    {import_css_path} [Client Component SSR]",
+                f"    {import_entry_path} [Client Component SSR]",
+                f"    {import_entry_path} [Server Component]",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _should_sync_live_route(contract: GeneratedAppContract) -> bool:
+    frontend_root = str(contract.frontend_root or "").strip().replace("\\", "/")
+    return frontend_root.startswith(f"{ISOLATED_GENERATED_APP_FRONTEND_ROOT_BASE}/")
+
+
 def generated_app_contract(slug: str, *, contract_override: dict[str, str] | None = None) -> GeneratedAppContract:
     normalized_slug = _slugify(slug)
     override = _normalize_contract_override(contract_override)
     route_path_prefix = override["route_path_prefix"] if override is not None else "/apps"
-    frontend_root_base = Path(override["frontend_root_base"]) if override is not None else Path("frontend") / "app" / "apps"
+    frontend_root_base = Path(override["frontend_root_base"]) if override is not None else Path(ISOLATED_GENERATED_APP_FRONTEND_ROOT_BASE)
     asset_root_base = Path(override["asset_root_base"]) if override is not None else Path("frontend") / "public" / "apps"
     frontend_root = (frontend_root_base / normalized_slug).as_posix()
     frontend_entry_path = (Path(frontend_root) / "page.tsx").as_posix()
@@ -216,6 +315,39 @@ def resolve_generated_app_contract(
 
 
 class AppRegistryService:
+    def _sync_live_route(self, record: GeneratedAppRecord) -> bool:
+        contract = resolve_generated_app_contract(record.slug, record.manifest_json)
+        if not _should_sync_live_route(contract):
+            return False
+
+        live_root = _live_generated_app_root(record.slug)
+        source_root = _repo_root() / contract.frontend_root
+        display_error = self.get_display_error(record)
+        has_live_entry_files = (source_root / "page.tsx").exists() and (source_root / "layout.tsx").exists()
+
+        if display_error or not source_root.exists() or not source_root.is_dir() or not has_live_entry_files:
+            shutil.rmtree(live_root, ignore_errors=True)
+            return False
+
+        if live_root.exists():
+            shutil.rmtree(live_root, ignore_errors=True)
+        live_root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_root, live_root)
+        return True
+
+    def _prune_live_routes(self, expected_slugs: set[str]) -> None:
+        live_root_base = _live_generated_app_root_base()
+        if not live_root_base.exists() or not live_root_base.is_dir():
+            return
+
+        for child in live_root_base.iterdir():
+            if not child.is_dir():
+                continue
+            if child.name == "[slug]":
+                continue
+            if child.name not in expected_slugs:
+                shutil.rmtree(child, ignore_errors=True)
+
     async def _lease_holder_is_active(
         self,
         *,
@@ -251,12 +383,21 @@ class AppRegistryService:
             result = await session.execute(
                 select(GeneratedApp).order_by(GeneratedApp.updated_at.desc(), GeneratedApp.created_at.desc())
             )
-            return [_record(item) for item in result.scalars().all()]
+            records = [_record(item) for item in result.scalars().all()]
+        expected_live_slugs: set[str] = set()
+        for record in records:
+            if self._sync_live_route(record):
+                expected_live_slugs.add(record.slug)
+        self._prune_live_routes(expected_live_slugs)
+        return records
 
     async def get_app(self, app_id: str) -> GeneratedAppRecord | None:
         async with session_scope() as session:
             item = await session.get(GeneratedApp, app_id)
-            return None if item is None else _record(item)
+            record = None if item is None else _record(item)
+        if record is not None:
+            self._sync_live_route(record)
+        return record
 
     async def get_app_by_slug(self, slug: str) -> GeneratedAppRecord | None:
         async with session_scope() as session:
@@ -264,7 +405,10 @@ class AppRegistryService:
                 select(GeneratedApp).where(GeneratedApp.slug == _slugify(slug)).limit(1)
             )
             item = result.scalar_one_or_none()
-            return None if item is None else _record(item)
+            record = None if item is None else _record(item)
+        if record is not None:
+            self._sync_live_route(record)
+        return record
 
     async def create_app(
         self,
@@ -308,7 +452,10 @@ class AppRegistryService:
             return _record(item)
 
     async def update_app(self, app_id: str, **changes) -> GeneratedAppRecord | None:
-        values = {key: value for key, value in changes.items() if value is not None}
+        values = dict(changes)
+        status = str(values.get("status") or "").strip()
+        if status and status != GeneratedAppStatus.failed.value and "last_error" not in values:
+            values["last_error"] = None
         if not values:
             return await self.get_app(app_id)
         values["updated_at"] = _utc_now()
@@ -434,6 +581,16 @@ class AppRegistryService:
 
     def get_absolute_write_roots(self, record: GeneratedAppRecord) -> list[str]:
         return [(_repo_root() / path).resolve().as_posix() for path in self.get_allowed_write_roots(record)]
+
+    def get_display_error(self, record: GeneratedAppRecord) -> str | None:
+        derived_error = _derived_app_error(record)
+        if derived_error:
+            return derived_error
+
+        stored_error = str(record.last_error or "").strip()
+        if str(record.status or "").strip() == GeneratedAppStatus.failed.value:
+            return stored_error or None
+        return None
 
 
 app_registry_service = AppRegistryService()

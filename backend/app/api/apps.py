@@ -60,20 +60,7 @@ async def get_app(app_id: str):
 
 @router.patch("/{app_id}", response_model=GeneratedAppDetail)
 async def update_app(app_id: str, req: GeneratedAppUpdateRequest):
-    record = await app_registry_service.update_app(
-        app_id,
-        title=req.title,
-        description=req.description,
-        status=req.status,
-        verification_status=req.verification_status,
-        frontend_entry_path=req.frontend_entry_path,
-        icon_asset_path=req.icon_asset_path,
-        cover_asset_path=req.cover_asset_path,
-        manifest_json=req.manifest_json,
-        last_error=req.last_error,
-        source_task_run_id=req.source_task_run_id,
-        source_conversation_id=req.source_conversation_id,
-    )
+    record = await app_registry_service.update_app(app_id, **req.model_dump(exclude_unset=True))
     if record is None:
         raise HTTPException(status_code=404, detail="App not found")
     return present_generated_app_detail(record)
