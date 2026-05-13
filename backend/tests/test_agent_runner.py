@@ -724,3 +724,68 @@ async def test_restore_runtime_metadata_from_events_recovers_deferred_tools():
     assert len(tool_history) == 2
     assert tool_history[0]["arguments"] == {"path": "frontend/lib/hooks.ts"}
     assert tool_history[1]["arguments"] == {"query": "active_step"}
+
+
+@pytest.mark.asyncio
+async def test_continue_run_logs_structured_phase_timings(monkeypatch):
+    _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5")
+    responses = [
+        {"response": _tool_response("file_read", {"path": "frontend/lib/hooks.ts"})},
+        {"response": _finalize_response("Inspection complete.")},
+    ]
+    payloads: list[dict[str, object]] = []
+
+    async def _fake_stream(messages, model, on_content_delta=None, **kwargs):
+        return responses.pop(0)["response"]
+
+    async def _fake_summary(messages, model, **kwargs):
+        return ModelResponse(
+            model=model,
+            content="Inspecting hooks status flow",
+            usage=None,
+            tool_calls=[],
+            finish_reason="stop",
+        )
+
+    async def _fake_execute(*, context, tool, arguments):
+        return ToolExecutionResult(tool=tool, output="hooks inspected", metadata={"path": arguments["path"]})
+
+    def _capture_timing_log(message, *args, **kwargs):
+        if message != "agent_timing %s" or not args:
+            return
+        payloads.append(json.loads(str(args[0])))
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+    monkeypatch.setattr(agent_runner_module, "chat_completion", _fake_summary)
+    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
+    monkeypatch.setattr(agent_run_support_module.timing_logger, "info", _capture_timing_log)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    assert any(payload.get("phase") == "continue.restore_runtime_metadata" for payload in payloads)
+    assert any(
+        payload.get("phase") == "native_turn.model_call"
+        and payload.get("step") == 1
+        and payload.get("request_kind") == "task.agent.native_decision"
+        for payload in payloads
+    )
+    assert any(
+        payload.get("phase") == "progress_summary.model_call"
+        and payload.get("step") == 1
+        for payload in payloads
+    )
+    assert any(
+        payload.get("phase") == "tool.execute"
+        and payload.get("step") == 1
+        and payload.get("tool") == "file_read"
+        for payload in payloads
+    )
+    assert any(
+        payload.get("phase") == "tool.persist"
+        and payload.get("step") == 1
+        and payload.get("tool") == "file_read"
+        and payload.get("ok") is True
+        for payload in payloads
+    )
+    assert all("started_at" in payload and "finished_at" in payload for payload in payloads)
+    assert all(isinstance(payload.get("duration_ms"), (int, float)) for payload in payloads)

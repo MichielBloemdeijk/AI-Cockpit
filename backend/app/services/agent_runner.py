@@ -52,6 +52,7 @@ from app.services.agent_run_support import (
     _pause_for_question,
     _record_llm_metrics,
     _record_llm_visible_output,
+    _timed_agent_phase,
     _update_run_metadata,
 )
 from app.services.chat_settings import chat_settings_service
@@ -228,16 +229,24 @@ class AgentRunner:
     ) -> dict[str, Any]:
         model = str(metadata.get("model") or await chat_settings_service.get_task_agent_model())
         recent_messages = await conversation_store.list_messages(conversation_id, final_only=True)
-        history_context = await build_agent_history_context(
+        async with _timed_agent_phase(
+            phase="native_turn.history_context",
             conversation_id=conversation_id,
             run_id=run_id,
-            metadata=metadata,
+            step=step_number,
             model=model,
-            update_run_metadata=_update_run_metadata,
-            record_llm_metrics=_record_llm_metrics,
-            record_llm_visible_output=_record_llm_visible_output,
-            chat_completion_fn=chat_completion,
-        )
+            plan_required=plan_required,
+        ):
+            history_context = await build_agent_history_context(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                metadata=metadata,
+                model=model,
+                update_run_metadata=_update_run_metadata,
+                record_llm_metrics=_record_llm_metrics,
+                record_llm_visible_output=_record_llm_visible_output,
+                chat_completion_fn=chat_completion,
+            )
         history_summary = history_context.history_summary
         rendered_history = history_context.rendered_history
 
@@ -335,7 +344,20 @@ class AgentRunner:
                 completion_kwargs["on_content_delta"] = _handle_content_delta
                 completion_kwargs["on_reasoning_delta"] = _handle_reasoning_delta
 
-            response = await completion_call(request_messages, model, **completion_kwargs)
+            async with _timed_agent_phase(
+                phase="native_turn.model_call",
+                conversation_id=conversation_id,
+                run_id=run_id,
+                step=step_number,
+                model=model,
+                request_kind=request_kind,
+                attempt=attempt + 1,
+                streaming=completion_call is chat_completion_stream_response,
+            ) as timing:
+                response = await completion_call(request_messages, model, **completion_kwargs)
+                timing.details["response_model"] = getattr(response, "model", model)
+                timing.details["finish_reason"] = getattr(response, "finish_reason", None)
+                timing.details["tool_call_count"] = len(getattr(response, "tool_calls", []))
             prompt_metrics = ensure_prompt_metrics(
                 messages=request_messages,
                 model=response.model,
@@ -344,21 +366,29 @@ class AgentRunner:
                 prompt_metrics=getattr(response, "prompt_metrics", None),
                 rendered_messages=render_prompt_segments(prompt_segments, response.model),
             )
-            metrics_event_id = await _record_llm_metrics(
+            async with _timed_agent_phase(
+                phase="native_turn.persist_output",
                 conversation_id=conversation_id,
                 run_id=run_id,
+                step=step_number,
                 model=response.model,
-                metrics=prompt_metrics,
                 request_kind=request_kind,
-            )
-            await _record_llm_visible_output(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                source_event_id=metrics_event_id,
-                request_kind=request_kind,
-                response=response,
-                streamed_visible_deltas=stream_buffer,
-            )
+            ):
+                metrics_event_id = await _record_llm_metrics(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    model=response.model,
+                    metrics=prompt_metrics,
+                    request_kind=request_kind,
+                )
+                await _record_llm_visible_output(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    source_event_id=metrics_event_id,
+                    request_kind=request_kind,
+                    response=response,
+                    streamed_visible_deltas=stream_buffer,
+                )
             if response.error:
                 raise ValueError(response.error)
 
@@ -442,38 +472,53 @@ class AgentRunner:
             raise ValueError(f"Task run not found: {run_id}")
 
         metadata = _normalize_task_metadata(run.metadata_json)
-        metadata = await _restore_runtime_metadata_from_events(
+        async with _timed_agent_phase(
+            phase="continue.restore_runtime_metadata",
             conversation_id=run.conversation_id,
             run_id=run.id,
-            metadata=metadata,
-        )
+        ):
+            metadata = await _restore_runtime_metadata_from_events(
+                conversation_id=run.conversation_id,
+                run_id=run.id,
+                metadata=metadata,
+            )
         conversation = await conversation_store.get_conversation(run.conversation_id)
         if conversation is None or not conversation.workspace_path:
             raise ValueError(f"Conversation not found for task run: {run_id}")
 
         checkpoint_state = _build_metadata_checkpoint_state(metadata)
-        context = _build_context(run.conversation_id, run.id, conversation.workspace_path, metadata)
-        if not metadata.get("started_event_recorded"):
-            await conversation_store.append_event(
-                run.conversation_id,
-                run_id=run.id,
-                actor_kind="task",
-                event_type="agent.run.started",
-                payload_json={
-                    "title": metadata.get("title"),
-                    "goal": metadata.get("goal"),
-                    "workspace_path": conversation.workspace_path,
-                    "allowed_roots": metadata.get("allowed_roots", []),
-                    "write_roots": metadata.get("write_roots", []),
-                    "app": (metadata.get("payload") or {}).get("app") if isinstance(metadata.get("payload"), dict) else None,
-                },
-            )
-            metadata["started_event_recorded"] = True
+        async with _timed_agent_phase(
+            phase="continue.build_context",
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+        ):
+            context = _build_context(run.conversation_id, run.id, conversation.workspace_path, metadata)
+        async with _timed_agent_phase(
+            phase="continue.resume_setup",
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+        ):
+            if not metadata.get("started_event_recorded"):
+                await conversation_store.append_event(
+                    run.conversation_id,
+                    run_id=run.id,
+                    actor_kind="task",
+                    event_type="agent.run.started",
+                    payload_json={
+                        "title": metadata.get("title"),
+                        "goal": metadata.get("goal"),
+                        "workspace_path": conversation.workspace_path,
+                        "allowed_roots": metadata.get("allowed_roots", []),
+                        "write_roots": metadata.get("write_roots", []),
+                        "app": (metadata.get("payload") or {}).get("app") if isinstance(metadata.get("payload"), dict) else None,
+                    },
+                )
+                metadata["started_event_recorded"] = True
 
-        metadata["task_status"] = "running"
-        metadata["current_action"] = metadata.get("current_action") or "Planning next step"
-        await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state, force=True)
-        await conversation_store.update_run_status(run.id, status="running", error=None, finished_at=None)
+            metadata["task_status"] = "running"
+            metadata["current_action"] = metadata.get("current_action") or "Planning next step"
+            await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state, force=True)
+            await conversation_store.update_run_status(run.id, status="running", error=None, finished_at=None)
 
         try:
             while True:
@@ -525,23 +570,38 @@ class AgentRunner:
                     )
                     return
 
-                action = await self._request_native_turn(
-                    metadata=metadata,
-                    context=context,
+                async with _timed_agent_phase(
+                    phase="native_turn.total",
                     conversation_id=run.conversation_id,
                     run_id=run.id,
-                    plan_required=False,
-                    step_number=current_step + 1,
-                    stream_callback=stream_callback,
-                )
-                presentation = await _build_step_presentation(
+                    step=current_step + 1,
+                ) as turn_timing:
+                    action = await self._request_native_turn(
+                        metadata=metadata,
+                        context=context,
+                        conversation_id=run.conversation_id,
+                        run_id=run.id,
+                        plan_required=False,
+                        step_number=current_step + 1,
+                        stream_callback=stream_callback,
+                    )
+                    turn_timing.details["action_kind"] = str(action.get("kind") or "").strip()
+                    turn_timing.details["tool"] = str(action.get("tool") or "").strip() or None
+                async with _timed_agent_phase(
+                    phase="step.presentation",
                     conversation_id=run.conversation_id,
                     run_id=run.id,
-                    metadata=metadata,
-                    action=action,
-                    step_number=current_step + 1,
-                    chat_completion_fn=chat_completion,
-                )
+                    step=current_step + 1,
+                    action_kind=str(action.get("kind") or "").strip(),
+                ):
+                    presentation = await _build_step_presentation(
+                        conversation_id=run.conversation_id,
+                        run_id=run.id,
+                        metadata=metadata,
+                        action=action,
+                        step_number=current_step + 1,
+                        chat_completion_fn=chat_completion,
+                    )
                 if presentation.progress_summary:
                     metadata["current_action"] = presentation.progress_summary
                     await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state)

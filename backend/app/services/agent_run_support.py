@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
@@ -31,6 +33,7 @@ AGENT_PROGRESS_SUMMARY_MAX_TOKENS = 192
 AGENT_METADATA_CHECKPOINT_INTERVAL_SECONDS = 5
 AGENT_METADATA_CHECKPOINT_STEP_INTERVAL = 10
 AgentStreamCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+timing_logger = logging.getLogger("app.agent_timing")
 
 
 @dataclass(slots=True)
@@ -45,12 +48,66 @@ class AgentMetadataCheckpointState:
     last_persisted_at: datetime
 
 
+@dataclass
+class AgentTimingScope:
+    phase: str
+    conversation_id: str
+    run_id: str
+    step: int | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+    started_at: datetime = field(init=False)
+    started_perf_counter: float = field(init=False, repr=False)
+
+    async def __aenter__(self) -> AgentTimingScope:
+        self.started_at = _utc_now()
+        self.started_perf_counter = perf_counter()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        finished_at = _utc_now()
+        payload: dict[str, Any] = {
+            "phase": self.phase,
+            "conversation_id": self.conversation_id,
+            "run_id": self.run_id,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_ms": round((perf_counter() - self.started_perf_counter) * 1000, 3),
+            "status": "error" if exc is not None else "ok",
+        }
+        if self.step is not None:
+            payload["step"] = self.step
+        for key, value in self.details.items():
+            if value is not None:
+                payload[key] = value
+        if exc is not None:
+            payload["error"] = str(exc)
+        timing_logger.info("agent_timing %s", json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str))
+        return False
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _iso_now() -> str:
     return _utc_now().isoformat()
+
+
+def _timed_agent_phase(
+    *,
+    phase: str,
+    conversation_id: str,
+    run_id: str,
+    step: int | None = None,
+    **details: Any,
+) -> AgentTimingScope:
+    return AgentTimingScope(
+        phase=phase,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        step=step,
+        details=details,
+    )
 
 
 def _parse_metadata_timestamp(value: Any) -> datetime | None:
@@ -325,15 +382,24 @@ async def _generate_progress_summary(
         PromptSegment(role="system", text=system_prompt, cache_candidate=True, stable=True),
         PromptSegment(role="user", text=user_prompt),
     ]
-    response = await chat_completion_fn(
-        [Message(role="system", content=system_prompt), Message(role="user", content=user_prompt)],
-        model,
-        temperature=0.1,
-        max_tokens=AGENT_PROGRESS_SUMMARY_MAX_TOKENS,
-        session_id=f"task:{conversation_id}:progress:{step_number}",
-        prompt_segments=prompt_segments,
-        request_overrides=summary_request_overrides(model),
-    )
+    async with _timed_agent_phase(
+        phase="progress_summary.model_call",
+        conversation_id=conversation_id,
+        run_id=run_id,
+        step=step_number,
+        model=model,
+    ) as timing:
+        response = await chat_completion_fn(
+            [Message(role="system", content=system_prompt), Message(role="user", content=user_prompt)],
+            model,
+            temperature=0.1,
+            max_tokens=AGENT_PROGRESS_SUMMARY_MAX_TOKENS,
+            session_id=f"task:{conversation_id}:progress:{step_number}",
+            prompt_segments=prompt_segments,
+            request_overrides=summary_request_overrides(model),
+        )
+        timing.details["response_model"] = getattr(response, "model", model)
+        timing.details["finish_reason"] = getattr(response, "finish_reason", None)
     prompt_metrics = ensure_prompt_metrics(
         messages=[Message(role="system", content=system_prompt), Message(role="user", content=user_prompt)],
         model=response.model,
@@ -342,20 +408,28 @@ async def _generate_progress_summary(
         prompt_metrics=getattr(response, "prompt_metrics", None),
         rendered_messages=render_prompt_segments(prompt_segments, response.model),
     )
-    metrics_event_id = await _record_llm_metrics(
+    async with _timed_agent_phase(
+        phase="progress_summary.persist_output",
         conversation_id=conversation_id,
         run_id=run_id,
+        step=step_number,
+        request_kind="task.agent.progress.summary",
         model=response.model,
-        metrics=prompt_metrics,
-        request_kind="task.agent.progress.summary",
-    )
-    await _record_llm_visible_output(
-        conversation_id=conversation_id,
-        run_id=run_id,
-        source_event_id=metrics_event_id,
-        request_kind="task.agent.progress.summary",
-        response=response,
-    )
+    ):
+        metrics_event_id = await _record_llm_metrics(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            model=response.model,
+            metrics=prompt_metrics,
+            request_kind="task.agent.progress.summary",
+        )
+        await _record_llm_visible_output(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            source_event_id=metrics_event_id,
+            request_kind="task.agent.progress.summary",
+            response=response,
+        )
     if response.error:
         return default_summary
     if str(getattr(response, "finish_reason", "") or "").strip().lower() == "length":
@@ -586,15 +660,31 @@ async def _handle_tool_action(
     metadata["updated_at"] = _iso_now()
 
     try:
-        result = await tool_executor(context=context, tool=tool_name, arguments=arguments)
+        async with _timed_agent_phase(
+            phase="tool.execute",
+            conversation_id=conversation_id,
+            run_id=run_id,
+            step=next_step,
+            tool=tool_name,
+        ) as timing:
+            result = await tool_executor(context=context, tool=tool_name, arguments=arguments)
+            timing.details["has_metadata"] = bool(result.metadata)
+            timing.details["output_chars"] = len(result.output or "")
         if tool_name == "app_initialize":
-            await _apply_app_initialize_result(
+            async with _timed_agent_phase(
+                phase="tool.apply_app_initialize",
                 conversation_id=conversation_id,
                 run_id=run_id,
-                metadata=metadata,
-                context=context,
-                tool_metadata=result.metadata,
-            )
+                step=next_step,
+                tool=tool_name,
+            ):
+                await _apply_app_initialize_result(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    metadata=metadata,
+                    context=context,
+                    tool_metadata=result.metadata,
+                )
         snippet = _result_snippet(tool_name, result.output, result.metadata)
         history_entry = {
             "kind": "tool",
@@ -611,20 +701,29 @@ async def _handle_tool_action(
         metadata["current_action"] = f"Completed {tool_name}"
         metadata["updated_at"] = _iso_now()
         should_persist_metadata = checkpoint_state is None or tool_name == "app_initialize" or _should_checkpoint_run_metadata(metadata, checkpoint_state)
-        persisted_tool_result = await conversation_store.record_agent_tool_result(
-            conversation_id,
+        async with _timed_agent_phase(
+            phase="tool.persist",
+            conversation_id=conversation_id,
             run_id=run_id,
             step=next_step,
-            tool_name=tool_name,
-            arguments=arguments,
+            tool=tool_name,
             ok=True,
-            output=snippet,
-            result_metadata=result.metadata,
-            artifact_type=f"agent.tool.{tool_name}.output",
-            artifact_content_text=result.output,
-            artifact_content_json={"metadata": result.metadata},
-            run_metadata_json=_serialize_agent_metadata(metadata) if should_persist_metadata else None,
-        )
+            persist_metadata=should_persist_metadata,
+        ):
+            persisted_tool_result = await conversation_store.record_agent_tool_result(
+                conversation_id,
+                run_id=run_id,
+                step=next_step,
+                tool_name=tool_name,
+                arguments=arguments,
+                ok=True,
+                output=snippet,
+                result_metadata=result.metadata,
+                artifact_type=f"agent.tool.{tool_name}.output",
+                artifact_content_text=result.output,
+                artifact_content_json={"metadata": result.metadata},
+                run_metadata_json=_serialize_agent_metadata(metadata) if should_persist_metadata else None,
+            )
         if should_persist_metadata and checkpoint_state is not None:
             _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
         history_entry["artifact_id"] = persisted_tool_result.artifact.id if persisted_tool_result.artifact is not None else None
@@ -644,16 +743,25 @@ async def _handle_tool_action(
         metadata["task_status"] = "running"
         metadata["current_action"] = f"Tool failed: {tool_name}"
         metadata["updated_at"] = _iso_now()
-        await conversation_store.record_agent_tool_result(
-            conversation_id,
+        async with _timed_agent_phase(
+            phase="tool.persist",
+            conversation_id=conversation_id,
             run_id=run_id,
             step=next_step,
-            tool_name=tool_name,
-            arguments=arguments,
+            tool=tool_name,
             ok=False,
-            error=error_text,
-            run_metadata_json=_serialize_agent_metadata(metadata),
-        )
+            persist_metadata=True,
+        ):
+            await conversation_store.record_agent_tool_result(
+                conversation_id,
+                run_id=run_id,
+                step=next_step,
+                tool_name=tool_name,
+                arguments=arguments,
+                ok=False,
+                error=error_text,
+                run_metadata_json=_serialize_agent_metadata(metadata),
+            )
         if checkpoint_state is not None:
             _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
     return metadata
