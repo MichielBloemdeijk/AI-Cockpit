@@ -12,6 +12,37 @@ import {
 describe("login", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("uses the same-origin api path in development without an explicit override", async () => {
+    vi.resetModules();
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubGlobal("window", {
+      location: {
+        protocol: "http:",
+        hostname: "ai-cockpit.tail1234.ts.net",
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+      } satisfies Partial<Response>),
+    );
+
+    const { login: developmentLogin } = await import("./api");
+
+    await developmentLogin("anything");
+
+    expect(fetch).toHaveBeenCalledWith("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ password: "anything" }),
+    });
   });
 
   it("throws a backend-unreachable message for network failures", async () => {

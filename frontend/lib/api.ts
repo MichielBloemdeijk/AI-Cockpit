@@ -8,10 +8,6 @@ function resolveApiBase(): string {
     return process.env.NEXT_PUBLIC_API_URL;
   }
 
-  if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
-    return `${window.location.protocol}//${window.location.hostname}:8000`;
-  }
-
   return "";
 }
 
@@ -173,9 +169,21 @@ export interface ConversationEventView {
 }
 
 export interface AgentStreamUpdate {
-  kind: "thought_delta" | "thought_done" | "progress";
+  kind:
+    | "thought_delta"
+    | "thought_done"
+    | "text_delta"
+    | "text_done"
+    | "summary_delta"
+    | "summary_done"
+    | "tool_started"
+    | "tool_progress"
+    | "tool_done"
+    | "progress";
   run_id: string;
   step: number;
+  tool?: string;
+  ok?: boolean;
   delta?: string;
   content?: string;
 }
