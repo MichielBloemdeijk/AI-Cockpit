@@ -534,12 +534,9 @@ def supports_native_tool_calls(model: str) -> bool:
 def native_agent_request_overrides(model: str) -> dict[str, Any] | None:
     normalized = str(model or "").strip().lower()
     overrides: dict[str, Any] = {"parallel_tool_calls": False}
-    if normalized.startswith("anthropic/"):
-        overrides["reasoning"] = {"max_tokens": 1024}
-    elif normalized.startswith("google/"):
-        overrides["reasoning"] = {"effort": "low", "exclude": False}
-    elif normalized.startswith("moonshotai/kimi-k2.6"):
-        overrides["reasoning"] = {"enabled": True, "exclude": False}
+    if normalized.startswith(("anthropic/", "google/", "moonshotai/", "openai/", "x-ai/")):
+        overrides["reasoning"] = {"exclude": True, "effort": "none"}
+    if normalized.startswith("moonshotai/kimi-k2.6"):
         overrides["provider"] = {
             "require_parameters": True,
             "sort": "throughput",
@@ -783,11 +780,33 @@ def _append_reasoning_detail_blocks(
     return observed, text_deltas
 
 
-def _collect_stream_tool_calls(tool_call_state: list[dict[str, Any]], delta_tool_calls: Any) -> bool:
+def _materialize_stream_tool_call(raw_call: dict[str, Any]) -> ToolCall | None:
+    if not isinstance(raw_call, dict):
+        return None
+    function = raw_call.get("function")
+    if not isinstance(function, dict):
+        return None
+    name = str(function.get("name") or "").strip()
+    if not name:
+        return None
+    arguments = function.get("arguments")
+    rendered_arguments = arguments if isinstance(arguments, str) else ""
+    return ToolCall(
+        id=str(raw_call.get("id") or "").strip() or None,
+        type=str(raw_call.get("type") or "function"),
+        function=ToolCallFunction(name=name, arguments=rendered_arguments),
+    )
+
+
+def _collect_stream_tool_calls(
+    tool_call_state: list[dict[str, Any]],
+    delta_tool_calls: Any,
+) -> tuple[bool, list[ToolCall]]:
     if not isinstance(delta_tool_calls, list):
-        return False
+        return False, []
 
     observed = False
+    updated_calls: list[ToolCall] = []
     for raw_call in delta_tool_calls:
         if not isinstance(raw_call, dict):
             continue
@@ -819,29 +838,18 @@ def _collect_stream_tool_calls(tool_call_state: list[dict[str, Any]], delta_tool
             state_function["arguments"] = str(state_function.get("arguments") or "") + arguments
             observed = True
         tool_call_state[index] = state
-    return observed
+        partial_call = _materialize_stream_tool_call(state)
+        if partial_call is not None:
+            updated_calls.append(partial_call)
+    return observed, updated_calls
 
 
 def _materialize_stream_tool_calls(tool_call_state: list[dict[str, Any]]) -> list[ToolCall]:
     tool_calls: list[ToolCall] = []
     for raw_call in tool_call_state:
-        if not isinstance(raw_call, dict):
-            continue
-        function = raw_call.get("function")
-        if not isinstance(function, dict):
-            continue
-        name = str(function.get("name") or "").strip()
-        if not name:
-            continue
-        arguments = function.get("arguments")
-        rendered_arguments = arguments if isinstance(arguments, str) else ""
-        tool_calls.append(
-            ToolCall(
-                id=str(raw_call.get("id") or "").strip() or None,
-                type=str(raw_call.get("type") or "function"),
-                function=ToolCallFunction(name=name, arguments=rendered_arguments),
-            )
-        )
+        partial_call = _materialize_stream_tool_call(raw_call)
+        if partial_call is not None:
+            tool_calls.append(partial_call)
     return tool_calls
 
 
@@ -1000,6 +1008,7 @@ async def chat_completion_stream_response(
     request_overrides: dict[str, Any] | None = None,
     on_content_delta: Callable[[str], Awaitable[None] | None] | None = None,
     on_reasoning_delta: Callable[[str], Awaitable[None] | None] | None = None,
+    on_tool_call_delta: Callable[[ToolCall], Awaitable[None] | None] | None = None,
 ) -> ModelResponse:
     """Streaming chat completion parsed back into a full ModelResponse."""
     cache_policy = resolve_prompt_cache_policy(model)
@@ -1061,8 +1070,17 @@ async def chat_completion_stream_response(
                                     maybe_awaitable = on_content_delta(content_delta)
                                     if inspect.isawaitable(maybe_awaitable):
                                         await maybe_awaitable
-                            if _collect_stream_tool_calls(tool_call_state, delta.get("tool_calls")):
+                            tool_calls_observed, streamed_tool_calls = _collect_stream_tool_calls(
+                                tool_call_state,
+                                delta.get("tool_calls"),
+                            )
+                            if tool_calls_observed:
                                 observed_any = True
+                            for streamed_tool_call in streamed_tool_calls:
+                                if on_tool_call_delta is not None:
+                                    maybe_awaitable = on_tool_call_delta(streamed_tool_call)
+                                    if inspect.isawaitable(maybe_awaitable):
+                                        await maybe_awaitable
                         if isinstance(choice, dict):
                             raw_finish_reason = choice.get("finish_reason")
                             if isinstance(raw_finish_reason, str) and raw_finish_reason:
@@ -1116,9 +1134,12 @@ async def chat_completion_stream_response(
                     logger.warning("Retrying streaming response HTTP error %s for model %s", e.response.status_code, model)
                     await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
-                logger.error("OpenRouter streaming response HTTP error %s: %s", e.response.status_code, e.response.text)
                 error_text = str(e)
-                response_text = (e.response.text or "").strip()
+                try:
+                    response_text = (await e.response.aread()).decode("utf-8", errors="replace").strip()
+                except Exception:
+                    response_text = _safe_response_text(e.response).strip()
+                logger.error("OpenRouter streaming response HTTP error %s: %s", e.response.status_code, response_text)
                 if response_text:
                     error_text = f"{error_text}: {response_text}"
                 return ModelResponse(

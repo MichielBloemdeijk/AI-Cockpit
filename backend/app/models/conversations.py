@@ -46,6 +46,7 @@ class ConversationDetail(ConversationSummary):
     active_branch_key: str = "main"
     branches: list[ConversationBranchView] = Field(default_factory=list)
     workspace: ConversationWorkspaceView | None = None
+    active_run: ActiveRunView | None = None
 
 
 class ConversationMessageView(BaseModel):
@@ -84,11 +85,45 @@ class ConversationArtifactView(BaseModel):
     created_at: datetime
 
 
+class TimelineSectionView(BaseModel):
+    title: str
+    items: list[str] = Field(default_factory=list)
+
+
+class TimelineItemView(BaseModel):
+    item_id: str
+    run_id: str | None = None
+    sequence: int
+    role: str
+    kind: str
+    content: str
+    title: str | None = None
+    label: str | None = None
+    tone: str | None = None
+    status: str | None = None
+    step: int | None = None
+    tool_name: str | None = None
+    badges: list[str] = Field(default_factory=list)
+    code: str | None = None
+    sections: list[TimelineSectionView] = Field(default_factory=list)
+    metadata: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ActiveRunView(BaseModel):
+    run_id: str
+    status: str
+    latest_sequence: int = 0
+    live_item: TimelineItemView | None = None
+
+
 class ConversationEventsResponse(BaseModel):
     conversation_id: str
     active_branch_key: str = "main"
     events: list[ConversationEventView] = Field(default_factory=list)
     artifacts: list[ConversationArtifactView] = Field(default_factory=list)
+    timeline_items: list[TimelineItemView] = Field(default_factory=list)
+    active_run: ActiveRunView | None = None
 
 
 class ConversationCreateRequest(BaseModel):

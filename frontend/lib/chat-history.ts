@@ -269,8 +269,22 @@ function buildEventTimelineEntries(events: ConversationEventView[]): TimelineEnt
           role: "assistant",
           kind: "thought",
           label: "Thinking",
-          title: step ? `Step ${step}` : "Thinking",
+          title: "Thinking",
           content: thought,
+          tone: "default",
+        });
+        return;
+      }
+      case "agent.text.output": {
+        const content = typeof payload?.text === "string" ? payload.text.trim() : "";
+        if (!content || isLowSignalToolIntentSummary(content)) {
+          return;
+        }
+        pushEntry({
+          id: `event:${event.id}`,
+          role: "assistant",
+          kind: "message",
+          content,
           tone: "default",
         });
         return;
@@ -286,7 +300,7 @@ function buildEventTimelineEntries(events: ConversationEventView[]): TimelineEnt
             role: "assistant",
             kind: "status",
             label: "Progress",
-            title: step ? `Step ${step}` : "Progress",
+            title: "Progress",
             content: summary,
             tone: "info",
           });
@@ -519,7 +533,21 @@ export function mapConversationMessages(
 
   const eventEntries = buildEventTimelineEntries(events);
 
-  return [...messageEntries, ...eventEntries]
+  const persistedAssistantMessageKeys = new Set(
+    messageEntries
+      .filter((entry) => entry.role === "assistant" && entry.kind === "message" && entry.content)
+      .map((entry) => `${entry.runId ?? ""}::${entry.content}`),
+  );
+
+  return [
+    ...messageEntries,
+    ...eventEntries.filter((entry) => {
+      if (entry.role !== "assistant" || entry.kind !== "message" || !entry.content) {
+        return true;
+      }
+      return !persistedAssistantMessageKeys.has(`${entry.runId ?? ""}::${entry.content}`);
+    }),
+  ]
     .sort((left, right) => {
       if (left.sortTime !== right.sortTime) {
         return left.sortTime - right.sortTime;

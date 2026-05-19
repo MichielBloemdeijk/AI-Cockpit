@@ -100,11 +100,156 @@ def _native_plan_tool_definition() -> dict[str, Any]:
     }
 
 
-def _parse_native_tool_arguments(raw_arguments: str) -> dict[str, Any]:
+def _extract_string_field(raw_arguments: str, field_name: str) -> str | None:
+    marker = f'"{field_name}"'
+    start = raw_arguments.find(marker)
+    if start < 0:
+        return None
+    colon = raw_arguments.find(":", start + len(marker))
+    if colon < 0:
+        return None
+    index = colon + 1
+    while index < len(raw_arguments) and raw_arguments[index].isspace():
+        index += 1
+    if index >= len(raw_arguments) or raw_arguments[index] != '"':
+        return None
+    index += 1
+    value_chars: list[str] = []
+    escaped = False
+    escape_map = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while index < len(raw_arguments):
+        char = raw_arguments[index]
+        if escaped:
+            value_chars.append(escape_map.get(char, char))
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            return "".join(value_chars)
+        value_chars.append(char)
+        index += 1
+    return "".join(value_chars)
+
+
+def _extract_json_string_at(raw_arguments: str, start_index: int) -> tuple[str | None, int]:
+    if start_index >= len(raw_arguments) or raw_arguments[start_index] != '"':
+        return None, start_index
+    index = start_index + 1
+    value_chars: list[str] = []
+    escaped = False
+    escape_map = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while index < len(raw_arguments):
+        char = raw_arguments[index]
+        if escaped:
+            value_chars.append(escape_map.get(char, char))
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            return "".join(value_chars), index + 1
+        value_chars.append(char)
+        index += 1
+    return "".join(value_chars), index
+
+
+def _extract_string_array_field(raw_arguments: str, field_name: str) -> list[str]:
+    marker = f'"{field_name}"'
+    start = raw_arguments.find(marker)
+    if start < 0:
+        return []
+    colon = raw_arguments.find(":", start + len(marker))
+    if colon < 0:
+        return []
+    index = colon + 1
+    while index < len(raw_arguments) and raw_arguments[index].isspace():
+        index += 1
+    if index >= len(raw_arguments) or raw_arguments[index] != "[":
+        return []
+    index += 1
+    items: list[str] = []
+    while index < len(raw_arguments):
+        char = raw_arguments[index]
+        if char == "]":
+            break
+        if char == '"':
+            item, next_index = _extract_json_string_at(raw_arguments, index)
+            if item is not None:
+                items.append(item)
+                index = next_index
+                continue
+        index += 1
+    return [item for item in items if item.strip()]
+
+
+def _repair_native_plan_arguments(raw_arguments: str) -> dict[str, Any] | None:
+    summary = _extract_string_field(raw_arguments, "summary")
+    steps = _extract_string_array_field(raw_arguments, "steps")
+    open_questions = _extract_string_array_field(raw_arguments, "open_questions")
+    assumptions = _extract_string_array_field(raw_arguments, "assumptions")
+    if not summary and not steps and not open_questions and not assumptions:
+        return None
+    return {
+        "summary": summary or "Plan ready",
+        "steps": steps,
+        "open_questions": open_questions,
+        "assumptions": assumptions,
+    }
+
+
+def _repair_native_control_tool_arguments(raw_arguments: str, tool_name: str) -> dict[str, Any] | None:
+    if tool_name == NATIVE_AGENT_PLAN_TOOL:
+        return _repair_native_plan_arguments(raw_arguments)
+    if tool_name == NATIVE_AGENT_ASK_USER_TOOL:
+        question = _extract_string_field(raw_arguments, "question")
+        if question:
+            return {"question": question}
+        return None
+    if tool_name == NATIVE_AGENT_FINALIZE_TOOL:
+        summary = _extract_string_field(raw_arguments, "summary")
+        result = _extract_string_field(raw_arguments, "result")
+        if summary or result:
+            return {"summary": summary or "", "result": result or ""}
+        return None
+    return None
+
+
+def _parse_native_tool_arguments(raw_arguments: str, *, tool_name: str | None = None) -> dict[str, Any]:
     normalized = str(raw_arguments or "").strip()
     if not normalized:
         return {}
-    parsed = json.loads(normalized)
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError:
+        repaired = _repair_native_control_tool_arguments(normalized, str(tool_name or "").strip())
+        if repaired is None:
+            raise
+        parsed = repaired
     if not isinstance(parsed, dict):
         raise ValueError("Native tool arguments must decode to a JSON object")
     return parsed
@@ -408,7 +553,11 @@ def _fallback_progress_summary(action: dict[str, Any]) -> str:
         return f"Searching for {query}" if query else "Searching the workspace"
     if tool_name == "file_write":
         path = _compact_path_label(str(arguments.get("path") or ""))
-        return f"Updating {path}" if path else "Updating a file"
+        content = str(arguments.get("content") or "")
+        line_count = len(content.splitlines()) if content else 0
+        if path and line_count > 0:
+            return f"Preparing to write {path} ({line_count} lines)"
+        return f"Preparing to write {path}" if path else "Preparing to write a file"
     if tool_name == "shell_command":
         command = str(arguments.get("command") or "").strip()
         return f"Running {command}" if command else "Running a command"
@@ -474,6 +623,11 @@ def _native_retry_feedback(
             return f"{base} Previous invalid arguments: {arguments_preview}"
         return base
     if tool_call_count is not None:
+        if tool_call_count == 0:
+            return (
+                "Your previous response was invalid because it produced zero tool calls. "
+                "A native tool call is required now. Retry immediately by returning exactly one tool call and no plain-text-only response."
+            )
         return (
             f"Your previous response was invalid because it produced {tool_call_count} tool calls. "
             "Retry by making exactly one tool call."

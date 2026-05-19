@@ -107,6 +107,12 @@ async def test_initial_message_persists_user_and_assistant_message(monkeypatch):
         assert isinstance(messages[1]["content"], str)
         assert messages[1]["content"]
 
+        events = await client.get(f"/api/conversations/{conversation_id}/events")
+        assert events.status_code == 200
+        timeline_items = events.json()["timeline_items"]
+        assert [item["content"] for item in timeline_items] == ["first durable turn", messages[1]["content"]]
+        assert events.json()["active_run"] is None
+
 @pytest.mark.asyncio
 async def test_single_model_stream_returns_done_and_persists_assistant_message(monkeypatch):
     responses = ["Plan stream response.", "Streamed response complete."]
@@ -147,6 +153,42 @@ async def test_single_model_stream_returns_done_and_persists_assistant_message(m
         detail = await client.get(f"/api/conversations/{conversation_id}")
         assert detail.status_code == 200
         assert any(message["role"] == "assistant" and message["content"] for message in detail.json()["messages"])
+
+
+@pytest.mark.asyncio
+async def test_conversation_events_expose_active_run_live_item_snapshot():
+    conversation = await conversation_store.create_conversation(mode_hint="single")
+    run = await conversation_store.start_run(
+        conversation.id,
+        kind="assistant",
+        metadata_json={
+            "branch_key": "main",
+            "live_item": {
+                "item_id": "tool:run-1:1:file_read",
+                "role": "assistant",
+                "kind": "tool_call",
+                "title": "file read",
+                "label": "Tool call",
+                "content": "Preparing to read hooks.ts",
+                "status": "streaming",
+                "sequence": 1,
+                "created_at": "2026-05-19T00:00:00Z",
+            },
+        },
+    )
+    await conversation_store.update_run_status(run.id, status="running", error=None, finished_at=None)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": "dev"})
+        response = await client.get(f"/api/conversations/{conversation.id}/events")
+
+    assert response.status_code == 200
+    active_run = response.json()["active_run"]
+    assert active_run["run_id"] == run.id
+    assert active_run["status"] == "running"
+    assert active_run["live_item"]["item_id"] == "tool:run-1:1:file_read"
+    assert active_run["live_item"]["content"] == "Preparing to read hooks.ts"
 
 @pytest.mark.asyncio
 async def test_stream_single_response_emits_metadata_before_run_completion(monkeypatch):
@@ -210,7 +252,11 @@ async def test_stream_single_response_emits_metadata_before_run_completion(monke
     assert persisted_conversation is not None
 
     progress_event = await anext(event_iterator)
-    assert progress_event["type"] == "event"
+    while not (
+        progress_event["type"] == "event"
+        and progress_event["event"]["event_type"] == "agent.plan.created"
+    ):
+        progress_event = await anext(event_iterator)
     assert progress_event["event"]["event_type"] == "agent.plan.created"
 
     gate.set()
@@ -277,9 +323,11 @@ async def test_stream_single_response_emits_transient_agent_stream_updates(monke
 
     event_iterator = envelope.events.__aiter__()
     metadata = await anext(event_iterator)
-    agent_stream_frame = await anext(event_iterator)
 
     assert metadata["type"] == "metadata"
+    agent_stream_frame = await anext(event_iterator)
+    while not (agent_stream_frame["type"] == "agent_stream" and agent_stream_frame["stream"]["kind"] == "thought_delta"):
+        agent_stream_frame = await anext(event_iterator)
     assert agent_stream_frame == {
         "type": "agent_stream",
         "stream": {
@@ -291,6 +339,8 @@ async def test_stream_single_response_emits_transient_agent_stream_updates(monke
     }
 
     progress_stream_frame = await anext(event_iterator)
+    while not (progress_stream_frame["type"] == "agent_stream" and progress_stream_frame["stream"]["kind"] == "progress"):
+        progress_stream_frame = await anext(event_iterator)
     assert progress_stream_frame == {
         "type": "agent_stream",
         "stream": {

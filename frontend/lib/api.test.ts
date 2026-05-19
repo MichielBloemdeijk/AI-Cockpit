@@ -17,13 +17,14 @@ describe("login", () => {
     vi.resetModules();
   });
 
-  it("uses the same-origin api path in development without an explicit override", async () => {
+  it("uses the backend origin directly in development without an explicit override", async () => {
     vi.resetModules();
     vi.stubEnv("NODE_ENV", "development");
     vi.stubGlobal("window", {
       location: {
         protocol: "http:",
         hostname: "ai-cockpit.tail1234.ts.net",
+        port: "3000",
       },
     });
     vi.stubGlobal(
@@ -37,7 +38,7 @@ describe("login", () => {
 
     await developmentLogin("anything");
 
-    expect(fetch).toHaveBeenCalledWith("/api/auth/login", {
+    expect(fetch).toHaveBeenCalledWith("http://ai-cockpit.tail1234.ts.net:8000/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -195,14 +196,17 @@ describe("streamChat", () => {
       ok: true,
       body: {
         getReader: () => ({
-          read: vi.fn(async () => {
+          closed: Promise.resolve(undefined),
+          cancel: vi.fn(async () => undefined),
+          read: vi.fn(async (): Promise<ReadableStreamReadResult<Uint8Array<ArrayBuffer>>> => {
             if (index >= frames.length) {
               return { done: true, value: undefined };
             }
-            const value = encoder.encode(frames[index]);
+            const value = encoder.encode(frames[index]) as Uint8Array<ArrayBuffer>;
             index += 1;
             return { done: false, value };
           }),
+          releaseLock: vi.fn(),
         }),
       },
     } satisfies Partial<Response>);

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
@@ -8,6 +9,7 @@ from app.config import settings
 
 
 MAX_TOOL_OUTPUT_CHARS = 12_000
+ToolProgressCallback = Callable[[str], Awaitable[None] | None]
 
 
 @dataclass(slots=True)
@@ -26,6 +28,7 @@ class ToolExecutionContext:
     read_roots: list[Path]
     write_roots: list[Path]
     generated_app_contract_override: dict[str, str] | None = None
+    progress_callback: ToolProgressCallback | None = None
 
 
 ToolExecutor = Callable[[ToolExecutionContext, dict[str, Any]], Awaitable[ToolExecutionResult]]
@@ -190,11 +193,24 @@ def _truncate_output(value: str) -> str:
     return value[:MAX_TOOL_OUTPUT_CHARS] + "\n\n...[truncated]"
 
 
+async def emit_tool_progress(context: ToolExecutionContext, message: str) -> None:
+    if context.progress_callback is None:
+        return
+    rendered = str(message or "").strip()
+    if not rendered:
+        return
+    maybe_awaitable = context.progress_callback(rendered)
+    if inspect.isawaitable(maybe_awaitable):
+        await maybe_awaitable
+
+
 __all__ = [
     "AgentTool",
     "ToolExecutionContext",
+    "ToolProgressCallback",
     "ToolExecutionResult",
     "build_tool_context",
+    "emit_tool_progress",
     "_display_path",
     "_resolve_read_path",
     "_resolve_write_path",

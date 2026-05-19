@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, GitBranch, Layers3, Loader2, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import clsx from "clsx";
-import { AgentStatusCard } from "@/components/AgentStatusCard";
 import { ChatActionErrorBanner } from "@/components/chat/ChatActionErrorBanner";
 import { ConversationDetailsPanel } from "@/components/chat/ConversationDetailsPanel";
 import { ConversationListPanel } from "@/components/chat/ConversationListPanel";
@@ -30,7 +29,6 @@ export default function ChatPage() {
   const {
     messages,
     actionError,
-    agentStatus,
     conversations,
     activeConversationId,
     activeBranchKey,
@@ -172,12 +170,6 @@ export default function ChatPage() {
               {activeConversationId && hasUsageSummary && sessionCostLabel && (
                 <span className="shrink-0 whitespace-nowrap rounded-full border border-emerald-600/30 bg-emerald-600/15 px-2 py-0.5 text-[11px] text-emerald-300 md:text-xs">
                   Session · {sessionCostLabel} credits
-                </span>
-              )}
-              {agentStatus && (
-                <span className="hidden shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-200 md:inline-flex">
-                  {agentStatus.active && <Loader2 size={11} className="animate-spin" />}
-                  {agentStatus.title}
                 </span>
               )}
             </div>
@@ -407,7 +399,6 @@ export default function ChatPage() {
                 />
               )}
               {actionError && <ChatActionErrorBanner error={actionError} onDismiss={clearActionError} />}
-              {agentStatus && <AgentStatusCard status={agentStatus} />}
               {messages.map((msg) => (
                 <ChatMessage
                   key={msg.id}

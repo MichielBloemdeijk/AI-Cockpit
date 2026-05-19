@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Blocks, ExternalLink, FileCode2, FolderTree, Route, ShieldCheck } from "lucide-react";
 import { GeneratedAppDetail, getGeneratedAppBySlug } from "@/lib/api";
@@ -21,6 +20,11 @@ function statusClasses(status: string): string {
   }
 }
 
+function navigationType(): string | null {
+  const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+  return entry?.type ?? null;
+}
+
 export default function GeneratedAppPage({ params }: { params: Promise<{ slug: string }> }) {
   const [app, setApp] = useState<GeneratedAppDetail | null>(null);
   const [slug, setSlug] = useState("");
@@ -28,6 +32,11 @@ export default function GeneratedAppPage({ params }: { params: Promise<{ slug: s
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (navigationType() === "back_forward") {
+      window.location.reload();
+      return;
+    }
+
     let active = true;
     const load = async () => {
       try {
@@ -52,17 +61,43 @@ export default function GeneratedAppPage({ params }: { params: Promise<{ slug: s
     };
   }, [params]);
 
-  if (loading) {
+  useEffect(() => {
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        window.location.reload();
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      void (async () => {
+        const resolved = await params;
+        setSlug(resolved.slug);
+        const detail = await getGeneratedAppBySlug(resolved.slug);
+        setApp(detail);
+        setLoading(false);
+      })().catch((nextError) => {
+        setError(nextError instanceof Error ? nextError.message : "Failed to load app.");
+        setLoading(false);
+      });
+    };
+
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("pageshow", handlePageShow);
+    };
+  }, [params]);
+
+  if (loading && !app) {
     return <div className="p-6 text-sm text-zinc-500">Loading app surface...</div>;
   }
 
-  if (error || !app) {
+  if ((error && !app) || !app) {
     return (
       <div className="p-6">
-        <Link href="/workspace/apps" className="mb-4 inline-flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-200">
+        <a href="/workspace/apps" className="mb-4 inline-flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-200">
           <ArrowLeft size={14} />
           Back to apps
-        </Link>
+        </a>
         <div className="rounded-3xl border border-rose-500/30 bg-rose-500/10 p-5 text-sm text-rose-200">
           {error || `App '${slug}' was not found.`}
         </div>
@@ -74,14 +109,14 @@ export default function GeneratedAppPage({ params }: { params: Promise<{ slug: s
     <div className="flex h-full flex-col overflow-y-auto">
       <div className="border-b border-zinc-800 bg-zinc-900/90 px-4 py-4">
         <div className="flex flex-wrap items-center gap-3">
-          <Link href="/workspace/apps" className="inline-flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-200">
+          <a href="/workspace/apps" className="inline-flex items-center gap-2 text-sm text-zinc-400 transition-colors hover:text-zinc-200">
             <ArrowLeft size={14} />
             Back to apps
-          </Link>
-          <Link href={`/apps/${app.slug}`} className="inline-flex items-center gap-2 text-sm text-blue-300 transition-colors hover:text-blue-200">
+          </a>
+          <a href={`/apps/${app.slug}`} className="inline-flex items-center gap-2 text-sm text-blue-300 transition-colors hover:text-blue-200">
             Open live surface
             <ExternalLink size={14} />
-          </Link>
+          </a>
         </div>
         <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models.conversations import (
+    ActiveRunView,
     ConversationArtifactView,
     ConversationBranchView,
     ConversationDetail,
@@ -8,6 +9,7 @@ from app.models.conversations import (
     ConversationEventsResponse,
     ConversationMessageView,
     ConversationSummary,
+    TimelineItemView,
     ConversationWorkspaceView,
     MemoryItemView,
     WorkspaceFileView,
@@ -112,6 +114,16 @@ def present_conversation_workspace(path: str, files: list[dict[str, str | int | 
     )
 
 
+def present_timeline_item(record: dict) -> TimelineItemView:
+    return TimelineItemView.model_validate(record)
+
+
+def present_active_run(record: dict | None) -> ActiveRunView | None:
+    if record is None:
+        return None
+    return ActiveRunView.model_validate(record)
+
+
 def present_conversation_detail(
     summary: ConversationSummary,
     *,
@@ -120,6 +132,7 @@ def present_conversation_detail(
     workspace_path: str | None,
     workspace_files: list[dict[str, str | int | None]],
     messages: list,
+    active_run: dict | None = None,
 ) -> ConversationDetail:
     return ConversationDetail(
         **summary.model_dump(),
@@ -127,6 +140,7 @@ def present_conversation_detail(
         branches=[present_conversation_branch(branch) for branch in branches],
         workspace=None if not workspace_path else present_conversation_workspace(workspace_path, workspace_files),
         messages=[present_conversation_message(message) for message in messages],
+        active_run=present_active_run(active_run),
     )
 
 
@@ -136,10 +150,14 @@ def present_conversation_events(
     active_branch_key: str,
     events: list,
     artifacts: list,
+    timeline_items: list[dict] | None = None,
+    active_run: dict | None = None,
 ) -> ConversationEventsResponse:
     return ConversationEventsResponse(
         conversation_id=conversation_id,
         active_branch_key=active_branch_key,
         events=[present_conversation_event(event) for event in events],
         artifacts=[present_conversation_artifact(artifact) for artifact in artifacts],
+        timeline_items=[present_timeline_item(item) for item in timeline_items or []],
+        active_run=present_active_run(active_run),
     )

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Blocks, ExternalLink, Plus, RefreshCw } from "lucide-react";
 import {
@@ -25,6 +24,19 @@ function statusClasses(status: string): string {
   }
 }
 
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+}
+
+function navigationType(): string | null {
+  const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+  return entry?.type ?? null;
+}
+
 export default function AppsPage() {
   const [apps, setApps] = useState<GeneratedAppSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,7 +59,26 @@ export default function AppsPage() {
   };
 
   useEffect(() => {
+    if (navigationType() === "back_forward") {
+      window.location.reload();
+      return;
+    }
     void refresh();
+  }, []);
+
+  useEffect(() => {
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        window.location.reload();
+        return;
+      }
+      void refresh();
+    };
+
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("pageshow", handlePageShow);
+    };
   }, []);
 
   const handleCreate = async () => {
@@ -134,7 +165,7 @@ export default function AppsPage() {
 
       <div className="flex-1 overflow-y-auto p-4">
         {error ? <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-        {loading ? (
+        {loading && apps.length === 0 ? (
           <div className="py-12 text-center text-sm text-zinc-500">Loading apps...</div>
         ) : apps.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center px-8 text-center">
@@ -175,24 +206,24 @@ export default function AppsPage() {
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span>Updated</span>
-                    <span className="truncate text-zinc-300">{new Date(app.updated_at).toLocaleString()}</span>
+                    <span className="truncate text-zinc-300">{formatTimestamp(app.updated_at)}</span>
                   </div>
                 </div>
 
                 <div className="mt-4 flex gap-2">
-                  <Link
+                  <a
                     href={`/apps/${app.slug}`}
                     className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                   >
                     Open surface
                     <ExternalLink size={14} />
-                  </Link>
-                  <Link
+                  </a>
+                  <a
                     href={`/workspace/apps/${app.slug}`}
                     className="inline-flex items-center justify-center rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
                   >
                     Details
-                  </Link>
+                  </a>
                 </div>
               </article>
             ))}

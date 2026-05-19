@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict, deque
-from datetime import datetime, timezone
 import inspect
 import json
 import logging
 from typing import Any
 
-from app.config import settings
 from app.models.chat import Message
 from app.services.agent_tools import (
     ToolExecutionContext,
@@ -18,6 +15,11 @@ from app.services.agent_tools import (
 )
 from app.services.agent_metadata import (
     _normalize_task_metadata,
+)
+from app.services.agent_runner_helpers import (
+    persist_visible_text_event,
+    render_live_tool_call_preview,
+    restore_runtime_metadata_from_events,
 )
 from app.services.agent_prompt_builder import (
     NATIVE_AGENT_ASK_USER_TOOL,
@@ -42,6 +44,7 @@ from app.services.agent_run_support import (
     _build_metadata_checkpoint_state,
     _build_context,
     _build_step_presentation,
+    _clear_live_timeline_item,
     _cancel_run,
     _complete_run,
     _emit_agent_stream_update,
@@ -52,12 +55,14 @@ from app.services.agent_run_support import (
     _pause_for_question,
     _record_llm_metrics,
     _record_llm_visible_output,
+    _set_live_timeline_item,
     _timed_agent_phase,
     _update_run_metadata,
 )
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_compaction import TASK_HISTORY_SUMMARY_PREFIX, build_agent_history_context
+from app.services.conversation_timeline import build_status_timeline_item, build_timeline_item, humanize_tool_name
 from app.services.llm import (
     PromptSegment,
     chat_completion,
@@ -74,88 +79,6 @@ from app.services.llm import (
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_STEPS = 50
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def iso_now() -> str:
-    return utc_now().isoformat()
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return default
-
-
-async def _restore_runtime_metadata_from_events(
-    *,
-    conversation_id: str,
-    run_id: str,
-    metadata: dict[str, Any],
-) -> dict[str, Any]:
-    events = await conversation_store.list_events_for_run(conversation_id, run_id, limit=5000)
-    if not events:
-        return metadata
-
-    pending_tool_arguments: dict[tuple[int, str], deque[dict[str, Any]]] = defaultdict(deque)
-    restored_tool_entries: list[dict[str, Any]] = []
-    latest_completed_action: str | None = None
-    latest_completed_step = _safe_int(metadata.get("current_step"), 0)
-    started_event_recorded = bool(metadata.get("started_event_recorded"))
-
-    for event in events:
-        payload = event.payload_json if isinstance(event.payload_json, dict) else {}
-        if event.event_type == "agent.run.started":
-            started_event_recorded = True
-            continue
-        if event.event_type == "agent.tool.called":
-            step = _safe_int(payload.get("step"), 0)
-            tool_name = str(payload.get("tool") or "").strip()
-            arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
-            if step > 0 and tool_name:
-                pending_tool_arguments[(step, tool_name)].append(dict(arguments))
-            continue
-        if event.event_type != "agent.tool.completed":
-            continue
-
-        step = _safe_int(payload.get("step"), 0)
-        tool_name = str(payload.get("tool") or "").strip()
-        if step <= 0 or not tool_name:
-            continue
-        arguments_queue = pending_tool_arguments[(step, tool_name)]
-        arguments = arguments_queue.popleft() if arguments_queue else {}
-        ok = bool(payload.get("ok"))
-        entry = {
-            "kind": "tool",
-            "tool": tool_name,
-            "arguments": arguments,
-            "ok": ok,
-            "output": payload.get("output") if ok else payload.get("error"),
-        }
-        artifact_id = payload.get("artifact_id")
-        if artifact_id:
-            entry["artifact_id"] = artifact_id
-        restored_tool_entries.append(entry)
-        if step >= latest_completed_step:
-            latest_completed_step = step
-            latest_completed_action = f"Completed {tool_name}" if ok else f"Tool failed: {tool_name}"
-
-    existing_history = list(metadata.get("history", [])) if isinstance(metadata.get("history"), list) else []
-    existing_tool_count = sum(1 for item in existing_history if isinstance(item, dict) and item.get("kind") == "tool")
-    if len(restored_tool_entries) > existing_tool_count:
-        metadata["history"] = existing_history + restored_tool_entries[existing_tool_count:]
-
-    if latest_completed_step > _safe_int(metadata.get("current_step"), 0):
-        metadata["current_step"] = latest_completed_step
-        if latest_completed_action and not isinstance(metadata.get("pending_question"), dict):
-            metadata["current_action"] = latest_completed_action
-
-    if started_event_recorded:
-        metadata["started_event_recorded"] = True
-    return metadata
 
 
 class AgentRunner:
@@ -204,6 +127,7 @@ class AgentRunner:
             checkpoint_state=None,
             action=await self._request_native_turn(
                 metadata=metadata,
+                checkpoint_state=None,
                 context=context,
                 conversation_id=conversation_id,
                 run_id=run_id,
@@ -220,6 +144,7 @@ class AgentRunner:
         self,
         *,
         metadata: dict[str, Any],
+        checkpoint_state,
         context: ToolExecutionContext,
         conversation_id: str,
         run_id: str,
@@ -258,7 +183,9 @@ class AgentRunner:
             f"Allowed read roots: {json.dumps([root.as_posix() for root in context.read_roots])}\n\n"
             f"Allowed write roots: {json.dumps([root.as_posix() for root in context.write_roots])}\n\n"
             f"Recent conversation context:\n{_conversation_context_block(recent_messages)}\n\n"
-            f"Recent runtime transcript:\n{_history_block(rendered_history)}"
+            f"Recent runtime transcript:\n{_history_block(rendered_history)}\n\n"
+            "Important: The recent conversation context and runtime transcript were already shown to the user. "
+            "Use them to continue from the latest state. Do not restate or re-summarize them unless you are surfacing a correction, a new finding, or the final result."
         )
 
         if not supports_native_tool_calls(model):
@@ -266,26 +193,31 @@ class AgentRunner:
 
         if plan_required:
             system_prompt = (
-                "You are the AI-Cockpit task agent. When no approved plan exists yet, your next turn must draft the execution plan by making exactly one native tool call. "
-                f"Use only the {NATIVE_AGENT_PLAN_TOOL} tool in this turn. Keep the plan concise, concrete, and grounded in the goal and current context. "
+                "You are the AI-Cockpit task agent. When no approved plan exists yet, your next turn must draft the execution plan using the native planning tool. "
+                f"Use only the {NATIVE_AGENT_PLAN_TOOL} tool in this turn. Any assistant text in this turn is shown directly to the user as a progress update. Use at most one short user-visible sentence before the tool call when it helps the user follow the work. "
+                "If you do, make it incremental and forward-looking: say only what you are doing right now, not a recap of the goal, plan, or prior transcript. "
+                "Write like you are updating the user, not thinking to yourself. If there is nothing new to say, emit no assistant text and just call the tool. "
+                "Keep the plan concise, concrete, and grounded in the goal and current context. "
                 "Do not add exploratory tool steps when the required next action is already obvious. For a new generated app request with a clear title, prefer app_initialize directly instead of app_list unless the user explicitly asked you to inspect existing apps first."
             )
-            user_prompt = common_user_prompt + "\n\nMake exactly one task_plan tool call now."
+            user_prompt = common_user_prompt + "\n\nDraft the execution plan now with the task_plan tool. If you include assistant text, keep it to one new sentence about the immediate planning action."
             tools = [_native_plan_tool_definition()]
             session_id = f"task:{conversation_id}:plan"
             request_kind = "task.agent.plan"
         else:
             system_prompt = (
-                "You are the AI-Cockpit task agent. Continue the run by making exactly one native tool call this turn. "
+                "You are the AI-Cockpit task agent. Continue the run with at most one native tool call this turn. "
                 f"Use {NATIVE_AGENT_FINALIZE_TOOL} when the task is complete. Use {NATIVE_AGENT_ASK_USER_TOOL} when user input is required. "
                 "Use at most one tool per turn. Prefer reading or searching before writing. Use shell only when the task genuinely needs an executable invocation. "
                 "Never write outside the allowed write roots. The provided native tool schemas are authoritative. "
                 "For generated app work, use the app_initialize tool before editing app route files if no app is attached yet. "
                 "When creating a new app, pass a clear title because that becomes the app's visible name. Pass app_slug only when you need an exact URL segment or when attaching an existing app. Never call app_initialize without title or app_slug. "
-                "Before each non-final tool call, include a brief one-sentence progress update in the assistant text so the user can follow what you are about to do. "
+                "Any assistant text in this turn is shown directly to the user as a progress update. When useful, include at most one short user-visible assistant sentence before the tool call so the user can follow the immediate next action. "
+                "Write like you are updating the user, not thinking to yourself. If there is nothing new to say, emit no assistant text and just call the tool. That sentence must add net-new information only. Do not restate the goal, approved plan, recent conversation context, or recent runtime transcript. "
+                "Continue from the latest completed step or tool result instead of re-summarizing the task. "
                 "If the latest successful tool result already satisfies the listed success criteria and no further external work is needed, call task_finalize immediately. For a clearly named new generated app request, do not call app_list unless the user explicitly asked to inspect existing apps first."
             )
-            user_prompt = common_user_prompt + "\n\nMake exactly one tool call now."
+            user_prompt = common_user_prompt + "\n\nContinue the task now from the latest completed step. Include assistant text only when it adds net-new information beyond the transcript already shown to the user."
             tools = [*get_agent_tool_provider_definitions("openai"), *_native_control_tool_definitions()]
             session_id = f"task:{conversation_id}"
             request_kind = "task.agent.native_decision"
@@ -301,23 +233,66 @@ class AgentRunner:
 
         last_error: Exception | None = None
         for attempt in range(2):
-            completion_call = chat_completion if plan_required else (chat_completion_stream_response if use_streaming_native_decision(model) else chat_completion)
+            completion_call = chat_completion_stream_response if use_streaming_native_decision(model) else chat_completion
             stream_buffer: list[str] = []
             reasoning_buffer: list[str] = []
+            last_tool_preview: tuple[str, str] | None = None
 
-            async def _handle_content_delta(delta: str) -> None:
-                stream_buffer.append(delta)
-                if reasoning_buffer:
-                    return
+            if plan_required:
                 await _emit_agent_stream_update(
                     stream_callback,
                     {
-                        "kind": "thought_delta",
+                        "kind": "progress",
+                        "run_id": run_id,
+                        "step": step_number,
+                        "content": "Drafting execution plan",
+                    },
+                )
+                await _set_live_timeline_item(
+                    run_id,
+                    metadata,
+                    checkpoint_state,
+                    build_timeline_item(
+                        item_id=f"status:{run_id}:{step_number or 0}:planning",
+                        role="assistant",
+                        kind="status",
+                        title="Progress",
+                        label="Progress",
+                        content="Drafting execution plan",
+                        tone="info",
+                        step=step_number or 0,
+                        status="streaming",
+                    ),
+                    force=True,
+                )
+
+            async def _handle_content_delta(delta: str) -> None:
+                stream_buffer.append(delta)
+                await _emit_agent_stream_update(
+                    stream_callback,
+                    {
+                        "kind": "text_delta",
                         "run_id": run_id,
                         "step": step_number,
                         "delta": delta,
                     },
                 )
+                current_text = "".join(stream_buffer).lstrip()
+                if current_text.strip():
+                    await _set_live_timeline_item(
+                        run_id,
+                        metadata,
+                        checkpoint_state,
+                        build_timeline_item(
+                            item_id=f"assistant:{run_id}:{step_number}:text",
+                            role="assistant",
+                            kind="message",
+                            content=current_text,
+                            step=step_number,
+                            status="streaming",
+                        ),
+                        force=False,
+                    )
 
             async def _handle_reasoning_delta(delta: str) -> None:
                 reasoning_buffer.append(delta)
@@ -331,18 +306,62 @@ class AgentRunner:
                     },
                 )
 
+            async def _handle_tool_call_delta(tool_call) -> None:
+                nonlocal last_tool_preview
+                tool_name = tool_call.function.name.strip()
+                if not tool_name:
+                    return
+                preview = render_live_tool_call_preview(tool_name, tool_call.function.arguments)
+                preview_key = (tool_name, preview)
+                if preview_key == last_tool_preview:
+                    return
+                last_tool_preview = preview_key
+                await _emit_agent_stream_update(
+                    stream_callback,
+                    {
+                        "kind": "tool_progress",
+                        "run_id": run_id,
+                        "step": step_number,
+                        "tool": tool_name,
+                        "content": preview,
+                    },
+                )
+                await _set_live_timeline_item(
+                    run_id,
+                    metadata,
+                    checkpoint_state,
+                    build_timeline_item(
+                        item_id=f"tool:{run_id}:{step_number}:{tool_name}",
+                        role="assistant",
+                        kind="tool_call",
+                        label="Tool call",
+                        title=humanize_tool_name(tool_name),
+                        content=preview,
+                        tone="info",
+                        step=step_number,
+                        tool_name=tool_name,
+                        badges=[f"step {step_number}"],
+                        status="streaming",
+                    ),
+                    force=False,
+                )
+
             completion_kwargs = {
                 "temperature": 0.2,
                 "max_tokens": native_plan_max_tokens(model) if plan_required else native_decision_attempt_max_tokens(model, attempt),
                 "tools": tools,
-                "tool_choice": "required",
+                "tool_choice": "auto",
                 "session_id": session_id,
                 "prompt_segments": prompt_segments,
                 "request_overrides": native_agent_request_overrides(model),
             }
-            if not plan_required and "on_content_delta" in inspect.signature(completion_call).parameters:
+            completion_signature = inspect.signature(completion_call).parameters
+            if "on_content_delta" in completion_signature:
                 completion_kwargs["on_content_delta"] = _handle_content_delta
+            if "on_reasoning_delta" in completion_signature:
                 completion_kwargs["on_reasoning_delta"] = _handle_reasoning_delta
+            if "on_tool_call_delta" in completion_signature:
+                completion_kwargs["on_tool_call_delta"] = _handle_tool_call_delta
 
             async with _timed_agent_phase(
                 phase="native_turn.model_call",
@@ -392,6 +411,30 @@ class AgentRunner:
             if response.error:
                 raise ValueError(response.error)
 
+            live_thought = response.reasoning.strip() or "".join(reasoning_buffer).strip()
+            visible_text = response.content.strip() or "".join(stream_buffer).strip()
+
+            if live_thought:
+                await _emit_agent_stream_update(
+                    stream_callback,
+                    {
+                        "kind": "thought_done",
+                        "run_id": run_id,
+                        "step": step_number,
+                        "content": live_thought,
+                    },
+                )
+            if visible_text:
+                await _emit_agent_stream_update(
+                    stream_callback,
+                    {
+                        "kind": "text_done",
+                        "run_id": run_id,
+                        "step": step_number,
+                        "content": visible_text,
+                    },
+                )
+
             tool_call_count = len(response.tool_calls)
             if tool_call_count != 1:
                 last_error = ValueError(f"Native tool decision must return exactly one tool call, got {tool_call_count}")
@@ -403,6 +446,15 @@ class AgentRunner:
                 raise last_error
 
             tool_call = response.tool_calls[0]
+            if visible_text and tool_call.function.name != NATIVE_AGENT_FINALIZE_TOOL:
+                await persist_visible_text_event(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    step_number=step_number,
+                    visible_text=visible_text,
+                    metadata=metadata,
+                    checkpoint_state=checkpoint_state,
+                )
             await conversation_store.append_event(
                 conversation_id,
                 run_id=run_id,
@@ -416,35 +468,47 @@ class AgentRunner:
                     "content": response.content,
                     "reasoning": response.reasoning,
                 },
+                branch_key=str(metadata.get("branch_key") or "main"),
             )
-            thought = response.reasoning.strip() or "".join(reasoning_buffer).strip() or response.content.strip() or "".join(stream_buffer).strip()
+            thought = live_thought
             try:
-                arguments = _parse_native_tool_arguments(tool_call.function.arguments)
+                arguments = _parse_native_tool_arguments(
+                    tool_call.function.arguments,
+                    tool_name=tool_call.function.name,
+                )
                 if tool_call.function.name == NATIVE_AGENT_PLAN_TOOL:
                     if not plan_required:
                         raise ValueError("Unexpected task_plan tool during execution")
-                    return _build_plan_action_payload(
+                    payload = _build_plan_action_payload(
                         thought=thought,
                         plan=_validate_execution_plan_payload(arguments),
                     )
+                    payload["visible_text"] = visible_text
+                    return payload
                 if plan_required:
                     raise ValueError(f"Native plan generation requires the {NATIVE_AGENT_PLAN_TOOL} tool")
                 if tool_call.function.name == NATIVE_AGENT_ASK_USER_TOOL:
-                    return _build_question_action_payload(
+                    payload = _build_question_action_payload(
                         thought=thought,
                         question=str(arguments.get("question") or "").strip(),
                     )
+                    payload["visible_text"] = visible_text
+                    return payload
                 if tool_call.function.name == NATIVE_AGENT_FINALIZE_TOOL:
-                    return _build_final_action_payload(
+                    payload = _build_final_action_payload(
                         thought=thought,
                         summary=str(arguments.get("summary") or "").strip(),
                         result=str(arguments.get("result") or "").strip(),
                     )
-                return _build_tool_action_payload(
+                    payload["visible_text"] = visible_text
+                    return payload
+                payload = _build_tool_action_payload(
                     thought=thought,
                     tool_name=tool_call.function.name,
                     arguments=arguments,
                 )
+                payload["visible_text"] = visible_text
+                return payload
             except Exception as exc:
                 last_error = exc
                 if attempt == 0:
@@ -477,7 +541,7 @@ class AgentRunner:
             conversation_id=run.conversation_id,
             run_id=run.id,
         ):
-            metadata = await _restore_runtime_metadata_from_events(
+            metadata = await restore_runtime_metadata_from_events(
                 conversation_id=run.conversation_id,
                 run_id=run.id,
                 metadata=metadata,
@@ -534,11 +598,13 @@ class AgentRunner:
                         checkpoint_state=checkpoint_state,
                         action=await self._request_native_turn(
                             metadata=metadata,
+                            checkpoint_state=checkpoint_state,
                             context=context,
                             conversation_id=run.conversation_id,
                             run_id=run.id,
                             plan_required=True,
                             step_number=0,
+                            stream_callback=stream_callback,
                         ),
                     )
                     if metadata.get("task_status") == "paused":
@@ -578,6 +644,7 @@ class AgentRunner:
                 ) as turn_timing:
                     action = await self._request_native_turn(
                         metadata=metadata,
+                        checkpoint_state=checkpoint_state,
                         context=context,
                         conversation_id=run.conversation_id,
                         run_id=run.id,
@@ -598,45 +665,51 @@ class AgentRunner:
                         conversation_id=run.conversation_id,
                         run_id=run.id,
                         metadata=metadata,
+                        checkpoint_state=checkpoint_state,
                         action=action,
                         step_number=current_step + 1,
-                        chat_completion_fn=chat_completion,
+                        chat_completion_fn=chat_completion_stream_response if stream_callback is not None else chat_completion,
+                        stream_callback=stream_callback,
                     )
                 if presentation.progress_summary:
                     metadata["current_action"] = presentation.progress_summary
                     await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state)
-                    await _emit_agent_stream_update(
-                        stream_callback,
-                        {
-                            "kind": "progress",
-                            "run_id": run.id,
-                            "step": current_step + 1,
-                            "content": presentation.progress_summary,
-                        },
-                    )
+                    if not presentation.summary_streamed:
+                        await _emit_agent_stream_update(
+                            stream_callback,
+                            {
+                                "kind": "progress",
+                                "run_id": run.id,
+                                "step": current_step + 1,
+                                "content": presentation.progress_summary,
+                            },
+                        )
                     await conversation_store.append_event(
                         run.conversation_id,
                         run_id=run.id,
                         actor_kind="assistant",
                         event_type="agent.progress.summary",
                         payload_json={"step": current_step + 1, "summary": presentation.progress_summary},
+                        branch_key=str(metadata.get("branch_key") or "main"),
+                    )
+                    await conversation_store.append_timeline_item(
+                        run.conversation_id,
+                        run_id=run.id,
+                        item_payload=build_status_timeline_item(
+                            run_id=run.id,
+                            step=current_step + 1,
+                            content=presentation.progress_summary,
+                        ),
+                        branch_key=str(metadata.get("branch_key") or "main"),
                     )
                 if presentation.thought:
-                    await _emit_agent_stream_update(
-                        stream_callback,
-                        {
-                            "kind": "thought_done",
-                            "run_id": run.id,
-                            "step": current_step + 1,
-                            "content": presentation.thought,
-                        },
-                    )
                     await conversation_store.append_event(
                         run.conversation_id,
                         run_id=run.id,
                         actor_kind="assistant",
                         event_type="agent.thought.summary",
                         payload_json={"step": current_step + 1, "thought": presentation.thought},
+                        branch_key=str(metadata.get("branch_key") or "main"),
                     )
 
                 action_kind = str(action.get("kind", "")).strip()
@@ -649,6 +722,7 @@ class AgentRunner:
                         context=context,
                         tool_executor=execute_agent_tool,
                         checkpoint_state=checkpoint_state,
+                        stream_callback=stream_callback,
                     )
                     continue
 

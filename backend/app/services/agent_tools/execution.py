@@ -17,9 +17,67 @@ from app.services.agent_tools.base import _resolve_write_path
 from app.services.agent_tools.base import _tool_property
 from app.services.agent_tools.base import _tool_schema
 from app.services.agent_tools.base import _truncate_output
+from app.services.agent_tools.base import emit_tool_progress
 
 
 SHELL_META_TOKENS = ("|", "&&", "||", ";", ">", "<")
+MAX_LIVE_PROCESS_UPDATES_PER_STREAM = 20
+
+
+async def _run_subprocess_with_live_progress(
+    *,
+    args: list[str],
+    cwd: Path,
+    timeout_seconds: int,
+    context: ToolExecutionContext,
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    async def _consume_stream(
+        stream: asyncio.StreamReader | None,
+        label: str,
+    ) -> bytes:
+        if stream is None:
+            return b""
+        chunks: list[bytes] = []
+        update_count = 0
+        skipped_notice_sent = False
+        while True:
+            chunk = await stream.readline()
+            if not chunk:
+                break
+            chunks.append(chunk)
+            rendered = chunk.decode(errors="replace").strip()
+            if not rendered:
+                continue
+            if update_count < MAX_LIVE_PROCESS_UPDATES_PER_STREAM:
+                await emit_tool_progress(context, f"{label}: {rendered}")
+            elif not skipped_notice_sent:
+                skipped_notice_sent = True
+                await emit_tool_progress(context, f"{label}: more output continues...")
+            update_count += 1
+        return b"".join(chunks)
+
+    try:
+        stdout_bytes, stderr_bytes, returncode = await asyncio.wait_for(
+            asyncio.gather(
+                _consume_stream(process.stdout, "stdout"),
+                _consume_stream(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise ValueError(f"Command timed out after {timeout_seconds} seconds") from exc
+
+    return int(returncode), stdout_bytes.decode(errors="replace").strip(), stderr_bytes.decode(errors="replace").strip()
 
 
 def _python_guard_script(code: str, read_roots: list[Path], write_roots: list[Path]) -> str:
@@ -226,6 +284,7 @@ async def run_python_execution(
     cwd = context.workspace_root
     if working_directory:
         cwd = _resolve_read_path(working_directory, context=context)
+    await emit_tool_progress(context, f"Preparing Python run in {_display_path(cwd)}")
 
     with tempfile.TemporaryDirectory(prefix="ai-cockpit-chat-tool-") as temp_dir:
         bootstrap_path = Path(temp_dir) / "guarded_python_exec.py"
@@ -234,21 +293,17 @@ async def run_python_execution(
             encoding="utf-8",
         )
 
-        try:
-            completed_process = await asyncio.to_thread(
-                subprocess.run,
-                [sys.executable, str(bootstrap_path)],
-                cwd=str(cwd),
-                capture_output=True,
-                timeout=10,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("Python execution timed out after 10 seconds") from exc
+        await emit_tool_progress(context, "Starting Python process")
+        returncode, stdout_text, stderr_text = await _run_subprocess_with_live_progress(
+            args=[sys.executable, str(bootstrap_path)],
+            cwd=cwd,
+            timeout_seconds=10,
+            context=context,
+        )
 
-    stdout_text = completed_process.stdout.decode(errors="replace").strip()
-    stderr_text = completed_process.stderr.decode(errors="replace").strip()
-    if completed_process.returncode != 0:
-        raise ValueError(stderr_text or stdout_text or f"Python execution failed with exit code {completed_process.returncode}")
+    if returncode != 0:
+        raise ValueError(stderr_text or stdout_text or f"Python execution failed with exit code {returncode}")
+    await emit_tool_progress(context, "Python run completed")
 
     sections = []
     if stdout_text:
@@ -263,7 +318,7 @@ async def run_python_execution(
         output="\n\n".join(sections),
         metadata={
             "working_directory": _display_path(cwd),
-            "returncode": completed_process.returncode,
+            "returncode": returncode,
             "workspace_path": context.workspace_path,
             "sandbox_mode": "allowed_write_roots_only",
             "write_roots": [_display_path(root) for root in context.write_roots],
@@ -296,22 +351,20 @@ async def run_shell_command(
     cwd = context.workspace_root
     if working_directory:
         cwd = _resolve_write_path(working_directory, context=context)
+    await emit_tool_progress(context, f"Preparing command in {_display_path(cwd)}")
+    await emit_tool_progress(context, f"Starting {args[0]}")
 
     try:
-        completed_process = await asyncio.to_thread(
-            subprocess.run,
-            args,
-            cwd=str(cwd),
-            capture_output=True,
-            timeout=15,
+        returncode, stdout_text, stderr_text = await _run_subprocess_with_live_progress(
+            args=args,
+            cwd=cwd,
+            timeout_seconds=15,
+            context=context,
         )
     except FileNotFoundError as exc:
         raise ValueError(f"Executable not found: {args[0]}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise ValueError("Command timed out after 15 seconds") from exc
 
-    stdout_text = completed_process.stdout.decode(errors="replace").strip()
-    stderr_text = completed_process.stderr.decode(errors="replace").strip()
+    await emit_tool_progress(context, f"Command finished with exit code {returncode}")
     sections = []
     if stdout_text:
         sections.append(f"stdout:\n{stdout_text}")
@@ -327,7 +380,7 @@ async def run_shell_command(
             "command": command,
             "args": args,
             "working_directory": "." if cwd == context.workspace_root else _display_path(cwd),
-            "returncode": completed_process.returncode,
+            "returncode": returncode,
             "write_roots": [_display_path(root) for root in context.write_roots],
         },
     )

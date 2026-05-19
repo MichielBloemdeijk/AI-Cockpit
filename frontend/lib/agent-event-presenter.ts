@@ -52,6 +52,20 @@ function shortOutputPreview(value: unknown, maxLength = 88): string | null {
   return compact;
 }
 
+function countTextLines(value: unknown): number | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  if (!value) {
+    return 0;
+  }
+  const lines = value.split(/\r?\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.length;
+}
+
 export function formatAgentEventDetails(value: unknown): string | undefined {
   if (value == null) {
     return undefined;
@@ -95,12 +109,16 @@ function describeToolTarget(toolName: string, args: Record<string, unknown> | nu
 export function summarizeToolCall(toolName: string, argsValue: unknown): string {
   const args = asRecord(argsValue);
   const target = describeToolTarget(toolName, args);
+  const lineCount = countTextLines(args?.content);
 
   switch (toolName) {
     case "file_read":
       return target ?? "file";
     case "file_write":
-      return target ?? "file";
+      if (target && lineCount && lineCount > 0) {
+        return `Preparing to write ${target} (${lineCount} lines)`;
+      }
+      return target ? `Preparing to write ${target}` : "Preparing to write a file";
     case "workspace_search":
       return target ? `Searching the workspace for ${target}` : "Searching the workspace";
     case "python_execution":
@@ -125,6 +143,7 @@ export function summarizeToolResult(
 ): string {
   const args = asRecord(argsValue);
   const target = describeToolTarget(toolName, args);
+  const lineCount = countTextLines(args?.content);
 
   if (!ok) {
     const errorPreview = shortOutputPreview(errorValue, 96);
@@ -140,7 +159,10 @@ export function summarizeToolResult(
     case "file_read":
       return target ?? "file";
     case "file_write":
-      return target ?? "file";
+      if (target && lineCount && lineCount > 0) {
+        return `Updated ${target} (${lineCount} lines)`;
+      }
+      return target ? `Updated ${target}` : "Finished updating the file";
     case "workspace_search":
       return target ? `Searched the workspace for ${target}` : "Finished the workspace search";
     case "python_execution":

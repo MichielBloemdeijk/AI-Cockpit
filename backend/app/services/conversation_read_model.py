@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.services.agent_metadata import _normalize_task_metadata
 from app.presenters.conversations import (
     present_conversation_detail,
     present_conversation_events,
@@ -7,10 +8,17 @@ from app.presenters.conversations import (
 )
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import ArtifactRecord, BranchRecord, EventRecord, MessageRecord, RunRecord, conversation_store
+from app.services.conversation_timeline import TIMELINE_ITEM_EVENT_TYPE, extract_timeline_item_payload, normalize_live_item
 from app.services.conversation_workspace import MAIN_BRANCH_KEY
 
 
 class ConversationReadModel:
+    @staticmethod
+    def _run_branch_key(run: RunRecord) -> str:
+        if isinstance(run.metadata_json, dict):
+            return str(run.metadata_json.get("branch_key") or MAIN_BRANCH_KEY)
+        return MAIN_BRANCH_KEY
+
     @staticmethod
     def _message_branch_key(message: MessageRecord, event_by_id: dict[str, EventRecord]) -> str:
         if not message.source_event_id:
@@ -132,6 +140,59 @@ class ConversationReadModel:
                 filtered.append(artifact)
         return filtered
 
+    def _build_timeline_items(self, events: list[EventRecord]) -> list[dict]:
+        timeline_items: list[dict] = []
+        for event in sorted(events, key=lambda item: (item.sequence, item.created_at, item.id)):
+            if event.event_type != TIMELINE_ITEM_EVENT_TYPE:
+                continue
+            payload = extract_timeline_item_payload(event.payload_json)
+            if payload is None:
+                continue
+            timeline_items.append({
+                **payload,
+                "run_id": event.run_id,
+                "sequence": event.sequence,
+                "created_at": event.created_at,
+            })
+        return timeline_items
+
+    def _build_active_run(
+        self,
+        *,
+        branch_key: str,
+        runs: list[RunRecord],
+        visible_events: list[EventRecord],
+    ) -> dict | None:
+        normalized_branch_key = branch_key or MAIN_BRANCH_KEY
+        visible_sequences_by_run: dict[str, int] = {}
+        for event in visible_events:
+            if event.run_id:
+                visible_sequences_by_run[event.run_id] = max(visible_sequences_by_run.get(event.run_id, 0), event.sequence)
+
+        for run in runs:
+            if self._run_branch_key(run) != normalized_branch_key:
+                continue
+            metadata = _normalize_task_metadata(run.metadata_json)
+            live_item = normalize_live_item(metadata.get("live_item"))
+            if run.status not in {"running", "paused"} and live_item is None:
+                continue
+            latest_sequence = visible_sequences_by_run.get(run.id, 0)
+            active_run: dict[str, object] = {
+                "run_id": run.id,
+                "status": run.status,
+                "latest_sequence": latest_sequence,
+                "live_item": None,
+            }
+            if live_item is not None:
+                active_run["live_item"] = {
+                    **live_item,
+                    "run_id": run.id,
+                    "sequence": int(live_item.get("sequence") or latest_sequence),
+                    "created_at": live_item.get("created_at") or run.started_at,
+                }
+            return active_run
+        return None
+
     async def list_messages_for_branch(
         self,
         conversation_id: str,
@@ -235,6 +296,8 @@ class ConversationReadModel:
         )
         branches = await conversation_store.list_branches(conversation_id)
         workspace_files = await conversation_store.get_workspace_files(conversation_id)
+        runs = await conversation_store.list_runs(conversation_id)
+        visible_events = await self.list_events_for_branch(conversation_id, branch_key=branch_key, limit=5000)
         return present_conversation_detail(
             summary,
             active_branch_key=branch_key,
@@ -242,6 +305,7 @@ class ConversationReadModel:
             workspace_path=conversation.workspace_path,
             workspace_files=workspace_files,
             messages=messages,
+            active_run=self._build_active_run(branch_key=branch_key, runs=runs, visible_events=visible_events),
         )
 
     async def get_conversation_events(self, conversation_id: str, *, branch_key: str = MAIN_BRANCH_KEY):
@@ -250,11 +314,14 @@ class ConversationReadModel:
             return None
         events = await self.list_events_for_branch(conversation_id, branch_key=branch_key)
         artifacts = await self.list_artifacts_for_branch(conversation_id, branch_key=branch_key)
+        runs = await conversation_store.list_runs(conversation_id)
         return present_conversation_events(
             conversation_id=conversation_id,
             active_branch_key=branch_key,
             events=events,
             artifacts=artifacts,
+            timeline_items=self._build_timeline_items(events),
+            active_run=self._build_active_run(branch_key=branch_key, runs=runs, visible_events=events),
         )
 
 

@@ -10,6 +10,12 @@ from app.db.repositories.conversations import ConversationRepository
 from app.db.session import session_scope
 from app.db.tables import ActorKind, MemoryStatus, MessageRole, RunStatus
 from app.services.conversation_title_service import conversation_title_service
+from app.services.conversation_timeline import (
+    TIMELINE_ITEM_EVENT_TYPE,
+    build_assistant_message_timeline_item,
+    build_tool_result_timeline_item,
+    build_user_message_timeline_item,
+)
 from app.services.conversation_workspace import (
     MAIN_BRANCH_KEY,
     ensure_conversation_workspace,
@@ -626,6 +632,15 @@ class ConversationStore:
                 content=content,
                 content_format=content_format,
             )
+            await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                actor_kind=ActorKind.user.value,
+                event_type=TIMELINE_ITEM_EVENT_TYPE,
+                payload_json=build_user_message_timeline_item(message_id=message.id, content=content),
+                branch_key=branch_key,
+                parent_event_id=event.id,
+            )
             await repo.touch_conversation(conversation_id)
             event_record = _event_record(event)
             message_record = _message_record(message)
@@ -664,6 +679,26 @@ class ConversationStore:
             await repo.touch_conversation(conversation_id)
             return _event_record(event)
 
+    async def append_timeline_item(
+        self,
+        conversation_id: str,
+        *,
+        run_id: str | None,
+        item_payload: dict,
+        actor_kind: str = ActorKind.assistant.value,
+        branch_key: str | None = None,
+        parent_event_id: str | None = None,
+    ) -> EventRecord:
+        return await self.append_event(
+            conversation_id,
+            run_id=run_id,
+            actor_kind=actor_kind,
+            event_type=TIMELINE_ITEM_EVENT_TYPE,
+            payload_json=item_payload,
+            branch_key=branch_key,
+            parent_event_id=parent_event_id,
+        )
+
     async def complete_message(
         self,
         conversation_id: str,
@@ -699,6 +734,21 @@ class ConversationStore:
                 content_format=content_format,
                 is_final=is_final,
             )
+            timeline_payload = None
+            if role == MessageRole.assistant.value:
+                timeline_payload = build_assistant_message_timeline_item(message_id=message.id, content=content)
+            elif role == MessageRole.user.value:
+                timeline_payload = build_user_message_timeline_item(message_id=message.id, content=content)
+            if timeline_payload is not None:
+                await repo.append_event(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    actor_kind=actor_kind,
+                    event_type=TIMELINE_ITEM_EVENT_TYPE,
+                    payload_json=timeline_payload,
+                    branch_key=branch_key,
+                    parent_event_id=event.id,
+                )
             await repo.touch_conversation(conversation_id)
             return _event_record(event), _message_record(message)
 
@@ -744,6 +794,7 @@ class ConversationStore:
         artifact_content_text: str | None = None,
         artifact_content_json: dict | None = None,
         run_metadata_json: dict | None = None,
+        branch_key: str | None = None,
     ) -> AgentToolPersistenceRecord:
         async with session_scope() as session:
             repo = ConversationRepository(session)
@@ -753,6 +804,7 @@ class ConversationStore:
                 actor_kind=ActorKind.task.value,
                 event_type="agent.tool.called",
                 payload_json={"step": step, "tool": tool_name, "arguments": arguments},
+                branch_key=branch_key,
             )
 
             artifact = None
@@ -786,6 +838,25 @@ class ConversationStore:
                 actor_kind=ActorKind.task.value,
                 event_type="agent.tool.completed",
                 payload_json=completed_payload,
+                branch_key=branch_key,
+            )
+            await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                actor_kind=ActorKind.assistant.value,
+                event_type=TIMELINE_ITEM_EVENT_TYPE,
+                payload_json=build_tool_result_timeline_item(
+                    run_id=run_id,
+                    step=step,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    ok=ok,
+                    output=output,
+                    error=error,
+                    result_metadata=result_metadata,
+                ),
+                branch_key=branch_key,
+                parent_event_id=completed_event.id,
             )
             if run_metadata_json is not None:
                 await repo.update_run_metadata(run_id, run_metadata_json)

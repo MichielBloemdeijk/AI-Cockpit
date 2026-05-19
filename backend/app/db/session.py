@@ -9,17 +9,29 @@ from tempfile import NamedTemporaryFile
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.config import settings
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _engine_kwargs_for_url(database_url: str) -> dict[str, object]:
+    if not database_url.startswith("sqlite"):
+        return {}
+
+    database = make_url(database_url).database
+    if database in (None, "", ":memory:"):
+        return {"poolclass": StaticPool}
+    return {"poolclass": NullPool}
 
 
 def initialize_engine(database_url: str | None = None) -> AsyncEngine:
@@ -29,7 +41,7 @@ def initialize_engine(database_url: str | None = None) -> AsyncEngine:
         return _engine
 
     resolved_url = database_url or settings.database_url
-    engine = create_async_engine(resolved_url, future=True)
+    engine = create_async_engine(resolved_url, future=True, **_engine_kwargs_for_url(resolved_url))
 
     if resolved_url.startswith("sqlite"):
         @event.listens_for(engine.sync_engine, "connect")

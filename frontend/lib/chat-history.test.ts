@@ -327,7 +327,7 @@ describe("mapConversationMessages", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].kind).toBe("status");
-    expect(messages[0].title).toBe("Step 1");
+    expect(messages[0].title).toBe("Progress");
     expect(messages[0].content).toBe("Inspecting the chat history mapping.");
   });
 
@@ -393,6 +393,97 @@ describe("mapConversationMessages", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].kind).toBe("tool_result");
+  });
+
+  it("renders persisted visible agent text as a regular assistant message", () => {
+    const detail: ConversationDetail = {
+      id: "conversation-7",
+      title: "Agent thread",
+      mode_hint: "single",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      archived_at: null,
+      last_message_preview: "Done",
+      latest_run_status: "completed",
+      messages: [],
+    };
+
+    const events: ConversationEventView[] = [
+      {
+        id: "event-text-1",
+        run_id: "run-7",
+        sequence: 1,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.text.output",
+        created_at: "2026-05-01T00:00:01Z",
+        schema_version: 1,
+        payload_json: {
+          step: 1,
+          text: "I am checking the target file now.",
+        },
+      },
+    ];
+
+    const messages = mapConversationMessages(detail, [], events);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].kind).toBe("message");
+    expect(messages[0].content).toBe("I am checking the target file now.");
+  });
+
+  it("deduplicates persisted visible agent text when an assistant message already exists", () => {
+    const detail: ConversationDetail = {
+      id: "conversation-8",
+      title: "Agent thread",
+      mode_hint: "single",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:00:00Z",
+      archived_at: null,
+      last_message_preview: "Done",
+      latest_run_status: "completed",
+      messages: [
+        {
+          id: "message-1",
+          role: "assistant",
+          content: "I need to ask for the specific details required to proceed with this unnecessarily detailed plan:",
+          content_format: "markdown",
+          created_at: "2026-05-01T00:00:02Z",
+          run_id: "run-8",
+          source_event_id: "event-assistant-1",
+          is_final: true,
+        },
+      ],
+    };
+
+    const events: ConversationEventView[] = [
+      {
+        id: "event-text-8",
+        run_id: "run-8",
+        sequence: 1,
+        branch_key: "main",
+        parent_event_id: null,
+        actor_kind: "assistant",
+        event_type: "agent.text.output",
+        created_at: "2026-05-01T00:00:01Z",
+        schema_version: 1,
+        payload_json: {
+          step: 1,
+          text: "I need to ask for the specific details required to proceed with this unnecessarily detailed plan:",
+        },
+      },
+    ];
+
+    const messages = mapConversationMessages(detail, [], events);
+
+    expect(
+      messages.filter(
+        (message) =>
+          message.kind === "message"
+          && message.content === "I need to ask for the specific details required to proceed with this unnecessarily detailed plan:",
+      ),
+    ).toHaveLength(1);
   });
 
   it("maps conversation.task.started with expandable task metadata details", () => {

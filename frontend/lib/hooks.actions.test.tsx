@@ -4,6 +4,11 @@ import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  buildConversationDetail,
+  buildConversationEventsResponse,
+  buildConversationSummary,
+} from "./test-fixtures";
 
 const apiMocks = vi.hoisted(() => ({
   archiveConversation: vi.fn(),
@@ -40,31 +45,6 @@ function Harness() {
   return null;
 }
 
-function conversationDetail(conversationId: string) {
-  return {
-    id: conversationId,
-    title: "Conversation",
-    mode_hint: "single",
-    session_metadata: {
-      mode: "single",
-      single_model: "anthropic/claude-sonnet-4-5",
-      council_models: ["anthropic/claude-sonnet-4-5"],
-      synthesizer_model: "anthropic/claude-sonnet-4-5",
-      tool_flags: { workspace_search: true, python_execution: true },
-    },
-    workspace_path: null,
-    created_at: "2026-05-01T00:00:00Z",
-    updated_at: "2026-05-01T00:00:00Z",
-    archived_at: null,
-    last_message_preview: null,
-    latest_run_status: "completed",
-    active_branch_key: "main",
-    branches: [],
-    workspace: null,
-    messages: [],
-  };
-}
-
 describe("useChat actions", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -77,8 +57,8 @@ describe("useChat actions", () => {
     root = createRoot(container);
 
     apiMocks.listConversations.mockResolvedValue([]);
-    apiMocks.getConversation.mockImplementation(async (conversationId: string) => conversationDetail(conversationId));
-    apiMocks.getConversationEvents.mockResolvedValue({ events: [], artifacts: [] });
+    apiMocks.getConversation.mockImplementation(async (conversationId: string) => buildConversationDetail(conversationId));
+    apiMocks.getConversationEvents.mockResolvedValue(buildConversationEventsResponse("conv-1"));
 
     await act(async () => {
       root.render(<Harness />);
@@ -95,23 +75,12 @@ describe("useChat actions", () => {
   });
 
   it("creates a conversation before running a tool when none is active", async () => {
-    const sessionMetadata = conversationDetail("draft").session_metadata;
+    const sessionMetadata = buildConversationDetail("draft").session_metadata;
     apiMocks.createConversation.mockResolvedValue({ conversation: { id: "conv-2" } });
     apiMocks.listConversations
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
-        {
-          id: "conv-2",
-          title: "Conversation",
-          mode_hint: "single",
-          session_metadata: sessionMetadata,
-          workspace_path: null,
-          created_at: "2026-05-01T00:00:00Z",
-          updated_at: "2026-05-01T00:00:00Z",
-          archived_at: null,
-          last_message_preview: null,
-          latest_run_status: "completed",
-        },
+        buildConversationSummary("conv-2", { session_metadata: sessionMetadata }),
       ]);
 
     await act(async () => {
@@ -130,21 +99,10 @@ describe("useChat actions", () => {
   });
 
   it("archives the active conversation and clears the selection", async () => {
-    const sessionMetadata = conversationDetail("conv-1").session_metadata;
+    const sessionMetadata = buildConversationDetail("conv-1").session_metadata;
     apiMocks.listConversations
       .mockResolvedValueOnce([
-        {
-          id: "conv-1",
-          title: "Conversation",
-          mode_hint: "single",
-          session_metadata: sessionMetadata,
-          workspace_path: null,
-          created_at: "2026-05-01T00:00:00Z",
-          updated_at: "2026-05-01T00:00:00Z",
-          archived_at: null,
-          last_message_preview: null,
-          latest_run_status: "completed",
-        },
+        buildConversationSummary("conv-1", { session_metadata: sessionMetadata }),
       ])
       .mockResolvedValueOnce([]);
 
@@ -170,20 +128,9 @@ describe("useChat actions", () => {
   });
 
   it("switches to the returned branch after resend", async () => {
-    const sessionMetadata = conversationDetail("conv-1").session_metadata;
+    const sessionMetadata = buildConversationDetail("conv-1").session_metadata;
     apiMocks.listConversations.mockResolvedValue([
-      {
-        id: "conv-1",
-        title: "Conversation",
-        mode_hint: "single",
-        session_metadata: sessionMetadata,
-        workspace_path: null,
-        created_at: "2026-05-01T00:00:00Z",
-        updated_at: "2026-05-01T00:00:00Z",
-        archived_at: null,
-        last_message_preview: null,
-        latest_run_status: "completed",
-      },
+      buildConversationSummary("conv-1", { session_metadata: sessionMetadata }),
     ]);
     apiMocks.resendConversationBranch.mockResolvedValue({
       branch: { branch_key: "branch-2" },
@@ -214,7 +161,7 @@ describe("useChat actions", () => {
   });
 
   it("surfaces tool errors through actionError state", async () => {
-    const sessionMetadata = conversationDetail("draft").session_metadata;
+    const sessionMetadata = buildConversationDetail("draft").session_metadata;
     apiMocks.createConversation.mockResolvedValue({ conversation: { id: "conv-3" } });
     apiMocks.executeConversationTool.mockRejectedValue(new Error("Tool sandbox rejected the command"));
 

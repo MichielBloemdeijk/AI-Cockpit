@@ -54,7 +54,10 @@ async def test_conversation_store_writes_messages_events_and_artifacts():
     assert {event.event_type for event in events} == {
         "conversation.user_message.accepted",
         "conversation.assistant.message.completed",
+        "chat.timeline.item.committed",
     }
+    timeline_items = [event.payload_json for event in events if event.event_type == "chat.timeline.item.committed"]
+    assert [item["content"] for item in timeline_items] == ["Persist this turn", "Stored reply"]
     assert artifacts[0].id == artifact.id
     assert scheduled_titles == [(conversation.id, "Persist this turn")]
 
@@ -137,7 +140,7 @@ async def test_record_agent_tool_result_persists_full_success_lifecycle():
     artifacts = await conversation_store.list_artifacts_for_run(conversation.id, run.id)
     stored_run = await conversation_store.get_run(run.id)
 
-    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed", "chat.timeline.item.committed"]
     assert events[0].payload_json == {
         "step": 1,
         "tool": "file_read",
@@ -151,6 +154,8 @@ async def test_record_agent_tool_result_persists_full_success_lifecycle():
         "artifact_id": record.artifact.id,
         "metadata": {"path": "frontend/lib/hooks.ts"},
     }
+    assert events[2].payload_json["kind"] == "tool_result"
+    assert events[2].payload_json["content"] == "Finished reading lib/hooks.ts"
     assert record.started_event.id == events[0].id
     assert record.completed_event.id == events[1].id
     assert record.artifact is not None
@@ -180,12 +185,14 @@ async def test_record_agent_tool_result_persists_failure_without_artifact():
     events = await conversation_store.list_events_for_run(conversation.id, run.id)
     artifacts = await conversation_store.list_artifacts_for_run(conversation.id, run.id)
 
-    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed", "chat.timeline.item.committed"]
     assert events[1].payload_json == {
         "step": 2,
         "tool": "file_write",
         "ok": False,
         "error": "permission denied",
     }
+    assert events[2].payload_json["kind"] == "tool_result"
+    assert events[2].payload_json["content"] == "permission denied"
     assert record.artifact is None
     assert artifacts == []

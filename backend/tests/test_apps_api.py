@@ -449,7 +449,7 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
     ):
         call_count["count"] += 1
         assert tools is not None
-        assert tool_choice == "required"
+        assert tool_choice == "auto"
         if call_count["count"] == 1:
             return _native_plan_response(
                 model=model,
@@ -544,7 +544,7 @@ async def test_chat_agent_native_tool_flow_can_pause_for_user_question(monkeypat
         **kwargs,
     ):
         assert tools is not None
-        assert tool_choice == "required"
+        assert tool_choice == "auto"
         if any(getattr(tool.get("function"), "get", lambda *_: None)("name") == "task_plan" for tool in tools if isinstance(tool, dict)):
             return _native_plan_response(
                 model=model,

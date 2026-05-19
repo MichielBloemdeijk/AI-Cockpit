@@ -26,9 +26,6 @@ function toneClasses(message: ChatMessage) {
 }
 
 function messageIcon(message: ChatMessage) {
-  if (message.streaming && message.role !== "user") {
-    return <Loader2 size={15} className="animate-spin" />;
-  }
   switch (message.kind) {
     case "question":
       return <CircleHelp size={15} />;
@@ -42,6 +39,9 @@ function messageIcon(message: ChatMessage) {
     case "answer":
       return <User size={15} />;
     default:
+      if (message.streaming && message.role !== "user") {
+        return <Loader2 size={15} className="animate-spin" />;
+      }
       return message.role === "system" ? <Sparkles size={15} /> : <Bot size={15} />;
   }
 }

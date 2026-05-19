@@ -17,6 +17,7 @@ from app.services.chat_settings import chat_settings_service
 from app.services.conversation_compaction import build_conversation_prompt_context
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import EventRecord, MessageRecord, RunRecord, conversation_store
+from app.services.conversation_timeline import TIMELINE_ITEM_EVENT_TYPE
 from app.services.conversation_workspace import MAIN_BRANCH_KEY
 from app.services.llm import PromptSegment, aggregate_usage, chat_completion, chat_completion_stream, ensure_prompt_metrics
 
@@ -26,6 +27,7 @@ STREAMED_AGENT_EVENT_TYPES = {
     "conversation.task.started",
     "conversation.task.start_failed",
     "agent.run.started",
+    "agent.text.output",
     "agent.plan.created",
     "agent.plan.feedback.skipped",
     "agent.thought.summary",
@@ -37,6 +39,7 @@ STREAMED_AGENT_EVENT_TYPES = {
     "agent.run.resumed",
     "agent.run.completed",
     "agent.run.failed",
+    TIMELINE_ITEM_EVENT_TYPE,
 }
 
 

@@ -5,8 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { checkAuth, type ConversationEventView } from "./api";
-import type { AgentStatus, ChatActionError, ChatMessage } from "./chat-state-types";
+import { checkAuth } from "./api";
 import { useConversationActions } from "./use-conversation-actions";
 import { useConversationDetail } from "./use-conversation-detail";
 import { useConversationList } from "./use-conversation-list";

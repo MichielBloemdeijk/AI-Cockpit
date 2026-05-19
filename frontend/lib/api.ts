@@ -8,6 +8,14 @@ function resolveApiBase(): string {
     return process.env.NEXT_PUBLIC_API_URL;
   }
 
+  if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
+    const { protocol, hostname, port } = window.location;
+    // Bypass the Next.js dev rewrite for SSE endpoints because it buffers streamed events.
+    if (port === "3000") {
+      return `${protocol}//${hostname}:8000`;
+    }
+  }
+
   return "";
 }
 
@@ -153,6 +161,7 @@ export interface ConversationDetail extends ConversationSummary {
   branches: ConversationBranchView[];
   workspace: ConversationWorkspaceView | null;
   messages: ConversationMessageView[];
+  active_run?: ActiveRunView | null;
 }
 
 export interface ConversationEventView {
@@ -199,11 +208,45 @@ export interface ConversationArtifactView {
   created_at: string;
 }
 
+export interface TimelineSectionView {
+  title: string;
+  items: string[];
+}
+
+export interface TimelineItemView {
+  item_id: string;
+  run_id: string | null;
+  sequence: number;
+  role: "user" | "assistant" | "system";
+  kind: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error";
+  content: string;
+  title?: string | null;
+  label?: string | null;
+  tone?: "default" | "info" | "success" | "warning" | "error" | null;
+  status?: string | null;
+  step?: number | null;
+  tool_name?: string | null;
+  badges?: string[];
+  code?: string | null;
+  sections?: TimelineSectionView[];
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface ActiveRunView {
+  run_id: string;
+  status: string;
+  latest_sequence: number;
+  live_item: TimelineItemView | null;
+}
+
 export interface ConversationEventsResponse {
   conversation_id: string;
   active_branch_key: string;
   events: ConversationEventView[];
   artifacts: ConversationArtifactView[];
+  timeline_items: TimelineItemView[];
+  active_run: ActiveRunView | null;
 }
 
 export interface ConversationCreateResponse {
