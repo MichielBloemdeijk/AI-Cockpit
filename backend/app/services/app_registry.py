@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import filecmp
 from pathlib import Path
 import re
 import shutil
@@ -280,6 +281,28 @@ def _should_sync_live_route(contract: GeneratedAppContract) -> bool:
     return frontend_root.startswith(f"{ISOLATED_GENERATED_APP_FRONTEND_ROOT_BASE}/")
 
 
+def _directory_trees_match(source: Path, destination: Path) -> bool:
+    if not source.is_dir() or not destination.is_dir():
+        return False
+
+    source_entries = {
+        path.relative_to(source): path.is_dir()
+        for path in source.rglob("*")
+    }
+    destination_entries = {
+        path.relative_to(destination): path.is_dir()
+        for path in destination.rglob("*")
+    }
+    if source_entries != destination_entries:
+        return False
+
+    return all(
+        is_directory
+        or filecmp.cmp(source / relative_path, destination / relative_path, shallow=False)
+        for relative_path, is_directory in source_entries.items()
+    )
+
+
 def generated_app_contract(slug: str, *, contract_override: dict[str, str] | None = None) -> GeneratedAppContract:
     normalized_slug = _slugify(slug)
     override = _normalize_contract_override(contract_override)
@@ -328,6 +351,9 @@ class AppRegistryService:
         if display_error or not source_root.exists() or not source_root.is_dir() or not has_live_entry_files:
             shutil.rmtree(live_root, ignore_errors=True)
             return False
+
+        if _directory_trees_match(source_root, live_root):
+            return True
 
         if live_root.exists():
             shutil.rmtree(live_root, ignore_errors=True)

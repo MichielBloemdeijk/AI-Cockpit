@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { MessageSquare, ListTodo, BookOpen, Settings, LogOut, Cpu, Blocks } from "lucide-react";
 import clsx from "clsx";
 import { logout } from "@/lib/api";
@@ -35,7 +36,7 @@ export function Sidebar() {
           {NAV.map(({ href, label, icon: Icon }) => {
             const active = pathname.startsWith(href);
             return (
-              <a
+              <Link
                 key={href}
                 href={href}
                 className={clsx(
@@ -47,7 +48,7 @@ export function Sidebar() {
               >
                 <Icon size={18} className="flex-shrink-0" />
                 <span>{label}</span>
-              </a>
+              </Link>
             );
           })}
         </nav>
@@ -68,7 +69,7 @@ export function Sidebar() {
           {NAV.map(({ href, label, icon: Icon }) => {
             const active = pathname.startsWith(href);
             return (
-              <a
+              <Link
                 key={href}
                 href={href}
                 className={clsx(
@@ -80,7 +81,7 @@ export function Sidebar() {
               >
                 <Icon size={18} className="flex-shrink-0" />
                 <span className="truncate">{label}</span>
-              </a>
+              </Link>
             );
           })}
           <button

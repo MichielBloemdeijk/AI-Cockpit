@@ -1,7 +1,9 @@
 """Application configuration loaded from environment variables."""
 from __future__ import annotations
 
+from ipaddress import ip_address
 from pathlib import Path
+import socket
 from typing import List, Literal
 from urllib.parse import urlparse
 
@@ -168,9 +170,37 @@ class Settings(BaseSettings):
         return hosts
 
     @property
+    def local_ipv4_host_list(self) -> List[str]:
+        """Return non-loopback IPv4 addresses currently assigned to this host."""
+        try:
+            address_info = socket.getaddrinfo(
+                socket.gethostname(),
+                None,
+                family=socket.AF_INET,
+            )
+        except OSError:
+            return []
+
+        hosts: list[str] = []
+        seen: set[str] = set()
+        for entry in address_info:
+            host = entry[4][0]
+            try:
+                address = ip_address(host)
+            except ValueError:
+                continue
+            if address.version != 4 or address.is_loopback or address.is_unspecified:
+                continue
+            if host not in seen:
+                hosts.append(host)
+                seen.add(host)
+        return hosts
+
+    @property
     def cors_origins(self) -> List[str]:
         origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-        for host in self.tailscale_host_list:
+        remote_hosts = [*self.tailscale_host_list, *self.local_ipv4_host_list]
+        for host in remote_hosts:
             origins.extend(
                 [
                     f"http://{host}",

@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 import app.services.agent_runner as agent_runner_module
 import app.services.app_builder as app_builder_module
+import app.services.app_registry as app_registry_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 
 from app.main import app
@@ -205,6 +206,29 @@ async def test_generated_app_reads_promote_healthy_apps_into_live_route_tree():
     assert record is not None
     assert (live_route_root / "page.tsx").exists()
     assert (live_route_root / "layout.tsx").exists()
+
+
+@pytest.mark.asyncio
+async def test_generated_app_reads_do_not_recopy_unchanged_live_routes(monkeypatch):
+    bootstrap = await bootstrap_generated_app(
+        goal="create stable live route app",
+        title="Stable Live Route App",
+    )
+    repo_root = app_builder_module._repo_root()
+    live_route_root = repo_root / "frontend" / "app" / "apps" / bootstrap.app.slug
+    copy_targets: list[Path] = []
+    original_copytree = app_registry_module.shutil.copytree
+
+    def track_copytree(source, destination, *args, **kwargs):
+        copy_targets.append(Path(destination))
+        return original_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(app_registry_module.shutil, "copytree", track_copytree)
+
+    await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+    await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+
+    assert copy_targets.count(live_route_root) == 1
 
 
 @pytest.mark.asyncio

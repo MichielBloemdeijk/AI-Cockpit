@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Blocks, ExternalLink, Plus, RefreshCw } from "lucide-react";
 import {
   createGeneratedApp,
@@ -32,11 +33,6 @@ function formatTimestamp(value: string): string {
   return date.toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
-function navigationType(): string | null {
-  const [entry] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
-  return entry?.type ?? null;
-}
-
 export default function AppsPage() {
   const [apps, setApps] = useState<GeneratedAppSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,7 +42,7 @@ export default function AppsPage() {
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -56,30 +52,22 @@ export default function AppsPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    if (navigationType() === "back_forward") {
-      window.location.reload();
-      return;
-    }
-    void refresh();
   }, []);
 
   useEffect(() => {
+    void refresh();
+
     const handlePageShow = (event: PageTransitionEvent) => {
       if (event.persisted) {
-        window.location.reload();
-        return;
+        void refresh();
       }
-      void refresh();
     };
 
     window.addEventListener("pageshow", handlePageShow);
     return () => {
       window.removeEventListener("pageshow", handlePageShow);
     };
-  }, []);
+  }, [refresh]);
 
   const handleCreate = async () => {
     if (!title.trim()) return;
@@ -211,19 +199,19 @@ export default function AppsPage() {
                 </div>
 
                 <div className="mt-4 flex gap-2">
-                  <a
+                  <Link
                     href={`/apps/${app.slug}`}
                     className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
                   >
                     Open surface
                     <ExternalLink size={14} />
-                  </a>
-                  <a
+                  </Link>
+                  <Link
                     href={`/workspace/apps/${app.slug}`}
                     className="inline-flex items-center justify-center rounded-xl border border-zinc-700 px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
                   >
                     Details
-                  </a>
+                  </Link>
                 </div>
               </article>
             ))}
