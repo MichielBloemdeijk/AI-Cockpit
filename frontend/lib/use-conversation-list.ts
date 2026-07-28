@@ -19,8 +19,16 @@ export function useConversationList(showArchived: boolean) {
   }, [showArchived]);
 
   useEffect(() => {
-    refreshConversations().catch(() => {});
-  }, [refreshConversations]);
+    let cancelled = false;
+    void listConversations(showArchived).then((nextConversations) => {
+      if (cancelled) return;
+      setConversations(nextConversations);
+      setActiveConversationId((current) => current ?? nextConversations[0]?.id ?? null);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [showArchived]);
 
   return {
     conversations,

@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated apps are runtime/user content and have their own verification lifecycle.
+    "generated-apps/**",
+    "app/apps/*/**",
+    "!app/apps/[[]slug[]]/**",
   ]),
 ]);
 

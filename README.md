@@ -1,303 +1,306 @@
 # AI Cockpit
 
-A locally-hosted personal AI command center. Use a configurable LLM council from the web UI, keep durable conversation history, review promoted knowledge, and run chat-first agent sessions that can build and verify local tools while staying reachable from your phone via Tailscale.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, and generated apps. The frontend is a Next.js application, the API is FastAPI, model requests go through OpenRouter, and local state is stored in SQLite.
 
-## Related Docs
+This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
-- [PLAN.md](PLAN.md) for the forward-looking roadmap
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current implemented architecture and codebase layout
+## What You Can Do
 
-```
-Android Phone (PWA)  ──HTTPS──▶  FastAPI Backend  ◀──▶  OpenRouter (LLMs)
-                                  Next.js Frontend
-```
+- Run multi-step Agent conversations with native tool calls and an inline activity timeline.
+- Ask an agent to create or update applications hosted at `/apps/<slug>`.
+- Compare several models in Council mode and synthesize their responses.
+- Keep conversations, branches, tool activity, reasoning summaries, and final responses across restarts.
+- Review proposed knowledge before promoting it into local files.
+- Reach the development UI from another device through Tailscale.
 
----
+For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick Start
 
-### Prerequisites
+### 1. Install prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Python | 3.11+ | [python.org](https://python.org) |
-| Node.js | 20+ | [nodejs.org](https://nodejs.org) |
-| uv | latest | `pip install uv` |
+| Tool | Supported version | Notes |
+|---|---:|---|
+| Git | Current | Required to clone the repository |
+| Python | 3.11 or 3.12 | Python 3.12 is recommended |
+| Node.js | 20.19+ or 22.13+ | Node.js 22 LTS is recommended |
+| uv | Current | Install with `python -m pip install uv` |
 
-### 1 — Clone & configure
+You also need an [OpenRouter](https://openrouter.ai/) API key. Creating a key is free, but the default models are paid and require available credit. You can replace the configured model IDs with models accessible to your account.
+
+### 2. Clone the repository
 
 ```powershell
-git clone <repo-url>
+git clone https://github.com/MichielBloemdeijk/AI-Cockpit.git
 cd AI-Cockpit
-copy .env.example .env
 ```
 
-Open `.env` and set your **OpenRouter API key**:
+### 3. Create the local configuration
+
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+macOS/Linux:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and replace the example OpenRouter key:
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
 ```
 
-Get a free key at [openrouter.ai](https://openrouter.ai). All other defaults work out of the box for local development.
+The copied file is safe for localhost development:
 
-Optional: if you want to seed local reviewed preferences manually, copy the example file:
+- `AUTH_PASSWORD_HASH` is blank, so any non-empty password is accepted.
+- `ALLOWED_DIRS` is blank, so it contains no machine-specific paths.
+- `SESSION_SECRET_KEY` is deliberately insecure and must be replaced before remote or shared use.
 
-```powershell
-copy knowledge\preferences.example.yaml knowledge\preferences.yaml
-```
+### 4. Install dependencies
 
-If you skip that step, the app can create `knowledge/preferences.yaml` automatically later when approved preferences are written from the UI.
+Backend, from the repository root:
 
-### 2 — Install dependencies
-
-**Backend** (from repo root):
 ```powershell
 cd backend
-uv venv .venv
-uv pip install -e ".[dev]"
+uv sync
 cd ..
 ```
 
-**Frontend:**
+`uv sync` creates `backend/.venv` and installs the locked runtime and development dependencies.
+
+Frontend:
+
 ```powershell
 cd frontend
-npm install
+npm ci
 cd ..
 ```
 
-### 3 — Run
+### 5. Start the application
 
-**Option A — VS Code (recommended)**
-
-Open the repo in VS Code and use the built-in tasks:
-
-- `Ctrl+Shift+P` → **Tasks: Run Task** → **Start Backend**
-- `Ctrl+Shift+P` → **Tasks: Run Task** → **Start Frontend**
-
-Or use **Tasks: Run Task** → **Start All** to launch both at once in split terminals.
-
-**Option B — PowerShell scripts**
+On Windows, open two PowerShell terminals in the repository root:
 
 ```powershell
 # Terminal 1
 .\start-backend.ps1
+```
 
+```powershell
 # Terminal 2
 .\start-frontend.ps1
 ```
 
-**Option C — Manual**
+The launchers resolve `uv` and `npm` from `PATH`; they do not depend on machine-specific installation paths.
 
-```powershell
-# Terminal 1 — backend
+On macOS/Linux, or to run the processes manually:
+
+```bash
+# Terminal 1
 cd backend
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
-# Terminal 2 — frontend
+```bash
+# Terminal 2
 cd frontend
 npm run dev
 ```
 
-### 4 — Open
+VS Code users can alternatively run `Tasks: Run Task` → `Start All`.
 
-- **Browser**: [http://localhost:3000](http://localhost:3000)
-- **API docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+### 6. Verify the installation
 
-Sign in with any password (auth is in dev mode when `AUTH_PASSWORD_HASH` is empty in `.env`).
+Check the backend:
 
----
-
-## Project Structure
-
-```
-AI-Cockpit/
-├── backend/                  # FastAPI Python backend
-│   ├── app/
-│   │   ├── main.py           # App entry point, router registration
-│   │   ├── config.py         # Settings from .env
-│   │   ├── api/
-│   │   │   ├── auth.py       # Login / logout / session
-│   │   │   ├── apps.py       # Generated app registry APIs
-│   │   │   ├── chat.py       # Compatibility chat + chat settings
-│   │   │   ├── conversations.py # Conversation-first chat, branches, tools, memory
-│   │   │   └── knowledge.py  # Knowledge review + approved knowledge APIs
-│   │   ├── db/               # SQLAlchemy tables, sessions, repositories
-│   │   ├── models/
-│   │   │   ├── chat.py       # Chat request/response types
-│   │   │   ├── conversations.py # Durable conversation DTOs
-│   │   │   ├── knowledge.py  # Knowledge and memory DTOs
-│   │   │   └── apps.py       # Generated app DTOs
-│   │   ├── presenters/      # API response mappers for conversations, apps, knowledge
-│   │   └── services/
-│   │       ├── app_builder.py # Generated app scaffolding + app contract helpers
-│   │       ├── app_registry.py # Durable generated app registry
-│   │       ├── agent_runner.py # Chat-first native-tool agent loop
-│   │       ├── conversation_compaction.py # Shared compaction helpers
-│   │       ├── conversation_read_model.py # Branch-aware transcript/event/artifact reads
-│   │       ├── llm.py        # OpenRouter client, prompt cache + native-tool helpers
-│   │       ├── chat_orchestrator.py # Conversation-aware chat execution
-│   │       ├── chat_settings.py # Chat defaults resolution and persistence
-│   │       ├── chat_tools.py # Workspace search + Python execution
-│   │       ├── conversation_store.py # Durable conversation writes and low-level persistence access
-│   │       ├── conversation_workspace.py # Per-conversation workspaces
-│   │       ├── memory_review_store.py # Review-first memory operations
-│   │       ├── knowledge_extractor.py # Proposed memory extraction from conversations
-│   │       ├── knowledge_memory.py # File-backed knowledge promotion/deletion
-│   │       └── auth.py       # Password verify, session tokens
-│   └── pyproject.toml
-│
-├── frontend/                 # Next.js 16 + Tailwind frontend
-│   ├── app/
-│   │   ├── (app)/            # Authenticated layout
-│   │   │   ├── chat/         # Chat page
-│   │   │   ├── background/   # Placeholder route
-│   │   │   ├── workspace/apps/ # Cockpit generated-app management
-│   │   │   ├── knowledge/    # Knowledge review + approved docs
-│   │   │   └── settings/     # Settings page
-│   │   ├── apps/             # Runtime generated app routes (/apps/[slug])
-│   │   └── login/            # Login page
-│   ├── components/           # Reusable UI components
-│   └── lib/
-│       ├── api.ts            # Typed API client
-│       ├── hooks.ts          # Public useChat, useAuth composition hooks
-│       ├── chat-history.ts   # Durable transcript projection
-│       ├── agent-stream-state.ts # Transient live agent overlay state
-│       └── use-conversation-*.ts # Narrower chat state ownership hooks
-│
-├── knowledge/                # File-backed approved knowledge + local preferences
-│   ├── notes/
-│   ├── preferences.example.yaml
-│   └── preferences.yaml      # Local-only, optional, gitignored
-│
-├── .env                      # Local secrets (not committed)
-├── .env.example              # Template — copy to .env
-├── start-backend.ps1         # Quick-start script
-└── start-frontend.ps1        # Quick-start script
+```powershell
+Invoke-RestMethod http://localhost:8000/api/health
 ```
 
----
+Expected response:
 
-## Configuration (`.env`)
+```json
+{"status":"ok","version":"0.1.0"}
+```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENROUTER_API_KEY` | *(required)* | Your OpenRouter API key |
-| `AUTH_PASSWORD_HASH` | *(empty = dev mode)* | bcrypt hash of your password |
-| `SESSION_SECRET_KEY` | *(auto-generated)* | Signs session cookies |
-| `COUNCIL_MODELS` | `claude-sonnet-4-5, gemini-pro-1.5, gpt-4o` | Comma-separated OpenRouter model IDs |
-| `SYNTHESIZER_MODEL` | `claude-sonnet-4-5` | Model that synthesizes council responses |
-| `ALLOWED_DIRS` | *(empty)* | Directories the file browser can access |
-| `NTFY_TOPIC` | *(empty)* | ntfy.sh topic for push notifications |
-| `TAILSCALE_HOST` | *(empty)* | Optional Tailscale hostname or IP used for remote dev-host allowance and backend CORS |
+Then open:
 
-### Enabling password auth
+- UI: [http://localhost:3000](http://localhost:3000)
+- API documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+With the default development configuration, enter any non-empty password on the login page.
+
+The backend creates and migrates its SQLite database automatically on first startup. No separate migration command is required.
+
+## Secure Authentication
+
+Development mode is convenient on localhost but should not be used when another device can reach the application.
+
+Generate a session secret:
 
 ```powershell
 cd backend
-uv run python -c "from passlib.hash import bcrypt; print(bcrypt.hash('yourpassword'))"
+uv run python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-Paste the output into `.env` as `AUTH_PASSWORD_HASH=...`.
+Generate a bcrypt password hash:
 
----
+```powershell
+uv run python -c "from passlib.hash import bcrypt; import getpass; print(bcrypt.hash(getpass.getpass('Password: ')))"
+```
 
-## Features (current)
+Put both values in the repository-root `.env` file and restart the backend:
 
-- **Conversation-first chat** — Durable conversations persist runs, events, transcript messages, branch lineage, and council artifacts across reloads and restarts
-- **Agent and council chat modes** — Agent chats use a full multi-step native-tool loop in the main chat surface, while council mode fans out to multiple models and stores the synthesized answer plus per-model artifacts
-- **Chat-first execution timeline** — New conversations start in Agent mode, can be switched to Council before the first turn, and render tool calls, wait states, thought rows, and final results inline in the main transcript
-- **Dedicated live agent status + inline progress** — Agent conversations keep a separate live status surface for what the agent is doing now, while durable thought and progress rows still appear inline in the transcript where they help explain the run history
-- **Reasoning-aware agent traces** — Agent-side model requests now persist `llm.response.visible_output` artifacts, including visible content, provider-exposed reasoning when available, streamed visible deltas, and tool-call payloads for later debugging
-- **Progress-summary hardening** — The fallback progress-summary path now uses a larger response budget and disables summary-model reasoning so short inline progress rows are less likely to arrive clipped
-- **Branching resend flow** — Editing and resending an earlier user turn creates a durable branch instead of overwriting history
-- **Archive controls** — Conversations can be archived and restored from the chat UI
-- **Per-conversation workspaces** — Each conversation has an isolated workspace folder that chat tools can write into safely
-- **Chat tools + app bootstrap** — Workspace search and Python execution remain available in chat, and generated app work runs directly through the in-chat agent loop with app bootstrap and conversation-owned lease handling
-- **Reviewed knowledge workflow** — Conversations can produce proposed memory items that are reviewed, approved into `knowledge/`, and deleted later with tombstoned metadata; local preference approvals can also populate `knowledge/preferences.yaml`
-- **Generated app registry** — Apps are tracked durably, exposed in the cockpit at `/workspace/apps`, and hosted as real product routes at `/apps/<slug>`
-- **Session auth** — Cookie-based auth with bcrypt password
-- **Mobile-first UI + PWA shell** — Responsive layout with Android install support
+```env
+SESSION_SECRET_KEY=<generated-secret>
+AUTH_PASSWORD_HASH=<generated-bcrypt-hash>
+```
 
-## UI Overview
+## Model Configuration and Cost
 
-- **Chat** — Recent conversations live in the sidebar, new chats offer Agent or Council, and Agent conversations show a dedicated live status card plus inline thought/progress rows and the durable execution timeline.
-- **Background** — Background is currently an empty placeholder while the product runs fully chat-first agent execution.
-- **Settings** — The settings page now manages future-session defaults for Agent chat, Council, and the default agent loop model without extra roadmap or onboarding panels.
+The defaults are ordinary paid OpenRouter models. Model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) if a request returns a model-not-found or payment error.
 
-## Generated App Flow
+The main settings are:
 
-- Ask for app creation or app changes directly in Agent chat.
-- Open `/workspace/apps` to browse generated apps, inspect status, and jump to details.
-- Open `/apps/<slug>` to view the live generated app surface.
-- Generated app code lives under `frontend/app/apps/<slug>`, while app public assets live under `frontend/public/apps/<slug>`.
+| Variable | Development default | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | example value | Required for model requests |
+| `COUNCIL_MODELS` | Claude Sonnet 4.5, Gemini 2.5 Pro, GPT-4o | Models queried in Council mode |
+| `SYNTHESIZER_MODEL` | Claude Sonnet 4.5 | Combines Council responses |
+| `TASK_AGENT_MODEL` | Claude Haiku 4.5 | Runs multi-step Agent conversations; must support native tool calls |
+| `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
+| `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
+| `ALLOWED_DIRS` | blank | Optional comma-separated absolute directories |
+| `TAILSCALE_HOST` | blank | Optional Tailscale IP or MagicDNS hostname |
+| `NTFY_TOPIC` | blank | Optional ntfy.sh topic |
 
-## Target App Flow
+Defaults for future conversations can also be changed from the Settings page after login.
 
-The intended steady-state product flow for generated apps is:
+## Phone Access with Tailscale
 
-1. Start an Agent chat.
-2. Ask the agent to create an app.
-3. The agent calls the app bootstrap tool, receives the app directory and scaffold, and keeps working in that same chat.
-4. The agent reads and writes files in the generated app directory directly from the in-chat tool loop.
-5. The agent returns in the same chat when the change is done.
-6. On later turns, the agent fetches or refreshes the app lease if needed, makes further edits, and returns in that same chat again.
+### Direct HTTP access
 
-Current behavior: app work runs through the same in-chat full agent loop used for Agent mode. The lease is fetched and persisted in agent context, with conversation ownership as the authoritative holder and run metadata retained for provenance.
+1. Install Tailscale on the development computer and phone and join both to the same tailnet.
+2. Get the computer's address with `tailscale ip -4` or `tailscale status`.
+3. Set the reachable IP or MagicDNS hostname in `.env`, for example:
 
-## Roadmap
+   ```env
+   TAILSCALE_HOST=100.x.y.z
+   ```
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| **1-4** | ✅ Done | Durable chat, reviewed knowledge, planning-first agent tasks, and runtime-efficiency groundwork |
-| **5** | ✅ Substrate shipped | Generated app registry, `/workspace/apps`, real `/apps/<slug>` routes, explicit app write roots, and in-chat app bootstrap |
-| **6** | 🔜 Next | Browser automation, screenshots, DOM inspection, and runtime interaction tooling |
-| **7+** | 📋 Planned | Deterministic verification, stronger app-builder specialization, and richer productized app management |
+4. Restart both development servers so backend CORS and Next.js development origins are rebuilt.
+5. Open `http://100.x.y.z:3000` from the phone.
 
-See [PLAN.md](PLAN.md) for the full roadmap and verification criteria.
+The browser uses the frontend origin for `/api` requests, and Next.js proxies them to the backend on the development computer. Port 8000 does not need to be opened separately to the phone.
 
----
+### HTTPS with Tailscale Serve
 
-## Phone Access (Tailscale)
+For a tailnet-only HTTPS URL, set `TAILSCALE_HOST` to the computer's full MagicDNS name, restart the servers, and proxy the frontend with [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve):
 
-1. Install [Tailscale](https://tailscale.com) on your PC and phone, then sign both into the same tailnet.
-2. On the PC, get the reachable address with `tailscale status` or `tailscale ip -4`.
-3. If you want to use a MagicDNS name instead of the raw `100.x.y.z` IP, set `TAILSCALE_HOST=your-machine.tail1234.ts.net` in the repo root `.env`.
-4. Start both servers. The backend already listens on `0.0.0.0:8000`, and the frontend dev server already listens on `0.0.0.0:3000`.
-5. Open the frontend from your phone at `http://100.x.y.z:3000` or `http://your-machine.tail1234.ts.net:3000`.
-6. No router port forwarding is needed as long as both devices stay connected to Tailscale.
-7. In Chrome or Safari, install it as a home-screen app if you want the PWA shell.
+```powershell
+tailscale serve --bg 3000
+tailscale serve status
+```
 
-The backend at port `8000` is still the API and docs endpoint. The browser entrypoint is the frontend on port `3000` unless you later ship a static frontend build behind FastAPI.
+Open the HTTPS URL printed by Tailscale. Tailscale terminates HTTPS and forwards traffic to the Next.js server on port 3000. To remove the proxy:
 
-For HTTPS (useful for stricter cookie handling and some PWA features), run `tailscale cert your-machine.tail1234.ts.net` and configure uvicorn with the cert.
+```powershell
+tailscale serve off
+```
 
----
+No router port forwarding is required for either approach.
 
-## API Reference
+## Generated Apps
 
-Interactive docs available at **[http://localhost:8000/docs](http://localhost:8000/docs)** when the backend is running.
+Ask for a new app or an update from an Agent conversation. The relevant paths are:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth/login` | POST | Login with password |
-| `/api/auth/logout` | POST | Clear session |
-| `/api/auth/status` | GET | Check if authenticated |
-| `/api/chat` | POST | Compatibility chat endpoint for streaming or council mode |
-| `/api/chat/settings` | GET, PUT | Read or update defaults for new conversations |
-| `/api/chat/models` | GET | List configured models |
-| `/api/conversations` | GET, POST | List conversations or create a conversation |
-| `/api/conversations/{id}` | GET | Fetch transcript detail, branches, memory, and workspace info |
-| `/api/conversations/{id}/messages` | POST | Append a user message and execute a turn |
-| `/api/conversations/{id}/branches/resend` | POST | Create a branch by editing and resending a prior user turn |
-| `/api/conversations/{id}/tools` | POST | Run chat tools such as workspace search or Python execution in the active conversation |
-| `/api/conversations/{id}/archive` | POST | Archive a conversation |
-| `/api/conversations/{id}/unarchive` | POST | Restore an archived conversation |
-| `/api/conversations/{id}/events` | GET | Inspect conversation events and artifacts |
-| `/api/apps` | GET, POST | List generated apps or create one directly through the registry |
-| `/api/apps/{id}` | GET, PATCH | Inspect or update a generated app |
-| `/api/apps/slug/{slug}` | GET | Fetch a generated app by route slug |
-| `/api/knowledge/review-items` | GET | List proposed and reviewed memory items |
-| `/api/knowledge/documents` | GET | Browse approved knowledge documents |
-| `/api/knowledge/memory-items/{id}/approve` | POST | Approve a reviewed memory item into `knowledge/` |
-| `/api/knowledge/memory-items/{id}` | DELETE | Delete an approved knowledge item and tombstone the DB row |
-| `/api/health` | GET | Health check |
+- `frontend/generated-apps/<slug>` — authoritative editable source for an app
+- `frontend/public/apps/<slug>` — public assets for that app
+- `frontend/app/apps/<slug>` — synchronized Next.js route copy used by the live development server
+- `/workspace/apps` — app management UI
+- `/apps/<slug>` — live app URL
+
+Generated app and conversation runtime data are intentionally ignored by Git.
+
+## Development Commands
+
+Backend:
+
+```powershell
+cd backend
+uv run pytest
+```
+
+Frontend:
+
+```powershell
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+## Troubleshooting
+
+### `uv` or `npm` is not recognized
+
+Confirm the command is available in a new terminal:
+
+```powershell
+uv --version
+npm --version
+```
+
+Install uv with `python -m pip install uv`. Install a supported Node.js release if `npm` is missing.
+
+### Login always says the password is invalid
+
+For development mode, confirm the copied `.env` contains an actually empty value:
+
+```env
+AUTH_PASSWORD_HASH=
+```
+
+Restart the backend after changing it. If a hash is configured, only the corresponding password will work.
+
+### The frontend says it cannot reach the backend
+
+Open [http://localhost:8000/api/health](http://localhost:8000/api/health). If it fails, inspect the backend terminal before debugging the frontend. The development proxy expects the backend on port 8000.
+
+### A model request returns 402, 404, or a provider error
+
+Check that the OpenRouter key is valid, the account has sufficient credit, and every configured model ID is currently available. Update `.env` or choose different defaults from Settings.
+
+### Tailscale loads the page but hot reload is blocked
+
+Set `TAILSCALE_HOST` to the exact IP or hostname used in the browser and restart the frontend. Next.js reads allowed development origins only when it starts.
+
+### Port 3000 or 8000 is already in use
+
+Stop the other process using the port. The frontend proxy and documented URLs assume the default ports, so changing them also requires updating `frontend/next.config.ts`.
+
+## Repository Layout
+
+```text
+AI-Cockpit/
+├── backend/                 FastAPI API, agent runtime, persistence, tests
+├── frontend/                Next.js UI and generated-app route host
+├── docs/ARCHITECTURE.md     Current implementation architecture
+├── knowledge/               Approved local knowledge and preference template
+├── .env.example             Safe local configuration template
+├── start-backend.ps1        Portable Windows backend launcher
+└── start-frontend.ps1       Portable Windows frontend launcher
+```
+
+Interactive API details are available from `/docs` while the backend is running.
+
+## Current Limitations
+
+- This is a development-oriented local application, not a hardened production deployment.
+- Agent mode can execute tools and write within configured conversation/app workspaces. Review model-produced changes before relying on them.
+- Generated apps do not yet have browser-driven verification and automatic repair loops.
+- Interrupted runs are persisted but are not automatically resumed after a backend restart.

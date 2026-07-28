@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Clock3, FileStack, FolderOpen, GitBranch, Layers3 } from "lucide-react";
+import { Clock3, FileStack, FolderOpen, GitBranch, Layers3 } from "lucide-react";
 import clsx from "clsx";
 
 import type { ConversationArtifactView, ConversationDetail, ConversationEventView } from "../../lib/api";

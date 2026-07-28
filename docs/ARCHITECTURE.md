@@ -7,7 +7,6 @@ This document describes the current architecture of AI Cockpit as it exists in t
 ## Related Docs
 
 - [README.md](../README.md) for setup, runtime entrypoints, and the high-level product overview
-- [PLAN.md](../PLAN.md) for the remaining roadmap and next implementation phases
 
 ## System Overview
 
@@ -71,7 +70,7 @@ Next.js frontend  ->  FastAPI backend  ->  OpenRouter
 
 - Durable conversational state lives in SQLite through SQLAlchemy async and Alembic-managed schema.
 - Per-conversation generated files live under the configured conversation workspace root.
-- Generated app runtime files for durable app surfaces live under `frontend/app/apps/<slug>`, with public assets under `frontend/public/apps/<slug>`.
+- Authoritative generated app source lives under `frontend/generated-apps/<slug>`, public assets live under `frontend/public/apps/<slug>`, and the registry synchronizes healthy source trees into `frontend/app/apps/<slug>` for Next.js routing.
 - Verifier scenarios exercise the same generated-app builder path but clean any transient `verifier-*` scaffold and asset roots after each run so the route tree stays reserved for durable surfaces.
 - Approved memory is written into markdown files under `knowledge/notes/` or structured entries in `knowledge/preferences.yaml`.
 - Approved knowledge is browsable in-app and readable by chat tools, without a separate retrieval index yet.
@@ -203,8 +202,8 @@ Implemented responsibilities:
 - compacts long conversation history into durable summary artifacts and reuses those summaries on later turns
 - applies more aggressive cold-cache microcompaction when session cache state indicates that prompt reuse is likely expired
 - persists streaming chunks as events for Agent mode
-- relays transient `agent_stream` progress and thought updates during active agent runs so the frontend can update status before durable reloads catch up
-- projects durable `agent.thought.summary` and `agent.progress.summary` events back into the transcript while keeping a separate live status surface for the currently active step
+- relays transient assistant text, reasoning, and tool-lifecycle updates during active agent runs so the frontend can update in place before durable reloads catch up
+- projects durable assistant text, thought rows, and tool activity into the ordered timeline while keeping a separate live status surface for the active run
 - persists per-model events and artifacts for council branches
 - persists synthesized output as the final assistant transcript message
 - carries branch metadata and parent event references through resend flows
@@ -320,12 +319,12 @@ Implemented responsibilities:
 - preserves the product's plan-first behavior through native plan/finalize/ask-user tool semantics rather than a bespoke decision-envelope hot path
 - pauses for plan feedback by default, with an explicit skip-feedback path at task creation time
 - compacts older task history into durable summary artifacts for later decisions
-- records prompt metrics, raw `llm.response.visible_output` artifacts, streamed thought text, progress summaries, tool events, plan artifacts, and run-summary artifacts into the conversation store
+- records prompt metrics, raw `llm.response.visible_output` artifacts, streamed assistant text and reasoning, tool events, plan artifacts, and run-summary artifacts into the conversation store
 - batches tool-call durability and only checkpoints active-run metadata on forced lifecycle boundaries, every 10 tool steps, or after 5 seconds of active execution time
 - prefers provider-exposed reasoning for transcript thought rows when available, and falls back to visible assistant text only when no reasoning blocks were returned
-- derives short progress summaries separately from transcript thought text so the UI can show status without depending on raw tool-call narration
-- falls back to a dedicated summary-model pass when the native tool loop returns no useful visible progress text
-- uses a larger progress-summary response budget and explicitly disables summary-model reasoning so fallback progress rows are less likely to be clipped by hidden thinking tokens
+- emits deterministic tool-lifecycle descriptions such as `Reading…` → `Read…`, using a stable activity id so the frontend updates one row instead of appending replacements
+- treats assistant text as optional on tool-call turns, persists model-provided visible text when present, and does not invoke a secondary progress-summary model
+- instructs the model not to narrate routine tool calls; user-facing text before completion is reserved for material findings, corrections, or blockers
 - restores deferred tool-step history and step counters from persisted events before resuming a run, so resume does not depend on every live progress change having been checkpointed
 - enforces workspace boundaries through the shared tool context
 
@@ -422,7 +421,7 @@ Examples of current event types:
 - `agent.plan.created`
 - `agent.plan.feedback.skipped`
 - `agent.thought.summary`
-- `agent.progress.summary`
+- `agent.text.output`
 - `agent.tool.called`
 - `agent.tool.completed`
 - `agent.question.asked`
@@ -436,7 +435,7 @@ Examples of current event types:
 
 #### `conversation_messages`
 
-Transcript projection for the normal chat UI. This lets the frontend load the durable transcript without replaying the full event stream. Agent progress summaries stay in the event stream and drive the dedicated live-status surface instead of being projected as normal transcript rows.
+Transcript projection for normal user and final assistant messages. Ordered reasoning, visible model text, plans, questions, and tool activity are stored as durable timeline items so the frontend does not need to reconstruct the current UI from the raw event log.
 
 #### `conversation_artifacts`
 
@@ -507,7 +506,7 @@ The frontend uses the Next.js app router.
 Current route groups:
 
 - `frontend/app/login` for authentication
-- `frontend/app/apps` for durable generated app routes
+- `frontend/app/apps` for synchronized generated app routes and the metadata/error fallback
 - `frontend/app/(app)/chat` for the main chat surface
 - `frontend/app/(app)/workspace/apps` for cockpit app management and app detail pages
 - `frontend/app/(app)/background` for the background run dashboard
@@ -581,13 +580,15 @@ Current behavior:
 The apps surfaces are split intentionally:
 
 - `frontend/app/(app)/workspace/apps` is the cockpit management UI
-- `frontend/app/apps/[slug]` is the real generated app runtime surface
+- `frontend/generated-apps/<slug>` is the authoritative editable app source
+- `frontend/app/apps/<slug>` is the synchronized Next.js runtime route
+- `frontend/app/apps/[slug]` is the metadata/error fallback when no healthy synchronized route exists
 
 Current behavior:
 
 - the cockpit apps page lists generated apps, their status, verification state, and route path
 - the cockpit app detail page shows contract paths, provenance, write roots, and manifest data
-- the runtime app route renders the scaffolded app page directly from the generated app directory
+- registry reads and updates synchronize healthy generated source into its exact live route without pruning unrelated apps
 - verifier runs clean up any transient `verifier-*` app scaffold after the scenario completes instead of leaving scratch routes behind
 - interactive edits to generated apps are tracked through conversation runs and app lease metadata rather than a separate task-first control plane
 
@@ -682,11 +683,10 @@ Current behavior:
 - `frontend/lib/chat-history.ts`: durable persisted timeline projection
 - `frontend/lib/agent-stream-state.ts`: transient live overlay state
 
-### Knowledge and Planning
+### Knowledge and Documentation
 
 - `knowledge/preferences.yaml`: structured preferences store
 - `knowledge/notes/`: approved memory notes and future knowledge corpus
-- `PLAN.md`: forward-looking product roadmap
 - `docs/ARCHITECTURE.md`: current-state architecture reference
 
 ## Validation Surface
@@ -720,4 +720,4 @@ The codebase has already crossed the main runtime, persistence, and frontend dec
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 
-That direction is reflected in `PLAN.md` and should remain the default assumption for future changes unless the underlying architecture changes materially.
+This document should be updated whenever the underlying architecture changes materially.

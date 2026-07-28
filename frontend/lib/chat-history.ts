@@ -436,8 +436,10 @@ export function mapConversationEventMessages(events: ConversationEventView[]): C
       return left.sortOrder - right.sortOrder;
     })
     .map((entry) => {
-      const { sortTime, sortOrder, ...timelineEntry } = entry;
-      return timelineEntry;
+      const timelineEntry: Partial<TimelineEntry> = { ...entry };
+      delete timelineEntry.sortTime;
+      delete timelineEntry.sortOrder;
+      return timelineEntry as ChatHistoryMessage;
     });
 }
 

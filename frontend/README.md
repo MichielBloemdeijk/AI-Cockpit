@@ -7,7 +7,7 @@ This folder contains the Next.js frontend for AI Cockpit. It is the authenticate
 From this folder:
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -18,6 +18,7 @@ Useful commands:
 - `npm run dev` to start the Next.js dev server
 - `npm run lint` to run ESLint
 - `npm run test` to run the Vitest suite
+- `npm run build` to run the production compilation and TypeScript checks
 
 ## Main Surfaces
 
@@ -26,7 +27,8 @@ Useful commands:
 - `app/(app)/knowledge` — reviewed memory queue and approved knowledge browser
 - `app/(app)/settings` — model defaults for future sessions and the default agent-loop model
 - `app/(app)/workspace/apps` — generated app management views
-- `app/apps` — live generated app runtime routes
+- `generated-apps` — authoritative generated app source trees (runtime content, Git-ignored)
+- `app/apps` — synchronized generated app routes plus the tracked `[slug]` fallback
 - `app/login` — authentication entrypoint
 
 ## Key Modules

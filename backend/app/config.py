@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # LLM Council
     council_models: str = (
         "anthropic/claude-sonnet-4-5,"
-        "google/gemini-pro-1.5,"
+        "google/gemini-2.5-pro,"
         "openai/gpt-4o"
     )
     synthesizer_model: str = "anthropic/claude-sonnet-4-5"
