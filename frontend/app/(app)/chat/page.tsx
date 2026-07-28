@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Archive, GitBranch, Layers3, Loader2, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
+import { Archive, GitBranch, Layers3, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import clsx from "clsx";
 import { ChatActionErrorBanner } from "@/components/chat/ChatActionErrorBanner";
 import { ConversationDetailsPanel } from "@/components/chat/ConversationDetailsPanel";
@@ -11,7 +11,7 @@ import { ChatInput, type ChatComposerMode } from "@/components/ChatInput";
 import { formatConversationModeLabel } from "@/components/chat/formatters";
 import { useChat } from "@/lib/hooks";
 import { ConversationSessionMetadata, getChatSettings } from "@/lib/api";
-import { formatTokenCount, formatUsageCost, summarizeConversationUsage } from "@/lib/usage";
+import { formatUsageCost, summarizeConversationUsage } from "@/lib/usage";
 
 function buildNewConversationMetadata(defaults: ConversationSessionMetadata): ConversationSessionMetadata {
   return { ...defaults, mode: "single" };
@@ -91,7 +91,6 @@ export default function ChatPage() {
     : null;
   const usageSummary = summarizeConversationUsage(events, artifacts);
   const sessionCostLabel = formatUsageCost(usageSummary.totalUsage?.cost);
-  const sessionTokenLabel = formatTokenCount(usageSummary.totalUsage?.total_tokens);
   const hasUsageSummary = usageSummary.requestCount > 0;
   const hasConversationDetails = Boolean(activeConversationId && (events.length > 0 || artifacts.length > 0 || activeConversation?.workspace?.files.length));
 
@@ -401,7 +400,7 @@ export default function ChatPage() {
               {actionError && <ChatActionErrorBanner error={actionError} onDismiss={clearActionError} />}
               {messages.map((msg) => (
                 <ChatMessage
-                  key={msg.id}
+                  key={msg.activityId ?? msg.id}
                   message={msg}
                   onEdit={msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
                 />

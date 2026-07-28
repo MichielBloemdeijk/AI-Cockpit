@@ -603,6 +603,9 @@ class ChatOrchestrator:
                 error_text=error_text,
             )
 
+            async for event_frame in _drain_run_events():
+                yield event_frame
+
             if response.error:
                 yield {
                     "type": "error",
@@ -611,8 +614,6 @@ class ChatOrchestrator:
                     "run_id": response.run_id,
                 }
                 return
-            if response.content:
-                yield {"type": "chunk", "content": response.content}
             yield {
                 "type": "done",
                 "conversation_id": response.conversation_id,

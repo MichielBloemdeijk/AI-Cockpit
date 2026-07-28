@@ -4,7 +4,73 @@ import pytest
 
 from app.db.session import initialize_engine
 from app.services import conversation_store as conversation_store_module
+from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import conversation_store
+from app.services.conversation_timeline import build_tool_result_timeline_item
+
+
+def test_app_initialize_activity_lists_scaffolded_files():
+    item = build_tool_result_timeline_item(
+        run_id="run-1",
+        step=1,
+        tool_name="app_initialize",
+        arguments={"title": "Hello World"},
+        ok=True,
+        output="Created generated app 'Hello World' at /apps/hello-world.",
+        result_metadata={
+            "app": {
+                "title": "Hello World",
+                "scaffolded_files": [
+                    "frontend/generated-apps/hello-world/page.tsx",
+                    "frontend/generated-apps/hello-world/styles.css",
+                ],
+            }
+        },
+    )
+
+    assert item["content"] == "Initialized Hello World"
+    assert item["code"] == (
+        "Created files:\n"
+        "frontend/generated-apps/hello-world/page.tsx\n"
+        "frontend/generated-apps/hello-world/styles.css"
+    )
+
+
+@pytest.mark.asyncio
+async def test_timeline_projection_replaces_activity_in_place():
+    initialize_engine()
+
+    conversation = await conversation_store.create_conversation(mode_hint="single")
+    run = await conversation_store.start_run(conversation.id, kind="assistant")
+    activity_id = f"tool:{run.id}:1:file_read"
+    first_event = await conversation_store.append_timeline_item(
+        conversation.id,
+        run_id=run.id,
+        item_payload={
+            "item_id": activity_id,
+            "role": "assistant",
+            "kind": "tool_call",
+            "content": "Reading lib/hooks.ts",
+        },
+    )
+    await conversation_store.append_timeline_item(
+        conversation.id,
+        run_id=run.id,
+        item_payload={
+            "item_id": activity_id,
+            "role": "assistant",
+            "kind": "tool_result",
+            "content": "Read lib/hooks.ts",
+        },
+    )
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    timeline_items = conversation_read_model._build_timeline_items(events)
+
+    assert len(timeline_items) == 1
+    assert timeline_items[0]["kind"] == "tool_result"
+    assert timeline_items[0]["content"] == "Read lib/hooks.ts"
+    assert timeline_items[0]["sequence"] == first_event.sequence
 
 
 @pytest.mark.asyncio
@@ -155,7 +221,8 @@ async def test_record_agent_tool_result_persists_full_success_lifecycle():
         "metadata": {"path": "frontend/lib/hooks.ts"},
     }
     assert events[2].payload_json["kind"] == "tool_result"
-    assert events[2].payload_json["content"] == "Finished reading lib/hooks.ts"
+    assert events[2].payload_json["content"] == "Read lib/hooks.ts"
+    assert events[2].payload_json["code"] == "hooks inspected"
     assert record.started_event.id == events[0].id
     assert record.completed_event.id == events[1].id
     assert record.artifact is not None

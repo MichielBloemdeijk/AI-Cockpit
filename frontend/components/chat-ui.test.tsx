@@ -59,7 +59,7 @@ describe("chat UI components", () => {
     expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
-  it("renders expandable thought messages", async () => {
+  it("keeps live reasoning collapsed until the user expands it", async () => {
     await act(async () => {
       root.render(
         <ChatMessage
@@ -67,15 +67,17 @@ describe("chat UI components", () => {
             id: "thought-1",
             role: "assistant",
             kind: "thought",
-            title: "Step 1",
+            title: "Thinking…",
             content: "Inspecting the existing timeline projector.",
+            streaming: true,
           }}
         />
       );
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain("Step 1");
+    expect(container.textContent).toContain("Thinking…");
+    expect(container.textContent).not.toContain("Inspecting the existing timeline projector.");
     const toggle = container.querySelector("button");
 
     await act(async () => {
@@ -84,6 +86,26 @@ describe("chat UI components", () => {
     });
 
     expect(container.textContent).toContain("Inspecting the existing timeline projector.");
+  });
+
+  it("renders assistant Markdown without a progress label", async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: "assistant-markdown",
+            role: "assistant",
+            kind: "message",
+            content: "The app now displays:\n- **Title**: Hello World\n- **Status**: Ready",
+          }}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("ul")).toBeTruthy();
+    expect(container.querySelector("strong")?.textContent).toBe("Title");
+    expect(container.textContent).not.toContain("Progress");
   });
 
   it("parses slash commands and sends the normalized payload", async () => {

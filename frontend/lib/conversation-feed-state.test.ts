@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   appendCommittedTimelineMessage,
   mergeConversationFeed,
-  upsertLocalLiveMessage,
 } from "./conversation-feed-state";
 import type { ChatMessage } from "./chat-state-types";
 
@@ -44,42 +43,52 @@ describe("conversation feed state", () => {
     ]);
   });
 
-  it("preserves the prior live assistant message when a tool row takes over", () => {
+  it("replaces a completed activity at its original position", () => {
     const currentMessages: ChatMessage[] = [
       {
-        id: "live-local:run-1:summary:1",
+        id: "live-local:tool:run-1:1:file_read",
+        activityId: "tool:run-1:1:file_read",
         runId: "run-1",
         step: 1,
         role: "assistant",
-        kind: "message",
-        content: "Inspecting the hooks flow",
+        kind: "tool_call",
+        content: "Reading lib/hooks.ts",
+        streaming: true,
+      },
+      {
+        id: "live-local:tool:run-1:2:file_read",
+        activityId: "tool:run-1:2:file_read",
+        runId: "run-1",
+        step: 2,
+        role: "assistant",
+        kind: "tool_call",
+        content: "Reading lib/api.ts",
         streaming: true,
       },
     ];
 
-    const nextMessages = upsertLocalLiveMessage(currentMessages, {
-      id: "live-local:run-1:tool:1:file_read",
+    const nextMessages = appendCommittedTimelineMessage(currentMessages, {
+      id: "tool:run-1:1:file_read",
+      activityId: "tool:run-1:1:file_read",
       runId: "run-1",
       step: 1,
       role: "assistant",
-      kind: "tool_call",
+      kind: "tool_result",
       title: "file read",
-      label: "Tool call",
-      content: "Reading lib/hooks.ts",
-      streaming: true,
-    }, {
-      preservePriorMessage: true,
+      label: "Tool result",
+      content: "Read lib/hooks.ts",
+      streaming: false,
     });
 
     expect(nextMessages).toEqual([
       expect.objectContaining({
-        id: "pending-local:run-1:summary:1",
-        content: "Inspecting the hooks flow",
+        id: "tool:run-1:1:file_read",
+        content: "Read lib/hooks.ts",
         streaming: false,
       }),
       expect.objectContaining({
-        id: "live-local:run-1:tool:1:file_read",
-        content: "Reading lib/hooks.ts",
+        id: "live-local:tool:run-1:2:file_read",
+        content: "Reading lib/api.ts",
         streaming: true,
       }),
     ]);

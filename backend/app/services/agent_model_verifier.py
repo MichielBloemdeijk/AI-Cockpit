@@ -18,7 +18,7 @@ from app.services.app_registry import app_registry_service
 from app.services.app_registry import resolve_generated_app_contract
 from app.services.agent_tools import get_agent_tool_provider_definitions
 from app.services.agent_runner import agent_runner
-from app.services.agent_runner import _native_control_tool_definitions, _native_plan_tool_definition
+from app.services.agent_prompt_builder import NATIVE_AGENT_PLAN_TOOL, _native_control_tool_definitions
 from app.services.chat_orchestrator import chat_orchestrator
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_read_model import conversation_read_model
@@ -132,17 +132,16 @@ def _tool_definition_names(definitions: Sequence[dict[str, Any]]) -> list[str]:
 
 
 def _build_harness_snapshot() -> HarnessSnapshot:
-    plan_tools = [_native_plan_tool_definition()]
     decision_tools = [*get_agent_tool_provider_definitions("openai"), *_native_control_tool_definitions()]
     return HarnessSnapshot(
         entrypoint="chat_orchestrator.run_single_response",
-        planner_prompt_source="agent_runner._request_native_turn(plan_required=True)",
-        decision_prompt_source="agent_runner._request_native_turn(plan_required=False)",
-        plan_tool_names=_tool_definition_names(plan_tools),
+        planner_prompt_source="agent_runner._request_native_turn (model-directed task_plan)",
+        decision_prompt_source="agent_runner._request_native_turn",
+        plan_tool_names=[NATIVE_AGENT_PLAN_TOOL],
         decision_tool_names=_tool_definition_names(decision_tools),
         notes=[
             "Verifier runs the real chat orchestrator and native agent runner.",
-            "Plan and action turns both come from the same phase-aware native loop used by the product flow.",
+            "The model chooses task_plan only when planning materially helps the task.",
             "Provider tool definitions are taken from agent_tools plus the native control tools.",
             "Only the user task message is synthetic; system prompts, context formatting, and tool schemas come from production code.",
         ],

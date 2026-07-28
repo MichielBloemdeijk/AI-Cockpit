@@ -105,8 +105,6 @@ describe("useChat single-model streaming", () => {
       opts.onAgentStream?.({ kind: "thought_done", run_id: "run-1", step: 1, content: "Looking around" });
       opts.onAgentStream?.({ kind: "text_delta", run_id: "run-1", step: 1, delta: "Reading " });
       opts.onAgentStream?.({ kind: "text_done", run_id: "run-1", step: 1, content: "Reading frontend/lib/hooks.ts" });
-      opts.onAgentStream?.({ kind: "summary_delta", run_id: "run-1", step: 1, delta: "Inspecting" });
-      opts.onAgentStream?.({ kind: "summary_done", run_id: "run-1", step: 1, content: "Inspecting the hooks flow" });
       opts.onAgentStream?.({ kind: "tool_started", run_id: "run-1", step: 1, tool: "file_read", content: "Reading lib/hooks.ts" });
       opts.onAgentStream?.({ kind: "tool_progress", run_id: "run-1", step: 1, tool: "file_read", content: "Loaded 1200 bytes from frontend/lib/hooks.ts" });
       opts.onAgentStream?.({ kind: "tool_done", run_id: "run-1", step: 1, tool: "file_read", ok: true, content: "Finished reading lib/hooks.ts" });
@@ -117,24 +115,10 @@ describe("useChat single-model streaming", () => {
         sequence: 1,
         created_at: "2026-05-01T00:00:01Z",
         payload_json: {
-          item_id: "assistant:run-1:text-1",
+          item_id: "assistant:run-1:1:text",
           role: "assistant",
-          kind: "message",
+          kind: "status",
           content: "Reading frontend/lib/hooks.ts",
-          step: 1,
-        },
-      });
-      opts.onEvent?.({
-        id: "event-2",
-        run_id: "run-1",
-        event_type: "chat.timeline.item.committed",
-        sequence: 2,
-        created_at: "2026-05-01T00:00:02Z",
-        payload_json: {
-          item_id: "assistant:run-1:summary-1",
-          role: "assistant",
-          kind: "message",
-          content: "Inspecting the hooks flow",
           step: 1,
         },
       });
@@ -173,7 +157,7 @@ describe("useChat single-model streaming", () => {
     container.remove();
   });
 
-  it("renders committed timeline items while keeping only one live row during streaming", async () => {
+  it("retains compact activities while keeping only the final answer live", async () => {
     const sessionMetadata = DEFAULT_SESSION_METADATA;
 
     let sendPromise: Promise<void> | undefined;
@@ -185,39 +169,27 @@ describe("useChat single-model streaming", () => {
     expect(apiMocks.streamChat).toHaveBeenCalledTimes(1);
     expect(apiMocks.getConversation).toHaveBeenCalledWith("conv-1", "main");
     expect(latestHook!.activeConversationId).toBe("conv-1");
-    expect(latestHook!.messages.filter((message) => message.role === "assistant")).toEqual([
-      expect.objectContaining({
-        role: "assistant",
-        content: "Reading frontend/lib/hooks.ts",
-        streaming: false,
-        kind: "message",
-      }),
-      expect.objectContaining({
-        role: "assistant",
-        content: "Inspecting the hooks flow",
-        streaming: false,
-        kind: "message",
-      }),
-      expect.objectContaining({
-        role: "assistant",
-        content: "Finished reading lib/hooks.ts",
-        streaming: false,
-        kind: "tool_result",
-        title: "file read",
-      }),
-      expect.objectContaining({
-        role: "assistant",
-        content: "hello world",
-        streaming: true,
-      }),
-    ]);
+    expect(latestHook!.messages).toContainEqual(expect.objectContaining({
+      content: "Looking around",
+      streaming: false,
+      kind: "thought",
+    }));
+    expect(latestHook!.messages).toContainEqual(expect.objectContaining({
+      content: "Reading frontend/lib/hooks.ts",
+      streaming: false,
+      kind: "status",
+    }));
+    expect(latestHook!.messages).toContainEqual(expect.objectContaining({
+      content: "Finished reading lib/hooks.ts",
+      streaming: false,
+      kind: "tool_result",
+    }));
     expect(latestHook!.messages.filter((message) => message.streaming)).toEqual([
       expect.objectContaining({
         role: "assistant",
         content: "hello world",
       }),
     ]);
-    expect(latestHook!.messages.filter((message) => message.id.startsWith("live-local:"))).toHaveLength(1);
     expect(latestHook!.agentStatus).toMatchObject({
       title: "Using a tool",
       content: "Loaded 1200 bytes from frontend/lib/hooks.ts",
@@ -262,21 +234,17 @@ describe("useChat single-model streaming", () => {
 
     expect(latestHook!.messages.some((message) => message.id.startsWith("live-agent:"))).toBe(false);
     expect(latestHook!.messages.some((message) => message.id === "event:event-2")).toBe(false);
-    expect(latestHook!.messages.filter((message) => message.role === "assistant")).toEqual([
-      expect.objectContaining({
-        content: "Reading lib/hooks.ts",
-        streaming: true,
-        kind: "tool_call",
-        title: "file read",
-      }),
-    ]);
-    expect(latestHook!.messages.filter((message) => message.streaming)).toEqual([
-      expect.objectContaining({
-        role: "assistant",
-        content: "Reading lib/hooks.ts",
-        kind: "tool_call",
-      }),
-    ]);
+    expect(latestHook!.messages).toContainEqual(expect.objectContaining({
+      content: "Use tool file_read",
+      kind: "thought",
+      title: "Thought",
+    }));
+    expect(latestHook!.messages).toContainEqual(expect.objectContaining({
+      content: "Reading lib/hooks.ts",
+      streaming: true,
+      kind: "tool_call",
+      title: "file read",
+    }));
     expect(latestHook!.messages.at(-1)).toMatchObject({
       role: "assistant",
       content: "Reading lib/hooks.ts",
@@ -314,9 +282,9 @@ describe("useChat single-model streaming", () => {
         sequence: 1,
         created_at: "2026-05-01T00:00:02Z",
         payload_json: {
-          item_id: "assistant:run-2b:summary-1",
+          item_id: "status:run-2b:1",
           role: "assistant",
-          kind: "message",
+          kind: "status",
           content: "Inspecting the hooks flow",
           step: 1,
         },
@@ -336,7 +304,7 @@ describe("useChat single-model streaming", () => {
       expect.objectContaining({
         content: "Inspecting the hooks flow",
         streaming: false,
-        kind: "message",
+        kind: "status",
       }),
       expect.objectContaining({
         content: "Reading lib/hooks.ts",
@@ -377,12 +345,17 @@ describe("useChat single-model streaming", () => {
       expect.objectContaining({
         content: "Planning the implementation",
         streaming: false,
-        kind: "message",
+        kind: "status",
+      }),
+      expect.objectContaining({
+        content: "Reading app/page.tsx",
+        streaming: true,
+        kind: "tool_call",
       }),
       expect.objectContaining({
         content: "Preparing the patch",
-        streaming: true,
-        kind: "message",
+        streaming: false,
+        kind: "status",
       }),
     ]);
 

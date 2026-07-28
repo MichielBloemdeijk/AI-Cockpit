@@ -86,14 +86,14 @@ def tool_response(tool_name: str, arguments: dict[str, object], *, content: str 
 def finalize_response(result: str = "Finished") -> ModelResponse:
     return ModelResponse(
         model="anthropic/claude-sonnet-4-5",
-        content="",
+        content=result,
         usage=None,
         tool_calls=[
             ToolCall(
                 id="call_finalize",
                 function=ToolCallFunction(
                     name="task_finalize",
-                    arguments=json.dumps({"summary": result, "result": result}),
+                    arguments=json.dumps({"summary": result}),
                 ),
             )
         ],

@@ -713,6 +713,7 @@ class ConversationStore:
         is_final: bool = True,
         payload_json: dict | None = None,
         branch_key: str | None = None,
+        timeline_item_id: str | None = None,
     ) -> tuple[EventRecord, MessageRecord]:
         async with session_scope() as session:
             repo = ConversationRepository(session)
@@ -736,7 +737,11 @@ class ConversationStore:
             )
             timeline_payload = None
             if role == MessageRole.assistant.value:
-                timeline_payload = build_assistant_message_timeline_item(message_id=message.id, content=content)
+                timeline_payload = build_assistant_message_timeline_item(
+                    message_id=message.id,
+                    content=content,
+                    item_id=timeline_item_id,
+                )
             elif role == MessageRole.user.value:
                 timeline_payload = build_user_message_timeline_item(message_id=message.id, content=content)
             if timeline_payload is not None:
@@ -786,6 +791,7 @@ class ConversationStore:
         tool_name: str,
         arguments: dict,
         ok: bool,
+        tool_call_id: str | None = None,
         output: str | None = None,
         error: str | None = None,
         result_metadata: dict | None = None,
@@ -798,12 +804,15 @@ class ConversationStore:
     ) -> AgentToolPersistenceRecord:
         async with session_scope() as session:
             repo = ConversationRepository(session)
+            started_payload: dict[str, object] = {"step": step, "tool": tool_name, "arguments": arguments}
+            if tool_call_id:
+                started_payload["tool_call_id"] = tool_call_id
             started_event = await repo.append_event(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 actor_kind=ActorKind.task.value,
                 event_type="agent.tool.called",
-                payload_json={"step": step, "tool": tool_name, "arguments": arguments},
+                payload_json=started_payload,
                 branch_key=branch_key,
             )
 
@@ -824,6 +833,8 @@ class ConversationStore:
                 "tool": tool_name,
                 "ok": ok,
             }
+            if tool_call_id:
+                completed_payload["tool_call_id"] = tool_call_id
             if ok:
                 completed_payload["output"] = output or ""
                 completed_payload["metadata"] = result_metadata
@@ -854,6 +865,7 @@ class ConversationStore:
                     output=output,
                     error=error,
                     result_metadata=result_metadata,
+                    tool_call_id=tool_call_id,
                 ),
                 branch_key=branch_key,
                 parent_event_id=completed_event.id,

@@ -299,10 +299,8 @@ function buildEventTimelineEntries(events: ConversationEventView[]): TimelineEnt
             id: `event:${event.id}`,
             role: "assistant",
             kind: "status",
-            label: "Progress",
-            title: "Progress",
             content: summary,
-            tone: "info",
+            tone: "default",
           });
         }
         return;

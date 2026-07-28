@@ -3,14 +3,17 @@ import { mapConversationMessages } from "./chat-history";
 import type { ChatMessage } from "./chat-state-types";
 
 function mapTimelineItemToChatMessage(item: TimelineItemView, id: string, streaming: boolean): ChatMessage {
+  const isLegacyProgressRow = item.kind === "status"
+    && (item.title === "Progress" || item.label === "Progress");
   return {
     id,
+    activityId: item.item_id,
     runId: item.run_id,
     step: item.step ?? undefined,
     role: item.role,
     kind: item.kind,
-    label: item.label ?? undefined,
-    title: item.title ?? undefined,
+    label: isLegacyProgressRow ? undefined : (item.label ?? undefined),
+    title: isLegacyProgressRow ? undefined : (item.title ?? undefined),
     content: item.content,
     createdAt: item.created_at,
     tone: item.tone ?? undefined,

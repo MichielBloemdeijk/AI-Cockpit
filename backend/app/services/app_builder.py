@@ -179,30 +179,22 @@ def _root_layout_template(app: GeneratedAppRecord) -> str:
     return f'''import "./styles.css";
 
 export default function {app.slug.replace("-", " ").title().replace(" ", "")}Layout({{ children }}: {{ children: React.ReactNode }}) {{
-  return children;
+  return <div className="generated-app-shell">{{children}}</div>;
 }}
 '''
 
 
-def _page_template(app: GeneratedAppRecord, route_path: str) -> str:
-    description = app.description or "This page was scaffolded for the task agent. Replace it with the real app UI and add nested routes under this directory as needed."
+def _page_template(app: GeneratedAppRecord, _route_path: str) -> str:
+    title = json.dumps(app.title, ensure_ascii=False)
+    description = json.dumps(app.description or "A focused space for your next idea.", ensure_ascii=False)
     return f'''export default function {app.slug.replace("-", " ").title().replace(" ", "")}Page() {{
   return (
-    <section className="generated-app-card">
-      <span className="generated-app-badge">Draft Surface Ready</span>
-      <h2>{app.title}</h2>
-      <p>{description}</p>
-      <div className="generated-app-meta">
-        <div>
-          <span>Route</span>
-          <strong>{route_path}</strong>
-        </div>
-        <div>
-          <span>Next Step</span>
-          <strong>Edit this page or add nested page.tsx files under this app directory.</strong>
-        </div>
-      </div>
-    </section>
+    <main className="generated-app-home">
+      <section className="generated-app-intro" aria-labelledby="app-title">
+        <h1 id="app-title">{{{title}}}</h1>
+        <p>{{{description}}}</p>
+      </section>
+    </main>
   );
 }}
 '''
@@ -210,7 +202,11 @@ def _page_template(app: GeneratedAppRecord, route_path: str) -> str:
 
 def _loading_template() -> str:
     return '''export default function Loading() {
-  return <div className="generated-app-card">Loading generated app...</div>;
+  return (
+    <main className="generated-app-home">
+      <div className="generated-app-state" role="status">Loading…</div>
+    </main>
+  );
 }
 '''
 
@@ -220,13 +216,13 @@ def _error_template() -> str:
 
 export default function Error({ error, reset }: { error: Error; reset: () => void }) {
   return (
-    <div className="generated-app-card generated-app-error">
-      <h2>Generated app error</h2>
-      <p>{error.message}</p>
-      <button type="button" onClick={reset} className="generated-app-button">
-        Retry
-      </button>
-    </div>
+    <main className="generated-app-home">
+      <section className="generated-app-state generated-app-error">
+        <h1>Something went wrong</h1>
+        <p>{error.message}</p>
+        <button type="button" onClick={reset} className="generated-app-button">Try again</button>
+      </section>
+    </main>
   );
 }
 '''
@@ -234,122 +230,132 @@ export default function Error({ error, reset }: { error: Error; reset: () => voi
 
 def _styles_template() -> str:
     return '''.generated-app-shell {
+  --app-background: #f4f4f5;
+  --app-surface: rgba(255, 255, 255, 0.78);
+  --app-border: rgba(24, 24, 27, 0.09);
+  --app-text: #18181b;
+  --app-muted: #52525b;
   min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  overflow: hidden;
   background:
-    radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 40%),
-    linear-gradient(180deg, #0f172a 0%, #09090b 100%);
-  color: #f8fafc;
+    radial-gradient(circle at 10% 5%, rgba(125, 211, 252, 0.36), transparent 34rem),
+    radial-gradient(circle at 92% 18%, rgba(196, 181, 253, 0.32), transparent 30rem),
+    var(--app-background);
+  color: var(--app-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.generated-app-header {
-  width: 100%;
-  padding: 24px 24px 0;
+.generated-app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(24, 24, 27, 0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(24, 24, 27, 0.025) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(to bottom, black, transparent 72%);
 }
 
-.generated-app-kicker {
-  margin: 0 0 8px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  font-size: 11px;
-  color: rgba(148, 163, 184, 0.9);
-}
-
-.generated-app-header h1 {
-  margin: 0;
-  font-size: clamp(2rem, 4vw, 3.25rem);
-}
-
-.generated-app-main {
-  flex: 1;
-  display: flex;
-  width: 100%;
-  min-height: 0;
-  padding: 0;
-}
-
-.generated-app-card {
-  flex: 1;
-  width: 100%;
-  min-height: 100%;
-  border: none;
-  background: transparent;
-  border-radius: 0;
-  padding: 28px;
-  box-shadow: none;
-}
-
-.generated-app-card h2 {
-  margin: 16px 0 12px;
-  font-size: clamp(1.5rem, 3vw, 2.25rem);
-}
-
-.generated-app-card p {
-  margin: 0;
-  color: rgba(226, 232, 240, 0.84);
-  line-height: 1.7;
-}
-
-.generated-app-badge {
-  display: inline-flex;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(59, 130, 246, 0.16);
-  border: 1px solid rgba(59, 130, 246, 0.35);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.generated-app-meta {
+.generated-app-home {
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
   display: grid;
-  gap: 16px;
-  margin-top: 24px;
+  place-items: center;
+  padding: clamp(1.25rem, 5vw, 4rem);
 }
 
-.generated-app-meta div {
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 20px;
-  padding: 16px;
-  background: rgba(2, 6, 23, 0.42);
+.generated-app-intro,
+.generated-app-card,
+.generated-app-state {
+  width: min(100%, 56rem);
+  border: 1px solid var(--app-border);
+  border-radius: clamp(1.5rem, 4vw, 2.25rem);
+  background: var(--app-surface);
+  box-shadow: 0 24px 80px rgba(24, 24, 27, 0.12), inset 0 1px rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(24px);
+  padding: clamp(2rem, 7vw, 5.5rem);
 }
 
-.generated-app-meta span {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: rgba(148, 163, 184, 0.88);
+.generated-app-intro h1,
+.generated-app-card h1,
+.generated-app-card h2,
+.generated-app-state h1 {
+  max-width: 14ch;
+  margin: 0;
+  font-size: clamp(2.5rem, 8vw, 5.75rem);
+  font-weight: 650;
+  line-height: 0.96;
+  letter-spacing: -0.055em;
+  text-wrap: balance;
 }
 
-.generated-app-meta strong {
-  display: block;
-  font-size: 14px;
-  line-height: 1.5;
+.generated-app-intro p,
+.generated-app-card p,
+.generated-app-state p {
+  max-width: 42rem;
+  margin: clamp(1.25rem, 3vw, 2rem) 0 0;
+  color: var(--app-muted);
+  font-size: clamp(1rem, 2.25vw, 1.25rem);
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
+.generated-app-state {
+  width: min(100%, 38rem);
+  padding: clamp(1.75rem, 5vw, 3rem);
+  color: var(--app-muted);
+}
+
+.generated-app-state h1 {
+  color: var(--app-text);
+  font-size: clamp(1.75rem, 5vw, 2.75rem);
+  line-height: 1.05;
 }
 
 .generated-app-error {
-  border-color: rgba(251, 113, 133, 0.35);
+  border-color: rgba(244, 63, 94, 0.22);
 }
 
 .generated-app-button {
-  margin-top: 16px;
+  margin-top: 1.5rem;
   border: 0;
   border-radius: 999px;
-  padding: 10px 16px;
-  background: #2563eb;
+  padding: 0.75rem 1.1rem;
+  background: var(--app-text);
   color: white;
+  font: inherit;
+  font-weight: 600;
   cursor: pointer;
+  transition: transform 150ms ease, opacity 150ms ease;
 }
 
-@media (max-width: 640px) {
-  .generated-app-header {
-    padding: 16px 16px 0;
+.generated-app-button:hover {
+  transform: translateY(-1px);
+  opacity: 0.86;
+}
+
+@media (prefers-color-scheme: dark) {
+  .generated-app-shell {
+    --app-background: #09090b;
+    --app-surface: rgba(24, 24, 27, 0.78);
+    --app-border: rgba(255, 255, 255, 0.09);
+    --app-text: #fafafa;
+    --app-muted: #a1a1aa;
+    background:
+      radial-gradient(circle at 10% 5%, rgba(14, 116, 144, 0.28), transparent 34rem),
+      radial-gradient(circle at 92% 18%, rgba(109, 40, 217, 0.24), transparent 30rem),
+      var(--app-background);
   }
 
-  .generated-app-card {
-    padding: 20px;
+  .generated-app-shell::before {
+    background-image: linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  }
+
+  .generated-app-intro,
+  .generated-app-card,
+  .generated-app-state {
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36), inset 0 1px rgba(255, 255, 255, 0.04);
   }
 }
 '''

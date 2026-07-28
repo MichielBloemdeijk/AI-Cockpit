@@ -7,8 +7,7 @@ import {
   GenericTimelineMessageRenderer,
   StatusMessageRenderer,
   ThoughtMessageRenderer,
-  ToolCallMessageRenderer,
-  ToolResultMessageRenderer,
+  ToolActivityMessageRenderer,
 } from "./chat-message/timeline-renderers";
 
 interface Props {
@@ -29,9 +28,8 @@ export function ChatMessage({ message, onEdit }: Props) {
     case "thought":
       return <ThoughtMessageRenderer message={message} />;
     case "tool_call":
-      return <ToolCallMessageRenderer message={message} />;
     case "tool_result":
-      return <ToolResultMessageRenderer message={message} />;
+      return <ToolActivityMessageRenderer message={message} />;
     case "status":
       return <StatusMessageRenderer message={message} />;
     default:

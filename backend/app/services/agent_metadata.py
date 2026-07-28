@@ -45,6 +45,16 @@ def _build_run_summary(metadata: dict[str, Any], final_summary: str) -> dict[str
             if question or answer:
                 questions_answered.append(f"Q: {question} A: {answer}".strip())
 
+    if "app_initialize" in tools_used:
+        payload = metadata.get("payload") if isinstance(metadata.get("payload"), dict) else {}
+        app = payload.get("app") if isinstance(payload, dict) else None
+        scaffolded_files = app.get("scaffolded_files") if isinstance(app, dict) else None
+        if isinstance(scaffolded_files, list):
+            for value in scaffolded_files:
+                path = str(value or "").strip()
+                if path and path not in changed_files:
+                    changed_files.append(path)
+
     return {
         "summary": final_summary,
         "tools_used": tools_used,

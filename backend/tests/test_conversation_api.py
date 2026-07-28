@@ -22,26 +22,17 @@ def _plan_payload(summary: str) -> dict[str, object]:
     }
 
 
-def _final_payload(result: str) -> dict[str, object]:
-    return {
-        "kind": "final",
-        "thought": "Done",
-        "summary": result,
-        "result": result,
-    }
-
-
 def _native_finalize_response(model: str, result: str) -> ModelResponse:
     return ModelResponse(
         model=model,
-        content="Done",
+        content=result,
         usage=None,
         tool_calls=[
             ToolCall(
                 id="call_task_finalize",
                 function=ToolCallFunction(
                     name="task_finalize",
-                    arguments=json.dumps({"summary": result, "result": result}),
+                    arguments=json.dumps({"summary": result}),
                 ),
             )
         ],
@@ -146,8 +137,15 @@ async def test_single_model_stream_returns_done_and_persists_assistant_message(m
         assert payloads_stream[0]["type"] == "metadata"
         assert payloads_stream[-1]["type"] in {"done", "error"}
         if payloads_stream[-1]["type"] == "done":
-            streamed_text = "".join(item["content"] for item in payloads_stream if item["type"] == "chunk")
-            assert "Streamed response complete" in streamed_text
+            final_items = [
+                item["event"]["payload_json"]
+                for item in payloads_stream
+                if item["type"] == "event"
+                and item["event"]["event_type"] == "chat.timeline.item.committed"
+                and item["event"]["payload_json"].get("kind") == "message"
+            ]
+            assert any(item.get("content") == "Streamed response complete." for item in final_items)
+            assert not any(item["type"] == "chunk" for item in payloads_stream)
 
         conversation_id = payloads_stream[0]["conversation_id"]
         detail = await client.get(f"/api/conversations/{conversation_id}")
@@ -265,7 +263,13 @@ async def test_stream_single_response_emits_metadata_before_run_completion(monke
         remaining_events.append(event)
 
     assert remaining_events[-1]["type"] == "done"
-    assert any(event.get("type") == "chunk" and event.get("content") == "Completed after metadata" for event in remaining_events)
+    assert any(
+        event.get("type") == "event"
+        and event["event"]["event_type"] == "chat.timeline.item.committed"
+        and event["event"]["payload_json"].get("content") == "Completed after metadata"
+        for event in remaining_events
+    )
+    assert not any(event.get("type") == "chunk" for event in remaining_events)
 
 
 @pytest.mark.asyncio

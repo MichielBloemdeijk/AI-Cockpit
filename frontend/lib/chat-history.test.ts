@@ -292,7 +292,7 @@ describe("mapConversationMessages", () => {
     expect(messages[1].content).toBe("lib/chat-history.ts");
   });
 
-  it("maps persisted progress summaries as visible status rows", () => {
+  it("maps legacy progress summaries as unlabeled status rows", () => {
     const detail: ConversationDetail = {
       id: "conversation-5",
       title: "Agent thread",
@@ -327,7 +327,7 @@ describe("mapConversationMessages", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].kind).toBe("status");
-    expect(messages[0].title).toBe("Progress");
+    expect(messages[0].title).toBeUndefined();
     expect(messages[0].content).toBe("Inspecting the chat history mapping.");
   });
 

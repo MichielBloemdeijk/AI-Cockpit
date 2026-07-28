@@ -22,7 +22,6 @@ import {
 } from "./agent-stream-state";
 import {
   isLocalLiveMessage,
-  isOptimisticUserMessage,
 } from "./conversation-message-lifecycle";
 import {
   appendCommittedTimelineMessage as appendCommittedTimelineMessageToFeed,
@@ -37,11 +36,11 @@ export interface ConversationToolPayload {
 }
 
 type LiveAssistantContentSource = "none" | "agent_stream" | "chunk";
-type LiveAssistantMessageKey = string | null;
 
 interface LiveAssistantUpdateDescriptor {
   mode: "append" | "replace";
   content: string;
+  streaming: boolean;
   messagePatch: Partial<ChatMessage>;
 }
 
@@ -51,12 +50,29 @@ function isLowSignalToolIntentSummary(content: string): boolean {
 
 function extractDisplayableAgentStreamContent(update: { kind: string; delta?: string; content?: string; tool?: string; ok?: boolean }): LiveAssistantUpdateDescriptor | null {
   switch (update.kind) {
+    case "thought_delta": {
+      const content = update.delta ?? "";
+      return content
+        ? {
+          mode: "append",
+          content,
+          streaming: true,
+          messagePatch: {
+            kind: "thought",
+            title: "Thinking…",
+            label: "Thinking",
+            tone: undefined,
+          },
+        }
+        : null;
+    }
     case "text_delta": {
       const content = update.delta ?? "";
       return content
         ? {
           mode: "append",
           content,
+          streaming: true,
           messagePatch: {
             kind: "message",
             title: undefined,
@@ -72,6 +88,7 @@ function extractDisplayableAgentStreamContent(update: { kind: string; delta?: st
         ? {
           mode: "append",
           content,
+          streaming: true,
           messagePatch: {
             kind: "message",
             title: undefined,
@@ -81,9 +98,23 @@ function extractDisplayableAgentStreamContent(update: { kind: string; delta?: st
         }
         : null;
     }
+    case "thought_done": {
+      const content = (update.content ?? "").trim();
+      return content
+        ? {
+          mode: "replace",
+          content,
+          streaming: false,
+          messagePatch: {
+            kind: "thought",
+            title: "Thought",
+            label: "Thinking",
+            tone: undefined,
+          },
+        }
+        : null;
+    }
     case "text_done":
-    case "summary_done":
-    case "progress":
     {
       const content = (update.content ?? "").trim();
       if (!content || isLowSignalToolIntentSummary(content)) {
@@ -92,11 +123,30 @@ function extractDisplayableAgentStreamContent(update: { kind: string; delta?: st
       return {
         mode: "replace",
         content,
+        streaming: false,
         messagePatch: {
-          kind: update.kind === "progress" ? "status" : "message",
-          title: update.kind === "progress" ? "Progress" : undefined,
-          label: update.kind === "progress" ? "Progress" : undefined,
-          tone: update.kind === "progress" ? "info" : undefined,
+          kind: "message",
+          title: undefined,
+          label: undefined,
+          tone: undefined,
+        },
+      };
+    }
+    case "summary_done":
+    case "progress": {
+      const content = (update.content ?? "").trim();
+      if (!content || isLowSignalToolIntentSummary(content)) {
+        return null;
+      }
+      return {
+        mode: "replace",
+        content,
+        streaming: update.kind === "progress",
+        messagePatch: {
+          kind: "status",
+          title: undefined,
+          label: undefined,
+          tone: undefined,
         },
       };
     }
@@ -112,6 +162,7 @@ function extractDisplayableAgentStreamContent(update: { kind: string; delta?: st
       return {
         mode: "replace",
         content,
+        streaming: !isDone,
         messagePatch: {
           kind: isDone ? "tool_result" : "tool_call",
           title: toolTitle,
@@ -125,20 +176,26 @@ function extractDisplayableAgentStreamContent(update: { kind: string; delta?: st
   }
 }
 
-function buildAgentStreamMessageKey(update: { kind: string; step: number; tool?: string }): LiveAssistantMessageKey {
+function buildAgentStreamMessageKey(update: { kind: string; run_id: string; step: number; tool?: string; activity_id?: string }): string | null {
+  if (update.activity_id) {
+    return update.activity_id;
+  }
   switch (update.kind) {
+    case "thought_delta":
+    case "thought_done":
+      return `thought:${update.run_id}:${update.step}`;
     case "text_delta":
     case "text_done":
-      return `text:${update.step}`;
+      return `assistant:${update.run_id}:${update.step}:text`;
     case "summary_delta":
     case "summary_done":
-      return `summary:${update.step}`;
+      return `status:${update.run_id}:${update.step}`;
     case "tool_started":
     case "tool_progress":
     case "tool_done":
-      return `tool:${update.step}:${update.tool ?? "tool"}`;
+      return `tool:${update.run_id}:${update.step}:${update.tool ?? "tool"}`;
     case "progress":
-      return `progress:${update.step}`;
+      return `status:${update.run_id}:${update.step}`;
     default:
       return null;
   }
@@ -182,8 +239,7 @@ export function useConversationActions({
   const abortRef = useRef<AbortController | null>(null);
   const optimisticMessageCounterRef = useRef(0);
   const liveAssistantContentSourceRef = useRef<LiveAssistantContentSource>("none");
-  const liveAssistantMessageKeyRef = useRef<LiveAssistantMessageKey>(null);
-  const liveAssistantMessageContentRef = useRef("");
+  const liveAssistantMessageContentRef = useRef(new Map<string, string>());
   const [actionError, setActionError] = useState<ChatActionError | null>(null);
 
   const clearActionError = useCallback(() => {
@@ -208,13 +264,12 @@ export function useConversationActions({
   }, [setMessages]);
 
   const clearLocalLiveMessage = useCallback(() => {
-    liveAssistantMessageKeyRef.current = null;
-    liveAssistantMessageContentRef.current = "";
+    liveAssistantMessageContentRef.current.clear();
     setMessages((prev) => prev.filter((message) => !isLocalLiveMessage(message)));
   }, [setMessages]);
 
-  const upsertLocalLiveMessage = useCallback((message: ChatMessage, options?: { preservePriorMessage?: boolean }) => {
-    setMessages((prev) => upsertLocalLiveMessageInFeed(prev, message, options));
+  const upsertLocalLiveMessage = useCallback((message: ChatMessage) => {
+    setMessages((prev) => upsertLocalLiveMessageInFeed(prev, message));
   }, [setMessages]);
 
   const appendCommittedTimelineMessage = useCallback((message: ChatMessage) => {
@@ -223,8 +278,7 @@ export function useConversationActions({
 
   const resetLiveAssistantState = useCallback(() => {
     liveAssistantContentSourceRef.current = "none";
-    liveAssistantMessageKeyRef.current = null;
-    liveAssistantMessageContentRef.current = "";
+    liveAssistantMessageContentRef.current.clear();
   }, []);
 
   const sendMessage = useCallback(async (content: string, sessionMetadata: ConversationSessionMetadata) => {
@@ -301,36 +355,34 @@ export function useConversationActions({
               if (!nextContent || !nextKey) {
                 return;
               }
-              const priorMessageKey = liveAssistantMessageKeyRef.current;
-              const priorContent = liveAssistantMessageKeyRef.current === nextKey ? liveAssistantMessageContentRef.current : "";
+              const priorContent = liveAssistantMessageContentRef.current.get(nextKey) ?? "";
               const content = nextContent.mode === "append"
                 ? `${priorContent}${nextContent.content}`
                 : nextContent.content;
+              liveAssistantMessageContentRef.current.set(nextKey, content);
               const nextLiveMessage: ChatMessage = {
-                id: `live-local:${activeStreamRunIdRef.current}:${nextKey}`,
+                id: `live-local:${nextKey}`,
+                activityId: nextKey,
                 runId: activeStreamRunIdRef.current,
                 step: update.step,
                 role: "assistant",
                 content,
-                streaming: true,
+                streaming: nextContent.streaming,
                 ...nextContent.messagePatch,
               };
-              liveAssistantMessageKeyRef.current = nextKey;
-              liveAssistantMessageContentRef.current = content;
-              upsertLocalLiveMessage(nextLiveMessage, {
-                preservePriorMessage: priorMessageKey !== null && priorMessageKey !== nextKey,
-              });
+              upsertLocalLiveMessage(nextLiveMessage);
               liveAssistantContentSourceRef.current = "agent_stream";
             },
             onChunk: (chunk) => {
               if (activeStreamRunIdRef.current) {
+                const priorChunkContent = liveAssistantMessageContentRef.current.get("chunk") ?? "";
                 const content = liveAssistantContentSourceRef.current === "chunk"
-                  ? `${liveAssistantMessageContentRef.current}${chunk}`
+                  ? `${priorChunkContent}${chunk}`
                   : chunk;
-                liveAssistantMessageKeyRef.current = "chunk";
-                liveAssistantMessageContentRef.current = content;
+                liveAssistantMessageContentRef.current.set("chunk", content);
                 upsertLocalLiveMessage({
                   id: `live-local:${activeStreamRunIdRef.current}:chunk`,
+                  activityId: `assistant:${activeStreamRunIdRef.current}:final`,
                   runId: activeStreamRunIdRef.current,
                   role: "assistant",
                   kind: "message",

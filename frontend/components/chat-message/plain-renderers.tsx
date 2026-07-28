@@ -2,12 +2,12 @@
 
 import { useState } from "react";
 import { Bot, ChevronDown, ChevronRight, Loader2, Pencil, User } from "lucide-react";
-import clsx from "clsx";
 
 import type { ChatMessage } from "../../lib/chat-state-types";
 import { formatTokenCount, formatUsageCost } from "../../lib/usage";
 
 import { CouncilResponses } from "./CouncilResponses";
+import { MarkdownContent } from "./MarkdownContent";
 
 function splitTaskMetadata(content: string): { before: string; startLine: string; metadata: string; after: string } | null {
   const lines = content.split("\n");
@@ -65,10 +65,10 @@ export function AssistantMessageRenderer({ message }: { message: ChatMessage }) 
             <Bot size={15} />
           </div>
           <div className="min-w-0 flex-1 space-y-1.5">
-            <div className="whitespace-pre-wrap text-sm leading-7 text-zinc-300">
+            <div className="text-sm leading-7 text-zinc-300">
               {inlineTaskMetadata ? (
                 <>
-                  {inlineTaskMetadata.before && <div className="mb-1 whitespace-pre-wrap">{inlineTaskMetadata.before}</div>}
+                  {inlineTaskMetadata.before && <MarkdownContent content={inlineTaskMetadata.before} className="mb-1" />}
                   <button
                     onClick={() => setTaskDetailsExpanded((current) => !current)}
                     className="flex w-full items-center gap-1.5 text-left text-sm text-zinc-300 transition-colors hover:text-zinc-100"
@@ -81,11 +81,11 @@ export function AssistantMessageRenderer({ message }: { message: ChatMessage }) 
                       {inlineTaskMetadata.metadata}
                     </pre>
                   )}
-                  {inlineTaskMetadata.after && <div className="mt-2 whitespace-pre-wrap">{inlineTaskMetadata.after}</div>}
+                  {inlineTaskMetadata.after && <MarkdownContent content={inlineTaskMetadata.after} className="mt-2" />}
                 </>
               ) : (
                 <>
-                  {message.content || (message.streaming && <Loader2 size={16} className="animate-spin inline" />)}
+                  {message.content ? <MarkdownContent content={message.content} /> : (message.streaming && <Loader2 size={16} className="inline animate-spin" />)}
                   {message.content && message.streaming && <Loader2 size={14} className="ml-2 inline animate-spin text-zinc-500" />}
                 </>
               )}

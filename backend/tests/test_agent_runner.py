@@ -20,7 +20,11 @@ from tests.agent_runner_fixtures import (
     no_tool_response as _no_tool_response,
     tool_response as _tool_response,
 )
-from app.services.agent_prompt_builder import NATIVE_AGENT_PLAN_TOOL, _parse_native_tool_arguments
+from app.services.agent_prompt_builder import (
+    NATIVE_AGENT_PLAN_TOOL,
+    _native_control_tool_definitions,
+    _parse_native_tool_arguments,
+)
 from app.services.agent_tools import ToolExecutionContext
 from app.services.agent_tools import ToolExecutionResult
 from app.services.agent_tools import build_tool_context
@@ -30,6 +34,46 @@ from app.services.agent_tools import run_python_execution
 from app.services.agent_tools import run_shell_command
 from app.services.agent_tools import run_workspace_search
 from app.services.conversation_store import conversation_store
+
+
+def test_finalize_tool_uses_visible_assistant_text_instead_of_a_result_argument():
+    definitions = {
+        definition["function"]["name"]: definition["function"]
+        for definition in _native_control_tool_definitions()
+    }
+
+    finalize_parameters = definitions["task_finalize"]["parameters"]
+    assert finalize_parameters["required"] == ["summary"]
+    assert set(finalize_parameters["properties"]) == {"summary"}
+
+
+def test_run_summary_counts_files_created_by_app_initialize():
+    metadata = {
+        "current_step": 1,
+        "history": [
+            {
+                "kind": "tool",
+                "tool": "app_initialize",
+                "arguments": {"title": "Hello World"},
+                "ok": True,
+            }
+        ],
+        "payload": {
+            "app": {
+                "scaffolded_files": [
+                    "frontend/generated-apps/hello-world/page.tsx",
+                    "frontend/generated-apps/hello-world/styles.css",
+                ]
+            }
+        },
+    }
+
+    summary = agent_run_support_module._build_run_summary(metadata, "Created the app.")
+
+    assert summary["changed_files"] == [
+        "frontend/generated-apps/hello-world/page.tsx",
+        "frontend/generated-apps/hello-world/styles.css",
+    ]
 
 
 @pytest.mark.asyncio
@@ -140,8 +184,10 @@ async def test_continue_run_uses_streaming_native_decision_for_anthropic_and_sep
             "run_id": run.id,
             "step": 1,
             "tool": "file_read",
+            "activity_id": f"tool:{run.id}:call_tool",
+            "tool_call_id": "call_tool",
             "ok": True,
-            "content": "Finished reading lib/hooks.ts",
+            "content": "Read lib/hooks.ts",
         }
         for update in stream_updates
     )
@@ -171,7 +217,7 @@ async def test_continue_run_uses_streaming_native_decision_for_anthropic_and_sep
 
 
 @pytest.mark.asyncio
-async def test_continue_run_does_not_commit_visible_text_timeline_item_before_finalize(monkeypatch):
+async def test_continue_run_promotes_visible_text_to_the_final_message(monkeypatch):
     _, run = await _create_agent_run()
 
     async def _fake_stream(messages, model, on_content_delta=None, **kwargs):
@@ -186,7 +232,7 @@ async def test_continue_run_does_not_commit_visible_text_timeline_item_before_fi
                     id="call_finalize",
                     function=ToolCallFunction(
                         name="task_finalize",
-                        arguments=json.dumps({"summary": "All done", "result": "All done"}),
+                        arguments=json.dumps({"summary": "All done"}),
                     ),
                 )
             ],
@@ -202,7 +248,17 @@ async def test_continue_run_does_not_commit_visible_text_timeline_item_before_fi
     timeline_events = [event for event in events if event.event_type == "chat.timeline.item.committed"]
 
     assert text_events == []
-    assert not any((event.payload_json or {}).get("item_id") == f"assistant:{run.id}:1:text" for event in timeline_events)
+    assert any(
+        (event.payload_json or {}).get("item_id") == f"assistant:{run.id}:1:text"
+        and (event.payload_json or {}).get("kind") == "message"
+        and (event.payload_json or {}).get("content") == "All done"
+        for event in timeline_events
+    )
+    assert not any(
+        event.event_type == "agent.progress.summary"
+        and (event.payload_json or {}).get("summary") == "Preparing final response"
+        for event in events
+    )
     assert any(
         (event.payload_json or {}).get("role") == "assistant"
         and (event.payload_json or {}).get("kind") == "message"
@@ -234,7 +290,7 @@ def test_parse_native_tool_arguments_recovers_malformed_task_plan_json():
 
 
 @pytest.mark.asyncio
-async def test_continue_run_skips_progress_summary_until_third_silent_tool_call(monkeypatch):
+async def test_continue_run_does_not_call_a_secondary_progress_model(monkeypatch):
     _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5")
     responses = [
         {"response": _tool_response("file_read", {"path": "frontend/lib/hooks.ts"})},
@@ -287,155 +343,6 @@ async def test_continue_run_skips_progress_summary_until_third_silent_tool_call(
     assert not any(event.payload_json.get("step") == 1 for event in progress_events)
     assert metric_events == []
     assert visible_summary_artifacts == []
-
-
-@pytest.mark.asyncio
-async def test_continue_run_generates_progress_summary_after_third_silent_tool_call(monkeypatch):
-    _, run = await _create_agent_run(
-        model="anthropic/claude-haiku-4.5",
-        silent_tool_call_streak=2,
-    )
-    responses = [
-        {"response": _tool_response("file_read", {"path": "frontend/lib/hooks.ts"})},
-        {"response": _finalize_response("Inspection complete.")},
-    ]
-    summary_calls = 0
-
-    async def _fake_stream(messages, model, on_content_delta=None, **kwargs):
-        return responses.pop(0)["response"]
-
-    async def _fake_summary(messages, model, **kwargs):
-        nonlocal summary_calls
-        summary_calls += 1
-        return ModelResponse(
-            model=model,
-            content="Inspecting hooks status flow",
-            usage=None,
-            tool_calls=[],
-            finish_reason="stop",
-        )
-
-    async def _fake_execute(*, context, tool, arguments):
-        return ToolExecutionResult(tool=tool, output="hooks inspected", metadata={})
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
-    monkeypatch.setattr(agent_runner_module, "chat_completion", _fake_summary)
-    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
-
-    await agent_runner_module.agent_runner.continue_run(run.id)
-
-    events = await conversation_store.list_events_for_run(run.conversation_id, run.id)
-    artifacts = await conversation_store.list_artifacts_for_run(run.conversation_id, run.id)
-    progress_events = [event for event in events if event.event_type == "agent.progress.summary"]
-    metric_events = [
-        event for event in events
-        if event.event_type == "llm.request.completed"
-        and isinstance(event.payload_json, dict)
-        and event.payload_json.get("request_kind") == "task.agent.progress.summary"
-    ]
-    visible_summary_artifacts = [
-        artifact for artifact in artifacts
-        if artifact.artifact_type == "llm.response.visible_output"
-        and isinstance(artifact.content_json, dict)
-        and artifact.content_json.get("request_kind") == "task.agent.progress.summary"
-    ]
-
-    assert summary_calls == 1
-    assert any(
-        event.payload_json == {"step": 1, "summary": "Inspecting hooks status flow"}
-        for event in progress_events
-    )
-    assert len(metric_events) == 1
-    assert any(
-        artifact.content_json == {
-            "request_kind": "task.agent.progress.summary",
-            "model": artifact.content_json.get("model"),
-            "content": "Inspecting hooks status flow",
-            "reasoning": "",
-            "reasoning_details": [],
-            "error": None,
-            "finish_reason": "stop",
-            "streamed_visible_deltas": [],
-            "tool_calls": [],
-        }
-        for artifact in visible_summary_artifacts
-    )
-
-
-@pytest.mark.asyncio
-async def test_continue_run_falls_back_when_progress_summary_is_incomplete(monkeypatch):
-    _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5", silent_tool_call_streak=2)
-    responses = [
-        {"response": _tool_response("file_read", {"path": "frontend/lib/hooks.ts"})},
-        {"response": _finalize_response("Inspection complete.")},
-    ]
-
-    async def _fake_stream(messages, model, on_content_delta=None, **kwargs):
-        return responses.pop(0)["response"]
-
-    async def _low_quality_summary(messages, model, **kwargs):
-        return ModelResponse(
-            model=model,
-            content="Reading the",
-            usage=None,
-            tool_calls=[],
-            finish_reason="stop",
-        )
-
-    async def _fake_execute(*, context, tool, arguments):
-        return ToolExecutionResult(tool=tool, output="hooks inspected", metadata={})
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
-    monkeypatch.setattr(agent_runner_module, "chat_completion", _low_quality_summary)
-    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
-
-    await agent_runner_module.agent_runner.continue_run(run.id)
-
-    events = await conversation_store.list_events_for_run(run.conversation_id, run.id)
-    progress_events = [event for event in events if event.event_type == "agent.progress.summary"]
-
-    assert any(
-        event.payload_json == {"step": 1, "summary": "Reading lib/hooks.ts"}
-        for event in progress_events
-    )
-
-
-@pytest.mark.asyncio
-async def test_continue_run_falls_back_when_progress_summary_hits_length_limit(monkeypatch):
-    _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5", silent_tool_call_streak=2)
-    responses = [
-        {"response": _tool_response("file_read", {"path": "frontend/lib/hooks.ts"})},
-        {"response": _finalize_response("Inspection complete.")},
-    ]
-
-    async def _fake_stream(messages, model, on_content_delta=None, **kwargs):
-        return responses.pop(0)["response"]
-
-    async def _truncated_summary(messages, model, **kwargs):
-        return ModelResponse(
-            model=model,
-            content="Writing",
-            usage=None,
-            tool_calls=[],
-            finish_reason="length",
-        )
-
-    async def _fake_execute(*, context, tool, arguments):
-        return ToolExecutionResult(tool=tool, output="hooks inspected", metadata={})
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
-    monkeypatch.setattr(agent_runner_module, "chat_completion", _truncated_summary)
-    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
-
-    await agent_runner_module.agent_runner.continue_run(run.id)
-
-    events = await conversation_store.list_events_for_run(run.conversation_id, run.id)
-    progress_events = [event for event in events if event.event_type == "agent.progress.summary"]
-
-    assert any(
-        event.payload_json == {"step": 1, "summary": "Reading lib/hooks.ts"}
-        for event in progress_events
-    )
 
 
 @pytest.mark.asyncio
@@ -522,8 +429,10 @@ async def test_continue_run_uses_hidden_reasoning_for_thoughts(monkeypatch):
             "run_id": run.id,
             "step": 1,
             "tool": "file_read",
+            "activity_id": f"tool:{run.id}:call_tool",
+            "tool_call_id": "call_tool",
             "ok": True,
-            "content": "Finished reading lib/hooks.ts",
+            "content": "Read lib/hooks.ts",
         }
         for update in stream_updates
     )
@@ -582,7 +491,7 @@ async def test_continue_run_retries_when_native_decision_returns_zero_tool_calls
     assert len(captured_messages) >= 2
     retry_feedback = str(captured_messages[1][-1].content)
     assert "produced zero tool calls" in retry_feedback
-    assert "A native tool call is required now" in retry_feedback
+    assert "An actionable native tool call is required now" in retry_feedback
     assert any(
         event.payload_json == {"step": 1, "text": "I am checking one more detail before I act."}
         for event in text_events
@@ -608,7 +517,7 @@ async def test_continue_run_preserves_visible_text_before_zero_tool_call_failure
 
     monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
 
-    with pytest.raises(ValueError, match="Native tool decision must return exactly one tool call, got 0"):
+    with pytest.raises(ValueError, match="Native tool decision must return at least one actionable tool call, got 0"):
         await agent_runner_module.agent_runner.continue_run(run.id, stream_callback=_stream_callback)
 
     stored_run = await conversation_store.get_run(run.id)
@@ -632,93 +541,170 @@ async def test_continue_run_preserves_visible_text_before_zero_tool_call_failure
         for event in text_events
     )
     assert any(
-        event.payload_json == {"error": "Native tool decision must return exactly one tool call, got 0"}
+        event.payload_json == {"error": "Native tool decision must return at least one actionable tool call, got 0"}
         for event in failure_events
     )
 
 
 @pytest.mark.asyncio
-async def test_ensure_execution_plan_records_visible_output_artifact(monkeypatch):
-    conversation, run = await _create_unplanned_agent_run()
+async def test_continue_run_executes_multiple_external_tool_calls_in_one_native_turn(monkeypatch):
+    _, run = await _create_agent_run(model="deepseek/deepseek-v4-flash")
+    executed_tools: list[tuple[str, dict[str, object]]] = []
+    responses = [
+        ModelResponse(
+            model="deepseek/deepseek-v4-flash",
+            content="",
+            usage=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_readme",
+                    function=ToolCallFunction(name="file_read", arguments=json.dumps({"path": "README.md"})),
+                ),
+                ToolCall(
+                    id="call_architecture",
+                    function=ToolCallFunction(name="file_read", arguments=json.dumps({"path": "docs/ARCHITECTURE.md"})),
+                ),
+            ],
+            finish_reason="tool_calls",
+        ),
+        _finalize_response("Two facts recovered."),
+    ]
 
-    async def _fake_plan_completion(messages, model, **kwargs):
+    async def _fake_stream(messages, model, **kwargs):
+        if kwargs.get("tools") is not None:
+            return responses.pop(0)
+        return _no_tool_response("Reading the requested docs")
+
+    async def _fake_execute(*, context, tool, arguments):
+        executed_tools.append((tool, dict(arguments)))
+        return ToolExecutionResult(tool=tool, output="file contents", metadata={})
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    stored_run = await conversation_store.get_run(run.id)
+    events = await conversation_store.list_events_for_run(run.conversation_id, run.id)
+    tool_call_events = [event for event in events if event.event_type == "agent.response.tool_call"]
+    tool_timeline_events = [
+        event
+        for event in events
+        if event.event_type == "chat.timeline.item.committed"
+        and event.payload_json.get("kind") == "tool_result"
+    ]
+
+    assert stored_run is not None
+    assert stored_run.status == "completed"
+    assert executed_tools == [
+        ("file_read", {"path": "README.md"}),
+        ("file_read", {"path": "docs/ARCHITECTURE.md"}),
+    ]
+    assert any(
+        event.payload_json == {
+            "tool_call_id": "call_readme",
+            "tool": "file_read",
+            "arguments": '{"path": "README.md"}',
+            "batch_index": 1,
+            "batch_size": 2,
+            "finish_reason": "tool_calls",
+            "content": "",
+            "reasoning": "",
+        }
+        for event in tool_call_events
+    )
+    assert any(
+        event.payload_json == {
+            "tool_call_id": "call_architecture",
+            "tool": "file_read",
+            "arguments": '{"path": "docs/ARCHITECTURE.md"}',
+            "batch_index": 2,
+            "batch_size": 2,
+            "finish_reason": "tool_calls",
+            "content": "",
+            "reasoning": "",
+        }
+        for event in tool_call_events
+    )
+    assert [event.payload_json["item_id"] for event in tool_timeline_events] == [
+        f"tool:{run.id}:call_readme",
+        f"tool:{run.id}:call_architecture",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_batched_tools_respect_the_step_limit_between_calls(monkeypatch):
+    _, run = await _create_agent_run(current_step=49)
+    executed_paths: list[str] = []
+
+    async def _fake_stream(messages, model, **kwargs):
         return ModelResponse(
             model=model,
             content="",
             usage=None,
             tool_calls=[
                 ToolCall(
-                    id="call_plan",
-                    function=ToolCallFunction(
-                        name="task_plan",
-                        arguments=json.dumps(
-                            {
-                                "summary": "Create Hello World App 9.",
-                                "steps": ["Initialize the app.", "Summarize the result."],
-                                "open_questions": [],
-                                "assumptions": [],
-                            }
-                        ),
-                    ),
-                )
+                    id="call_one",
+                    function=ToolCallFunction(name="file_read", arguments=json.dumps({"path": "README.md"})),
+                ),
+                ToolCall(
+                    id="call_two",
+                    function=ToolCallFunction(name="file_read", arguments=json.dumps({"path": "docs/ARCHITECTURE.md"})),
+                ),
             ],
             finish_reason="tool_calls",
         )
 
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_plan_completion)
+    async def _fake_execute(*, context, tool, arguments):
+        executed_paths.append(str(arguments["path"]))
+        return ToolExecutionResult(tool=tool, output="file contents", metadata={})
 
-    context = ToolExecutionContext(
-        conversation_id=conversation.id,
-        run_id=run.id,
-        workspace_path=str(Path(".cockpit/conversations") / conversation.id),
-        workspace_root=Path("c:/Users/Sander/Documents/Repos/AI-Cockpit"),
-        read_roots=[Path("c:/Users/Sander/Documents/Repos")],
-        write_roots=[Path("c:/Users/Sander/Documents/Repos/AI-Cockpit")],
-    )
-    metadata = {
-        "task_type": "agent",
-        "title": "Agent run",
-        "goal": "Create Hello World App 9.",
-        "skip_plan_feedback": True,
-        "model": "anthropic/claude-haiku-4.5",
-        "history": [],
-        "payload": {},
-        "branch_key": "main",
-    }
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
 
-    await agent_runner_module.agent_runner._ensure_execution_plan(
-        conversation_id=conversation.id,
-        run_id=run.id,
-        metadata=metadata,
-        context=context,
-    )
+    await agent_runner_module.agent_runner.continue_run(run.id)
 
-    artifacts = await conversation_store.list_artifacts_for_run(conversation.id, run.id)
-    assert any(
-        artifact.artifact_type == "llm.response.visible_output"
-        and isinstance(artifact.content_json, dict)
-        and artifact.content_json == {
-            "request_kind": "task.agent.plan",
-            "model": "anthropic/claude-haiku-4.5",
-            "content": "",
-            "reasoning": "",
-            "reasoning_details": [],
-            "error": None,
-            "finish_reason": "tool_calls",
-            "streamed_visible_deltas": [],
-            "tool_calls": [
-                {
-                    "id": "call_plan",
-                    "type": "function",
-                    "function": {
-                        "name": "task_plan",
-                        "arguments": '{"summary": "Create Hello World App 9.", "steps": ["Initialize the app.", "Summarize the result."], "open_questions": [], "assumptions": []}',
-                    },
-                }
+    stored_run = await conversation_store.get_run(run.id)
+    assert stored_run is not None
+    assert stored_run.status == "paused"
+    assert executed_paths == ["README.md"]
+
+
+@pytest.mark.asyncio
+async def test_batched_tool_retry_identifies_the_call_with_invalid_arguments(monkeypatch):
+    _, run = await _create_agent_run()
+    captured_messages: list[list[object]] = []
+    responses = [
+        ModelResponse(
+            model="anthropic/claude-sonnet-4-5",
+            content="",
+            usage=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_valid",
+                    function=ToolCallFunction(name="file_read", arguments=json.dumps({"path": "README.md"})),
+                ),
+                ToolCall(
+                    id="call_invalid",
+                    function=ToolCallFunction(name="workspace_search", arguments="{"),
+                ),
             ],
-        }
-        for artifact in artifacts
-    )
+            finish_reason="tool_calls",
+        ),
+        _finalize_response("Recovered from the malformed batch."),
+    ]
+
+    async def _fake_stream(messages, model, **kwargs):
+        captured_messages.append(list(messages))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    retry_feedback = str(captured_messages[1][-1].content)
+    assert "workspace_search" in retry_feedback
+    assert "file_read" not in retry_feedback
 
 
 @pytest.mark.asyncio
@@ -775,18 +761,9 @@ async def test_continue_run_streams_planning_turn_updates(monkeypatch):
 
     assert any(
         update == {
-            "kind": "progress",
-            "run_id": run.id,
-            "step": 0,
-            "content": "Drafting execution plan",
-        }
-        for update in stream_updates
-    )
-    assert any(
-        update == {
             "kind": "text_delta",
             "run_id": run.id,
-            "step": 0,
+            "step": 1,
             "delta": "Drafting ",
         }
         for update in stream_updates
@@ -795,7 +772,7 @@ async def test_continue_run_streams_planning_turn_updates(monkeypatch):
         update == {
             "kind": "text_done",
             "run_id": run.id,
-            "step": 0,
+            "step": 1,
             "content": "Drafting a concrete plan.",
         }
         for update in stream_updates
@@ -804,7 +781,7 @@ async def test_continue_run_streams_planning_turn_updates(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_continue_run_streams_progress_summary_deltas_and_tool_lifecycle(monkeypatch):
+async def test_continue_run_uses_tool_lifecycle_without_a_secondary_progress_model(monkeypatch):
     _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5", silent_tool_call_streak=2)
     responses = [
         {"response": _tool_response("file_write", {"path": "frontend/app/page.tsx"})},
@@ -845,49 +822,21 @@ async def test_continue_run_streams_progress_summary_deltas_and_tool_lifecycle(m
         and artifact.content_json.get("request_kind") == "task.agent.progress.summary"
     ]
 
-    assert any(
-        update == {
-            "kind": "summary_delta",
-            "run_id": run.id,
-            "step": 1,
-            "delta": "Editing",
-        }
-        for update in stream_updates
-    )
-    assert any(
-        update == {
-            "kind": "summary_done",
-            "run_id": run.id,
-            "step": 1,
-            "content": "Editing the landing page",
-        }
-        for update in stream_updates
-    )
+    assert not any(update.get("kind") in {"summary_delta", "summary_done"} for update in stream_updates)
     assert any(
         update == {
             "kind": "tool_done",
             "run_id": run.id,
             "step": 1,
             "tool": "file_write",
+            "activity_id": f"tool:{run.id}:call_tool",
+            "tool_call_id": "call_tool",
             "ok": True,
             "content": "Updated app/page.tsx",
         }
         for update in stream_updates
     )
-    assert any(
-        artifact.content_json == {
-            "request_kind": "task.agent.progress.summary",
-            "model": artifact.content_json.get("model"),
-            "content": "Editing the landing page",
-            "reasoning": "",
-            "reasoning_details": [],
-            "error": None,
-            "finish_reason": "stop",
-            "streamed_visible_deltas": ["Editing", " the landing page"],
-            "tool_calls": [],
-        }
-        for artifact in visible_summary_artifacts
-    )
+    assert visible_summary_artifacts == []
 
 
 @pytest.mark.asyncio
@@ -923,10 +872,12 @@ async def test_continue_run_native_decision_prompt_requests_delta_only_updates(m
     first_messages = captured_messages[0]
     system_prompt = first_messages[0].content
     user_prompt = first_messages[-1].content
-    assert "shown directly to the user as a progress update" in system_prompt
-    assert "Write like you are updating the user, not thinking to yourself" in system_prompt
-    assert "must add net-new information only" in system_prompt
-    assert "Do not restate the goal, approved plan, recent conversation context, or recent runtime transcript" in system_prompt
+    assert "On turns that call external tools, normally emit no assistant text" in system_prompt
+    assert "You may batch independent external tool calls" in system_prompt
+    assert "at most one" not in system_prompt
+    assert "Do not announce what you are about to do or narrate the tool call" in system_prompt
+    assert "must add net-new information" in system_prompt
+    assert "must not restate the goal, approved plan, recent conversation context, or recent runtime transcript" in system_prompt
     assert "were already shown to the user" in user_prompt
     assert "Continue the task now from the latest completed step" in user_prompt
 
@@ -997,6 +948,8 @@ async def test_continue_run_streams_live_tool_call_previews_before_tool_executio
             "run_id": run.id,
             "step": 1,
             "tool": "file_write",
+            "activity_id": f"tool:{run.id}:call_tool",
+            "tool_call_id": "call_tool",
             "content": "Preparing to write frontend/generated-apps/demo/page.tsx (1 lines, 36 bytes buffered)",
         }
         for update in stream_updates
@@ -1049,7 +1002,7 @@ async def test_continue_run_persists_live_item_snapshot_during_tool_execution(mo
     mid_run = await conversation_store.get_run(run.id)
     assert mid_run is not None
     live_item = dict((mid_run.metadata_json or {}).get("live_item") or {})
-    assert live_item["item_id"] == f"tool:{run.id}:1:file_read"
+    assert live_item["item_id"] == f"tool:{run.id}:call_tool"
     assert live_item["kind"] == "tool_call"
     assert live_item["content"] == "Reading lib/hooks.ts"
 
@@ -1142,8 +1095,8 @@ async def test_filesystem_tools_emit_live_progress_callbacks():
     assert any(update.startswith("Reading ") and update.endswith("notes.txt") for update in progress_updates)
     assert any(update.startswith("Loaded 27 bytes from ") and update.endswith("notes.txt") for update in progress_updates)
     assert any(update == "Resolving destination draft.txt" for update in progress_updates)
-    assert any(update.startswith("Writing 5 bytes to ") and update.endswith("draft.txt") for update in progress_updates)
-    assert any(update.startswith("Saved ") and update.endswith("draft.txt") for update in progress_updates)
+    assert any(update.startswith("Writing ") and update.endswith("draft.txt (1 lines)") for update in progress_updates)
+    assert any(update.startswith("Updated ") and update.endswith("draft.txt (1 lines)") for update in progress_updates)
     assert any(update == "Searching for 'live progress marker'" for update in progress_updates)
     assert any(update.startswith("Scanning ") for update in progress_updates)
     assert any(update.startswith("Found a match in ") for update in progress_updates)
@@ -1260,7 +1213,11 @@ async def test_handle_tool_action_persists_metadata_once_per_tool(monkeypatch):
     assert len(metadata_updates) == 0
     assert next_metadata["current_step"] == 1
     assert next_metadata["current_action"] == "Completed file_read"
-    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert [event.event_type for event in events] == [
+        "agent.tool.called",
+        "agent.tool.completed",
+        "chat.timeline.item.committed",
+    ]
     assert len(artifacts) == 1
     assert stored_run is not None
     assert stored_run.metadata_json["active_step_index"] == 1
@@ -1268,7 +1225,7 @@ async def test_handle_tool_action_persists_metadata_once_per_tool(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_tool_action_can_defer_metadata_checkpoint(monkeypatch):
+async def test_handle_tool_action_clears_live_activity_checkpoint_after_completion(monkeypatch):
     conversation, run = await _create_agent_run()
     metadata = dict(run.metadata_json or {})
     context = build_tool_context(conversation.id, ".", run_id=run.id)
@@ -1292,9 +1249,14 @@ async def test_handle_tool_action_can_defer_metadata_checkpoint(monkeypatch):
 
     assert next_metadata["current_step"] == 1
     assert stored_run is not None
-    assert stored_run.metadata_json["current_step"] == 0
-    assert stored_run.metadata_json["history"] == []
-    assert [event.event_type for event in events] == ["agent.tool.called", "agent.tool.completed"]
+    assert stored_run.metadata_json.get("current_step", 0) == 0
+    assert len(stored_run.metadata_json["history"]) == 1
+    assert stored_run.metadata_json.get("live_item") is None
+    assert [event.event_type for event in events] == [
+        "agent.tool.called",
+        "agent.tool.completed",
+        "chat.timeline.item.committed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1389,11 +1351,7 @@ async def test_continue_run_logs_structured_phase_timings(monkeypatch):
         and payload.get("request_kind") == "task.agent.native_decision"
         for payload in payloads
     )
-    assert any(
-        payload.get("phase") == "progress_summary.model_call"
-        and payload.get("step") == 1
-        for payload in payloads
-    )
+    assert not any(payload.get("phase") == "progress_summary.model_call" for payload in payloads)
     assert any(
         payload.get("phase") == "tool.execute"
         and payload.get("step") == 1

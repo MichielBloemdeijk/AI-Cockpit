@@ -203,10 +203,6 @@ def _live_generated_app_root(slug: str) -> Path:
     return _repo_root() / LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE / _slugify(slug)
 
 
-def _live_generated_app_root_base() -> Path:
-    return _repo_root() / LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE
-
-
 def _find_invalid_css_module_selector(app_root: Path) -> tuple[Path, str] | None:
     if not app_root.exists() or not app_root.is_dir():
         return None
@@ -361,19 +357,6 @@ class AppRegistryService:
         shutil.copytree(source_root, live_root)
         return True
 
-    def _prune_live_routes(self, expected_slugs: set[str]) -> None:
-        live_root_base = _live_generated_app_root_base()
-        if not live_root_base.exists() or not live_root_base.is_dir():
-            return
-
-        for child in live_root_base.iterdir():
-            if not child.is_dir():
-                continue
-            if child.name == "[slug]":
-                continue
-            if child.name not in expected_slugs:
-                shutil.rmtree(child, ignore_errors=True)
-
     async def _lease_holder_is_active(
         self,
         *,
@@ -410,11 +393,8 @@ class AppRegistryService:
                 select(GeneratedApp).order_by(GeneratedApp.updated_at.desc(), GeneratedApp.created_at.desc())
             )
             records = [_record(item) for item in result.scalars().all()]
-        expected_live_slugs: set[str] = set()
         for record in records:
-            if self._sync_live_route(record):
-                expected_live_slugs.add(record.slug)
-        self._prune_live_routes(expected_live_slugs)
+            self._sync_live_route(record)
         return records
 
     async def get_app(self, app_id: str) -> GeneratedAppRecord | None:
@@ -493,15 +473,22 @@ class AppRegistryService:
             if not result.rowcount:
                 return None
             item = await session.get(GeneratedApp, app_id)
-            return None if item is None else _record(item)
+            record = None if item is None else _record(item)
+        if record is not None:
+            self._sync_live_route(record)
+        return record
 
     async def delete_app(self, app_id: str) -> bool:
+        slug: str | None = None
         async with session_scope() as session:
             item = await session.get(GeneratedApp, app_id)
             if item is None:
                 return False
+            slug = item.slug
             await session.delete(item)
-            return True
+        if slug:
+            shutil.rmtree(_live_generated_app_root(slug), ignore_errors=True)
+        return True
 
     async def acquire_lease(
         self,

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import inspect
 import json
 import logging
 from pathlib import Path
@@ -12,48 +11,33 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from app.config import settings
-from app.models.chat import Message, PromptMetrics
+from app.models.chat import PromptMetrics
 from app.services.agent_metadata import _build_run_summary, _infer_app_file_read_path, _serialize_agent_metadata
 from app.services.agent_prompt_builder import (
-    _fallback_action_thought,
-    _fallback_progress_summary,
-    _is_low_quality_progress_summary,
-    _is_low_signal_tool_intent_summary,
-    _plan_block,
     _plan_feedback_question,
     _result_snippet,
+    summarize_tool_start_content,
 )
 from app.services.agent_tools import ToolExecutionContext, build_tool_context, execute_agent_tool
 from app.services.app_registry import app_registry_service
-from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_timeline import (
     build_plan_timeline_item,
     build_question_timeline_item,
-    build_status_timeline_item,
     build_timeline_item,
+    build_tool_activity_id,
     build_visible_text_timeline_item,
     clear_live_item,
     humanize_tool_name,
     summarize_tool_progress_content,
     set_live_item,
 )
-from app.services.llm import PromptSegment, chat_completion, ensure_prompt_metrics, render_prompt_segments, summary_request_overrides
+from app.services.llm import ensure_prompt_metrics
 
-AGENT_PROGRESS_SUMMARY_SILENT_TOOL_THRESHOLD = 3
-AGENT_PROGRESS_SUMMARY_MAX_TOKENS = 192
 AGENT_METADATA_CHECKPOINT_INTERVAL_SECONDS = 5
 AGENT_METADATA_CHECKPOINT_STEP_INTERVAL = 10
 AgentStreamCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 timing_logger = logging.getLogger("app.agent_timing")
-
-
-@dataclass(slots=True)
-class AgentStepPresentation:
-    thought: str
-    progress_summary: str
-    visible_text: str = ""
-    summary_streamed: bool = False
 
 
 @dataclass(slots=True)
@@ -318,7 +302,8 @@ async def _set_live_timeline_item(
     if not changed:
         return False
     metadata["updated_at"] = _iso_now()
-    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=force)
+    if checkpoint_state is not None:
+        await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=force)
     return True
 
 
@@ -334,7 +319,8 @@ async def _clear_live_timeline_item(
     if not changed:
         return False
     metadata["updated_at"] = _iso_now()
-    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=force)
+    if checkpoint_state is not None:
+        await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=force)
     return True
 
 
@@ -380,8 +366,6 @@ async def _record_llm_visible_output(
     response: Any,
     streamed_visible_deltas: list[str] | None = None,
 ) -> None:
-    if source_event_id is None:
-        return
     await conversation_store.attach_artifact(
         conversation_id,
         run_id=run_id,
@@ -399,211 +383,6 @@ async def _record_llm_visible_output(
             "streamed_visible_deltas": list(streamed_visible_deltas or []),
             "tool_calls": [tool_call.model_dump() for tool_call in getattr(response, "tool_calls", [])],
         },
-    )
-
-
-async def _generate_progress_summary(
-    *,
-    conversation_id: str,
-    run_id: str,
-    metadata: dict[str, Any],
-    checkpoint_state: AgentMetadataCheckpointState | None,
-    action: dict[str, Any],
-    step_number: int,
-    thought: str,
-    default_summary: str,
-    chat_completion_fn: Callable[..., Awaitable[Any]] = chat_completion,
-    stream_callback: AgentStreamCallback | None = None,
-) -> tuple[str, bool]:
-    defaults = await chat_settings_service.get_defaults()
-    model = str(defaults.synthesizer_model or metadata.get("model") or "").strip()
-    if not model:
-        return default_summary, False
-
-    system_prompt = (
-        "You write concise live progress updates for AI-Cockpit. "
-        "Respond with exactly one short sentence in present tense, ideally 3-9 words. "
-        "Mention the file, function, query, or command when useful. "
-        "Describe only the immediate next action or newly completed change. Do not restate the overall goal, approved plan, or earlier transcript. "
-        "Do not mention tools, JSON, or schemas. Do not use first person."
-    )
-    user_prompt = (
-        f"Task goal:\n{metadata.get('goal', '')}\n\n"
-        f"Approved plan:\n{_plan_block(metadata.get('plan'))}\n\n"
-        f"Upcoming action:\n{json.dumps(action, ensure_ascii=True)}\n\n"
-        f"Visible assistant text, if any:\n{thought or '[none]'}\n\n"
-        f"Fallback summary:\n{default_summary}\n\n"
-        "Return only the progress update."
-    )
-    prompt_segments = [
-        PromptSegment(role="system", text=system_prompt, cache_candidate=True, stable=True),
-        PromptSegment(role="user", text=user_prompt),
-    ]
-    streamed_visible_deltas: list[str] = []
-    partial_summary_parts: list[str] = []
-
-    async def _handle_summary_delta(delta: str) -> None:
-        if not delta:
-            return
-        streamed_visible_deltas.append(delta)
-        partial_summary_parts.append(delta)
-        partial_summary = "".join(partial_summary_parts).lstrip()
-        if partial_summary.strip():
-            await _emit_agent_stream_update(
-                stream_callback,
-                {
-                    "kind": "summary_delta",
-                    "run_id": run_id,
-                    "step": step_number,
-                    "delta": delta,
-                },
-            )
-            await _set_live_timeline_item(
-                run_id,
-                metadata,
-                checkpoint_state,
-                build_timeline_item(
-                    item_id=f"status:{run_id}:{step_number}",
-                    role="assistant",
-                    kind="status",
-                    title="Progress",
-                    label="Progress",
-                    content=partial_summary,
-                    tone="info",
-                    step=step_number,
-                    status="streaming",
-                ),
-                force=False,
-            )
-
-    completion_kwargs: dict[str, Any] = {
-        "temperature": 0.1,
-        "max_tokens": AGENT_PROGRESS_SUMMARY_MAX_TOKENS,
-        "session_id": f"task:{conversation_id}:progress:{step_number}",
-        "prompt_segments": prompt_segments,
-        "request_overrides": summary_request_overrides(model),
-    }
-    if stream_callback is not None and "on_content_delta" in inspect.signature(chat_completion_fn).parameters:
-        completion_kwargs["on_content_delta"] = _handle_summary_delta
-    async with _timed_agent_phase(
-        phase="progress_summary.model_call",
-        conversation_id=conversation_id,
-        run_id=run_id,
-        step=step_number,
-        model=model,
-    ) as timing:
-        response = await chat_completion_fn(
-            [Message(role="system", content=system_prompt), Message(role="user", content=user_prompt)],
-            model,
-            **completion_kwargs,
-        )
-        timing.details["response_model"] = getattr(response, "model", model)
-        timing.details["finish_reason"] = getattr(response, "finish_reason", None)
-    prompt_metrics = ensure_prompt_metrics(
-        messages=[Message(role="system", content=system_prompt), Message(role="user", content=user_prompt)],
-        model=response.model,
-        session_id=f"task:{conversation_id}:progress:{step_number}",
-        usage=getattr(response, "usage", None),
-        prompt_metrics=getattr(response, "prompt_metrics", None),
-        rendered_messages=render_prompt_segments(prompt_segments, response.model),
-    )
-    async with _timed_agent_phase(
-        phase="progress_summary.persist_output",
-        conversation_id=conversation_id,
-        run_id=run_id,
-        step=step_number,
-        request_kind="task.agent.progress.summary",
-        model=response.model,
-    ):
-        metrics_event_id = await _record_llm_metrics(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            model=response.model,
-            metrics=prompt_metrics,
-            request_kind="task.agent.progress.summary",
-        )
-        await _record_llm_visible_output(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            source_event_id=metrics_event_id,
-            request_kind="task.agent.progress.summary",
-            response=response,
-            streamed_visible_deltas=streamed_visible_deltas,
-        )
-    if response.error:
-        return default_summary, False
-    if str(getattr(response, "finish_reason", "") or "").strip().lower() == "length":
-        return default_summary, False
-
-    summary = " ".join(response.content.split()).strip().strip("\"'")
-    if not summary or _is_low_signal_tool_intent_summary(summary) or _is_low_quality_progress_summary(summary):
-        return default_summary, False
-    await _emit_agent_stream_update(
-        stream_callback,
-        {
-            "kind": "summary_done",
-            "run_id": run_id,
-            "step": step_number,
-            "content": summary,
-        },
-    )
-    return summary, True
-
-
-async def _build_step_presentation(
-    *,
-    conversation_id: str,
-    run_id: str,
-    metadata: dict[str, Any],
-    checkpoint_state: AgentMetadataCheckpointState | None,
-    action: dict[str, Any],
-    step_number: int,
-    chat_completion_fn: Callable[..., Awaitable[Any]] = chat_completion,
-    stream_callback: AgentStreamCallback | None = None,
-) -> AgentStepPresentation:
-    thought = str(action.get("thought") or "").strip()
-    visible_text = str(action.get("visible_text") or "").strip()
-    default_summary = _fallback_progress_summary(action)
-    action_kind = str(action.get("kind") or "").strip()
-    has_user_visible_update = bool(visible_text) and not _is_low_signal_tool_intent_summary(visible_text)
-    try:
-        prior_silent_tool_call_streak = int(metadata.get("silent_tool_call_streak", 0) or 0)
-    except (TypeError, ValueError):
-        prior_silent_tool_call_streak = 0
-    silent_tool_call_streak = 0
-    if action_kind == "tool":
-        silent_tool_call_streak = 0 if has_user_visible_update else prior_silent_tool_call_streak + 1
-    metadata["silent_tool_call_streak"] = silent_tool_call_streak
-
-    should_generate_summary = (
-        action_kind == "tool"
-        and not has_user_visible_update
-        and silent_tool_call_streak >= AGENT_PROGRESS_SUMMARY_SILENT_TOOL_THRESHOLD
-    )
-    if should_generate_summary:
-        progress_summary, summary_streamed = await _generate_progress_summary(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            metadata=metadata,
-            checkpoint_state=checkpoint_state,
-            action=action,
-            step_number=step_number,
-            thought=thought or _fallback_action_thought(action),
-            default_summary=default_summary,
-            chat_completion_fn=chat_completion_fn,
-            stream_callback=stream_callback,
-        )
-    elif action_kind == "tool":
-        progress_summary = ""
-        summary_streamed = False
-    else:
-        progress_summary = default_summary
-        summary_streamed = False
-    return AgentStepPresentation(
-        thought=thought,
-        progress_summary=progress_summary,
-        visible_text=visible_text,
-        summary_streamed=summary_streamed,
     )
 
 
@@ -804,14 +583,21 @@ async def _handle_tool_action(
     stream_callback: AgentStreamCallback | None = None,
 ) -> dict[str, Any]:
     tool_name = str(action.get("tool", "")).strip()
+    tool_call_id = str(action.get("tool_call_id") or "").strip() or None
     arguments = action.get("arguments") or {}
     if not isinstance(arguments, dict):
         raise ValueError("Tool arguments must be a JSON object")
     arguments = _normalize_tool_arguments(metadata, tool_name, arguments)
 
     next_step = int(metadata.get("current_step", 0) or 0) + 1
+    activity_id = build_tool_activity_id(
+        run_id=run_id,
+        step=next_step,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+    )
     previous_action = str(metadata.get("current_action") or "").strip()
-    tool_start_summary = _fallback_progress_summary({"kind": "tool", "tool": tool_name, "arguments": arguments})
+    tool_start_summary = summarize_tool_start_content(tool_name, arguments)
     if tool_start_summary and tool_start_summary != previous_action:
         await _emit_agent_stream_update(
             stream_callback,
@@ -820,6 +606,8 @@ async def _handle_tool_action(
                 "run_id": run_id,
                 "step": next_step,
                 "tool": tool_name,
+                "activity_id": activity_id,
+                "tool_call_id": tool_call_id,
                 "content": tool_start_summary,
             },
         )
@@ -828,7 +616,7 @@ async def _handle_tool_action(
             metadata,
             checkpoint_state,
             build_timeline_item(
-                item_id=f"tool:{run_id}:{next_step}:{tool_name}",
+                item_id=activity_id,
                 role="assistant",
                 kind="tool_call",
                 label="Tool call",
@@ -854,6 +642,8 @@ async def _handle_tool_action(
                 "run_id": run_id,
                 "step": next_step,
                 "tool": tool_name,
+                "activity_id": activity_id,
+                "tool_call_id": tool_call_id,
                 "content": message,
             },
         )
@@ -862,7 +652,7 @@ async def _handle_tool_action(
             metadata,
             checkpoint_state,
             build_timeline_item(
-                item_id=f"tool:{run_id}:{next_step}:{tool_name}",
+                item_id=activity_id,
                 role="assistant",
                 kind="tool_call",
                 label="Tool call",
@@ -937,6 +727,7 @@ async def _handle_tool_action(
                 tool_name=tool_name,
                 arguments=arguments,
                 ok=True,
+                tool_call_id=tool_call_id,
                 output=snippet,
                 result_metadata=result.metadata,
                 artifact_type=f"agent.tool.{tool_name}.output",
@@ -955,11 +746,13 @@ async def _handle_tool_action(
                 "run_id": run_id,
                 "step": next_step,
                 "tool": tool_name,
+                "activity_id": activity_id,
+                "tool_call_id": tool_call_id,
                 "ok": True,
                 "content": summarize_tool_progress_content(tool_name, arguments, True),
             },
         )
-        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=f"tool:{run_id}:{next_step}:{tool_name}")
+        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     except Exception as exc:
         error_text = str(exc)
         history_entry = {
@@ -992,6 +785,7 @@ async def _handle_tool_action(
                 tool_name=tool_name,
                 arguments=arguments,
                 ok=False,
+                tool_call_id=tool_call_id,
                 error=error_text,
                 run_metadata_json=_serialize_agent_metadata(metadata),
                 branch_key=_metadata_branch_key(metadata),
@@ -1005,11 +799,13 @@ async def _handle_tool_action(
                 "run_id": run_id,
                 "step": next_step,
                 "tool": tool_name,
+                "activity_id": activity_id,
+                "tool_call_id": tool_call_id,
                 "ok": False,
                 "content": summarize_tool_progress_content(tool_name, arguments, False),
             },
         )
-        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=f"tool:{run_id}:{next_step}:{tool_name}")
+        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     finally:
         context.progress_callback = previous_progress_callback
     return metadata
@@ -1021,10 +817,10 @@ async def _complete_run(
     run_id: str,
     metadata: dict[str, Any],
     summary: str,
-    result: str,
+    final_text: str,
+    final_activity_id: str,
     checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> None:
-    final_text = result or summary or "Task completed."
     final_summary = summary or final_text
     run_summary = _build_run_summary(metadata, final_summary)
     metadata["final_summary"] = final_summary
@@ -1044,6 +840,7 @@ async def _complete_run(
         event_type="conversation.assistant.message.completed",
         author_label="agent",
         branch_key=_metadata_branch_key(metadata),
+        timeline_item_id=final_activity_id,
     )
     await conversation_store.append_event(
         conversation_id,

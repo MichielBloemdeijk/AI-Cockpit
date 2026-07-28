@@ -191,6 +191,8 @@ export interface AgentStreamUpdate {
     | "progress";
   run_id: string;
   step: number;
+  activity_id?: string;
+  tool_call_id?: string;
   tool?: string;
   ok?: boolean;
   delta?: string;

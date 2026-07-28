@@ -10,6 +10,13 @@ def humanize_tool_name(tool_name: str) -> str:
     return normalized or "tool"
 
 
+def build_tool_activity_id(*, run_id: str, step: int, tool_name: str, tool_call_id: str | None = None) -> str:
+    stable_call_id = str(tool_call_id or "").strip()
+    if stable_call_id:
+        return f"tool:{run_id}:{stable_call_id}"
+    return f"tool:{run_id}:{step}:{tool_name}"
+
+
 def compact_tool_target_label(value: str) -> str:
     normalized = str(value or "").strip().replace("\\", "/")
     if not normalized:
@@ -49,7 +56,7 @@ def summarize_tool_result_content(
         if path:
             return f"Updated {path}"
     if tool_name == "file_read" and path:
-        return f"Finished reading {path}"
+        return f"Read {path}"
     if tool_name == "workspace_search":
         query = str(arguments.get("query") or "").strip()
         if query:
@@ -130,9 +137,14 @@ def build_user_message_timeline_item(*, message_id: str, content: str) -> dict[s
     )
 
 
-def build_assistant_message_timeline_item(*, message_id: str, content: str) -> dict[str, Any]:
+def build_assistant_message_timeline_item(
+    *,
+    message_id: str,
+    content: str,
+    item_id: str | None = None,
+) -> dict[str, Any]:
     return build_timeline_item(
-        item_id=f"assistant:{message_id}",
+        item_id=item_id or f"assistant:{message_id}",
         role="assistant",
         kind="message",
         content=content,
@@ -144,6 +156,18 @@ def build_visible_text_timeline_item(*, run_id: str, step: int, content: str) ->
         item_id=f"assistant:{run_id}:{step}:text",
         role="assistant",
         kind="message",
+        content=content,
+        step=step,
+    )
+
+
+def build_thought_timeline_item(*, run_id: str, step: int, content: str) -> dict[str, Any]:
+    return build_timeline_item(
+        item_id=f"thought:{run_id}:{step}",
+        role="assistant",
+        kind="thought",
+        label="Thinking",
+        title="Thought",
         content=content,
         step=step,
     )
@@ -194,9 +218,24 @@ def build_tool_result_timeline_item(
     output: str | None = None,
     error: str | None = None,
     result_metadata: dict[str, Any] | None = None,
+    tool_call_id: str | None = None,
 ) -> dict[str, Any]:
+    if tool_name == "file_write":
+        detail = str(arguments.get("content") or "")
+    elif tool_name == "app_initialize":
+        app = result_metadata.get("app") if isinstance(result_metadata, dict) else None
+        scaffolded_files = app.get("scaffolded_files") if isinstance(app, dict) else None
+        detail = "\n".join(str(path) for path in scaffolded_files) if isinstance(scaffolded_files, list) else ""
+        detail = f"Created files:\n{detail}" if detail else str(output or error or "")
+    else:
+        detail = str(output or error or "")
     return build_timeline_item(
-        item_id=f"tool:{run_id}:{step}:{tool_name}",
+        item_id=build_tool_activity_id(
+            run_id=run_id,
+            step=step,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+        ),
         role="assistant",
         kind="tool_result",
         label="Tool result" if ok else "Tool failure",
@@ -206,25 +245,13 @@ def build_tool_result_timeline_item(
         step=step,
         tool_name=tool_name,
         badges=[f"step {step}"],
+        code=detail or None,
         metadata={
             "tool": tool_name,
             "ok": ok,
             "arguments": arguments,
             "result_metadata": result_metadata,
         },
-    )
-
-
-def build_status_timeline_item(*, run_id: str, step: int, content: str) -> dict[str, Any]:
-    return build_timeline_item(
-        item_id=f"status:{run_id}:{step}",
-        role="assistant",
-        kind="status",
-        label="Progress",
-        title="Progress",
-        content=content,
-        tone="info",
-        step=step,
     )
 
 

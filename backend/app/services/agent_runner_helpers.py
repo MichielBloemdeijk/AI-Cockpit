@@ -5,7 +5,6 @@ from typing import Any
 
 from app.services.agent_prompt_builder import (
     NATIVE_AGENT_ASK_USER_TOOL,
-    NATIVE_AGENT_FINALIZE_TOOL,
     NATIVE_AGENT_PLAN_TOOL,
 )
 from app.services.agent_run_support import _clear_live_timeline_item
@@ -159,14 +158,6 @@ def render_live_tool_call_preview(tool_name: str, raw_arguments: str) -> str:
 
     if normalized_tool == NATIVE_AGENT_PLAN_TOOL:
         return render_partial_plan_preview(raw_arguments)
-
-    if normalized_tool == NATIVE_AGENT_FINALIZE_TOOL:
-        result_text = extract_partial_json_string_field(raw_arguments, "result")
-        if not result_text:
-            result_text = extract_partial_json_string_field(raw_arguments, "summary")
-        if result_text:
-            return truncate_live_tool_preview(result_text)
-        return "Preparing final response"
 
     if normalized_tool == NATIVE_AGENT_ASK_USER_TOOL:
         question = extract_partial_json_string_field(raw_arguments, "question")

@@ -131,14 +131,14 @@ async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkey
             )
         return ModelResponse(
             model=model,
-            content="Done",
+            content="Used the configured task model.",
             usage=None,
             tool_calls=[
                 ToolCall(
                     id="call_task_finalize",
                     function=ToolCallFunction(
                         name="task_finalize",
-                        arguments=json.dumps({"summary": "Finished", "result": "Used the configured task model."}),
+                        arguments=json.dumps({"summary": "Finished"}),
                     ),
                 )
             ],

@@ -6,38 +6,38 @@ import {
 } from "./conversation-message-lifecycle";
 import type { ChatMessage } from "./chat-state-types";
 
-function shouldPreservePriorLiveMessage(current: ChatMessage, next: ChatMessage): boolean {
-  if (!current.content.trim()) {
-    return false;
-  }
-  const currentKind = current.kind ?? "message";
-  const nextKind = next.kind ?? "message";
-  return currentKind !== "tool_call"
-    && currentKind !== "tool_result"
-    && (nextKind === "tool_call" || nextKind === "tool_result");
-}
-
 export function upsertLocalLiveMessage(
   currentMessages: ChatMessage[],
   message: ChatMessage,
-  options?: { preservePriorMessage?: boolean },
 ): ChatMessage[] {
-  const currentLiveMessage = currentMessages.find((current) => isLocalLiveMessage(current)) ?? null;
-  let next = currentMessages.filter((current) => !isLocalLiveMessage(current) && !(isPendingLocalMessage(current) && areEquivalentMessages(current, message)));
-  if (options?.preservePriorMessage && currentLiveMessage && shouldPreservePriorLiveMessage(currentLiveMessage, message) && !next.some((current) => areEquivalentMessages(current, currentLiveMessage))) {
-    next = [
-      ...next,
-      {
-        ...currentLiveMessage,
-        id: currentLiveMessage.id.replace(/^live-local:/, "pending-local:"),
-        streaming: false,
-      },
-    ];
+  const existingIndex = currentMessages.findIndex((current) => (
+    (Boolean(message.activityId) && current.activityId === message.activityId)
+    || current.id === message.id
+  ));
+  if (existingIndex >= 0) {
+    return currentMessages.map((current, index) => {
+      if (index !== existingIndex) {
+        return current;
+      }
+      if (!isLocalLiveMessage(current) && !message.streaming) {
+        return current;
+      }
+      return message;
+    });
   }
-  return [...next, message];
+  return [
+    ...currentMessages.filter((current) => !(isPendingLocalMessage(current) && areEquivalentMessages(current, message))),
+    message,
+  ];
 }
 
 export function appendCommittedTimelineMessage(currentMessages: ChatMessage[], message: ChatMessage): ChatMessage[] {
+  const activityIndex = message.activityId
+    ? currentMessages.findIndex((current) => current.activityId === message.activityId)
+    : -1;
+  if (activityIndex >= 0) {
+    return currentMessages.map((current, index) => index === activityIndex ? message : current);
+  }
   let next = currentMessages.filter((current) => {
     if (isPendingLocalMessage(current) && areEquivalentMessages(current, message)) {
       return false;
@@ -84,14 +84,26 @@ export function mergeConversationFeed(
   const optimisticUserMessages = currentMessages.filter((message) => isOptimisticUserMessage(message)).filter((message) => !committedMessages.some(
     (committedMessage) => committedMessage.role === "user" && committedMessage.content === message.content,
   ));
-  const localLiveMessage = activeRunId
-    ? currentMessages.find((message) => isLocalLiveMessage(message) && message.runId === activeRunId) ?? null
-    : null;
+  const localLiveMessages = activeRunId
+    ? currentMessages.filter((message) => isLocalLiveMessage(message) && message.runId === activeRunId)
+    : [];
   const nextMessages = [...committedMessages, ...preservedCommittedMessages, ...optimisticUserMessages];
-  const effectiveLiveMessage = localLiveMessage ?? loadedLiveMessage;
-
-  if (effectiveLiveMessage) {
-    nextMessages.push(effectiveLiveMessage);
+  for (const liveMessage of localLiveMessages) {
+    const existingIndex = liveMessage.activityId
+      ? nextMessages.findIndex((message) => message.activityId === liveMessage.activityId)
+      : nextMessages.findIndex((message) => message.id === liveMessage.id);
+    if (existingIndex >= 0) {
+      nextMessages[existingIndex] = liveMessage;
+    } else {
+      nextMessages.push(liveMessage);
+    }
+  }
+  if (loadedLiveMessage && !nextMessages.some((message) => (
+    loadedLiveMessage.activityId
+      ? message.activityId === loadedLiveMessage.activityId
+      : message.id === loadedLiveMessage.id
+  ))) {
+    nextMessages.push(loadedLiveMessage);
   }
 
   return nextMessages;

@@ -33,7 +33,6 @@ from app.services.agent_prompt_builder import (
     _conversation_context_block,
     _history_block,
     _native_control_tool_definitions,
-    _native_plan_tool_definition,
     _native_retry_feedback,
     _parse_native_tool_arguments,
     _plan_block,
@@ -43,7 +42,6 @@ from app.services.agent_run_support import (
     AgentStreamCallback,
     _build_metadata_checkpoint_state,
     _build_context,
-    _build_step_presentation,
     _clear_live_timeline_item,
     _cancel_run,
     _complete_run,
@@ -62,7 +60,12 @@ from app.services.agent_run_support import (
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_compaction import TASK_HISTORY_SUMMARY_PREFIX, build_agent_history_context
-from app.services.conversation_timeline import build_status_timeline_item, build_timeline_item, humanize_tool_name
+from app.services.conversation_timeline import (
+    build_thought_timeline_item,
+    build_timeline_item,
+    build_tool_activity_id,
+    humanize_tool_name,
+)
 from app.services.llm import (
     PromptSegment,
     chat_completion,
@@ -70,7 +73,6 @@ from app.services.llm import (
     ensure_prompt_metrics,
     native_agent_request_overrides,
     native_decision_attempt_max_tokens,
-    native_plan_max_tokens,
     render_prompt_segments,
     supports_native_tool_calls,
     use_streaming_native_decision,
@@ -80,66 +82,14 @@ logger = logging.getLogger(__name__)
 
 MAX_AGENT_STEPS = 50
 
+_NATIVE_CONTROL_TOOL_NAMES = {
+    NATIVE_AGENT_PLAN_TOOL,
+    NATIVE_AGENT_ASK_USER_TOOL,
+    NATIVE_AGENT_FINALIZE_TOOL,
+}
+
 
 class AgentRunner:
-    def _structured_model_is_deprioritized(self, model: str) -> bool:
-        return False
-
-    async def _structured_model_candidates(self, primary_model: str) -> list[str]:
-        defaults = await chat_settings_service.get_defaults()
-        if self._structured_model_is_deprioritized(primary_model):
-            candidates = [
-                defaults.single_model,
-                defaults.synthesizer_model,
-                *defaults.council_models,
-                primary_model,
-            ]
-        else:
-            candidates = [
-                primary_model,
-                defaults.single_model,
-                defaults.synthesizer_model,
-                *defaults.council_models,
-            ]
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for value in candidates:
-            normalized = str(value or "").strip()
-            if normalized and normalized not in seen:
-                ordered.append(normalized)
-                seen.add(normalized)
-        return ordered
-
-    async def _ensure_execution_plan(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        metadata: dict[str, Any],
-        context: ToolExecutionContext,
-    ) -> dict[str, Any]:
-        if self._plan_exists(metadata):
-            return metadata
-        return await _handle_plan_action(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            metadata=metadata,
-            checkpoint_state=None,
-            action=await self._request_native_turn(
-                metadata=metadata,
-                checkpoint_state=None,
-                context=context,
-                conversation_id=conversation_id,
-                run_id=run_id,
-                plan_required=True,
-                step_number=0,
-            ),
-        )
-
-    def _plan_exists(self, metadata: dict[str, Any]) -> bool:
-        plan = metadata.get("plan")
-        return isinstance(plan, dict) and bool(str(plan.get("summary") or "").strip())
-
     async def _request_native_turn(
         self,
         *,
@@ -148,7 +98,6 @@ class AgentRunner:
         context: ToolExecutionContext,
         conversation_id: str,
         run_id: str,
-        plan_required: bool,
         step_number: int,
         stream_callback: AgentStreamCallback | None = None,
     ) -> dict[str, Any]:
@@ -160,7 +109,6 @@ class AgentRunner:
             run_id=run_id,
             step=step_number,
             model=model,
-            plan_required=plan_required,
         ):
             history_context = await build_agent_history_context(
                 conversation_id=conversation_id,
@@ -191,36 +139,25 @@ class AgentRunner:
         if not supports_native_tool_calls(model):
             raise ValueError(f"Task agent model does not support the native tool loop: {model}")
 
-        if plan_required:
-            system_prompt = (
-                "You are the AI-Cockpit task agent. When no approved plan exists yet, your next turn must draft the execution plan using the native planning tool. "
-                f"Use only the {NATIVE_AGENT_PLAN_TOOL} tool in this turn. Any assistant text in this turn is shown directly to the user as a progress update. Use at most one short user-visible sentence before the tool call when it helps the user follow the work. "
-                "If you do, make it incremental and forward-looking: say only what you are doing right now, not a recap of the goal, plan, or prior transcript. "
-                "Write like you are updating the user, not thinking to yourself. If there is nothing new to say, emit no assistant text and just call the tool. "
-                "Keep the plan concise, concrete, and grounded in the goal and current context. "
-                "Do not add exploratory tool steps when the required next action is already obvious. For a new generated app request with a clear title, prefer app_initialize directly instead of app_list unless the user explicitly asked you to inspect existing apps first."
-            )
-            user_prompt = common_user_prompt + "\n\nDraft the execution plan now with the task_plan tool. If you include assistant text, keep it to one new sentence about the immediate planning action."
-            tools = [_native_plan_tool_definition()]
-            session_id = f"task:{conversation_id}:plan"
-            request_kind = "task.agent.plan"
-        else:
-            system_prompt = (
-                "You are the AI-Cockpit task agent. Continue the run with at most one native tool call this turn. "
-                f"Use {NATIVE_AGENT_FINALIZE_TOOL} when the task is complete. Use {NATIVE_AGENT_ASK_USER_TOOL} when user input is required. "
-                "Use at most one tool per turn. Prefer reading or searching before writing. Use shell only when the task genuinely needs an executable invocation. "
-                "Never write outside the allowed write roots. The provided native tool schemas are authoritative. "
-                "For generated app work, use the app_initialize tool before editing app route files if no app is attached yet. "
-                "When creating a new app, pass a clear title because that becomes the app's visible name. Pass app_slug only when you need an exact URL segment or when attaching an existing app. Never call app_initialize without title or app_slug. "
-                "Any assistant text in this turn is shown directly to the user as a progress update. When useful, include at most one short user-visible assistant sentence before the tool call so the user can follow the immediate next action. "
-                "Write like you are updating the user, not thinking to yourself. If there is nothing new to say, emit no assistant text and just call the tool. That sentence must add net-new information only. Do not restate the goal, approved plan, recent conversation context, or recent runtime transcript. "
-                "Continue from the latest completed step or tool result instead of re-summarizing the task. "
-                "If the latest successful tool result already satisfies the listed success criteria and no further external work is needed, call task_finalize immediately. For a clearly named new generated app request, do not call app_list unless the user explicitly asked to inspect existing apps first."
-            )
-            user_prompt = common_user_prompt + "\n\nContinue the task now from the latest completed step. Include assistant text only when it adds net-new information beyond the transcript already shown to the user."
-            tools = [*get_agent_tool_provider_definitions("openai"), *_native_control_tool_definitions()]
-            session_id = f"task:{conversation_id}"
-            request_kind = "task.agent.native_decision"
+        system_prompt = (
+            "You are the AI-Cockpit task agent. Continue the run using the native tools that materially advance the task. "
+            f"Use {NATIVE_AGENT_FINALIZE_TOOL} when the task is complete. Use {NATIVE_AGENT_ASK_USER_TOOL} when user input is required. "
+            f"Use {NATIVE_AGENT_PLAN_TOOL} when an explicit plan would materially help; do not plan trivial work. "
+            "You may batch independent external tool calls. Do not combine a control tool with other calls. Prefer reading or searching before writing. Use shell only when the task genuinely needs an executable invocation. "
+            "Never write outside the allowed write roots. The provided native tool schemas are authoritative. "
+            "For generated app work, use the app_initialize tool before editing app route files if no app is attached yet. "
+            "When creating a new app, pass a clear title because that becomes the app's visible name. Pass app_slug only when you need an exact URL segment or when attaching an existing app. Never call app_initialize without title or app_slug. "
+            "Any assistant text in this turn is shown directly to the user. Assistant text is optional. On turns that call external tools, normally emit no assistant text and call the tools directly. "
+            "When finalizing, write the complete final user-facing response as assistant text and call task_finalize with only a short metadata summary. The assistant text is the final answer, so do not duplicate it in tool arguments. "
+            "Do not announce what you are about to do or narrate the tool call with phrases such as 'I will', 'I'll', or 'Let me'. The UI already shows tool activity. Emit assistant text before completion only for a material finding, correction, or blocker that the user needs to know. It must add net-new information and must not restate the goal, approved plan, recent conversation context, or recent runtime transcript. "
+            "Describe only work actually completed. Do not claim that a file was edited unless a successful file_write appears in the runtime transcript. app_initialize creates a scaffold; it does not prove a later edit occurred. "
+            "Continue from the latest completed step or tool result instead of re-summarizing the task. "
+            "If the latest successful tool result already satisfies the listed success criteria and no further external work is needed, call task_finalize immediately. For a clearly named new generated app request, do not call app_list unless the user explicitly asked to inspect existing apps first."
+        )
+        user_prompt = common_user_prompt + "\n\nContinue the task now from the latest completed step. Include assistant text only when it adds net-new information beyond the transcript already shown to the user."
+        tools = [*get_agent_tool_provider_definitions("openai"), *_native_control_tool_definitions()]
+        session_id = f"task:{conversation_id}"
+        request_kind = "task.agent.native_decision"
 
         prompt_segments = [PromptSegment(role="system", text=system_prompt, cache_candidate=True, stable=True)]
         request_messages = [Message(role="system", content=system_prompt)]
@@ -237,34 +174,6 @@ class AgentRunner:
             stream_buffer: list[str] = []
             reasoning_buffer: list[str] = []
             last_tool_preview: tuple[str, str] | None = None
-
-            if plan_required:
-                await _emit_agent_stream_update(
-                    stream_callback,
-                    {
-                        "kind": "progress",
-                        "run_id": run_id,
-                        "step": step_number,
-                        "content": "Drafting execution plan",
-                    },
-                )
-                await _set_live_timeline_item(
-                    run_id,
-                    metadata,
-                    checkpoint_state,
-                    build_timeline_item(
-                        item_id=f"status:{run_id}:{step_number or 0}:planning",
-                        role="assistant",
-                        kind="status",
-                        title="Progress",
-                        label="Progress",
-                        content="Drafting execution plan",
-                        tone="info",
-                        step=step_number or 0,
-                        status="streaming",
-                    ),
-                    force=True,
-                )
 
             async def _handle_content_delta(delta: str) -> None:
                 stream_buffer.append(delta)
@@ -305,13 +214,39 @@ class AgentRunner:
                         "delta": delta,
                     },
                 )
+                current_thought = "".join(reasoning_buffer).lstrip()
+                if current_thought.strip():
+                    await _set_live_timeline_item(
+                        run_id,
+                        metadata,
+                        checkpoint_state,
+                        build_timeline_item(
+                            item_id=f"thought:{run_id}:{step_number}",
+                            role="assistant",
+                            kind="thought",
+                            label="Thinking",
+                            title="Thinking…",
+                            content=current_thought,
+                            step=step_number,
+                            status="streaming",
+                        ),
+                        force=False,
+                    )
 
             async def _handle_tool_call_delta(tool_call) -> None:
                 nonlocal last_tool_preview
                 tool_name = tool_call.function.name.strip()
                 if not tool_name:
                     return
+                if tool_name == NATIVE_AGENT_FINALIZE_TOOL:
+                    return
                 preview = render_live_tool_call_preview(tool_name, tool_call.function.arguments)
+                activity_id = build_tool_activity_id(
+                    run_id=run_id,
+                    step=step_number,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call.id,
+                )
                 preview_key = (tool_name, preview)
                 if preview_key == last_tool_preview:
                     return
@@ -323,6 +258,8 @@ class AgentRunner:
                         "run_id": run_id,
                         "step": step_number,
                         "tool": tool_name,
+                        "activity_id": activity_id,
+                        "tool_call_id": tool_call.id,
                         "content": preview,
                     },
                 )
@@ -331,7 +268,7 @@ class AgentRunner:
                     metadata,
                     checkpoint_state,
                     build_timeline_item(
-                        item_id=f"tool:{run_id}:{step_number}:{tool_name}",
+                        item_id=activity_id,
                         role="assistant",
                         kind="tool_call",
                         label="Tool call",
@@ -348,7 +285,7 @@ class AgentRunner:
 
             completion_kwargs = {
                 "temperature": 0.2,
-                "max_tokens": native_plan_max_tokens(model) if plan_required else native_decision_attempt_max_tokens(model, attempt),
+                "max_tokens": native_decision_attempt_max_tokens(model, attempt),
                 "tools": tools,
                 "tool_choice": "auto",
                 "session_id": session_id,
@@ -424,7 +361,13 @@ class AgentRunner:
                         "content": live_thought,
                     },
                 )
-            if visible_text:
+            raw_tool_calls = [tool_call for tool_call in response.tool_calls if tool_call.function.name.strip()]
+            tool_call_count = len(raw_tool_calls)
+            is_finalize_turn = (
+                tool_call_count == 1
+                and raw_tool_calls[0].function.name.strip() == NATIVE_AGENT_FINALIZE_TOOL
+            )
+            if visible_text and not is_finalize_turn:
                 await _emit_agent_stream_update(
                     stream_callback,
                     {
@@ -434,19 +377,6 @@ class AgentRunner:
                         "content": visible_text,
                     },
                 )
-
-            tool_call_count = len(response.tool_calls)
-            if tool_call_count != 1:
-                last_error = ValueError(f"Native tool decision must return exactly one tool call, got {tool_call_count}")
-                if attempt == 0:
-                    retry_feedback = _native_retry_feedback(last_error, tool_call_count=tool_call_count)
-                    request_messages.append(Message(role="system", content=retry_feedback))
-                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
-                    continue
-                raise last_error
-
-            tool_call = response.tool_calls[0]
-            if visible_text and tool_call.function.name != NATIVE_AGENT_FINALIZE_TOOL:
                 await persist_visible_text_event(
                     conversation_id=conversation_id,
                     run_id=run_id,
@@ -455,73 +385,122 @@ class AgentRunner:
                     metadata=metadata,
                     checkpoint_state=checkpoint_state,
                 )
-            await conversation_store.append_event(
-                conversation_id,
-                run_id=run_id,
-                actor_kind="assistant",
-                event_type="agent.response.tool_call",
-                payload_json={
-                    "tool_call_id": tool_call.id,
-                    "tool": tool_call.function.name,
-                    "arguments": tool_call.function.arguments,
-                    "finish_reason": response.finish_reason,
-                    "content": response.content,
-                    "reasoning": response.reasoning,
-                },
-                branch_key=str(metadata.get("branch_key") or "main"),
-            )
-            thought = live_thought
+            if tool_call_count == 0:
+                last_error = ValueError("Native tool decision must return at least one actionable tool call, got 0")
+                if attempt == 0:
+                    retry_feedback = _native_retry_feedback(last_error, tool_call_count=tool_call_count)
+                    request_messages.append(Message(role="system", content=retry_feedback))
+                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
+                    continue
+                raise last_error
+            if len(raw_tool_calls) != len(response.tool_calls):
+                last_error = ValueError("Native tool decision returned a tool call with no name")
+                if attempt == 0:
+                    retry_feedback = _native_retry_feedback(last_error)
+                    request_messages.append(Message(role="system", content=retry_feedback))
+                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
+                    continue
+                raise last_error
+
+            tool_actions: list[dict[str, Any]] = []
+            tool_names = [tool_call.function.name.strip() for tool_call in raw_tool_calls]
+            has_control_tool = any(tool_name in _NATIVE_CONTROL_TOOL_NAMES for tool_name in tool_names)
+            if len(raw_tool_calls) > 1 and has_control_tool:
+                last_error = ValueError(
+                    "Native tool decision cannot combine task_plan, task_ask_user, or task_finalize with other tool calls"
+                )
+                if attempt == 0:
+                    retry_feedback = _native_retry_feedback(last_error, tool_call_count=len(raw_tool_calls))
+                    request_messages.append(Message(role="system", content=retry_feedback))
+                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
+                    continue
+                raise last_error
+
+            for index, tool_call in enumerate(raw_tool_calls, start=1):
+                await conversation_store.append_event(
+                    conversation_id,
+                    run_id=run_id,
+                    actor_kind="assistant",
+                    event_type="agent.response.tool_call",
+                    payload_json={
+                        "tool_call_id": tool_call.id,
+                        "tool": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                        "batch_index": index,
+                        "batch_size": len(raw_tool_calls),
+                        "finish_reason": response.finish_reason,
+                        "content": response.content,
+                        "reasoning": response.reasoning,
+                    },
+                    branch_key=str(metadata.get("branch_key") or "main"),
+                )
+
+            failing_tool_call = raw_tool_calls[0]
             try:
-                arguments = _parse_native_tool_arguments(
-                    tool_call.function.arguments,
-                    tool_name=tool_call.function.name,
-                )
-                if tool_call.function.name == NATIVE_AGENT_PLAN_TOOL:
-                    if not plan_required:
-                        raise ValueError("Unexpected task_plan tool during execution")
-                    payload = _build_plan_action_payload(
-                        thought=thought,
-                        plan=_validate_execution_plan_payload(arguments),
+                for tool_call in raw_tool_calls:
+                    failing_tool_call = tool_call
+                    arguments = _parse_native_tool_arguments(
+                        tool_call.function.arguments,
+                        tool_name=tool_call.function.name,
                     )
-                    payload["visible_text"] = visible_text
-                    return payload
-                if plan_required:
-                    raise ValueError(f"Native plan generation requires the {NATIVE_AGENT_PLAN_TOOL} tool")
-                if tool_call.function.name == NATIVE_AGENT_ASK_USER_TOOL:
-                    payload = _build_question_action_payload(
-                        thought=thought,
-                        question=str(arguments.get("question") or "").strip(),
+                    if tool_call.function.name == NATIVE_AGENT_PLAN_TOOL:
+                        payload = _build_plan_action_payload(
+                            thought=live_thought,
+                            plan=_validate_execution_plan_payload(arguments),
+                        )
+                        payload["visible_text"] = visible_text
+                        return payload
+                    if tool_call.function.name == NATIVE_AGENT_ASK_USER_TOOL:
+                        payload = _build_question_action_payload(
+                            thought=live_thought,
+                            question=str(arguments.get("question") or "").strip(),
+                        )
+                        payload["visible_text"] = visible_text
+                        return payload
+                    if tool_call.function.name == NATIVE_AGENT_FINALIZE_TOOL:
+                        payload = _build_final_action_payload(
+                            thought=live_thought,
+                            summary=str(arguments.get("summary") or "").strip(),
+                            final_text=visible_text,
+                        )
+                        return payload
+                    tool_actions.append(
+                        _build_tool_action_payload(
+                            thought=live_thought,
+                            tool_name=tool_call.function.name,
+                            arguments=arguments,
+                            tool_call_id=tool_call.id,
+                        )
                     )
-                    payload["visible_text"] = visible_text
-                    return payload
-                if tool_call.function.name == NATIVE_AGENT_FINALIZE_TOOL:
-                    payload = _build_final_action_payload(
-                        thought=thought,
-                        summary=str(arguments.get("summary") or "").strip(),
-                        result=str(arguments.get("result") or "").strip(),
-                    )
-                    payload["visible_text"] = visible_text
-                    return payload
-                payload = _build_tool_action_payload(
-                    thought=thought,
-                    tool_name=tool_call.function.name,
-                    arguments=arguments,
-                )
-                payload["visible_text"] = visible_text
-                return payload
             except Exception as exc:
                 last_error = exc
                 if attempt == 0:
                     retry_feedback = _native_retry_feedback(
                         exc,
-                        tool_name=tool_call.function.name,
-                        raw_arguments=tool_call.function.arguments,
+                        tool_name=failing_tool_call.function.name,
+                        raw_arguments=failing_tool_call.function.arguments,
                         finish_reason=response.finish_reason,
                     )
                     request_messages.append(Message(role="system", content=retry_feedback))
                     prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
                     continue
                 raise ValueError(str(exc)) from exc
+
+            if not tool_actions:
+                last_error = ValueError("Native tool decision did not produce any executable external tool calls")
+                if attempt == 0:
+                    retry_feedback = _native_retry_feedback(last_error)
+                    request_messages.append(Message(role="system", content=retry_feedback))
+                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
+                    continue
+                raise last_error
+
+            primary_tool_action = dict(tool_actions[0])
+            batched_tools = [dict(action) for action in tool_actions[1:]]
+            primary_tool_action["visible_text"] = visible_text
+            if batched_tools:
+                primary_tool_action["batched_tools"] = batched_tools
+            return primary_tool_action
 
         raise ValueError(str(last_error) if last_error is not None else "Native tool decision failed")
 
@@ -590,27 +569,6 @@ class AgentRunner:
                     await _cancel_run(run.conversation_id, run.id, metadata, checkpoint_state=checkpoint_state)
                     return
 
-                if not self._plan_exists(metadata):
-                    metadata = await _handle_plan_action(
-                        conversation_id=run.conversation_id,
-                        run_id=run.id,
-                        metadata=metadata,
-                        checkpoint_state=checkpoint_state,
-                        action=await self._request_native_turn(
-                            metadata=metadata,
-                            checkpoint_state=checkpoint_state,
-                            context=context,
-                            conversation_id=run.conversation_id,
-                            run_id=run.id,
-                            plan_required=True,
-                            step_number=0,
-                            stream_callback=stream_callback,
-                        ),
-                    )
-                    if metadata.get("task_status") == "paused":
-                        return
-                    continue
-
                 plan = metadata.get("plan") if isinstance(metadata.get("plan"), dict) else {}
                 if plan and not bool(plan.get("approved")) and not metadata.get("skip_plan_feedback"):
                     metadata["task_status"] = "paused"
@@ -648,82 +606,85 @@ class AgentRunner:
                         context=context,
                         conversation_id=run.conversation_id,
                         run_id=run.id,
-                        plan_required=False,
                         step_number=current_step + 1,
                         stream_callback=stream_callback,
                     )
                     turn_timing.details["action_kind"] = str(action.get("kind") or "").strip()
                     turn_timing.details["tool"] = str(action.get("tool") or "").strip() or None
-                async with _timed_agent_phase(
-                    phase="step.presentation",
-                    conversation_id=run.conversation_id,
-                    run_id=run.id,
-                    step=current_step + 1,
-                    action_kind=str(action.get("kind") or "").strip(),
-                ):
-                    presentation = await _build_step_presentation(
-                        conversation_id=run.conversation_id,
-                        run_id=run.id,
-                        metadata=metadata,
-                        checkpoint_state=checkpoint_state,
-                        action=action,
-                        step_number=current_step + 1,
-                        chat_completion_fn=chat_completion_stream_response if stream_callback is not None else chat_completion,
-                        stream_callback=stream_callback,
-                    )
-                if presentation.progress_summary:
-                    metadata["current_action"] = presentation.progress_summary
-                    await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state)
-                    if not presentation.summary_streamed:
-                        await _emit_agent_stream_update(
-                            stream_callback,
-                            {
-                                "kind": "progress",
-                                "run_id": run.id,
-                                "step": current_step + 1,
-                                "content": presentation.progress_summary,
-                            },
-                        )
-                    await conversation_store.append_event(
+                thought = str(action.get("thought") or "").strip()
+                if thought:
+                    thought_event = await conversation_store.append_event(
                         run.conversation_id,
                         run_id=run.id,
                         actor_kind="assistant",
-                        event_type="agent.progress.summary",
-                        payload_json={"step": current_step + 1, "summary": presentation.progress_summary},
+                        event_type="agent.thought.summary",
+                        payload_json={"step": current_step + 1, "thought": thought},
                         branch_key=str(metadata.get("branch_key") or "main"),
                     )
                     await conversation_store.append_timeline_item(
                         run.conversation_id,
                         run_id=run.id,
-                        item_payload=build_status_timeline_item(
+                        item_payload=build_thought_timeline_item(
                             run_id=run.id,
                             step=current_step + 1,
-                            content=presentation.progress_summary,
+                            content=thought,
                         ),
                         branch_key=str(metadata.get("branch_key") or "main"),
-                    )
-                if presentation.thought:
-                    await conversation_store.append_event(
-                        run.conversation_id,
-                        run_id=run.id,
-                        actor_kind="assistant",
-                        event_type="agent.thought.summary",
-                        payload_json={"step": current_step + 1, "thought": presentation.thought},
-                        branch_key=str(metadata.get("branch_key") or "main"),
+                        parent_event_id=thought_event.id,
                     )
 
                 action_kind = str(action.get("kind", "")).strip()
-                if action_kind == "tool":
-                    metadata = await _handle_tool_action(
+                if action_kind == "plan":
+                    metadata = await _handle_plan_action(
                         conversation_id=run.conversation_id,
                         run_id=run.id,
                         metadata=metadata,
-                        action=action,
-                        context=context,
-                        tool_executor=execute_agent_tool,
                         checkpoint_state=checkpoint_state,
-                        stream_callback=stream_callback,
+                        action=action,
                     )
+                    if metadata.get("task_status") == "paused":
+                        return
+                    continue
+
+                if action_kind == "tool":
+                    batched_tools = action.get("batched_tools") if isinstance(action.get("batched_tools"), list) else []
+                    tool_actions = [
+                        dict(action),
+                        *[
+                            dict(item)
+                            for item in batched_tools
+                            if isinstance(item, dict)
+                        ],
+                    ]
+                    for tool_action in tool_actions:
+                        if cancel_event is not None and cancel_event.is_set():
+                            await _cancel_run(run.conversation_id, run.id, metadata, checkpoint_state=checkpoint_state)
+                            return
+                        if int(metadata.get("current_step", 0) or 0) >= MAX_AGENT_STEPS:
+                            await _pause_for_question(
+                                conversation_id=run.conversation_id,
+                                run_id=run.id,
+                                metadata=metadata,
+                                question=(
+                                    f"I've reached {MAX_AGENT_STEPS} steps in this run. "
+                                    f"Reply with 'continue' if you want me to keep going for another {MAX_AGENT_STEPS} steps, "
+                                    "or send new instructions if you want to redirect the work."
+                                ),
+                                kind="continue_confirmation",
+                                current_action="Waiting to continue past the step limit",
+                                checkpoint_state=checkpoint_state,
+                            )
+                            return
+                        metadata = await _handle_tool_action(
+                            conversation_id=run.conversation_id,
+                            run_id=run.id,
+                            metadata=metadata,
+                            action=tool_action,
+                            context=context,
+                            tool_executor=execute_agent_tool,
+                            checkpoint_state=checkpoint_state,
+                            stream_callback=stream_callback,
+                        )
                     continue
 
                 if action_kind == "ask_user":
@@ -742,7 +703,8 @@ class AgentRunner:
                         run_id=run.id,
                         metadata=metadata,
                         summary=str(action.get("summary", "")).strip(),
-                        result=str(action.get("result", "")).strip(),
+                        final_text=str(action.get("final_text", "")).strip(),
+                        final_activity_id=f"assistant:{run.id}:{current_step + 1}:text",
                         checkpoint_state=checkpoint_state,
                     )
                     return

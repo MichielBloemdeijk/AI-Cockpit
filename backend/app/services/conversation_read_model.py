@@ -142,18 +142,31 @@ class ConversationReadModel:
 
     def _build_timeline_items(self, events: list[EventRecord]) -> list[dict]:
         timeline_items: list[dict] = []
+        indexes_by_item_id: dict[str, int] = {}
         for event in sorted(events, key=lambda item: (item.sequence, item.created_at, item.id)):
             if event.event_type != TIMELINE_ITEM_EVENT_TYPE:
                 continue
             payload = extract_timeline_item_payload(event.payload_json)
             if payload is None:
                 continue
-            timeline_items.append({
+            item = {
                 **payload,
                 "run_id": event.run_id,
                 "sequence": event.sequence,
                 "created_at": event.created_at,
-            })
+            }
+            item_id = str(payload.get("item_id") or "")
+            existing_index = indexes_by_item_id.get(item_id)
+            if existing_index is None:
+                indexes_by_item_id[item_id] = len(timeline_items)
+                timeline_items.append(item)
+                continue
+            original = timeline_items[existing_index]
+            timeline_items[existing_index] = {
+                **item,
+                "sequence": original["sequence"],
+                "created_at": original["created_at"],
+            }
         return timeline_items
 
     def _build_active_run(

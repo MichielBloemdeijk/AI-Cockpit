@@ -7,6 +7,7 @@ export interface ChatActionError {
 
 export interface ChatMessage {
   id: string;
+  activityId?: string;
   runId?: string | null;
   step?: number;
   role: "user" | "assistant" | "system";

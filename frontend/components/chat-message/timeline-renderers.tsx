@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { AlertTriangle, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Loader2, Sparkles, User, Wrench } from "lucide-react";
 import clsx from "clsx";
 
 import type { ChatMessage } from "../../lib/chat-state-types";
+import { MarkdownContent } from "./MarkdownContent";
 
 function toneClasses(message: ChatMessage) {
   if (message.kind === "tool_call" || message.kind === "tool_result") {
@@ -81,7 +82,6 @@ function TimelineShell({
 
 export function ThoughtMessageRenderer({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
-  const preview = useMemo(() => message.content.replace(/\s+/g, " ").trim(), [message.content]);
   const tones = toneClasses(message);
 
   return (
@@ -95,16 +95,15 @@ export function ThoughtMessageRenderer({ message }: { message: ChatMessage }) {
       >
         {expanded ? <ChevronDown size={12} className="shrink-0 text-zinc-500" /> : <ChevronRight size={12} className="shrink-0 text-zinc-500" />}
         <span className="font-medium text-zinc-200">{message.title ?? (message.streaming ? "Thinking" : "Thought")}</span>
-        {!expanded && preview && <span className="min-w-0 truncate text-zinc-500">{preview}</span>}
       </button>
       {expanded && message.content && (
-        <div className="mt-1 whitespace-pre-wrap text-sm leading-6 text-zinc-300">{message.content}</div>
+        <MarkdownContent content={message.content} className="mt-1 text-sm leading-6 text-zinc-300" />
       )}
     </TimelineShell>
   );
 }
 
-function ToolMessageRenderer({ message }: { message: ChatMessage }) {
+export function ToolActivityMessageRenderer({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const previewLimit = 1200;
@@ -127,9 +126,7 @@ function ToolMessageRenderer({ message }: { message: ChatMessage }) {
           tones.text,
         )}
       >
-        {message.title && <span className="shrink-0 font-medium text-zinc-400">{message.title}</span>}
-        {message.content && <span className="text-zinc-600">-</span>}
-        {message.content && <span className="min-w-0 truncate text-zinc-500">{message.content}</span>}
+        <span className="min-w-0 truncate text-zinc-400">{message.content || message.title || "Working…"}</span>
         {expanded ? <ChevronDown size={12} className="ml-auto shrink-0 text-zinc-600" /> : <ChevronRight size={12} className="ml-auto shrink-0 text-zinc-700" />}
       </button>
       {debugContent && (
@@ -150,11 +147,11 @@ function ToolMessageRenderer({ message }: { message: ChatMessage }) {
 }
 
 export function ToolCallMessageRenderer({ message }: { message: ChatMessage }) {
-  return <ToolMessageRenderer message={message} />;
+  return <ToolActivityMessageRenderer message={message} />;
 }
 
 export function ToolResultMessageRenderer({ message }: { message: ChatMessage }) {
-  return <ToolMessageRenderer message={message} />;
+  return <ToolActivityMessageRenderer message={message} />;
 }
 
 export function StatusMessageRenderer({ message }: { message: ChatMessage }) {
@@ -185,10 +182,10 @@ export function StatusMessageRenderer({ message }: { message: ChatMessage }) {
           )}
         </>
       ) : (
-        <div className={clsx("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm leading-6", tones.text)}>
+        <div className={clsx("text-sm leading-6", tones.text)}>
           {message.title && <span className="font-medium text-zinc-200">{message.title}</span>}
           {message.title && message.content && <span className="text-zinc-600">·</span>}
-          {message.content && <span className="whitespace-pre-wrap">{message.content}</span>}
+          {message.content && <MarkdownContent content={message.content} className={message.title ? "mt-1" : undefined} />}
           {message.badges?.map((badge) => (
             <span key={badge} className="text-xs text-zinc-500">· {badge}</span>
           ))}

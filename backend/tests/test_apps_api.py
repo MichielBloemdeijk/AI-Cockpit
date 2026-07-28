@@ -30,16 +30,33 @@ _DURABLE_APP_SLUGS = {"app", "launchpad", "leaseable-launch-dashboard", "release
 
 @pytest_asyncio.fixture(autouse=True)
 async def cleanup_generated_app_scaffolds():
+    repo_root = app_builder_module._repo_root()
+    protected_roots = {
+        child.resolve()
+        for base in (
+            repo_root / "frontend" / "generated-apps",
+            repo_root / "frontend" / "public" / "apps",
+            repo_root / "frontend" / "app" / "apps",
+        )
+        if base.is_dir()
+        for child in base.iterdir()
+        if child.is_dir()
+    }
     try:
         yield
     finally:
-        repo_root = app_builder_module._repo_root()
         for record in await app_registry_service.list_apps():
             if record.slug in _DURABLE_APP_SLUGS:
                 continue
             contract = resolve_generated_app_contract(record.slug, record.manifest_json)
-            for relative_root in (contract.frontend_root, contract.asset_root):
-                shutil.rmtree(repo_root / relative_root, ignore_errors=True)
+            roots = (
+                repo_root / contract.frontend_root,
+                repo_root / contract.asset_root,
+                repo_root / "frontend" / "app" / "apps" / record.slug,
+            )
+            for root in roots:
+                if root.resolve() not in protected_roots:
+                    shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -61,6 +78,15 @@ async def test_bootstrap_generated_app_uses_contract_override_roots():
         "backend/data/verifier-runs/test-run/app/apps/verifier-app",
         "backend/data/verifier-runs/test-run/public/apps/verifier-app",
     ]
+    app = await app_registry_service.get_app_by_slug("verifier-app")
+    assert app is not None
+    page = app_builder_module._page_template(app, bootstrap.route_path)
+    layout = app_builder_module._root_layout_template(app)
+    styles = app_builder_module._styles_template()
+    assert "Draft Surface Ready" not in page
+    assert 'className="generated-app-intro"' in page
+    assert 'className="generated-app-shell"' in layout
+    assert "prefers-color-scheme: dark" in styles
 
 
 @pytest.mark.asyncio
@@ -199,6 +225,8 @@ async def test_generated_app_reads_promote_healthy_apps_into_live_route_tree():
     repo_root = app_builder_module._repo_root()
 
     live_route_root = repo_root / "frontend" / "app" / "apps" / bootstrap.app.slug
+    assert (live_route_root / "page.tsx").exists()
+    shutil.rmtree(live_route_root)
     assert not live_route_root.exists()
 
     record = await app_registry_service.get_app_by_slug(bootstrap.app.slug)
@@ -228,7 +256,7 @@ async def test_generated_app_reads_do_not_recopy_unchanged_live_routes(monkeypat
     await app_registry_service.get_app_by_slug(bootstrap.app.slug)
     await app_registry_service.get_app_by_slug(bootstrap.app.slug)
 
-    assert copy_targets.count(live_route_root) == 1
+    assert copy_targets.count(live_route_root) == 0
 
 
 @pytest.mark.asyncio
@@ -388,7 +416,7 @@ async def test_chat_agent_flow_accepts_top_level_app_initialize_fields(monkeypat
         },
         {
             "tool": "task_finalize",
-            "arguments": {"summary": "Created app.", "result": "App scaffold is ready."},
+            "arguments": {"summary": "Created app."},
             "content": "Creation complete.",
         },
     ]
@@ -450,7 +478,7 @@ async def test_chat_agent_flow_accepts_top_level_app_initialize_fields(monkeypat
     assert metadata["app_context"]["app"]["slug"] == "hello-world"
 
     messages = await conversation_store.list_messages(conversation_id, final_only=True)
-    assert messages[-1].content == "App scaffold is ready."
+    assert messages[-1].content == "Creation complete."
     assert native_responses == []
 
 
@@ -505,7 +533,7 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
                     id="call_finalize",
                     function=ToolCallFunction(
                         name="task_finalize",
-                        arguments='{"summary":"Created app.","result":"App scaffold is ready."}',
+                        arguments='{"summary":"Created app."}',
                     ),
                 )
             ],
@@ -549,11 +577,13 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
     assert {event["tool"] for event in raw_tool_calls} == {"task_plan", "app_initialize", "task_finalize"}
 
     messages = await conversation_store.list_messages(conversation_id, final_only=True)
-    assert messages[-1].content == "App scaffold is ready."
+    assert messages[-1].content == "Creation complete."
 
 
 @pytest.mark.asyncio
 async def test_chat_agent_native_tool_flow_can_pause_for_user_question(monkeypatch):
+    decision_count = 0
+
     async def _fake_chat_completion(
         messages,
         model,
@@ -567,9 +597,11 @@ async def test_chat_agent_native_tool_flow_can_pause_for_user_question(monkeypat
         request_overrides=None,
         **kwargs,
     ):
+        nonlocal decision_count
         assert tools is not None
         assert tool_choice == "auto"
-        if any(getattr(tool.get("function"), "get", lambda *_: None)("name") == "task_plan" for tool in tools if isinstance(tool, dict)):
+        decision_count += 1
+        if decision_count == 1:
             return _native_plan_response(
                 model=model,
                 summary="Clarify the app scope.",
@@ -671,7 +703,7 @@ async def test_chat_agent_retry_feedback_recovers_missing_app_initialize_argumen
         return _native_tool_response(
             model=model,
             name="task_finalize",
-            arguments={"summary": "Created app.", "result": "App scaffold is ready."},
+            arguments={"summary": "Created app."},
             content="Creation complete.",
         )
 
@@ -810,7 +842,7 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
         },
         {
             "tool": "task_finalize",
-            "arguments": {"summary": "Created app.", "result": "App scaffold is ready."},
+            "arguments": {"summary": "Created app."},
             "content": "Creation complete.",
         },
         {
@@ -828,7 +860,7 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
         },
         {
             "tool": "task_finalize",
-            "arguments": {"summary": "Updated app.", "result": "Applied the requested update."},
+            "arguments": {"summary": "Updated app."},
             "content": "Edit complete.",
         },
         {
@@ -843,7 +875,7 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
         },
         {
             "tool": "task_finalize",
-            "arguments": {"summary": "Lease moved.", "result": "Lease now belongs to the second conversation."},
+            "arguments": {"summary": "Lease moved."},
             "content": "Takeover complete.",
         },
         {
@@ -858,7 +890,7 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
         },
         {
             "tool": "task_finalize",
-            "arguments": {"summary": "Lease restored.", "result": "Original conversation can edit again."},
+            "arguments": {"summary": "Lease restored."},
             "content": "Reacquire complete.",
         },
     ]

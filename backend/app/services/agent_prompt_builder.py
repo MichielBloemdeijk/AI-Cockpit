@@ -21,6 +21,7 @@ def _tool_spec_block() -> str:
 
 def _native_control_tool_definitions() -> list[dict[str, Any]]:
     return [
+        _native_plan_tool_definition(),
         {
             "type": "function",
             "function": {
@@ -43,7 +44,10 @@ def _native_control_tool_definitions() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": NATIVE_AGENT_FINALIZE_TOOL,
-                "description": "Finish the current run after the task is complete and provide the final user-facing result.",
+                "description": (
+                    "Finish the current run after the task is complete. Put the final user-facing response in the "
+                    "assistant text for the same turn; this tool only records a compact completion summary."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -51,12 +55,8 @@ def _native_control_tool_definitions() -> list[dict[str, Any]]:
                             "type": "string",
                             "description": "A short summary of what was completed.",
                         },
-                        "result": {
-                            "type": "string",
-                            "description": "The final assistant message that should be shown to the user.",
-                        },
                     },
-                    "required": ["summary", "result"],
+                    "required": ["summary"],
                     "additionalProperties": False,
                 },
             },
@@ -231,10 +231,9 @@ def _repair_native_control_tool_arguments(raw_arguments: str, tool_name: str) ->
             return {"question": question}
         return None
     if tool_name == NATIVE_AGENT_FINALIZE_TOOL:
-        summary = _extract_string_field(raw_arguments, "summary")
-        result = _extract_string_field(raw_arguments, "result")
-        if summary or result:
-            return {"summary": summary or "", "result": result or ""}
+        summary = _extract_string_field(raw_arguments, "summary") or _extract_string_field(raw_arguments, "result")
+        if summary:
+            return {"summary": summary}
         return None
     return None
 
@@ -302,7 +301,13 @@ def _validate_execution_plan_payload(payload: Any) -> dict[str, Any]:
     }
 
 
-def _build_tool_action_payload(*, thought: str, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _build_tool_action_payload(
+    *,
+    thought: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    tool_call_id: str | None = None,
+) -> dict[str, Any]:
     normalized_tool = str(tool_name or "").strip()
     if not normalized_tool:
         raise ValueError("Tool decisions require a tool name")
@@ -318,12 +323,15 @@ def _build_tool_action_payload(*, thought: str, tool_name: str, arguments: dict[
         app_slug = str(normalized_arguments.get("app_slug") or "").strip()
         if not title and not app_slug:
             raise ValueError("app_initialize requires title or app_slug")
-    return {
+    payload = {
         "kind": "tool",
         "thought": emitted_thought,
         "tool": normalized_tool,
         "arguments": normalized_arguments,
     }
+    if tool_call_id:
+        payload["tool_call_id"] = tool_call_id
+    return payload
 
 
 def _build_question_action_payload(*, thought: str, question: str) -> dict[str, Any]:
@@ -341,11 +349,13 @@ def _build_question_action_payload(*, thought: str, question: str) -> dict[str, 
     }
 
 
-def _build_final_action_payload(*, thought: str, summary: str, result: str) -> dict[str, Any]:
+def _build_final_action_payload(*, thought: str, summary: str, final_text: str) -> dict[str, Any]:
     normalized_summary = str(summary or "").strip()
-    normalized_result = str(result or "").strip()
-    if not normalized_summary or not normalized_result:
-        raise ValueError("Native finalize tool requires summary and result")
+    normalized_final_text = str(final_text or "").strip()
+    if not normalized_summary:
+        raise ValueError("Native finalize tool requires a summary")
+    if not normalized_final_text:
+        raise ValueError("Native finalize tool requires the final response in assistant text")
     emitted_thought = str(thought or "").strip()
     normalized_thought = emitted_thought or "Task complete"
     if not normalized_thought.strip():
@@ -354,7 +364,7 @@ def _build_final_action_payload(*, thought: str, summary: str, result: str) -> d
         "kind": "final",
         "thought": emitted_thought,
         "summary": normalized_summary,
-        "result": normalized_result,
+        "final_text": normalized_final_text,
     }
 
 
@@ -510,40 +520,8 @@ def _is_low_signal_tool_intent_summary(text: str) -> bool:
     return normalized in {"working on it", "continuing", "in progress"}
 
 
-def _is_low_quality_progress_summary(text: str) -> bool:
-    normalized = " ".join(str(text or "").split()).strip().strip(".?!")
-    if not normalized:
-        return True
-    trailing_word = normalized.split()[-1].lower()
-    return trailing_word in {
-        "a",
-        "an",
-        "and",
-        "at",
-        "for",
-        "from",
-        "in",
-        "into",
-        "of",
-        "on",
-        "or",
-        "the",
-        "to",
-        "with",
-    }
-
-
-def _fallback_progress_summary(action: dict[str, Any]) -> str:
-    kind = str(action.get("kind") or "").strip()
-    if kind == "ask_user":
-        return "Waiting for input"
-    if kind == "final":
-        return "Preparing final response"
-    if kind != "tool":
-        return "Continuing the task"
-
-    tool_name = str(action.get("tool") or "tool").strip()
-    arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+def summarize_tool_start_content(tool_name: str, arguments: dict[str, Any]) -> str:
+    tool_name = str(tool_name or "tool").strip()
 
     if tool_name == "file_read":
         path = _compact_path_label(str(arguments.get("path") or ""))
@@ -569,39 +547,6 @@ def _fallback_progress_summary(action: dict[str, Any]) -> str:
     return f"Running {tool_name}"
 
 
-def _fallback_action_thought(action: dict[str, Any]) -> str:
-    kind = str(action.get("kind") or "").strip()
-    if kind == "ask_user":
-        return "I need one detail from you before I can continue."
-    if kind == "final":
-        return "I have enough information to wrap this up."
-    if kind != "tool":
-        return ""
-
-    tool_name = str(action.get("tool") or "tool").strip()
-    arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
-
-    if tool_name == "file_read":
-        path = str(arguments.get("path") or "").strip()
-        return f"I will read {path} next and pull out the useful details." if path else "I will inspect a file next and pull out the useful details."
-    if tool_name == "workspace_search":
-        query = str(arguments.get("query") or "").strip()
-        return f"I will search the workspace for '{query}' to find the next clue." if query else "I will search the workspace to find the next clue."
-    if tool_name == "file_write":
-        path = str(arguments.get("path") or "").strip()
-        return f"I am updating {path} now." if path else "I am writing the next change now."
-    if tool_name == "shell_command":
-        command = str(arguments.get("command") or "").strip()
-        return f"I am running '{command}' to verify the next step." if command else "I am running a shell command to verify the next step."
-    if tool_name == "python_execution":
-        return "I am running a small Python check to inspect the current state."
-    if tool_name == "app_initialize":
-        title = str(arguments.get("title") or arguments.get("app_slug") or "the app").strip()
-        return f"I am preparing {title} so I can work inside the generated app files."
-
-    return f"I am using {tool_name} for the next step."
-
-
 def _native_retry_feedback(
     error: Exception,
     *,
@@ -616,7 +561,7 @@ def _native_retry_feedback(
     if tool_name == "app_initialize" and "app_initialize requires title or app_slug" in error_text:
         base = (
             "Your previous tool call called app_initialize without the required arguments. "
-            "Retry with exactly one corrected tool call. If you are creating a new app, include title. "
+            "Retry with a corrected app_initialize call. If you are creating a new app, include title. "
             "If you are attaching an existing app, include app_slug."
         )
         if arguments_preview:
@@ -626,27 +571,28 @@ def _native_retry_feedback(
         if tool_call_count == 0:
             return (
                 "Your previous response was invalid because it produced zero tool calls. "
-                "A native tool call is required now. Retry immediately by returning exactly one tool call and no plain-text-only response."
+                "An actionable native tool call is required now. Return a control call or one or more external tool calls."
             )
         return (
             f"Your previous response was invalid because it produced {tool_call_count} tool calls. "
-            "Retry by making exactly one tool call."
+            "Retry by returning either exactly one control tool call or a batch of external tool calls only. "
+            "Do not combine task_plan, task_ask_user, or task_finalize with any other tool call."
         )
     if truncated_by_length and tool_name:
         if arguments_preview:
             return (
                 f"Your previous tool call for {tool_name} was truncated because the response hit the token limit. "
-                f"Retry with exactly one complete tool call containing valid JSON arguments. Previous truncated arguments: {arguments_preview}"
+                f"Retry with a complete {tool_name} call containing valid JSON arguments. Previous truncated arguments: {arguments_preview}"
             )
         return (
             f"Your previous tool call for {tool_name} was truncated because the response hit the token limit. "
-            "Retry with exactly one complete tool call containing valid JSON arguments."
+            f"Retry with a complete {tool_name} call containing valid JSON arguments."
         )
     if tool_name:
         if arguments_preview:
             return (
                 f"Your previous tool call for {tool_name} was invalid: {error_text}. "
-                f"Retry with exactly one corrected tool call. Previous invalid arguments: {arguments_preview}"
+                f"Retry with a corrected {tool_name} call. Previous invalid arguments: {arguments_preview}"
             )
-        return f"Your previous tool call for {tool_name} was invalid: {error_text}. Retry with exactly one corrected tool call."
-    return f"Your previous response was invalid: {error_text}. Retry by making exactly one corrected tool call."
+        return f"Your previous tool call for {tool_name} was invalid: {error_text}. Retry with a corrected {tool_name} call."
+    return f"Your previous response was invalid: {error_text}. Retry with valid control or external tool calls."
