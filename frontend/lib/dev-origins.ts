@@ -104,7 +104,9 @@ export function getConfiguredRemoteHosts(options: AllowedDevOriginsOptions = {})
 }
 
 export function getAllowedDevOrigins(options: AllowedDevOriginsOptions = {}): string[] {
-  const origins = new Set<string>(["localhost", "127.0.0.1"]);
+  // Next.js rejects a bare "*", but this recursive pattern allows every
+  // dotted hostname and IPv4 address (including all Tailscale 100.x.x.x IPs).
+  const origins = new Set<string>(["localhost", "127.0.0.1", "**.*"]);
   const networkInterfaceMap = options.networkInterfaceMap ?? networkInterfaces();
 
   for (const entries of Object.values(networkInterfaceMap)) {

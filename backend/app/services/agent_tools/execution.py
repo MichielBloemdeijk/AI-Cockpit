@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from queue import Empty, Queue
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from typing import Any
 
 from app.services.agent_tools.base import AgentTool
@@ -31,52 +34,65 @@ async def _run_subprocess_with_live_progress(
     timeout_seconds: int,
     context: ToolExecutionContext,
 ) -> tuple[int, str, str]:
-    process = await asyncio.create_subprocess_exec(
-        *args,
+    process = await asyncio.to_thread(
+        subprocess.Popen,
+        args,
         cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+    output_queue: Queue[tuple[str, bytes]] = Queue()
+    captured: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
 
-    async def _consume_stream(
-        stream: asyncio.StreamReader | None,
-        label: str,
-    ) -> bytes:
+    def _consume_stream(stream, label: str) -> None:
         if stream is None:
-            return b""
-        chunks: list[bytes] = []
-        update_count = 0
-        skipped_notice_sent = False
+            return
+        try:
+            for chunk in iter(stream.readline, b""):
+                captured[label].append(chunk)
+                output_queue.put((label, chunk))
+        finally:
+            stream.close()
+
+    readers = [
+        threading.Thread(target=_consume_stream, args=(process.stdout, "stdout"), daemon=True),
+        threading.Thread(target=_consume_stream, args=(process.stderr, "stderr"), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    update_counts = {"stdout": 0, "stderr": 0}
+    skipped_notices: set[str] = set()
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    timed_out = False
+    while process.poll() is None or any(reader.is_alive() for reader in readers) or not output_queue.empty():
         while True:
-            chunk = await stream.readline()
-            if not chunk:
+            try:
+                label, chunk = output_queue.get_nowait()
+            except Empty:
                 break
-            chunks.append(chunk)
             rendered = chunk.decode(errors="replace").strip()
             if not rendered:
                 continue
-            if update_count < MAX_LIVE_PROCESS_UPDATES_PER_STREAM:
+            if update_counts[label] < MAX_LIVE_PROCESS_UPDATES_PER_STREAM:
                 await emit_tool_progress(context, f"{label}: {rendered}")
-            elif not skipped_notice_sent:
-                skipped_notice_sent = True
+            elif label not in skipped_notices:
+                skipped_notices.add(label)
                 await emit_tool_progress(context, f"{label}: more output continues...")
-            update_count += 1
-        return b"".join(chunks)
+            update_counts[label] += 1
+        if process.poll() is None and asyncio.get_running_loop().time() >= deadline:
+            timed_out = True
+            process.kill()
+        await asyncio.sleep(0.01)
 
-    try:
-        stdout_bytes, stderr_bytes, returncode = await asyncio.wait_for(
-            asyncio.gather(
-                _consume_stream(process.stdout, "stdout"),
-                _consume_stream(process.stderr, "stderr"),
-                process.wait(),
-            ),
-            timeout=timeout_seconds,
-        )
-    except asyncio.TimeoutError as exc:
-        process.kill()
-        await process.wait()
-        raise ValueError(f"Command timed out after {timeout_seconds} seconds") from exc
+    returncode = await asyncio.to_thread(process.wait)
+    for reader in readers:
+        await asyncio.to_thread(reader.join)
+    if timed_out:
+        raise ValueError(f"Command timed out after {timeout_seconds} seconds")
 
+    stdout_bytes = b"".join(captured["stdout"])
+    stderr_bytes = b"".join(captured["stderr"])
     return int(returncode), stdout_bytes.decode(errors="replace").strip(), stderr_bytes.decode(errors="replace").strip()
 
 
@@ -284,8 +300,6 @@ async def run_python_execution(
     cwd = context.workspace_root
     if working_directory:
         cwd = _resolve_read_path(working_directory, context=context)
-    await emit_tool_progress(context, f"Preparing Python run in {_display_path(cwd)}")
-
     with tempfile.TemporaryDirectory(prefix="ai-cockpit-chat-tool-") as temp_dir:
         bootstrap_path = Path(temp_dir) / "guarded_python_exec.py"
         bootstrap_path.write_text(
@@ -348,10 +362,12 @@ async def run_shell_command(
     working_directory: str | None = None,
 ) -> ToolExecutionResult:
     args = _parse_shell_command(command)
+    resolved_executable = shutil.which(args[0])
+    if resolved_executable:
+        args[0] = resolved_executable
     cwd = context.workspace_root
     if working_directory:
         cwd = _resolve_write_path(working_directory, context=context)
-    await emit_tool_progress(context, f"Preparing command in {_display_path(cwd)}")
     await emit_tool_progress(context, f"Starting {args[0]}")
 
     try:

@@ -27,7 +27,11 @@ def get_agent_tool_definitions() -> list[AgentTool]:
 
 
 def get_agent_tool_provider_definitions(provider_format: Literal["openai", "anthropic"] = "openai") -> list[dict[str, Any]]:
-    return [tool.to_provider_definition(provider_format) for tool in get_agent_tool_definitions()]
+    return [
+        tool.to_provider_definition(provider_format)
+        for tool in get_agent_tool_definitions()
+        if tool.model_visible
+    ]
 
 
 async def execute_agent_tool(

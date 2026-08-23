@@ -13,15 +13,6 @@ import app.services.chat_orchestrator as orchestrator_module
 from app.services.conversation_store import conversation_store
 
 
-def _plan_payload(summary: str) -> dict[str, object]:
-    return {
-        "summary": summary,
-        "steps": ["Do the requested work."],
-        "open_questions": [],
-        "assumptions": [],
-    }
-
-
 def _native_finalize_response(model: str, result: str) -> ModelResponse:
     return ModelResponse(
         model=model,
@@ -40,39 +31,10 @@ def _native_finalize_response(model: str, result: str) -> ModelResponse:
     )
 
 
-def _native_plan_response(model: str, summary: str) -> ModelResponse:
-    return ModelResponse(
-        model=model,
-        content="Plan drafted.",
-        usage=None,
-        tool_calls=[
-            ToolCall(
-                id="call_task_plan",
-                function=ToolCallFunction(
-                    name="task_plan",
-                    arguments=json.dumps(
-                        {
-                            "summary": summary,
-                            "steps": ["Do the requested work."],
-                            "open_questions": [],
-                            "assumptions": [],
-                        }
-                    ),
-                ),
-            )
-        ],
-        finish_reason="tool_calls",
-    )
-
-
 @pytest.mark.asyncio
 async def test_initial_message_persists_user_and_assistant_message(monkeypatch):
-    responses = ["Plan initial conversation response.", "Initial response complete."]
-
     async def _fake_chat_completion(messages, model, temperature=0.7, max_tokens=4096, response_format=None, tools=None, tool_choice=None, session_id=None, prompt_segments=None):
-        if len(responses) == 2:
-            return _native_plan_response(model, responses.pop(0))
-        return _native_finalize_response(model, responses.pop(0))
+        return _native_finalize_response(model, "Initial response complete.")
 
     monkeypatch.setattr(agent_runner_module, "chat_completion", _fake_chat_completion)
     monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_chat_completion)
@@ -106,12 +68,8 @@ async def test_initial_message_persists_user_and_assistant_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_single_model_stream_returns_done_and_persists_assistant_message(monkeypatch):
-    responses = ["Plan stream response.", "Streamed response complete."]
-
     async def _fake_chat_completion(messages, model, temperature=0.7, max_tokens=4096, response_format=None, tools=None, tool_choice=None, session_id=None, prompt_segments=None):
-        if len(responses) == 2:
-            return _native_plan_response(model, responses.pop(0))
-        return _native_finalize_response(model, responses.pop(0))
+        return _native_finalize_response(model, "Streamed response complete.")
 
     monkeypatch.setattr(agent_runner_module, "chat_completion", _fake_chat_completion)
     monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_chat_completion)
@@ -199,12 +157,11 @@ async def test_stream_single_response_emits_metadata_before_run_completion(monke
             run.conversation_id,
             run_id=run.id,
             actor_kind="assistant",
-            event_type="agent.plan.created",
+            event_type="agent.tool.called",
             payload_json={
-                "summary": "Plan while running",
-                "steps": ["Keep streaming progress"],
-                "open_questions": [],
-                "assumptions": [],
+                "step": 1,
+                "tool": "file_read",
+                "arguments": {"path": "README.md"},
             },
         )
         await gate.wait()
@@ -252,10 +209,10 @@ async def test_stream_single_response_emits_metadata_before_run_completion(monke
     progress_event = await anext(event_iterator)
     while not (
         progress_event["type"] == "event"
-        and progress_event["event"]["event_type"] == "agent.plan.created"
+        and progress_event["event"]["event_type"] == "agent.tool.called"
     ):
         progress_event = await anext(event_iterator)
-    assert progress_event["event"]["event_type"] == "agent.plan.created"
+    assert progress_event["event"]["event_type"] == "agent.tool.called"
 
     gate.set()
     remaining_events = []
@@ -393,12 +350,8 @@ async def test_conversation_message_returns_error_when_single_response_fails(mon
 
 @pytest.mark.asyncio
 async def test_collection_routes_accept_requests_without_trailing_slashes(monkeypatch):
-    responses = ["Plan slashless chat response.", "slashless ok"]
-
     async def _fake_chat_completion(messages, model, temperature=0.7, max_tokens=4096, response_format=None, tools=None, tool_choice=None, session_id=None, prompt_segments=None):
-        if len(responses) == 2:
-            return _native_plan_response(model, responses.pop(0))
-        return _native_finalize_response(model, responses.pop(0))
+        return _native_finalize_response(model, "slashless ok")
 
     monkeypatch.setattr(agent_runner_module, "chat_completion", _fake_chat_completion)
     monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_chat_completion)

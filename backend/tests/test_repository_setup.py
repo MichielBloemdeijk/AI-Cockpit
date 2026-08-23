@@ -25,7 +25,8 @@ def test_example_environment_is_safe_and_machine_independent() -> None:
     assert values["AUTH_PASSWORD_HASH"] == ""
     assert values["ALLOWED_DIRS"] == ""
     assert values["SESSION_SECRET_KEY"]
-    assert values["TASK_AGENT_MODEL"] == "anthropic/claude-haiku-4.5"
+    assert values["TASK_AGENT_MODEL"] == "openai/gpt-5.6-luna"
+    assert values["AVAILABLE_MODELS"].split(",") == Settings().available_model_list
     assert "Sander" not in (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
 
@@ -48,8 +49,10 @@ def test_readme_quick_start_is_copyable_and_current() -> None:
     assert "PLAN.md" not in readme
 
 
-def test_default_council_models_avoid_retired_gemini_slug() -> None:
+def test_default_models_use_current_openrouter_slugs() -> None:
     default_models = str(Settings.model_fields["council_models"].default)
 
-    assert "google/gemini-2.5-pro" in default_models
-    assert "google/gemini-pro-1.5" not in default_models
+    assert "openai/gpt-5.6-terra" in default_models
+    assert "google/gemini-3.5-flash" in default_models
+    assert "anthropic/claude-sonnet-5" in default_models
+    assert Settings.model_fields["task_agent_model"].default == "openai/gpt-5.6-luna"

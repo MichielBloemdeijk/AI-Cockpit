@@ -68,6 +68,9 @@ def summarize_tool_result_content(
     if tool_name == "app_initialize":
         title = str(arguments.get("title") or arguments.get("app_slug") or "the app").strip()
         return f"Initialized {title}" if title else "Finished initializing the app"
+    if tool_name == "app_verify":
+        slug = str(arguments.get("app_slug") or "").strip()
+        return f"Verified {slug}" if slug else "Verified the app"
     output_text = str(output or "").strip()
     if output_text:
         return output_text
@@ -170,26 +173,6 @@ def build_thought_timeline_item(*, run_id: str, step: int, content: str) -> dict
         title="Thought",
         content=content,
         step=step,
-    )
-
-
-def build_plan_timeline_item(*, run_id: str, plan: dict[str, Any]) -> dict[str, Any]:
-    sections = []
-    for title, key in (("Steps", "steps"), ("Open points", "open_questions"), ("Assumptions", "assumptions")):
-        values = [str(item).strip() for item in plan.get(key, []) if str(item).strip()]
-        if values:
-            sections.append({"title": title, "items": values})
-    summary = str(plan.get("summary") or "").strip() or "The agent prepared a plan."
-    return build_timeline_item(
-        item_id=f"plan:{run_id}",
-        role="assistant",
-        kind="plan",
-        label="Execution plan",
-        title="Plan ready",
-        content=summary,
-        tone="info",
-        sections=sections,
-        metadata={"approved": bool(plan.get("approved"))},
     )
 
 

@@ -135,7 +135,7 @@ export default function ChatPage() {
   const closeMobileDrawer = () => setMobileDrawer(null);
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 bg-zinc-900">
       <ConversationListPanel
         conversations={conversations}
         activeConversationId={activeConversationId}

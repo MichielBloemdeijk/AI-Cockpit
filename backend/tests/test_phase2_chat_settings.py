@@ -97,7 +97,6 @@ async def test_chat_settings_apply_to_future_sessions_only(monkeypatch):
 @pytest.mark.asyncio
 async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkeypatch):
     seen_models: list[str] = []
-    responses = ["plan", "final"]
 
     async def _fake_chat_completion(
         messages,
@@ -113,22 +112,6 @@ async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkey
         **kwargs,
     ):
         seen_models.append(model)
-        if responses.pop(0) == "plan":
-            return ModelResponse(
-                model=model,
-                content="Plan drafted.",
-                usage=None,
-                tool_calls=[
-                    ToolCall(
-                        id="call_task_plan",
-                        function=ToolCallFunction(
-                            name="task_plan",
-                            arguments=json.dumps({"summary": "Use the configured task model.", "steps": ["Finish immediately."], "open_questions": [], "assumptions": []}),
-                        ),
-                    )
-                ],
-                finish_reason="tool_calls",
-            )
         return ModelResponse(
             model=model,
             content="Used the configured task model.",

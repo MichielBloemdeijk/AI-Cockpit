@@ -169,13 +169,14 @@ The main settings are:
 | Variable | Development default | Purpose |
 |---|---|---|
 | `OPENROUTER_API_KEY` | example value | Required for model requests |
-| `COUNCIL_MODELS` | Claude Sonnet 4.5, Gemini 2.5 Pro, GPT-4o | Models queried in Council mode |
-| `SYNTHESIZER_MODEL` | Claude Sonnet 4.5 | Combines Council responses |
-| `TASK_AGENT_MODEL` | Claude Haiku 4.5 | Runs multi-step Agent conversations; must support native tool calls |
+| `AVAILABLE_MODELS` | GPT-5.6 Luna/Terra/Sol, Gemini 3.5 Flash, Claude Sonnet/Opus 5, Grok 4.5 | Options shown in the model pickers |
+| `COUNCIL_MODELS` | GPT-5.6 Terra, Gemini 3.5 Flash, Claude Sonnet 5 | Models queried in Council mode |
+| `SYNTHESIZER_MODEL` | Claude Sonnet 5 | Combines Council responses |
+| `TASK_AGENT_MODEL` | GPT-5.6 Luna | Default chat and multi-step Agent model; must support native tool calls |
 | `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
 | `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
 | `ALLOWED_DIRS` | blank | Optional comma-separated absolute directories |
-| `TAILSCALE_HOST` | blank | Optional Tailscale IP or MagicDNS hostname |
+| `TAILSCALE_HOST` | blank | Optional fixed Tailscale IP or MagicDNS hostname; normal same-origin tailnet access requires no per-device list |
 | `NTFY_TOPIC` | blank | Optional ntfy.sh topic |
 
 Defaults for future conversations can also be changed from the Settings page after login.
@@ -186,16 +187,9 @@ Defaults for future conversations can also be changed from the Settings page aft
 
 1. Install Tailscale on the development computer and phone and join both to the same tailnet.
 2. Get the computer's address with `tailscale ip -4` or `tailscale status`.
-3. Set the reachable IP or MagicDNS hostname in `.env`, for example:
+3. Open `http://100.x.y.z:3000` from any device in the tailnet. You can use the computer's MagicDNS hostname instead.
 
-   ```env
-   TAILSCALE_HOST=100.x.y.z
-   ```
-
-4. Restart both development servers so backend CORS and Next.js development origins are rebuilt.
-5. Open `http://100.x.y.z:3000` from the phone.
-
-The browser uses the frontend origin for `/api` requests, and Next.js proxies them to the backend on the development computer. Port 8000 does not need to be opened separately to the phone.
+The browser uses same-origin `/api` requests, and Next.js proxies them to the backend on the development computer. Port 8000 does not need to be reachable from other devices, and individual tailnet devices do not need to be added to `.env`. `TAILSCALE_HOST` remains available for unusual cross-origin setups.
 
 ### HTTPS with Tailscale Serve
 

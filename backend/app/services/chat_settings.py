@@ -10,7 +10,12 @@ from app.services.conversation_store import ConversationRecord, conversation_sto
 
 class ChatSettingsService:
     def _available_models(self) -> list[str]:
-        values = [*settings.council_model_list, settings.synthesizer_model, settings.task_agent_model]
+        values = [
+            *settings.available_model_list,
+            *settings.council_model_list,
+            settings.synthesizer_model,
+            settings.task_agent_model,
+        ]
         ordered: list[str] = []
         seen: set[str] = set()
         for value in values:
@@ -21,13 +26,13 @@ class ChatSettingsService:
         return ordered
 
     def _env_defaults(self) -> ConversationSessionMetadata:
-        available_models = settings.council_model_list
-        first_model = available_models[0] if available_models else settings.synthesizer_model
+        council_models = settings.council_model_list
+        default_model = settings.task_agent_model or settings.synthesizer_model
         return ConversationSessionMetadata(
             mode="single",
-            single_model=first_model,
-            council_models=available_models or [first_model],
-            synthesizer_model=settings.synthesizer_model or first_model,
+            single_model=default_model,
+            council_models=council_models or [default_model],
+            synthesizer_model=settings.synthesizer_model or default_model,
         )
 
     def _normalize(self, payload: ConversationSessionMetadata | dict | None) -> ConversationSessionMetadata:

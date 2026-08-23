@@ -17,7 +17,7 @@ describe("login", () => {
     vi.resetModules();
   });
 
-  it("uses the backend origin directly in development without an explicit override", async () => {
+  it("uses the same-origin API proxy in development without an explicit override", async () => {
     vi.resetModules();
     vi.stubEnv("NODE_ENV", "development");
     vi.stubGlobal("window", {
@@ -38,7 +38,7 @@ describe("login", () => {
 
     await developmentLogin("anything");
 
-    expect(fetch).toHaveBeenCalledWith("http://ai-cockpit.tail1234.ts.net:8000/api/auth/login", {
+    expect(fetch).toHaveBeenCalledWith("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",

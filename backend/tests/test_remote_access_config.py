@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import socket
 
 from app.config import settings
@@ -37,3 +38,13 @@ def test_cors_origins_include_discovered_interface_addresses(monkeypatch):
     assert "http://100.105.57.1:3000" in origins
     assert "https://100.105.57.1" in origins
     assert "http://192.168.1.20:3000" in origins
+
+
+def test_cors_origin_regex_allows_tailnet_origins_without_per_device_configuration():
+    pattern = re.compile(settings.cors_origin_regex)
+
+    assert pattern.fullmatch("http://100.64.0.1:3000")
+    assert pattern.fullmatch("https://100.127.255.254")
+    assert pattern.fullmatch("https://cockpit.example-tailnet.ts.net")
+    assert not pattern.fullmatch("http://100.128.0.1:3000")
+    assert not pattern.fullmatch("https://example.com")

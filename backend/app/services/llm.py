@@ -555,21 +555,15 @@ def use_streaming_native_decision(model: str) -> bool:
     return supports_native_tool_calls(model)
 
 
-def native_plan_max_tokens(model: str) -> int:
-    return 1200
-
-
 def native_decision_max_tokens(model: str) -> int:
-    if str(model or "").strip().lower().startswith("anthropic/"):
-        return 2500
-    return 1200
+    return 8192
 
 
 def native_decision_attempt_max_tokens(model: str, attempt: int) -> int:
     base = native_decision_max_tokens(model)
     if attempt <= 0:
         return base
-    return max(base * 4, 4096)
+    return max(base * 2, 16_384)
 
 
 def resolve_prompt_cache_policy(model: str) -> PromptCachePolicy:

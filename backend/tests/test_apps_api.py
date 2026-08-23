@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -10,6 +11,7 @@ import pytest_asyncio
 import app.services.agent_runner as agent_runner_module
 import app.services.app_builder as app_builder_module
 import app.services.app_registry as app_registry_module
+import app.services.app_verifier as app_verifier_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 
 from app.main import app
@@ -22,10 +24,20 @@ from app.services.agent_tools import (
     get_agent_tool_provider_definitions,
 )
 from app.services.app_registry import AppLeaseConflictError, app_registry_service, generated_app_contract, resolve_generated_app_contract
+from app.services.app_verifier import verify_generated_app
 from app.services.conversation_store import conversation_store
 
 
 _DURABLE_APP_SLUGS = {"app", "launchpad", "leaseable-launch-dashboard", "release-dashboard"}
+_REAL_FRONTEND_BUILD = app_verifier_module._run_frontend_build
+
+
+@pytest.fixture(autouse=True)
+def stub_generated_app_build(monkeypatch):
+    async def _successful_build(frontend_root: Path):
+        return 0, "Next.js build passed"
+
+    monkeypatch.setattr(app_verifier_module, "_run_frontend_build", _successful_build)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -128,20 +140,6 @@ def _native_tool_response(*, model: str, name: str, arguments: dict[str, object]
             )
         ],
         finish_reason="tool_calls",
-    )
-
-
-def _native_plan_response(*, model: str, summary: str, steps: list[str], open_questions: list[str] | None = None, assumptions: list[str] | None = None) -> ModelResponse:
-    return _native_tool_response(
-        model=model,
-        name="task_plan",
-        arguments={
-            "summary": summary,
-            "steps": steps,
-            "open_questions": open_questions or [],
-            "assumptions": assumptions or [],
-        },
-        content="Plan drafted.",
     )
 
 
@@ -302,6 +300,87 @@ async def test_update_app_allows_clearing_last_error_for_recovered_apps():
 
 
 @pytest.mark.asyncio
+async def test_generated_app_verification_marks_a_successful_build_as_passed(monkeypatch):
+    bootstrap = await bootstrap_generated_app(goal="create verified app", title="Verified Build App")
+
+    async def _successful_build(frontend_root: Path):
+        return 0, "Next.js build passed"
+
+    monkeypatch.setattr(app_verifier_module, "_run_frontend_build", _successful_build)
+
+    result = await verify_generated_app(bootstrap.app.slug)
+    record = await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+
+    assert result["verification_status"] == "passed"
+    assert record is not None
+    assert record.status == "verified"
+    assert record.verification_status == "passed"
+    assert record.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_generated_app_verification_records_build_error_for_agent_repair(monkeypatch):
+    bootstrap = await bootstrap_generated_app(goal="create broken app", title="Broken Build App")
+
+    async def _failed_build(frontend_root: Path):
+        return 1, "TypeScript error in generated app"
+
+    monkeypatch.setattr(app_verifier_module, "_run_frontend_build", _failed_build)
+
+    with pytest.raises(ValueError, match="TypeScript error in generated app"):
+        await verify_generated_app(bootstrap.app.slug)
+
+    record = await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+    assert record is not None
+    assert record.status == "building"
+    assert record.verification_status == "failed"
+    assert record.last_error == "TypeScript error in generated app"
+
+
+@pytest.mark.asyncio
+async def test_generated_app_verification_infrastructure_error_does_not_mark_app_broken(monkeypatch):
+    bootstrap = await bootstrap_generated_app(goal="create app", title="Verifier Infrastructure App")
+
+    async def _infrastructure_failure(frontend_root: Path):
+        raise app_verifier_module.AppVerificationInfrastructureError("npm could not start")
+
+    monkeypatch.setattr(app_verifier_module, "_run_frontend_build", _infrastructure_failure)
+
+    with pytest.raises(app_verifier_module.AppVerificationInfrastructureError, match="npm could not start"):
+        await verify_generated_app(bootstrap.app.slug)
+
+    record = await app_registry_service.get_app_by_slug(bootstrap.app.slug)
+    assert record is not None
+    assert record.status == "ready_for_test"
+    assert record.verification_status == "not_started"
+    assert record.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_frontend_build_uses_cross_platform_worker_and_cleans_temporary_files(tmp_path, monkeypatch):
+    frontend_root = tmp_path / "frontend"
+    frontend_root.mkdir()
+    (frontend_root / "tsconfig.json").write_text("{}", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    def _fake_run(args, *, cwd, env, stdout, stderr, timeout, check):
+        observed.update({"args": args, "cwd": cwd, "env": env, "timeout": timeout})
+        assert (frontend_root / str(env["AI_COCKPIT_TSCONFIG_PATH"])).is_file()
+        return SimpleNamespace(returncode=0, stdout=b"Next.js build passed")
+
+    monkeypatch.setattr(app_verifier_module.shutil, "which", lambda name: "npm.cmd")
+    monkeypatch.setattr(app_verifier_module.subprocess, "run", _fake_run)
+
+    returncode, output = await _REAL_FRONTEND_BUILD(frontend_root)
+
+    assert returncode == 0
+    assert output == "Next.js build passed"
+    assert observed["args"] == ["npm.cmd", "run", "build"]
+    assert observed["cwd"] == frontend_root
+    assert list(frontend_root.glob(".next-verify-*")) == []
+
+
+@pytest.mark.asyncio
 async def test_generated_app_write_roots_are_explicit_and_enforced():
     conversation = await conversation_store.create_conversation(title="Generated app writes")
     assert conversation.workspace_path is not None
@@ -368,9 +447,13 @@ def test_agent_tools_expose_provider_native_schemas():
     assert tools["file_write"].input_schema["required"] == ["path", "content"]
     assert tools["app_initialize"].input_schema["additionalProperties"] is False
     assert tools["app_initialize"].input_schema["properties"]["title"]["type"] == "string"
+    assert tools["app_verify"].input_schema["required"] == ["app_slug"]
 
     openai_definitions = get_agent_tool_provider_definitions("openai")
     anthropic_definitions = get_agent_tool_provider_definitions("anthropic")
+
+    assert all(tool["function"]["name"] != "app_verify" for tool in openai_definitions)
+    assert all(tool["name"] != "app_verify" for tool in anthropic_definitions)
 
     file_write_definition = next(tool for tool in openai_definitions if tool["function"]["name"] == "file_write")
     app_initialize_definition = next(tool for tool in anthropic_definitions if tool["name"] == "app_initialize")
@@ -399,16 +482,6 @@ async def test_app_initialize_tool_creates_app_from_title_only():
 @pytest.mark.asyncio
 async def test_chat_agent_flow_accepts_top_level_app_initialize_fields(monkeypatch):
     native_responses = [
-        {
-            "tool": "task_plan",
-            "arguments": {
-                "summary": "Create the app.",
-                "steps": ["Initialize app", "Return confirmation"],
-                "open_questions": [],
-                "assumptions": [],
-            },
-            "content": "Plan drafted.",
-        },
         {
             "tool": "app_initialize",
             "arguments": {"title": "Hello World", "app_slug": "hello-world"},
@@ -472,7 +545,7 @@ async def test_chat_agent_flow_accepts_top_level_app_initialize_fields(monkeypat
         for event in events
         if event.event_type == "agent.tool.called"
     ]
-    assert called_tools == ["app_initialize"]
+    assert called_tools == ["app_initialize", "app_verify"]
     assert isinstance(metadata.get("app_context"), dict)
     assert metadata["app_context"]["mode"] == "app_builder"
     assert metadata["app_context"]["app"]["slug"] == "hello-world"
@@ -503,12 +576,6 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
         assert tools is not None
         assert tool_choice == "auto"
         if call_count["count"] == 1:
-            return _native_plan_response(
-                model=model,
-                summary="Create the app.",
-                steps=["Initialize app", "Return confirmation"],
-            )
-        if call_count["count"] == 2:
             return ModelResponse(
                 model=model,
                 content="Initialize the app boundary first.",
@@ -553,7 +620,7 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
         )
 
     assert response.status_code == 201
-    assert call_count["count"] == 3
+    assert call_count["count"] == 2
     conversation_id = response.json()["conversation"]["id"]
 
     app_record = await app_registry_service.get_app_by_slug("hello-world")
@@ -573,8 +640,8 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
         for event in events
         if event.event_type == "agent.response.tool_call"
     ]
-    assert called_tools == ["app_initialize"]
-    assert {event["tool"] for event in raw_tool_calls} == {"task_plan", "app_initialize", "task_finalize"}
+    assert called_tools == ["app_initialize", "app_verify"]
+    assert {event["tool"] for event in raw_tool_calls} == {"app_initialize", "task_finalize"}
 
     messages = await conversation_store.list_messages(conversation_id, final_only=True)
     assert messages[-1].content == "Creation complete."
@@ -601,13 +668,6 @@ async def test_chat_agent_native_tool_flow_can_pause_for_user_question(monkeypat
         assert tools is not None
         assert tool_choice == "auto"
         decision_count += 1
-        if decision_count == 1:
-            return _native_plan_response(
-                model=model,
-                summary="Clarify the app scope.",
-                steps=["Ask one clarifying question"],
-                open_questions=["What should the app be named?"],
-            )
         return ModelResponse(
             model=model,
             content="Need clarification before creating the app.",
@@ -637,6 +697,7 @@ async def test_chat_agent_native_tool_flow_can_pause_for_user_question(monkeypat
         )
 
     assert response.status_code == 201
+    assert decision_count == 1
     conversation_id = response.json()["conversation"]["id"]
 
     messages = await conversation_store.list_messages(conversation_id, final_only=True)
@@ -672,23 +733,16 @@ async def test_chat_agent_retry_feedback_recovers_missing_app_initialize_argumen
         request_overrides=None,
         **kwargs,
     ):
-        if state["decision_calls"] == 0:
-            state["decision_calls"] += 1
-            return _native_plan_response(
-                model=model,
-                summary="Create the app.",
-                steps=["Initialize app", "Return confirmation"],
-            )
         state["decision_calls"] += 1
         decision_attempts.append([message.content for message in messages])
-        if state["decision_calls"] == 2:
+        if state["decision_calls"] == 1:
             return _native_tool_response(
                 model=model,
                 name="app_initialize",
                 arguments={},
                 content="Initialize the app.",
             )
-        if state["decision_calls"] == 3:
+        if state["decision_calls"] == 2:
             assert any(
                 "called app_initialize without the required arguments" in message.content
                 for message in messages
@@ -720,7 +774,7 @@ async def test_chat_agent_retry_feedback_recovers_missing_app_initialize_argumen
         )
 
     assert response.status_code == 201
-    assert state["decision_calls"] >= 4
+    assert state["decision_calls"] >= 3
     conversation_id = response.json()["conversation"]["id"]
     app_record = await app_registry_service.get_app_by_slug("hello-world")
     assert app_record is not None
@@ -831,11 +885,6 @@ async def test_app_leases_allow_same_conversation_handoff_and_block_active_other
 async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
     native_payload_queue = [
         {
-            "tool": "task_plan",
-            "arguments": {"summary": "Create the app.", "steps": ["Initialize app", "Return confirmation"], "open_questions": [], "assumptions": []},
-            "content": "Plan drafted.",
-        },
-        {
             "tool": "app_initialize",
             "arguments": {"title": "Leaseable Launch Dashboard", "app_slug": "leaseable-launch-dashboard"},
             "content": "Initialize app boundary first.",
@@ -844,11 +893,6 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
             "tool": "task_finalize",
             "arguments": {"summary": "Created app."},
             "content": "Creation complete.",
-        },
-        {
-            "tool": "task_plan",
-            "arguments": {"summary": "Edit the app without reinitializing.", "steps": ["Write update", "Return confirmation"], "open_questions": [], "assumptions": []},
-            "content": "Plan drafted.",
         },
         {
             "tool": "file_write",
@@ -864,11 +908,6 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
             "content": "Edit complete.",
         },
         {
-            "tool": "task_plan",
-            "arguments": {"summary": "Take over the lease from another conversation.", "steps": ["Attach app", "Return confirmation"], "open_questions": [], "assumptions": []},
-            "content": "Plan drafted.",
-        },
-        {
             "tool": "app_initialize",
             "arguments": {"app_slug": "leaseable-launch-dashboard"},
             "content": "Acquire by attaching app in this conversation.",
@@ -877,11 +916,6 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
             "tool": "task_finalize",
             "arguments": {"summary": "Lease moved."},
             "content": "Takeover complete.",
-        },
-        {
-            "tool": "task_plan",
-            "arguments": {"summary": "Reacquire lease for original conversation.", "steps": ["Attach app", "Return confirmation"], "open_questions": [], "assumptions": []},
-            "content": "Plan drafted.",
         },
         {
             "tool": "app_initialize",

@@ -101,6 +101,8 @@ function describeToolTarget(toolName: string, args: Record<string, unknown> | nu
     }
     case "app_list":
       return "registered apps";
+    case "app_verify":
+      return typeof args?.app_slug === "string" && args.app_slug.trim() ? compactPath(args.app_slug, 88) : null;
     default:
       return null;
   }
@@ -116,9 +118,9 @@ export function summarizeToolCall(toolName: string, argsValue: unknown): string 
       return target ?? "file";
     case "file_write":
       if (target && lineCount && lineCount > 0) {
-        return `Preparing to write ${target} (${lineCount} lines)`;
+        return `Writing ${target} (${lineCount} lines)`;
       }
-      return target ? `Preparing to write ${target}` : "Preparing to write a file";
+      return target ? `Writing ${target}` : "Writing a file";
     case "workspace_search":
       return target ? `Searching the workspace for ${target}` : "Searching the workspace";
     case "python_execution":
@@ -126,9 +128,11 @@ export function summarizeToolCall(toolName: string, argsValue: unknown): string 
     case "shell_command":
       return target ? `Running ${target}` : "Running a shell command";
     case "app_initialize":
-      return target ? `Preparing an app workspace for ${target}` : "Preparing an app workspace";
+      return target ? `Initializing an app workspace for ${target}` : "Initializing an app workspace";
     case "app_list":
       return "Checking existing app names";
+    case "app_verify":
+      return target ? `Verifying ${target}` : "Verifying the app";
     default:
       return `Running ${toolName.replace(/_/g, " ")}`;
   }
@@ -173,6 +177,8 @@ export function summarizeToolResult(
       return outputPreview ?? (target ? `Prepared an app workspace for ${target}` : "Prepared the app workspace");
     case "app_list":
       return "Checked existing app names";
+    case "app_verify":
+      return target ? `Verified ${target}` : "Verified the app";
     default:
       return outputPreview ?? `Completed ${toolName.replace(/_/g, " ")}`;
   }

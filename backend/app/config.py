@@ -31,14 +31,30 @@ class Settings(BaseSettings):
     session_secret_key: str = "dev-secret-change-me"
 
     # LLM Council
-    council_models: str = (
-        "anthropic/claude-sonnet-4-5,"
-        "google/gemini-2.5-pro,"
-        "openai/gpt-4o"
+    available_models: str = (
+        "openai/gpt-5.6-luna,"
+        "openai/gpt-5.6-terra,"
+        "openai/gpt-5.6-sol,"
+        "google/gemini-3.5-flash,"
+        "anthropic/claude-sonnet-5,"
+        "anthropic/claude-opus-5,"
+        "x-ai/grok-4.5"
     )
-    synthesizer_model: str = "anthropic/claude-sonnet-4-5"
-    task_agent_model: str = "anthropic/claude-haiku-4.5"
-    native_tool_model_prefixes: str = "moonshotai/kimi-k2.6,anthropic/claude,openai/gpt-5,deepseek/"
+    council_models: str = (
+        "openai/gpt-5.6-terra,"
+        "google/gemini-3.5-flash,"
+        "anthropic/claude-sonnet-5"
+    )
+    synthesizer_model: str = "anthropic/claude-sonnet-5"
+    task_agent_model: str = "openai/gpt-5.6-luna"
+    native_tool_model_prefixes: str = (
+        "moonshotai/kimi-k2.6,"
+        "anthropic/claude,"
+        "openai/gpt-5,"
+        "google/gemini-3.5,"
+        "x-ai/grok-4.5,"
+        "deepseek/"
+    )
 
     # File browser
     allowed_dirs: str = ""
@@ -77,6 +93,10 @@ class Settings(BaseSettings):
     @property
     def council_model_list(self) -> List[str]:
         return [m.strip() for m in self.council_models.split(",") if m.strip()]
+
+    @property
+    def available_model_list(self) -> List[str]:
+        return [m.strip() for m in self.available_models.split(",") if m.strip()]
 
     @property
     def native_tool_model_prefix_list(self) -> List[str]:
@@ -211,6 +231,13 @@ class Settings(BaseSettings):
             )
         origins = list(dict.fromkeys(origins))
         return origins
+
+    @property
+    def cors_origin_regex(self) -> str:
+        """Allow credentialed direct API requests from localhost and tailnet origins."""
+        tailscale_ipv4 = r"100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])(?:\.\d{1,3}){2}"
+        tailscale_dns = r"(?:[a-zA-Z0-9-]+\.)+ts\.net"
+        return rf"^https?://(?:localhost|127\.0\.0\.1|{tailscale_ipv4}|{tailscale_dns})(?::\d+)?$"
 
 
 settings = Settings()

@@ -8,7 +8,6 @@ from app.services.agent_tools import get_agent_tool_definitions
 MAX_TOOL_SNIPPET_CHARS = 4_000
 NATIVE_AGENT_ASK_USER_TOOL = "task_ask_user"
 NATIVE_AGENT_FINALIZE_TOOL = "task_finalize"
-NATIVE_AGENT_PLAN_TOOL = "task_plan"
 
 
 def _tool_spec_block() -> str:
@@ -21,7 +20,6 @@ def _tool_spec_block() -> str:
 
 def _native_control_tool_definitions() -> list[dict[str, Any]]:
     return [
-        _native_plan_tool_definition(),
         {
             "type": "function",
             "function": {
@@ -46,7 +44,9 @@ def _native_control_tool_definitions() -> list[dict[str, Any]]:
                 "name": NATIVE_AGENT_FINALIZE_TOOL,
                 "description": (
                     "Finish the current run after the task is complete. Put the final user-facing response in the "
-                    "assistant text for the same turn; this tool only records a compact completion summary."
+                    "assistant text for the same turn; this tool only records a compact completion summary. "
+                    "Attached generated apps are production-build verified before completion is accepted, so describe "
+                    "successful verification in the past tense."
                 ),
                 "parameters": {
                     "type": "object",
@@ -62,42 +62,6 @@ def _native_control_tool_definitions() -> list[dict[str, Any]]:
             },
         },
     ]
-
-
-def _native_plan_tool_definition() -> dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": NATIVE_AGENT_PLAN_TOOL,
-            "description": "Draft the execution plan for the current task before tool execution begins.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Short summary of the execution plan.",
-                    },
-                    "steps": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Ordered concrete steps to complete the task.",
-                    },
-                    "open_questions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Questions that remain unresolved before execution.",
-                    },
-                    "assumptions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Explicit assumptions the plan relies on.",
-                    },
-                },
-                "required": ["summary", "steps", "open_questions", "assumptions"],
-                "additionalProperties": False,
-            },
-        },
-    }
 
 
 def _extract_string_field(raw_arguments: str, field_name: str) -> str | None:
@@ -178,53 +142,7 @@ def _extract_json_string_at(raw_arguments: str, start_index: int) -> tuple[str |
     return "".join(value_chars), index
 
 
-def _extract_string_array_field(raw_arguments: str, field_name: str) -> list[str]:
-    marker = f'"{field_name}"'
-    start = raw_arguments.find(marker)
-    if start < 0:
-        return []
-    colon = raw_arguments.find(":", start + len(marker))
-    if colon < 0:
-        return []
-    index = colon + 1
-    while index < len(raw_arguments) and raw_arguments[index].isspace():
-        index += 1
-    if index >= len(raw_arguments) or raw_arguments[index] != "[":
-        return []
-    index += 1
-    items: list[str] = []
-    while index < len(raw_arguments):
-        char = raw_arguments[index]
-        if char == "]":
-            break
-        if char == '"':
-            item, next_index = _extract_json_string_at(raw_arguments, index)
-            if item is not None:
-                items.append(item)
-                index = next_index
-                continue
-        index += 1
-    return [item for item in items if item.strip()]
-
-
-def _repair_native_plan_arguments(raw_arguments: str) -> dict[str, Any] | None:
-    summary = _extract_string_field(raw_arguments, "summary")
-    steps = _extract_string_array_field(raw_arguments, "steps")
-    open_questions = _extract_string_array_field(raw_arguments, "open_questions")
-    assumptions = _extract_string_array_field(raw_arguments, "assumptions")
-    if not summary and not steps and not open_questions and not assumptions:
-        return None
-    return {
-        "summary": summary or "Plan ready",
-        "steps": steps,
-        "open_questions": open_questions,
-        "assumptions": assumptions,
-    }
-
-
 def _repair_native_control_tool_arguments(raw_arguments: str, tool_name: str) -> dict[str, Any] | None:
-    if tool_name == NATIVE_AGENT_PLAN_TOOL:
-        return _repair_native_plan_arguments(raw_arguments)
     if tool_name == NATIVE_AGENT_ASK_USER_TOOL:
         question = _extract_string_field(raw_arguments, "question")
         if question:
@@ -252,53 +170,6 @@ def _parse_native_tool_arguments(raw_arguments: str, *, tool_name: str | None = 
     if not isinstance(parsed, dict):
         raise ValueError("Native tool arguments must decode to a JSON object")
     return parsed
-
-
-def _normalize_plan_items(items: Any, *, limit: int) -> list[str]:
-    if not isinstance(items, list):
-        return []
-    normalized: list[str] = []
-    for item in items:
-        text = ""
-        if isinstance(item, str):
-            text = item.strip()
-        elif isinstance(item, dict):
-            for key in ("description", "summary", "title", "question", "text", "label", "name"):
-                candidate = item.get(key)
-                if isinstance(candidate, str) and candidate.strip():
-                    text = candidate.strip()
-                    break
-        elif item is not None:
-            text = str(item).strip()
-        if text:
-            normalized.append(text)
-        if len(normalized) >= limit:
-            break
-    return normalized
-
-
-def _validate_execution_plan_payload(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ValueError("Execution plan payload must be a JSON object")
-
-    normalized = dict(payload)
-    summary = normalized.get("summary")
-    if not isinstance(summary, str) or not summary.strip():
-        for fallback_key in ("goal", "title", "description"):
-            fallback = normalized.get(fallback_key)
-            if isinstance(fallback, str) and fallback.strip():
-                summary = fallback.strip()
-                break
-    summary_text = str(summary or "").strip()
-    if not summary_text:
-        raise ValueError("Execution plan requires a summary")
-
-    return {
-        "summary": summary_text,
-        "steps": _normalize_plan_items(normalized.get("steps"), limit=12),
-        "open_questions": _normalize_plan_items(normalized.get("open_questions"), limit=8),
-        "assumptions": _normalize_plan_items(normalized.get("assumptions"), limit=8),
-    }
 
 
 def _build_tool_action_payload(
@@ -351,11 +222,9 @@ def _build_question_action_payload(*, thought: str, question: str) -> dict[str, 
 
 def _build_final_action_payload(*, thought: str, summary: str, final_text: str) -> dict[str, Any]:
     normalized_summary = str(summary or "").strip()
-    normalized_final_text = str(final_text or "").strip()
     if not normalized_summary:
         raise ValueError("Native finalize tool requires a summary")
-    if not normalized_final_text:
-        raise ValueError("Native finalize tool requires the final response in assistant text")
+    normalized_final_text = str(final_text or "").strip() or normalized_summary
     emitted_thought = str(thought or "").strip()
     normalized_thought = emitted_thought or "Task complete"
     if not normalized_thought.strip():
@@ -365,14 +234,6 @@ def _build_final_action_payload(*, thought: str, summary: str, final_text: str) 
         "thought": emitted_thought,
         "summary": normalized_summary,
         "final_text": normalized_final_text,
-    }
-
-
-def _build_plan_action_payload(*, thought: str, plan: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "kind": "plan",
-        "thought": str(thought or "").strip(),
-        "plan": dict(plan),
     }
 
 
@@ -393,52 +254,6 @@ def _history_block(history: list[dict[str, Any]]) -> str:
         else:
             rendered.append(f"{index}. {json.dumps(item, ensure_ascii=True)}")
     return "\n".join(rendered)
-
-
-def _plan_block(plan: dict[str, Any] | None) -> str:
-    if not plan:
-        return "No approved execution plan yet."
-
-    sections = [f"Plan summary: {plan.get('summary', '').strip()}"]
-    steps = [str(step).strip() for step in plan.get("steps", []) if str(step).strip()]
-    if steps:
-        sections.append("Steps:\n" + "\n".join(f"- {step}" for step in steps))
-    open_questions = [str(item).strip() for item in plan.get("open_questions", []) if str(item).strip()]
-    if open_questions:
-        sections.append("Open points:\n" + "\n".join(f"- {item}" for item in open_questions))
-    assumptions = [str(item).strip() for item in plan.get("assumptions", []) if str(item).strip()]
-    if assumptions:
-        sections.append("Assumptions:\n" + "\n".join(f"- {item}" for item in assumptions))
-    feedback = str(plan.get("feedback") or "").strip()
-    if feedback:
-        sections.append("Latest user feedback:\n" + feedback)
-    return "\n\n".join(sections)
-
-
-def _plan_feedback_question(plan: dict[str, Any]) -> str:
-    lines = [
-        "Review this execution plan before the agent starts:",
-        "",
-        f"Summary: {str(plan.get('summary') or '').strip()}",
-    ]
-    steps = [str(step).strip() for step in plan.get("steps", []) if str(step).strip()]
-    if steps:
-        lines.append("")
-        lines.append("Planned steps:")
-        lines.extend(f"- {step}" for step in steps)
-    open_points = [str(item).strip() for item in plan.get("open_questions", []) if str(item).strip()]
-    if open_points:
-        lines.append("")
-        lines.append("Open points:")
-        lines.extend(f"- {item}" for item in open_points)
-    assumptions = [str(item).strip() for item in plan.get("assumptions", []) if str(item).strip()]
-    if assumptions:
-        lines.append("")
-        lines.append("Current assumptions:")
-        lines.extend(f"- {item}" for item in assumptions)
-    lines.append("")
-    lines.append("Reply with approval or the corrections the agent should apply before continuing.")
-    return "\n".join(lines)
 
 
 def _conversation_context_block(messages: list[Any]) -> str:
@@ -468,6 +283,7 @@ def _app_context_block(metadata: dict[str, Any]) -> str:
         f"Asset root: {app.get('asset_root', '')}",
         f"Allowed write roots: {json.dumps(app.get('allowed_write_roots', []), ensure_ascii=True)}",
         "Styling rule: prefer the app's existing styles.css. If you add a CSS Module, every selector must include a local class or id; bare element selectors like h1 and keyframe percentages such as 0% or 100% inside module files are invalid and can break the frontend build. Keep animations and @keyframes in styles.css.",
+        "Completion rule: the runtime will run an isolated Next.js production build before accepting completion. Do not run npm build yourself. If automatic verification fails, fix the returned error and finalize again. Because an app final response is only committed after verification passes, describe verification as completed rather than pending.",
         "To add more pages for this app, create nested page.tsx files under the app directory.",
     ]
     if scaffolded_files:
@@ -534,8 +350,8 @@ def summarize_tool_start_content(tool_name: str, arguments: dict[str, Any]) -> s
         content = str(arguments.get("content") or "")
         line_count = len(content.splitlines()) if content else 0
         if path and line_count > 0:
-            return f"Preparing to write {path} ({line_count} lines)"
-        return f"Preparing to write {path}" if path else "Preparing to write a file"
+            return f"Writing {path} ({line_count} lines)"
+        return f"Writing {path}" if path else "Writing a file"
     if tool_name == "shell_command":
         command = str(arguments.get("command") or "").strip()
         return f"Running {command}" if command else "Running a command"
@@ -544,6 +360,9 @@ def summarize_tool_start_content(tool_name: str, arguments: dict[str, Any]) -> s
     if tool_name == "app_initialize":
         title = str(arguments.get("title") or arguments.get("app_slug") or "the app").strip()
         return f"Initializing {title}" if title else "Initializing the app"
+    if tool_name == "app_verify":
+        slug = str(arguments.get("app_slug") or "").strip()
+        return f"Verifying {slug}" if slug else "Verifying the app"
     return f"Running {tool_name}"
 
 
@@ -576,7 +395,7 @@ def _native_retry_feedback(
         return (
             f"Your previous response was invalid because it produced {tool_call_count} tool calls. "
             "Retry by returning either exactly one control tool call or a batch of external tool calls only. "
-            "Do not combine task_plan, task_ask_user, or task_finalize with any other tool call."
+            "Do not combine task_ask_user or task_finalize with any other tool call."
         )
     if truncated_by_length and tool_name:
         if arguments_preview:

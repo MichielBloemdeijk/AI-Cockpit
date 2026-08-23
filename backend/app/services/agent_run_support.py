@@ -13,16 +13,11 @@ from uuid import uuid4
 from app.config import settings
 from app.models.chat import PromptMetrics
 from app.services.agent_metadata import _build_run_summary, _infer_app_file_read_path, _serialize_agent_metadata
-from app.services.agent_prompt_builder import (
-    _plan_feedback_question,
-    _result_snippet,
-    summarize_tool_start_content,
-)
+from app.services.agent_prompt_builder import _result_snippet, summarize_tool_start_content
 from app.services.agent_tools import ToolExecutionContext, build_tool_context, execute_agent_tool
 from app.services.app_registry import app_registry_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_timeline import (
-    build_plan_timeline_item,
     build_question_timeline_item,
     build_timeline_item,
     build_tool_activity_id,
@@ -500,77 +495,6 @@ async def _pause_for_question(
     await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
 
 
-async def _handle_plan_action(
-    *,
-    conversation_id: str,
-    run_id: str,
-    metadata: dict[str, Any],
-    action: dict[str, Any],
-    checkpoint_state: AgentMetadataCheckpointState | None = None,
-) -> dict[str, Any]:
-    plan = dict(action.get("plan") or {})
-    if not plan:
-        raise ValueError("Plan action requires a validated plan payload")
-
-    plan["approved"] = bool(metadata.get("skip_plan_feedback"))
-    plan["feedback_skipped"] = bool(metadata.get("skip_plan_feedback"))
-    plan["feedback"] = None
-    plan["approved_at"] = _iso_now() if plan["approved"] else None
-    metadata["plan"] = plan
-    metadata["current_action"] = "Plan ready"
-    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-
-    plan_event = await conversation_store.append_event(
-        conversation_id,
-        run_id=run_id,
-        actor_kind="assistant",
-        event_type="agent.plan.created",
-        payload_json=plan,
-        branch_key=_metadata_branch_key(metadata),
-    )
-    await conversation_store.attach_artifact(
-        conversation_id,
-        run_id=run_id,
-        source_event_id=plan_event.id,
-        artifact_type="agent.plan",
-        mime_type="application/json",
-        content_json=plan,
-    )
-    await conversation_store.append_timeline_item(
-        conversation_id,
-        run_id=run_id,
-        item_payload=build_plan_timeline_item(run_id=run_id, plan=plan),
-        branch_key=_metadata_branch_key(metadata),
-        parent_event_id=plan_event.id,
-    )
-    await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
-
-    if metadata.get("skip_plan_feedback"):
-        metadata["current_action"] = "Plan approved; starting execution"
-        metadata["task_status"] = "running"
-        await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-        await conversation_store.append_event(
-            conversation_id,
-            run_id=run_id,
-            actor_kind="assistant",
-            event_type="agent.plan.feedback.skipped",
-            payload_json={"reason": "explicit_user_request"},
-            branch_key=_metadata_branch_key(metadata),
-        )
-        return metadata
-
-    await _pause_for_question(
-        conversation_id=conversation_id,
-        run_id=run_id,
-        metadata=metadata,
-        question=_plan_feedback_question(plan),
-        kind="plan_feedback",
-        current_action="Waiting for plan feedback",
-        checkpoint_state=checkpoint_state,
-    )
-    return metadata
-
-
 async def _handle_tool_action(
     *,
     conversation_id: str,
@@ -695,6 +619,8 @@ async def _handle_tool_action(
                     context=context,
                     tool_metadata=result.metadata,
                 )
+        if tool_name == "app_verify" and isinstance(result.metadata, dict):
+            metadata["app_verification"] = dict(result.metadata)
         snippet = _result_snippet(tool_name, result.output, result.metadata)
         history_entry = {
             "kind": "tool",
@@ -755,12 +681,14 @@ async def _handle_tool_action(
         await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     except Exception as exc:
         error_text = str(exc)
+        fatal = bool(getattr(exc, "fatal", False))
         history_entry = {
             "kind": "tool",
             "tool": tool_name,
             "arguments": arguments,
             "ok": False,
             "output": error_text,
+            "fatal": fatal,
         }
         history = list(metadata.get("history", []))
         history.append(history_entry)
@@ -857,12 +785,14 @@ async def _complete_run(
         mime_type="application/json",
         content_json=run_summary,
     )
+    app_verification = metadata.get("app_verification") if isinstance(metadata.get("app_verification"), dict) else {}
+    verification_passed = app_verification.get("verification_status") == "passed"
     await _sync_bound_app_state(
         metadata=metadata,
         conversation_id=conversation_id,
         run_id=run_id,
-        status="ready_for_test",
-        verification_status="not_started",
+        status="verified" if verification_passed else "ready_for_test",
+        verification_status="passed" if verification_passed else "not_started",
         last_error=None,
     )
     await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
@@ -889,13 +819,6 @@ async def _fail_run(
         payload_json={"error": error},
         branch_key=_metadata_branch_key(metadata),
     )
-    await _sync_bound_app_state(
-        metadata=metadata,
-        conversation_id=conversation_id,
-        run_id=run_id,
-        status="failed",
-        last_error=error,
-    )
     await conversation_store.mark_run_failed(run_id, error)
 
 
@@ -916,12 +839,5 @@ async def _cancel_run(
         event_type="agent.run.failed",
         payload_json={"error": "Task cancelled by user"},
         branch_key=_metadata_branch_key(metadata),
-    )
-    await _sync_bound_app_state(
-        metadata=metadata,
-        conversation_id=conversation_id,
-        run_id=run_id,
-        status="failed",
-        last_error="Task cancelled by user",
     )
     await conversation_store.update_run_status(run_id, status="cancelled", error="Task cancelled by user", finished_at=_utc_now())

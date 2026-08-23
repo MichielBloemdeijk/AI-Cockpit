@@ -18,16 +18,13 @@ from app.services.agent_metadata import (
 )
 from app.services.agent_runner_helpers import (
     persist_visible_text_event,
-    render_live_tool_call_preview,
     restore_runtime_metadata_from_events,
 )
 from app.services.agent_prompt_builder import (
     NATIVE_AGENT_ASK_USER_TOOL,
     NATIVE_AGENT_FINALIZE_TOOL,
-    NATIVE_AGENT_PLAN_TOOL,
     _app_context_block,
     _build_final_action_payload,
-    _build_plan_action_payload,
     _build_question_action_payload,
     _build_tool_action_payload,
     _conversation_context_block,
@@ -35,8 +32,6 @@ from app.services.agent_prompt_builder import (
     _native_control_tool_definitions,
     _native_retry_feedback,
     _parse_native_tool_arguments,
-    _plan_block,
-    _validate_execution_plan_payload,
 )
 from app.services.agent_run_support import (
     AgentStreamCallback,
@@ -47,7 +42,6 @@ from app.services.agent_run_support import (
     _complete_run,
     _emit_agent_stream_update,
     _fail_run,
-    _handle_plan_action,
     _handle_tool_action,
     _maybe_checkpoint_run_metadata,
     _pause_for_question,
@@ -63,8 +57,6 @@ from app.services.conversation_compaction import TASK_HISTORY_SUMMARY_PREFIX, bu
 from app.services.conversation_timeline import (
     build_thought_timeline_item,
     build_timeline_item,
-    build_tool_activity_id,
-    humanize_tool_name,
 )
 from app.services.llm import (
     PromptSegment,
@@ -83,10 +75,54 @@ logger = logging.getLogger(__name__)
 MAX_AGENT_STEPS = 50
 
 _NATIVE_CONTROL_TOOL_NAMES = {
-    NATIVE_AGENT_PLAN_TOOL,
     NATIVE_AGENT_ASK_USER_TOOL,
     NATIVE_AGENT_FINALIZE_TOOL,
 }
+
+
+def _text_completion_summary(final_text: str) -> str:
+    first_line = next((line.strip() for line in final_text.splitlines() if line.strip()), "Task complete")
+    return first_line[:240]
+
+
+def _attached_app_slug(metadata: dict[str, Any]) -> str:
+    payload = metadata.get("payload") if isinstance(metadata.get("payload"), dict) else {}
+    app = payload.get("app") if isinstance(payload, dict) else None
+    if not isinstance(app, dict):
+        return ""
+    return str(app.get("slug") or "").strip()
+
+
+def _app_verification_required(metadata: dict[str, Any]) -> bool:
+    if not _attached_app_slug(metadata):
+        return False
+    history = metadata.get("history") if isinstance(metadata.get("history"), list) else []
+    last_mutation_index = -1
+    last_successful_verification_index = -1
+    for index, item in enumerate(history):
+        if not isinstance(item, dict) or item.get("kind") != "tool":
+            continue
+        tool_name = str(item.get("tool") or "").strip()
+        if tool_name in {"app_initialize", "file_write"} and item.get("ok") is not False:
+            last_mutation_index = index
+        if tool_name == "app_verify" and item.get("ok") is True:
+            last_successful_verification_index = index
+    return last_successful_verification_index < last_mutation_index
+
+
+def _app_verification_failed_since_last_mutation(metadata: dict[str, Any]) -> bool:
+    history = metadata.get("history") if isinstance(metadata.get("history"), list) else []
+    last_mutation_index = -1
+    last_failed_verification_index = -1
+    for index, item in enumerate(history):
+        if not isinstance(item, dict) or item.get("kind") != "tool":
+            continue
+        tool_name = str(item.get("tool") or "").strip()
+        if tool_name in {"app_initialize", "file_write"} and item.get("ok") is not False:
+            last_mutation_index = index
+        if tool_name == "app_verify" and item.get("ok") is False:
+            last_failed_verification_index = index
+    return last_failed_verification_index > last_mutation_index
 
 
 class AgentRunner:
@@ -125,7 +161,6 @@ class AgentRunner:
 
         common_user_prompt = (
             f"Goal:\n{metadata.get('goal', '')}\n\n"
-            f"Current plan state:\n{_plan_block(metadata.get('plan'))}\n\n"
             f"App context:\n{_app_context_block(metadata)}\n\n"
             f"Conversation workspace: {context.workspace_root.as_posix()}\n"
             f"Allowed read roots: {json.dumps([root.as_posix() for root in context.read_roots])}\n\n"
@@ -142,10 +177,10 @@ class AgentRunner:
         system_prompt = (
             "You are the AI-Cockpit task agent. Continue the run using the native tools that materially advance the task. "
             f"Use {NATIVE_AGENT_FINALIZE_TOOL} when the task is complete. Use {NATIVE_AGENT_ASK_USER_TOOL} when user input is required. "
-            f"Use {NATIVE_AGENT_PLAN_TOOL} when an explicit plan would materially help; do not plan trivial work. "
             "You may batch independent external tool calls. Do not combine a control tool with other calls. Prefer reading or searching before writing. Use shell only when the task genuinely needs an executable invocation. "
             "Never write outside the allowed write roots. The provided native tool schemas are authoritative. "
             "For generated app work, use the app_initialize tool before editing app route files if no app is attached yet. "
+            "Generated apps are automatically checked with an isolated Next.js production build when you finalize. Do not run npm build yourself. If automatic verification fails, use the returned build error to fix the app and finalize again. App final text is only committed after verification passes, so phrase successful verification as completed, not as something that will happen later. "
             "When creating a new app, pass a clear title because that becomes the app's visible name. Pass app_slug only when you need an exact URL segment or when attaching an existing app. Never call app_initialize without title or app_slug. "
             "Any assistant text in this turn is shown directly to the user. Assistant text is optional. On turns that call external tools, normally emit no assistant text and call the tools directly. "
             "When finalizing, write the complete final user-facing response as assistant text and call task_finalize with only a short metadata summary. The assistant text is the final answer, so do not duplicate it in tool arguments. "
@@ -169,11 +204,11 @@ class AgentRunner:
         prompt_segments.append(PromptSegment(role="user", text=user_prompt))
 
         last_error: Exception | None = None
+        text_only_completion_candidate = ""
         for attempt in range(2):
             completion_call = chat_completion_stream_response if use_streaming_native_decision(model) else chat_completion
             stream_buffer: list[str] = []
             reasoning_buffer: list[str] = []
-            last_tool_preview: tuple[str, str] | None = None
 
             async def _handle_content_delta(delta: str) -> None:
                 stream_buffer.append(delta)
@@ -233,56 +268,6 @@ class AgentRunner:
                         force=False,
                     )
 
-            async def _handle_tool_call_delta(tool_call) -> None:
-                nonlocal last_tool_preview
-                tool_name = tool_call.function.name.strip()
-                if not tool_name:
-                    return
-                if tool_name == NATIVE_AGENT_FINALIZE_TOOL:
-                    return
-                preview = render_live_tool_call_preview(tool_name, tool_call.function.arguments)
-                activity_id = build_tool_activity_id(
-                    run_id=run_id,
-                    step=step_number,
-                    tool_name=tool_name,
-                    tool_call_id=tool_call.id,
-                )
-                preview_key = (tool_name, preview)
-                if preview_key == last_tool_preview:
-                    return
-                last_tool_preview = preview_key
-                await _emit_agent_stream_update(
-                    stream_callback,
-                    {
-                        "kind": "tool_progress",
-                        "run_id": run_id,
-                        "step": step_number,
-                        "tool": tool_name,
-                        "activity_id": activity_id,
-                        "tool_call_id": tool_call.id,
-                        "content": preview,
-                    },
-                )
-                await _set_live_timeline_item(
-                    run_id,
-                    metadata,
-                    checkpoint_state,
-                    build_timeline_item(
-                        item_id=activity_id,
-                        role="assistant",
-                        kind="tool_call",
-                        label="Tool call",
-                        title=humanize_tool_name(tool_name),
-                        content=preview,
-                        tone="info",
-                        step=step_number,
-                        tool_name=tool_name,
-                        badges=[f"step {step_number}"],
-                        status="streaming",
-                    ),
-                    force=False,
-                )
-
             completion_kwargs = {
                 "temperature": 0.2,
                 "max_tokens": native_decision_attempt_max_tokens(model, attempt),
@@ -297,8 +282,6 @@ class AgentRunner:
                 completion_kwargs["on_content_delta"] = _handle_content_delta
             if "on_reasoning_delta" in completion_signature:
                 completion_kwargs["on_reasoning_delta"] = _handle_reasoning_delta
-            if "on_tool_call_delta" in completion_signature:
-                completion_kwargs["on_tool_call_delta"] = _handle_tool_call_delta
 
             async with _timed_agent_phase(
                 phase="native_turn.model_call",
@@ -367,6 +350,22 @@ class AgentRunner:
                 tool_call_count == 1
                 and raw_tool_calls[0].function.name.strip() == NATIVE_AGENT_FINALIZE_TOOL
             )
+            if tool_call_count == 0:
+                last_error = ValueError("Native tool decision must return at least one actionable tool call, got 0")
+                if visible_text:
+                    text_only_completion_candidate = visible_text
+                if attempt == 0:
+                    retry_feedback = _native_retry_feedback(last_error, tool_call_count=tool_call_count)
+                    request_messages.append(Message(role="system", content=retry_feedback))
+                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
+                    continue
+                if text_only_completion_candidate:
+                    return _build_final_action_payload(
+                        thought=live_thought,
+                        summary=_text_completion_summary(text_only_completion_candidate),
+                        final_text=text_only_completion_candidate,
+                    )
+                raise last_error
             if visible_text and not is_finalize_turn:
                 await _emit_agent_stream_update(
                     stream_callback,
@@ -385,14 +384,6 @@ class AgentRunner:
                     metadata=metadata,
                     checkpoint_state=checkpoint_state,
                 )
-            if tool_call_count == 0:
-                last_error = ValueError("Native tool decision must return at least one actionable tool call, got 0")
-                if attempt == 0:
-                    retry_feedback = _native_retry_feedback(last_error, tool_call_count=tool_call_count)
-                    request_messages.append(Message(role="system", content=retry_feedback))
-                    prompt_segments.append(PromptSegment(role="system", text=retry_feedback))
-                    continue
-                raise last_error
             if len(raw_tool_calls) != len(response.tool_calls):
                 last_error = ValueError("Native tool decision returned a tool call with no name")
                 if attempt == 0:
@@ -407,7 +398,7 @@ class AgentRunner:
             has_control_tool = any(tool_name in _NATIVE_CONTROL_TOOL_NAMES for tool_name in tool_names)
             if len(raw_tool_calls) > 1 and has_control_tool:
                 last_error = ValueError(
-                    "Native tool decision cannot combine task_plan, task_ask_user, or task_finalize with other tool calls"
+                    "Native tool decision cannot combine task_ask_user or task_finalize with other tool calls"
                 )
                 if attempt == 0:
                     retry_feedback = _native_retry_feedback(last_error, tool_call_count=len(raw_tool_calls))
@@ -443,13 +434,6 @@ class AgentRunner:
                         tool_call.function.arguments,
                         tool_name=tool_call.function.name,
                     )
-                    if tool_call.function.name == NATIVE_AGENT_PLAN_TOOL:
-                        payload = _build_plan_action_payload(
-                            thought=live_thought,
-                            plan=_validate_execution_plan_payload(arguments),
-                        )
-                        payload["visible_text"] = visible_text
-                        return payload
                     if tool_call.function.name == NATIVE_AGENT_ASK_USER_TOOL:
                         payload = _build_question_action_payload(
                             thought=live_thought,
@@ -569,14 +553,6 @@ class AgentRunner:
                     await _cancel_run(run.conversation_id, run.id, metadata, checkpoint_state=checkpoint_state)
                     return
 
-                plan = metadata.get("plan") if isinstance(metadata.get("plan"), dict) else {}
-                if plan and not bool(plan.get("approved")) and not metadata.get("skip_plan_feedback"):
-                    metadata["task_status"] = "paused"
-                    metadata["current_action"] = "Waiting for plan feedback"
-                    await _maybe_checkpoint_run_metadata(run.id, metadata, checkpoint_state, force=True)
-                    await conversation_store.update_run_status(run.id, status="paused", error=None, finished_at=None)
-                    return
-
                 current_step = int(metadata.get("current_step", 0) or 0)
                 if current_step >= MAX_AGENT_STEPS:
                     await _pause_for_question(
@@ -634,18 +610,6 @@ class AgentRunner:
                     )
 
                 action_kind = str(action.get("kind", "")).strip()
-                if action_kind == "plan":
-                    metadata = await _handle_plan_action(
-                        conversation_id=run.conversation_id,
-                        run_id=run.id,
-                        metadata=metadata,
-                        checkpoint_state=checkpoint_state,
-                        action=action,
-                    )
-                    if metadata.get("task_status") == "paused":
-                        return
-                    continue
-
                 if action_kind == "tool":
                     batched_tools = action.get("batched_tools") if isinstance(action.get("batched_tools"), list) else []
                     tool_actions = [
@@ -698,6 +662,34 @@ class AgentRunner:
                     return
 
                 if action_kind == "final":
+                    app_slug = _attached_app_slug(metadata)
+                    if app_slug and _app_verification_failed_since_last_mutation(metadata):
+                        raise ValueError(
+                            "Generated app verification failed, but the app was not changed before finalizing again"
+                        )
+                    if app_slug and _app_verification_required(metadata):
+                        verification_step = int(metadata.get("current_step", 0) or 0) + 1
+                        metadata = await _handle_tool_action(
+                            conversation_id=run.conversation_id,
+                            run_id=run.id,
+                            metadata=metadata,
+                            action={
+                                "kind": "tool",
+                                "tool": "app_verify",
+                                "arguments": {"app_slug": app_slug},
+                                "tool_call_id": f"auto_verify_{verification_step}",
+                            },
+                            context=context,
+                            tool_executor=execute_agent_tool,
+                            checkpoint_state=checkpoint_state,
+                            stream_callback=stream_callback,
+                        )
+                        history = metadata.get("history") if isinstance(metadata.get("history"), list) else []
+                        verification_entry = history[-1] if history and isinstance(history[-1], dict) else {}
+                        if verification_entry.get("tool") != "app_verify" or verification_entry.get("ok") is not True:
+                            if verification_entry.get("fatal") is True:
+                                raise RuntimeError(str(verification_entry.get("output") or "App verification could not run"))
+                            continue
                     await _complete_run(
                         conversation_id=run.conversation_id,
                         run_id=run.id,

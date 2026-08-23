@@ -4,19 +4,7 @@
  */
 
 function resolveApiBase(): string {
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL;
-  }
-
-  if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
-    const { protocol, hostname, port } = window.location;
-    // Bypass the Next.js dev rewrite for SSE endpoints because it buffers streamed events.
-    if (port === "3000") {
-      return `${protocol}//${hostname}:8000`;
-    }
-  }
-
-  return "";
+  return process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/$/, "") ?? "";
 }
 
 const BASE = resolveApiBase();

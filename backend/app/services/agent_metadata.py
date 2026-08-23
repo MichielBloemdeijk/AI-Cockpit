@@ -115,8 +115,6 @@ def _normalize_task_metadata(run_metadata: dict[str, Any] | None) -> dict[str, A
     metadata.setdefault("allowed_roots", [])
     metadata.setdefault("payload", {})
     metadata.setdefault("write_roots", [])
-    metadata.setdefault("skip_plan_feedback", False)
-    metadata.setdefault("plan", None)
     metadata.setdefault("run_summary", None)
     metadata.setdefault("task_status", "pending")
     metadata.setdefault("created_at", _iso_now())

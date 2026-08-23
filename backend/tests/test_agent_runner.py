@@ -11,20 +11,16 @@ import pytest
 from app.config import settings
 import app.services.agent_runner as agent_runner_module
 import app.services.agent_run_support as agent_run_support_module
+import app.services.agent_tools.execution as agent_execution_module
+import app.services.llm as llm_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 from tests.agent_runner_fixtures import (
-    APPROVED_PLAN,
     create_agent_run as _create_agent_run,
-    create_unplanned_agent_run as _create_unplanned_agent_run,
     finalize_response as _finalize_response,
     no_tool_response as _no_tool_response,
     tool_response as _tool_response,
 )
-from app.services.agent_prompt_builder import (
-    NATIVE_AGENT_PLAN_TOOL,
-    _native_control_tool_definitions,
-    _parse_native_tool_arguments,
-)
+from app.services.agent_prompt_builder import _native_control_tool_definitions
 from app.services.agent_tools import ToolExecutionContext
 from app.services.agent_tools import ToolExecutionResult
 from app.services.agent_tools import build_tool_context
@@ -33,6 +29,7 @@ from app.services.agent_tools import run_file_write
 from app.services.agent_tools import run_python_execution
 from app.services.agent_tools import run_shell_command
 from app.services.agent_tools import run_workspace_search
+from app.services.app_verifier import AppVerificationInfrastructureError
 from app.services.conversation_store import conversation_store
 
 
@@ -43,8 +40,43 @@ def test_finalize_tool_uses_visible_assistant_text_instead_of_a_result_argument(
     }
 
     finalize_parameters = definitions["task_finalize"]["parameters"]
+    assert set(definitions) == {"task_ask_user", "task_finalize"}
     assert finalize_parameters["required"] == ["summary"]
     assert set(finalize_parameters["properties"]) == {"summary"}
+
+
+def test_native_tool_turns_have_enough_output_budget_for_source_files():
+    assert llm_module.native_decision_max_tokens("openai/gpt-5.6-luna") == 8192
+    assert llm_module.native_decision_attempt_max_tokens("openai/gpt-5.6-luna", 1) == 16_384
+
+
+@pytest.mark.asyncio
+async def test_finalize_summary_is_used_when_provider_omits_assistant_text(monkeypatch):
+    _, run = await _create_agent_run()
+
+    async def _fake_stream(messages, model, **kwargs):
+        return ModelResponse(
+            model=model,
+            content="",
+            usage=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_finalize",
+                    function=ToolCallFunction(
+                        name="task_finalize",
+                        arguments=json.dumps({"summary": "The requested inspection is complete."}),
+                    ),
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    messages = await conversation_store.list_messages(run.conversation_id, final_only=True)
+    assert messages[-1].content == "The requested inspection is complete."
 
 
 def test_run_summary_counts_files_created_by_app_initialize():
@@ -267,28 +299,6 @@ async def test_continue_run_promotes_visible_text_to_the_final_message(monkeypat
     )
 
 
-def test_parse_native_tool_arguments_recovers_malformed_task_plan_json():
-    raw_arguments = (
-        '{"summary":"Update the hello world text",'
-        '"steps":["Inspect the app entry file" "Change the displayed text","Verify the preview"],'
-        '"open_questions":["Should the punctuation change?"],'
-        '"assumptions":["The app already exists"]}'
-    )
-
-    parsed = _parse_native_tool_arguments(raw_arguments, tool_name=NATIVE_AGENT_PLAN_TOOL)
-
-    assert parsed == {
-        "summary": "Update the hello world text",
-        "steps": [
-            "Inspect the app entry file",
-            "Change the displayed text",
-            "Verify the preview",
-        ],
-        "open_questions": ["Should the punctuation change?"],
-        "assumptions": ["The app already exists"],
-    }
-
-
 @pytest.mark.asyncio
 async def test_continue_run_does_not_call_a_secondary_progress_model(monkeypatch):
     _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5")
@@ -492,58 +502,173 @@ async def test_continue_run_retries_when_native_decision_returns_zero_tool_calls
     retry_feedback = str(captured_messages[1][-1].content)
     assert "produced zero tool calls" in retry_feedback
     assert "An actionable native tool call is required now" in retry_feedback
-    assert any(
-        event.payload_json == {"step": 1, "text": "I am checking one more detail before I act."}
-        for event in text_events
-    )
+    assert not any(event.payload_json.get("text") == "I am checking one more detail before I act." for event in text_events)
 
 
 @pytest.mark.asyncio
-async def test_continue_run_preserves_visible_text_before_zero_tool_call_failure(monkeypatch):
+async def test_continue_run_accepts_text_only_completion_after_control_call_retry(monkeypatch):
     _, run = await _create_agent_run()
     responses = [
         _no_tool_response("I am checking one more detail before I act."),
         _no_tool_response(""),
     ]
-    stream_updates: list[dict[str, object]] = []
-
     async def _fake_stream(messages, model, **kwargs):
         if kwargs.get("tools") is not None:
             return responses.pop(0)
         return _no_tool_response("Inspecting the requested file")
 
-    async def _stream_callback(payload):
-        stream_updates.append(payload)
-
     monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
 
-    with pytest.raises(ValueError, match="Native tool decision must return at least one actionable tool call, got 0"):
-        await agent_runner_module.agent_runner.continue_run(run.id, stream_callback=_stream_callback)
+    await agent_runner_module.agent_runner.continue_run(run.id)
 
     stored_run = await conversation_store.get_run(run.id)
+    messages = await conversation_store.list_messages(run.conversation_id, final_only=True)
     events = await conversation_store.list_events_for_run(run.conversation_id, run.id)
     text_events = [event for event in events if event.event_type == "agent.text.output"]
     failure_events = [event for event in events if event.event_type == "agent.run.failed"]
 
     assert stored_run is not None
-    assert stored_run.status == "failed"
-    assert any(
-        update == {
-            "kind": "text_done",
-            "run_id": run.id,
-            "step": 1,
-            "content": "I am checking one more detail before I act.",
+    assert stored_run.status == "completed"
+    assert messages[-1].content == "I am checking one more detail before I act."
+    assert text_events == []
+    assert failure_events == []
+
+
+async def _attach_demo_app(run) -> None:
+    metadata = dict(run.metadata_json or {})
+    app_payload = {
+        "app_id": "missing-test-app-id",
+        "slug": "demo-app",
+        "title": "Demo App",
+        "route_path": "/apps/demo-app",
+        "frontend_root": "frontend/generated-apps/demo-app",
+        "frontend_entry_path": "frontend/generated-apps/demo-app/page.tsx",
+        "frontend_layout_path": "frontend/generated-apps/demo-app/layout.tsx",
+        "manifest_path": "frontend/generated-apps/demo-app/cockpit-app.json",
+        "asset_root": "frontend/public/apps/demo-app",
+        "allowed_write_roots": ["frontend/generated-apps/demo-app", "frontend/public/apps/demo-app"],
+    }
+    metadata["payload"] = {"app": app_payload}
+    metadata["app_context"] = {"mode": "app_builder", "app": app_payload}
+    metadata["history"] = [
+        {
+            "kind": "tool",
+            "tool": "file_write",
+            "arguments": {"path": "frontend/generated-apps/demo-app/page.tsx", "content": "broken"},
+            "ok": True,
+            "output": "Updated page.tsx",
         }
-        for update in stream_updates
-    )
-    assert any(
-        event.payload_json == {"step": 1, "text": "I am checking one more detail before I act."}
-        for event in text_events
-    )
-    assert any(
-        event.payload_json == {"error": "Native tool decision must return at least one actionable tool call, got 0"}
-        for event in failure_events
-    )
+    ]
+    await conversation_store.update_run_metadata(run.id, metadata)
+
+
+@pytest.mark.asyncio
+async def test_generated_app_completion_verifies_and_returns_build_errors_to_the_agent(monkeypatch):
+    _, run = await _create_agent_run()
+    await _attach_demo_app(run)
+
+    responses = [
+        _finalize_response("Demo App is complete."),
+        _tool_response(
+            "file_write",
+            {"path": "frontend/generated-apps/demo-app/page.tsx", "content": "fixed"},
+        ),
+        _finalize_response("Demo App is fixed and verified."),
+    ]
+    executed_tools: list[str] = []
+    captured_prompts: list[str] = []
+    verification_attempts = 0
+
+    async def _fake_stream(messages, model, **kwargs):
+        captured_prompts.append(str(messages[-1].content))
+        return responses.pop(0)
+
+    async def _fake_execute(*, context, tool, arguments):
+        nonlocal verification_attempts
+        executed_tools.append(tool)
+        if tool == "app_verify":
+            verification_attempts += 1
+            if verification_attempts == 1:
+                raise ValueError("TypeScript error: demo-app/page.tsx:7")
+            return ToolExecutionResult(
+                tool=tool,
+                output="Verified demo-app",
+                metadata={
+                    "app_id": "missing-test-app-id",
+                    "slug": "demo-app",
+                    "verification_status": "passed",
+                    "status": "verified",
+                },
+            )
+        return ToolExecutionResult(tool=tool, output="Updated demo app", metadata={})
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    stored_run = await conversation_store.get_run(run.id)
+    messages = await conversation_store.list_messages(run.conversation_id, final_only=True)
+    assert stored_run is not None
+    assert stored_run.status == "completed"
+    assert messages[-1].content == "Demo App is fixed and verified."
+    assert executed_tools == ["app_verify", "file_write", "app_verify"]
+    assert any("TypeScript error: demo-app/page.tsx:7" in prompt for prompt in captured_prompts[1:])
+    assert (stored_run.metadata_json or {}).get("app_verification", {}).get("verification_status") == "passed"
+
+
+@pytest.mark.asyncio
+async def test_generated_app_verification_infrastructure_failure_stops_the_run_once(monkeypatch):
+    _, run = await _create_agent_run()
+    await _attach_demo_app(run)
+    executed_tools: list[str] = []
+
+    async def _fake_stream(messages, model, **kwargs):
+        return _finalize_response("Demo App is complete.")
+
+    async def _fake_execute(*, context, tool, arguments):
+        executed_tools.append(tool)
+        raise AppVerificationInfrastructureError("Generated app verification could not start npm")
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
+
+    with pytest.raises(RuntimeError, match="could not start npm"):
+        await agent_runner_module.agent_runner.continue_run(run.id)
+
+    stored_run = await conversation_store.get_run(run.id)
+    assert stored_run is not None
+    assert stored_run.status == "failed"
+    assert executed_tools == ["app_verify"]
+
+
+@pytest.mark.asyncio
+async def test_generated_app_cannot_repeat_finalize_after_build_failure_without_a_change(monkeypatch):
+    _, run = await _create_agent_run()
+    await _attach_demo_app(run)
+    responses = [
+        _finalize_response("Demo App is complete."),
+        _finalize_response("Demo App is complete now."),
+    ]
+    executed_tools: list[str] = []
+
+    async def _fake_stream(messages, model, **kwargs):
+        return responses.pop(0)
+
+    async def _fake_execute(*, context, tool, arguments):
+        executed_tools.append(tool)
+        raise ValueError("TypeScript error: demo-app/page.tsx:7")
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+    monkeypatch.setattr(agent_runner_module, "execute_agent_tool", _fake_execute)
+
+    with pytest.raises(ValueError, match="was not changed"):
+        await agent_runner_module.agent_runner.continue_run(run.id)
+
+    stored_run = await conversation_store.get_run(run.id)
+    assert stored_run is not None
+    assert stored_run.status == "failed"
+    assert executed_tools == ["app_verify"]
 
 
 @pytest.mark.asyncio
@@ -708,79 +833,6 @@ async def test_batched_tool_retry_identifies_the_call_with_invalid_arguments(mon
 
 
 @pytest.mark.asyncio
-async def test_continue_run_streams_planning_turn_updates(monkeypatch):
-    _, run = await _create_unplanned_agent_run()
-    stream_updates: list[dict[str, object]] = []
-    tool_choices: list[object] = []
-    responses = [
-        {
-            "deltas": ["Drafting ", "a concrete plan."],
-            "response": ModelResponse(
-                model="anthropic/claude-haiku-4.5",
-                content="",
-                usage=None,
-                tool_calls=[
-                    ToolCall(
-                        id="call_plan",
-                        function=ToolCallFunction(
-                            name="task_plan",
-                            arguments=json.dumps(
-                                {
-                                    "summary": "Create a simple tic tac toe app.",
-                                    "steps": ["Initialize the app.", "Implement the game.", "Summarize the result."],
-                                    "open_questions": [],
-                                    "assumptions": [],
-                                }
-                            ),
-                        ),
-                    )
-                ],
-                finish_reason="tool_calls",
-            ),
-        },
-        {
-            "deltas": [],
-            "response": _finalize_response("Done."),
-        },
-    ]
-
-    async def _fake_stream(messages, model, on_content_delta=None, **kwargs):
-        tool_choices.append(kwargs.get("tool_choice"))
-        current = responses.pop(0)
-        for delta in current["deltas"]:
-            if on_content_delta is not None:
-                await on_content_delta(delta)
-        return current["response"]
-
-    async def _stream_callback(payload):
-        stream_updates.append(payload)
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
-
-    await agent_runner_module.agent_runner.continue_run(run.id, stream_callback=_stream_callback)
-
-    assert any(
-        update == {
-            "kind": "text_delta",
-            "run_id": run.id,
-            "step": 1,
-            "delta": "Drafting ",
-        }
-        for update in stream_updates
-    )
-    assert any(
-        update == {
-            "kind": "text_done",
-            "run_id": run.id,
-            "step": 1,
-            "content": "Drafting a concrete plan.",
-        }
-        for update in stream_updates
-    )
-    assert tool_choices == ["auto", "auto"]
-
-
-@pytest.mark.asyncio
 async def test_continue_run_uses_tool_lifecycle_without_a_secondary_progress_model(monkeypatch):
     _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5", silent_tool_call_streak=2)
     responses = [
@@ -883,7 +935,7 @@ async def test_continue_run_native_decision_prompt_requests_delta_only_updates(m
 
 
 @pytest.mark.asyncio
-async def test_continue_run_streams_live_tool_call_previews_before_tool_execution(monkeypatch):
+async def test_continue_run_starts_tool_activity_only_when_execution_begins(monkeypatch):
     _, run = await _create_agent_run(model="anthropic/claude-haiku-4.5")
     responses = [
         {
@@ -942,24 +994,11 @@ async def test_continue_run_streams_live_tool_call_previews_before_tool_executio
 
     await agent_runner_module.agent_runner.continue_run(run.id, stream_callback=_stream_callback)
 
+    assert not any("Preparing" in str(update.get("content") or "") for update in stream_updates)
     assert any(
-        update == {
-            "kind": "tool_progress",
-            "run_id": run.id,
-            "step": 1,
-            "tool": "file_write",
-            "activity_id": f"tool:{run.id}:call_tool",
-            "tool_call_id": "call_tool",
-            "content": "Preparing to write frontend/generated-apps/demo/page.tsx (1 lines, 36 bytes buffered)",
-        }
-        for update in stream_updates
-    )
-    assert any(
-        update.get("kind") == "tool_progress"
-        and update.get("run_id") == run.id
-        and update.get("step") == 1
+        update.get("kind") == "tool_started"
         and update.get("tool") == "file_write"
-        and "3 lines, 73 bytes buffered" in str(update.get("content") or "")
+        and update.get("content") == "Writing demo/page.tsx (3 lines)"
         for update in stream_updates
     )
     assert any(
@@ -1015,63 +1054,6 @@ async def test_continue_run_persists_live_item_snapshot_during_tool_execution(mo
 
 
 @pytest.mark.asyncio
-async def test_continue_run_streams_partial_plan_sections_in_tool_preview(monkeypatch):
-    _, run = await _create_unplanned_agent_run(model="anthropic/claude-haiku-4.5")
-    responses = [
-        {
-            "response": _tool_response(
-                "task_plan",
-                {
-                    "summary": "Build a tiny probe app.",
-                    "steps": ["Initialize the app", "Render one heading"],
-                    "open_questions": ["What heading text should appear?"],
-                    "assumptions": ["A default title is acceptable"],
-                },
-                content="Planning the app steps now.",
-            )
-        },
-        {"response": _finalize_response("Done.")},
-    ]
-    stream_updates: list[dict[str, object]] = []
-
-    async def _fake_stream(messages, model, on_tool_call_delta=None, **kwargs):
-        current = responses.pop(0)
-        if kwargs.get("tools") is not None and on_tool_call_delta is not None:
-            await on_tool_call_delta(
-                ToolCall(
-                    id="call_plan",
-                    function=ToolCallFunction(
-                        name="task_plan",
-                        arguments=(
-                            '{"summary":"Build a tiny probe app.",'
-                            '"steps":["Initialize the app","Render one heading"],'
-                            '"open_questions":["What heading text should appear?"],'
-                            '"assumptions":["A default title is acceptable"]}'
-                        ),
-                    ),
-                )
-            )
-        return current["response"]
-
-    async def _stream_callback(payload):
-        stream_updates.append(payload)
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
-
-    await agent_runner_module.agent_runner.continue_run(run.id, stream_callback=_stream_callback)
-
-    assert any(
-        update.get("kind") == "tool_progress"
-        and update.get("tool") == "task_plan"
-        and "Steps" in str(update.get("content") or "")
-        and "Initialize the app" in str(update.get("content") or "")
-        and "Open points" in str(update.get("content") or "")
-        and "Assumptions" in str(update.get("content") or "")
-        for update in stream_updates
-    )
-
-
-@pytest.mark.asyncio
 async def test_filesystem_tools_emit_live_progress_callbacks():
     progress_updates: list[str] = []
 
@@ -1123,14 +1105,31 @@ async def test_execution_tools_emit_live_progress_callbacks():
         else:
             await run_shell_command("echo live shell output", context=context)
 
-    assert any(update.startswith("Preparing Python run in ") for update in progress_updates)
     assert any(update == "Starting Python process" for update in progress_updates)
     assert any(update == "stdout: live tool output" for update in progress_updates)
     assert any(update == "Python run completed" for update in progress_updates)
-    assert any(update.startswith("Preparing command in ") for update in progress_updates)
     assert any(update.startswith("Starting ") for update in progress_updates)
     assert any(update == "stdout: live shell output" for update in progress_updates)
     assert any(update == "Command finished with exit code 0" for update in progress_updates)
+
+
+@pytest.mark.asyncio
+async def test_shell_tool_resolves_windows_command_wrappers(monkeypatch):
+    observed_args: list[str] = []
+
+    async def _fake_process(*, args, cwd, timeout_seconds, context):
+        observed_args.extend(args)
+        return 0, "10.0.0", ""
+
+    monkeypatch.setattr(agent_execution_module.shutil, "which", lambda executable: "C:/node/npm.cmd")
+    monkeypatch.setattr(agent_execution_module, "_run_subprocess_with_live_progress", _fake_process)
+
+    with TemporaryDirectory(dir=settings.backend_root.parent) as temp_dir:
+        context = build_tool_context("conv-shell-resolution", temp_dir)
+        result = await run_shell_command("npm --version", context=context)
+
+    assert observed_args == ["C:/node/npm.cmd", "--version"]
+    assert result.metadata["returncode"] == 0
 
 
 @pytest.mark.asyncio

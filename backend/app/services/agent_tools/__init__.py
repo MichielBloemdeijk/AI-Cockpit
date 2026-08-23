@@ -1,6 +1,7 @@
 """Agent tool package used by the runtime hot path."""
 from app.services.agent_tools.apps import run_app_initialize
 from app.services.agent_tools.apps import run_app_list
+from app.services.agent_tools.apps import run_app_verify
 from app.services.agent_tools.base import AgentTool
 from app.services.agent_tools.base import ToolExecutionContext
 from app.services.agent_tools.base import ToolExecutionResult
@@ -26,6 +27,7 @@ __all__ = [
     "get_agent_tool_provider_definitions",
     "run_app_initialize",
     "run_app_list",
+    "run_app_verify",
     "run_file_read",
     "run_file_write",
     "run_python_execution",

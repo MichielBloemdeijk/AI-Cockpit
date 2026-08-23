@@ -50,7 +50,7 @@ describe("getAllowedDevOrigins", () => {
     });
 
     expect(origins).toEqual(
-      expect.arrayContaining(["localhost", "127.0.0.1", "100.101.218.34"]),
+      expect.arrayContaining(["localhost", "127.0.0.1", "**.*", "100.101.218.34"]),
     );
   });
 });

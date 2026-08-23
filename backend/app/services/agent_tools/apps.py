@@ -7,8 +7,10 @@ from app.services.agent_tools.base import ToolExecutionContext
 from app.services.agent_tools.base import ToolExecutionResult
 from app.services.agent_tools.base import _tool_property
 from app.services.agent_tools.base import _tool_schema
+from app.services.agent_tools.base import emit_tool_progress
 from app.services.app_builder import bootstrap_generated_app
 from app.services.app_registry import app_registry_service
+from app.services.app_verifier import verify_generated_app
 
 
 async def run_app_initialize(
@@ -88,6 +90,20 @@ async def run_app_list(*, context: ToolExecutionContext) -> ToolExecutionResult:
     )
 
 
+async def run_app_verify(*, context: ToolExecutionContext, app_slug: str) -> ToolExecutionResult:
+    normalized_slug = str(app_slug or "").strip()
+    if not normalized_slug:
+        raise ValueError("Generated app verification requires app_slug")
+    await emit_tool_progress(context, f"Verifying {normalized_slug}")
+    result = await verify_generated_app(normalized_slug)
+    await emit_tool_progress(context, f"Verified {normalized_slug}")
+    return ToolExecutionResult(
+        tool="app_verify",
+        output=f"Verified generated app '{normalized_slug}' with a Next.js production build.",
+        metadata=result,
+    )
+
+
 async def _execute_app_initialize(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
     return await run_app_initialize(
         context=context,
@@ -99,6 +115,10 @@ async def _execute_app_initialize(context: ToolExecutionContext, arguments: dict
 
 async def _execute_app_list(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
     return await run_app_list(context=context)
+
+
+async def _execute_app_verify(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
+    return await run_app_verify(context=context, app_slug=str(arguments.get("app_slug") or ""))
 
 
 APP_TOOLS: list[AgentTool] = [
@@ -122,6 +142,19 @@ APP_TOOLS: list[AgentTool] = [
         executor=_execute_app_list,
         read_only=True,
     ),
+    AgentTool(
+        name="app_verify",
+        description="Run an isolated Next.js production build for an attached generated app and return any compile error so it can be fixed before completion.",
+        input_schema=_tool_schema(
+            {
+                "app_slug": _tool_property("string", "Slug of the generated app to verify."),
+            },
+            required=["app_slug"],
+        ),
+        executor=_execute_app_verify,
+        read_only=False,
+        model_visible=False,
+    ),
 ]
 
 
@@ -129,4 +162,5 @@ __all__ = [
     "APP_TOOLS",
     "run_app_initialize",
     "run_app_list",
+    "run_app_verify",
 ]

@@ -45,6 +45,7 @@ class AgentTool:
     allows_parallel: bool = False
     result_serializer: ToolResultSerializer | None = None
     ui_event_name: str | None = None
+    model_visible: bool = True
 
     @property
     def arguments(self) -> dict[str, str]:

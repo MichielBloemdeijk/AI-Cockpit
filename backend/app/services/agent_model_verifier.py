@@ -18,7 +18,7 @@ from app.services.app_registry import app_registry_service
 from app.services.app_registry import resolve_generated_app_contract
 from app.services.agent_tools import get_agent_tool_provider_definitions
 from app.services.agent_runner import agent_runner
-from app.services.agent_prompt_builder import NATIVE_AGENT_PLAN_TOOL, _native_control_tool_definitions
+from app.services.agent_prompt_builder import _native_control_tool_definitions
 from app.services.chat_orchestrator import chat_orchestrator
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_read_model import conversation_read_model
@@ -79,9 +79,7 @@ class ScenarioResult:
 @dataclass(slots=True)
 class HarnessSnapshot:
     entrypoint: str
-    planner_prompt_source: str
     decision_prompt_source: str
-    plan_tool_names: list[str]
     decision_tool_names: list[str]
     notes: list[str]
 
@@ -135,13 +133,10 @@ def _build_harness_snapshot() -> HarnessSnapshot:
     decision_tools = [*get_agent_tool_provider_definitions("openai"), *_native_control_tool_definitions()]
     return HarnessSnapshot(
         entrypoint="chat_orchestrator.run_single_response",
-        planner_prompt_source="agent_runner._request_native_turn (model-directed task_plan)",
         decision_prompt_source="agent_runner._request_native_turn",
-        plan_tool_names=[NATIVE_AGENT_PLAN_TOOL],
         decision_tool_names=_tool_definition_names(decision_tools),
         notes=[
             "Verifier runs the real chat orchestrator and native agent runner.",
-            "The model chooses task_plan only when planning materially helps the task.",
             "Provider tool definitions are taken from agent_tools plus the native control tools.",
             "Only the user task message is synthetic; system prompts, context formatting, and tool schemas come from production code.",
         ],
@@ -315,7 +310,6 @@ def _evaluate_ask_user(trace: ScenarioTrace) -> ScenarioResult:
     external_tool_names = _external_tool_names(trace.external_tool_calls)
     checks = [
         _check("run paused", trace.run_status == "paused", f"run_status={trace.run_status}"),
-        _check("task_plan used", "task_plan" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("task_ask_user used", "task_ask_user" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("no external tool work", not external_tool_names, f"external_tools={external_tool_names}"),
         _check("question surfaced", bool(trace.final_message.strip()), f"final_message={trace.final_message!r}"),
@@ -345,7 +339,6 @@ def _evaluate_app_initialize(trace: ScenarioTrace) -> ScenarioResult:
     app_metadata = completed_initialize[-1].get("metadata") if completed_initialize else {}
     checks = [
         _check("run completed", trace.run_status == "completed", f"run_status={trace.run_status}"),
-        _check("task_plan used", "task_plan" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("app_initialize used", "app_initialize" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("task_finalize used", "task_finalize" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("no failed tools", not failures, f"failed_tools={failures}"),
@@ -376,7 +369,6 @@ def _evaluate_app_edit(trace: ScenarioTrace) -> ScenarioResult:
     )
     checks = [
         _check("run completed", trace.run_status == "completed", f"run_status={trace.run_status}"),
-        _check("task_plan used", "task_plan" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("app_initialize used", "app_initialize" in external_tool_names, f"external_tools={external_tool_names}"),
         _check("file_write used", "file_write" in external_tool_names, f"external_tools={external_tool_names}"),
         _check("task_finalize used", "task_finalize" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
@@ -405,7 +397,6 @@ def _evaluate_repo_summary(trace: ScenarioTrace) -> ScenarioResult:
     final_text = trace.final_message
     checks = [
         _check("run completed", trace.run_status == "completed", f"run_status={trace.run_status}"),
-        _check("task_plan used", "task_plan" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check(
             "doc inspection used",
             "workspace_search" in external_tool_names or "file_read" in external_tool_names,
@@ -444,7 +435,6 @@ def _evaluate_doc_informed_app_edit(trace: ScenarioTrace) -> ScenarioResult:
     )
     checks = [
         _check("run completed", trace.run_status == "completed", f"run_status={trace.run_status}"),
-        _check("task_plan used", "task_plan" in raw_tool_names, f"raw_tool_calls={raw_tool_names}"),
         _check("app_initialize used", "app_initialize" in external_tool_names, f"external_tools={external_tool_names}"),
         _check(
             "doc inspection used",
@@ -525,9 +515,7 @@ def render_report(report: VerificationReport) -> str:
         f"Finished: {report.finished_at}",
         f"Overall passed: {'yes' if report.overall_passed else 'no'}",
         f"Harness entrypoint: {report.harness.entrypoint}",
-        f"Plan prompt source: {report.harness.planner_prompt_source}",
         f"Decision prompt source: {report.harness.decision_prompt_source}",
-        f"Plan tools: {', '.join(report.harness.plan_tool_names) or 'none'}",
         f"Decision tools: {', '.join(report.harness.decision_tool_names) or 'none'}",
         "",
     ]
