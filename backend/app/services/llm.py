@@ -328,6 +328,11 @@ def _extract_message_reasoning(data: dict[str, Any]) -> tuple[str, list[dict[str
         return "", []
 
     raw_reasoning = message.get("reasoning")
+    if not isinstance(raw_reasoning, str) or not raw_reasoning.strip():
+        # llama.cpp's OpenAI-compatible endpoint uses reasoning_content for
+        # extracted thinking, while OpenRouter commonly uses reasoning or
+        # reasoning_details.  Accept all three representations.
+        raw_reasoning = message.get("reasoning_content")
     reasoning = raw_reasoning.strip() if isinstance(raw_reasoning, str) else ""
     reasoning_details = _extract_reasoning_details_blocks(message.get("reasoning_details"))
     if not reasoning:
@@ -602,7 +607,13 @@ def supports_native_tool_calls(model: str) -> bool:
 def native_agent_request_overrides(model: str) -> dict[str, Any] | None:
     normalized = str(model or "").strip().lower()
     overrides: dict[str, Any] = {"parallel_tool_calls": False}
-    if normalized.startswith(("anthropic/", "google/", "moonshotai/", "openai/", "x-ai/")):
+    if is_local_model(model):
+        # Gemma 4 is a hybrid reasoning model.  Its unrestricted thinking can
+        # consume the entire small decision budget before it emits a tool call
+        # or a spoken answer.  This is the llama.cpp-supported per-request
+        # switch and keeps interactive turns deterministic and low latency.
+        overrides["chat_template_kwargs"] = {"enable_thinking": False}
+    elif normalized.startswith(("anthropic/", "google/", "moonshotai/", "openai/", "x-ai/")):
         overrides["reasoning"] = {"exclude": True, "effort": "none"}
     if normalized.startswith("moonshotai/kimi-k2.6"):
         overrides["provider"] = {
@@ -614,6 +625,8 @@ def native_agent_request_overrides(model: str) -> dict[str, Any] | None:
 
 def summary_request_overrides(model: str) -> dict[str, Any] | None:
     normalized = str(model or "").strip().lower()
+    if is_local_model(model):
+        return {"chat_template_kwargs": {"enable_thinking": False}}
     if normalized.startswith(("anthropic/", "google/", "moonshotai/", "openai/", "x-ai/")):
         return {"reasoning": {"exclude": True, "effort": "none"}}
     return None
@@ -1132,6 +1145,7 @@ async def chat_completion_stream_response(
             observed_any = False
             content_parts: list[str] = []
             reasoning_state: list[dict[str, Any]] = []
+            reasoning_content_parts: list[str] = []
             tool_call_state: list[dict[str, Any]] = []
             finish_reason: str | None = None
             usage: dict[str, Any] | None = None
@@ -1162,6 +1176,16 @@ async def chat_completion_stream_response(
                                     maybe_awaitable = on_reasoning_delta(reasoning_delta)
                                     if inspect.isawaitable(maybe_awaitable):
                                         await maybe_awaitable
+                            raw_reasoning_delta = delta.get("reasoning")
+                            if not isinstance(raw_reasoning_delta, str) or not raw_reasoning_delta:
+                                raw_reasoning_delta = delta.get("reasoning_content")
+                            if isinstance(raw_reasoning_delta, str) and raw_reasoning_delta:
+                                reasoning_content_parts.append(raw_reasoning_delta)
+                                observed_any = True
+                                if on_reasoning_delta is not None and not reasoning_deltas:
+                                    maybe_awaitable = on_reasoning_delta(raw_reasoning_delta)
+                                    if inspect.isawaitable(maybe_awaitable):
+                                        await maybe_awaitable
                             content_parts_delta = _extract_stream_content_parts(delta.get("content"))
                             for content_delta in content_parts_delta:
                                 content_parts.append(content_delta)
@@ -1187,7 +1211,7 @@ async def chat_completion_stream_response(
                                 finish_reason = raw_finish_reason
                         usage = _extract_stream_usage(chunk, choice) or usage
                 content = "".join(content_parts)
-                reasoning = _reasoning_text_from_details(reasoning_state)
+                reasoning = "".join(reasoning_content_parts).strip() or _reasoning_text_from_details(reasoning_state)
                 tool_calls = _materialize_stream_tool_calls(tool_call_state)
                 if not content and not tool_calls and not reasoning:
                     if attempt < settings.llm_transport_retry_attempts:

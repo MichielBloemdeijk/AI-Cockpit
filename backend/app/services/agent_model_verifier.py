@@ -23,7 +23,7 @@ from app.services.chat_orchestrator import chat_orchestrator
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import conversation_store
-from app.services.llm import supports_native_tool_calls
+from app.services.llm import is_local_model, supports_native_tool_calls
 
 ScenarioName = Literal["ask_user", "app_initialize", "app_edit", "repo_summary", "doc_informed_app_edit"]
 SCENARIO_TIMEOUT_SECONDS = 90.0
@@ -666,7 +666,9 @@ async def verify_agent_model(
     normalized_model = str(model or "").strip()
     if not normalized_model:
         raise ValueError("Model is required")
-    if not settings.openrouter_api_key:
+    if is_local_model(normalized_model) and not settings.local_llm_enabled:
+        raise ValueError("The local LLM provider is disabled")
+    if not is_local_model(normalized_model) and not settings.openrouter_api_key:
         raise ValueError("OPENROUTER_API_KEY is required for live model verification")
     if not supports_native_tool_calls(normalized_model):
         raise ValueError(f"Model is not currently allowed for the native agent harness: {normalized_model}")

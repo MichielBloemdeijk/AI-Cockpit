@@ -24,6 +24,21 @@ from app.services.llm import PromptSegment, aggregate_usage, chat_completion, ch
 
 
 _APP_CONTEXT_HINT_RE = re.compile(r"(?:/apps/|started app task|app root:|entry page:|allowed write roots:|app has been updated)", re.IGNORECASE)
+_VOICE_BACKGROUND_DIRECTIVE_RE = re.compile(
+    r"\b(?:in the background|keep (?:working|going)|take your time|monitor|watch for|wait until|"
+    r"tell me when|notify me when|let me know when)\b",
+    re.IGNORECASE,
+)
+_VOICE_MUTATING_REQUEST_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:create|edit|update|change|fix|install|download|run|execute|test|build|"
+    r"commit|deploy|start|stop|restart|delete|remove|move|rename|send|publish|configure)\b",
+    re.IGNORECASE,
+)
+_VOICE_MULTI_STEP_RE = re.compile(
+    r"\b(?:and then|then|after that|once (?:that|it) (?:is|has)|compare\b.+\b(?:and|with)\b|"
+    r"read\b.+\band\b.+\b(?:compare|summari[sz]e|analy[sz]e|review))",
+    re.IGNORECASE,
+)
 STREAMED_AGENT_EVENT_TYPES = {
     "conversation.task.started",
     "conversation.task.start_failed",
@@ -40,6 +55,25 @@ STREAMED_AGENT_EVENT_TYPES = {
     "agent.run.failed",
     TIMELINE_ITEM_EVENT_TYPE,
 }
+
+
+def should_delegate_voice_goal(content: str, *, requested_notification: bool = False) -> bool:
+    """Return whether a voice request must outlive its acknowledgement turn.
+
+    The local model still decides borderline cases, but explicit notification,
+    waiting/background language, mutating commands, and unmistakably multi-step
+    requests are routed deterministically. This preserves the core voice contract
+    even when a small local model would otherwise execute a long request inline.
+    """
+    normalized = " ".join(str(content or "").split()).strip()
+    if not normalized:
+        return False
+    return bool(
+        requested_notification
+        or _VOICE_BACKGROUND_DIRECTIVE_RE.search(normalized)
+        or _VOICE_MUTATING_REQUEST_RE.search(normalized)
+        or _VOICE_MULTI_STEP_RE.search(normalized)
+    )
 
 
 def _latest_user_message(messages: list[Message]) -> Message:
@@ -509,6 +543,10 @@ class ChatOrchestrator:
                 "llm_priority": "interactive",
                 "voice_response": True,
                 "requested_notification": bool(requested_notification),
+                "force_background_delegation": should_delegate_voice_goal(
+                    content,
+                    requested_notification=requested_notification,
+                ),
             }
         )
         return await self.prepare_turn(

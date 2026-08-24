@@ -38,7 +38,10 @@ class Settings(BaseSettings):
     # Voice pipeline (optional local dependencies are loaded lazily)
     voice_enabled: bool = True
     voice_wake_word: str = "jarvis"
-    voice_stt_model: str = "openai/whisper-large-v3-turbo"
+    # faster-whisper expects a CTranslate2 checkpoint.  This built-in model
+    # name resolves to mobiuslabsgmbh/faster-whisper-large-v3-turbo; the
+    # original OpenAI repository contains Transformers weights instead.
+    voice_stt_model: str = "large-v3-turbo"
     voice_stt_device: str = "cuda"
     voice_stt_compute_type: str = "int8_float16"
     voice_stt_language: str = "en"

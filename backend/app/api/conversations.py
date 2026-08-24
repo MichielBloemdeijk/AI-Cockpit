@@ -136,7 +136,28 @@ async def unarchive_conversation(conversation_id: str):
 
 
 @router.get("/{conversation_id}/events", response_model=ConversationEventsResponse)
-async def get_conversation_events(conversation_id: str, branch_key: str = Query(default=MAIN_BRANCH_KEY)):
+async def get_conversation_events(
+    conversation_id: str,
+    branch_key: str = Query(default=MAIN_BRANCH_KEY),
+    after_sequence: int | None = Query(default=None, ge=0),
+):
+    if after_sequence is not None:
+        conversation = await conversation_store.get_conversation(conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        events = await conversation_store.list_events_after(
+            conversation_id,
+            after_sequence=after_sequence,
+            limit=250,
+        )
+        return ConversationEventsResponse(
+            conversation_id=conversation_id,
+            active_branch_key=branch_key,
+            events=[present_conversation_event(event) for event in events if event.branch_key == branch_key],
+            artifacts=[],
+            timeline_items=[],
+            active_run=None,
+        )
     response = await conversation_read_model.get_conversation_events(conversation_id, branch_key=branch_key)
     if response is None:
         raise HTTPException(status_code=404, detail="Conversation not found")

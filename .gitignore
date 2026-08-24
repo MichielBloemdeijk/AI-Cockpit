@@ -43,6 +43,8 @@ out/
 .cockpit/
 backend/data/
 backend/chroma_data/
+backend/models/
+tools/llama.cpp/
 
 # Knowledge base (keep structure, ignore generated)
 knowledge/.chroma/

@@ -13,12 +13,22 @@ from app.services.llm import (
     LocalLLMPriorityGate,
     _build_chat_completion_payload,
     _build_client,
+    _extract_message_reasoning,
     is_local_model,
     native_decision_max_tokens,
     resolve_prompt_cache_policy,
     resolve_upstream_model,
     supports_native_tool_calls,
 )
+
+
+def test_llama_cpp_reasoning_content_is_preserved() -> None:
+    reasoning, details = _extract_message_reasoning(
+        {"choices": [{"message": {"content": "", "reasoning_content": "considering options"}}]}
+    )
+
+    assert reasoning == "considering options"
+    assert details == []
 
 
 def test_local_alias_resolves_to_native_tool_model_with_short_budget() -> None:

@@ -575,8 +575,10 @@ export async function getConversation(conversationId: string, branchKey = "main"
 export async function getConversationEvents(
   conversationId: string,
   branchKey = "main",
+  afterSequence?: number,
 ): Promise<ConversationEventsResponse> {
-  const res = await fetch(`${BASE}/api/conversations/${conversationId}/events?branch_key=${encodeURIComponent(branchKey)}`, {
+  const cursor = afterSequence === undefined ? "" : `&after_sequence=${Math.max(0, Math.trunc(afterSequence))}`;
+  const res = await fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/events?branch_key=${encodeURIComponent(branchKey)}${cursor}`, {
     credentials: "include",
     cache: "no-store",
   });
@@ -841,37 +843,52 @@ export function streamConversationEvents(
   onError?: (error: Error) => void,
 ): AbortController {
   const controller = new AbortController();
-  fetch(`${BASE}/api/conversations/${encodeURIComponent(conversationId)}/stream?after_sequence=${afterSequence}`, {
-    credentials: "include",
-    signal: controller.signal,
-    cache: "no-store",
-  }).then(async (res) => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (!res.body) throw new Error("Event stream is unavailable");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (!controller.signal.aborted) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      // sse-starlette may emit CRLF. Normalize line endings before framing so
-      // events are not silently held in the buffer on Windows/Tailscale.
-      buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-      const frames = buffer.split(/\n\n/);
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
-        if (!dataLine) continue;
-        try {
-          const payload = JSON.parse(dataLine.slice(6)) as { event?: ConversationEventView };
-          if (payload.event) onEvent(payload.event);
-        } catch {}
-      }
+  let cursor = Math.max(0, afterSequence);
+  let polling = false;
+  const deliver = (event: ConversationEventView) => {
+    if (event.sequence <= cursor) return;
+    cursor = event.sequence;
+    onEvent(event);
+  };
+  const source = new EventSource(
+    `${BASE}/api/conversations/${encodeURIComponent(conversationId)}/stream?after_sequence=${afterSequence}`,
+    { withCredentials: true },
+  );
+  const receive = (rawEvent: Event) => {
+    const message = rawEvent as MessageEvent<string>;
+    try {
+      const payload = JSON.parse(message.data) as { event?: ConversationEventView };
+      if (payload.event) deliver(payload.event);
+    } catch {
+      // Ignore malformed or non-event frames. The durable cursor makes a
+      // reconnect safe without inventing a partial event locally.
     }
-  }).catch((reason) => {
-    if (!controller.signal.aborted) onError?.(reason instanceof Error ? reason : new Error(String(reason)));
-  });
+  };
+  source.addEventListener("conversation.event", receive);
+  source.onerror = () => {
+    source.close();
+    if (!controller.signal.aborted) onError?.(new Error("Conversation event stream disconnected"));
+  };
+  // Some mobile/WebView proxies leave an SSE request open but do not release
+  // small frames promptly. A cheap durable catch-up poll keeps the voice UI
+  // correct in that case; sequence filtering makes it a no-op when SSE works.
+  const pollTimer = setInterval(() => {
+    if (polling || controller.signal.aborted) return;
+    polling = true;
+    void getConversationEvents(conversationId, "main", cursor)
+      .then((response) => response.events
+        .filter((event) => event.sequence > cursor)
+        .sort((left, right) => left.sequence - right.sequence)
+        .forEach(deliver))
+      .catch((reason) => {
+        if (!controller.signal.aborted) onError?.(reason instanceof Error ? reason : new Error(String(reason)));
+      })
+      .finally(() => { polling = false; });
+  }, 750);
+  controller.signal.addEventListener("abort", () => {
+    source.close();
+    clearInterval(pollTimer);
+  }, { once: true });
   return controller;
 }
 

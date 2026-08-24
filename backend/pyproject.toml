@@ -48,3 +48,6 @@ voice = [
 notifications = [
     "pywebpush>=2.0.0",
 ]
+benchmark = [
+    "jsonschema>=4.23.0",
+]

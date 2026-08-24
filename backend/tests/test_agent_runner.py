@@ -31,11 +31,12 @@ from app.services.agent_tools import run_shell_command
 from app.services.agent_tools import run_workspace_search
 from app.services.app_verifier import AppVerificationInfrastructureError
 from app.services.conversation_store import conversation_store
+from app.services.chat_orchestrator import should_delegate_voice_goal
 from app.services.run_lifecycle import run_lifecycle
 from app.db.repositories.conversations import ConversationRepository
 
 
-def test_finalize_tool_uses_visible_assistant_text_instead_of_a_result_argument():
+def test_finalize_tool_requires_a_user_facing_result_and_internal_summary():
     definitions = {
         definition["function"]["name"]: definition["function"]
         for definition in _native_control_tool_definitions()
@@ -43,13 +44,64 @@ def test_finalize_tool_uses_visible_assistant_text_instead_of_a_result_argument(
 
     finalize_parameters = definitions["task_finalize"]["parameters"]
     assert set(definitions) == {"task_ask_user", "task_finalize"}
-    assert finalize_parameters["required"] == ["summary"]
-    assert set(finalize_parameters["properties"]) == {"summary"}
+    assert finalize_parameters["required"] == ["summary", "final_text"]
+    assert set(finalize_parameters["properties"]) == {"summary", "final_text"}
 
 
 def test_native_tool_turns_have_enough_output_budget_for_source_files():
     assert llm_module.native_decision_max_tokens("openai/gpt-5.6-luna") == 8192
     assert llm_module.native_decision_attempt_max_tokens("openai/gpt-5.6-luna", 1) == 16_384
+
+
+@pytest.mark.parametrize(
+    ("goal", "requested_notification", "expected"),
+    [
+        ("What is three plus three?", False, False),
+        ("Summarize README.md briefly.", False, False),
+        ("Tell me when the repository review is complete.", True, True),
+        ("Please fix the failing tests.", False, True),
+        ("Read README.md and docs/ARCHITECTURE.md, then compare them.", False, True),
+        ("Monitor the build and notify me when it finishes.", False, True),
+    ],
+)
+def test_voice_background_routing_policy(goal: str, requested_notification: bool, expected: bool) -> None:
+    assert should_delegate_voice_goal(goal, requested_notification=requested_notification) is expected
+
+
+@pytest.mark.asyncio
+async def test_forced_voice_background_route_skips_model_and_queues_child(monkeypatch) -> None:
+    from app.services.run_supervisor import run_supervisor
+
+    conversation, run = await _create_agent_run()
+    metadata = dict(run.metadata_json or {})
+    metadata.update(
+        {
+            "execution_mode": "voice_interactive",
+            "voice_response": True,
+            "force_background_delegation": True,
+            "requested_notification": True,
+            "goal": "Compare two files and tell me when it is done.",
+        }
+    )
+    await conversation_store.update_run_metadata(run.id, metadata)
+
+    async def _model_must_not_run(*args, **kwargs):
+        raise AssertionError("forced background routing must not spend an interactive model turn")
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _model_must_not_run)
+    monkeypatch.setattr(run_supervisor, "start", lambda *args, **kwargs: None)
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    runs = await conversation_store.list_runs(conversation.id)
+    child = next(item for item in runs if item.parent_run_id == run.id)
+    assert child.metadata_json["execution_mode"] == "background"
+    assert child.metadata_json["notify_policy"] == "completion"
+    assert child.metadata_json["requested_notification"] is True
+
+    parent = await conversation_store.get_run(run.id)
+    assert parent is not None and parent.status == "completed"
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    assert messages[-1].content == "I'm on it. I'll let you know when it's done."
 
 
 @pytest.mark.asyncio
@@ -213,6 +265,38 @@ async def test_finalize_summary_is_used_when_provider_omits_assistant_text(monke
 
     messages = await conversation_store.list_messages(run.conversation_id, final_only=True)
     assert messages[-1].content == "The requested inspection is complete."
+
+
+@pytest.mark.asyncio
+async def test_finalize_argument_is_used_when_provider_omits_assistant_text(monkeypatch):
+    _, run = await _create_agent_run()
+
+    async def _fake_stream(messages, model, **kwargs):
+        return ModelResponse(
+            model=model,
+            content="",
+            usage=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_finalize",
+                    function=ToolCallFunction(
+                        name="task_finalize",
+                        arguments=json.dumps({
+                            "summary": "Answered the arithmetic question.",
+                            "final_text": "Two plus two is four.",
+                        }),
+                    ),
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    messages = await conversation_store.list_messages(run.conversation_id, final_only=True)
+    assert messages[-1].content == "Two plus two is four."
 
 
 def test_run_summary_counts_files_created_by_app_initialize():

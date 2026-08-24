@@ -140,6 +140,25 @@ class AgentRunner:
         step_number: int,
         stream_callback: AgentStreamCallback | None = None,
     ) -> dict[str, Any]:
+        if (
+            step_number == 1
+            and metadata.get("execution_mode") == "voice_interactive"
+            and metadata.get("force_background_delegation")
+        ):
+            requested_notification = bool(metadata.get("requested_notification"))
+            acknowledgement = (
+                "I'm on it. I'll let you know when it's done."
+                if requested_notification
+                else "I'm on it. You can keep talking while I work on that."
+            )
+            return _build_delegate_action_payload(
+                thought="This request needs an independently observable background run.",
+                goal=str(metadata.get("goal") or ""),
+                notify_policy="completion" if requested_notification else "important",
+                priority="normal",
+                acknowledgement=acknowledgement,
+            )
+
         model = str(metadata.get("model") or await chat_settings_service.get_task_agent_model())
         recent_messages = await conversation_store.list_messages(conversation_id, final_only=True)
         async with _timed_agent_phase(
@@ -186,7 +205,7 @@ class AgentRunner:
             "Generated apps are automatically checked with an isolated Next.js production build when you finalize. Do not run npm build yourself. If automatic verification fails, use the returned build error to fix the app and finalize again. App final text is only committed after verification passes, so phrase successful verification as completed, not as something that will happen later. "
             "When creating a new app, pass a clear title because that becomes the app's visible name. Pass app_slug only when you need an exact URL segment or when attaching an existing app. Never call app_initialize without title or app_slug. "
             "Any assistant text in this turn is shown directly to the user. Assistant text is optional. On turns that call external tools, normally emit no assistant text and call the tools directly. "
-            "When finalizing, write the complete final user-facing response as assistant text and call task_finalize with only a short metadata summary. The assistant text is the final answer, so do not duplicate it in tool arguments. "
+            "When finalizing, call task_finalize with a short metadata summary and put the complete final user-facing response in final_text. final_text must contain the actual answer or result, not a description such as 'answered the question'. Assistant text may be omitted on that turn. "
             "For interactive voice runs, delegate multi-step, mutating, executable, waiting, or explicitly background work immediately with delegate_background_task and put a concise acknowledgement in assistant text. Background runs must not delegate again. "
             "Do not announce what you are about to do or narrate the tool call with phrases such as 'I will', 'I'll', or 'Let me'. The UI already shows tool activity. Emit assistant text before completion only for a material finding, correction, or blocker that the user needs to know. It must add net-new information and must not restate the goal, approved plan, recent conversation context, or recent runtime transcript. "
             "Describe only work actually completed. Do not claim that a file was edited unless a successful file_write appears in the runtime transcript. app_initialize creates a scaffold; it does not prove a later edit occurred. "
@@ -465,7 +484,7 @@ class AgentRunner:
                         payload = _build_final_action_payload(
                             thought=live_thought,
                             summary=str(arguments.get("summary") or "").strip(),
-                            final_text=visible_text,
+                            final_text=visible_text or str(arguments.get("final_text") or "").strip(),
                         )
                         return payload
                     if tool_call.function.name == NATIVE_AGENT_DELEGATE_TOOL:

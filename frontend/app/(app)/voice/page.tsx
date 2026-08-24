@@ -30,6 +30,14 @@ import { restartJarvisVad, type JarvisVadInstance } from "@/lib/jarvis-vad";
 type InstallPrompt = Event & { prompt: () => Promise<void> };
 const CURSOR_PREFIX = "ai-cockpit-voice-cursor:";
 
+function formatSpeechError(reason: unknown): string {
+  const message = String(reason);
+  if (/NotAllowedError|play\(\) failed because the user didn't interact/i.test(message)) {
+    return "Tap Arm to play the pending voice update when browser audio is available.";
+  }
+  return message;
+}
+
 function encodeWav(audio: Float32Array): Blob {
   const buffer = new ArrayBuffer(44 + audio.length * 2);
   const view = new DataView(buffer);
@@ -98,7 +106,7 @@ export default function VoicePage() {
       resumeVad: () => restartJarvisVad(vadRef.current, machine.current.micEnabled),
       acknowledgeSpoken: (deliveryId) => acknowledgePushDelivery(deliveryId, "spoken"),
       isVisible: () => document.visibilityState === "visible",
-      onError: (reason) => setError(String(reason)),
+      onError: (reason) => setError(formatSpeechError(reason)),
     });
   }
   const scheduler = schedulerRef.current;

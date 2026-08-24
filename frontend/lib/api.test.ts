@@ -6,6 +6,8 @@ import {
   listGeneratedApps,
   login,
   streamChat,
+  streamConversationEvents,
+  type ConversationEventView,
   updateChatSettings,
 } from "./api";
 
@@ -244,5 +246,103 @@ describe("streamChat", () => {
       council_mode: false,
       model: "model-1",
     });
+  });
+});
+
+describe("streamConversationEvents", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("uses native SSE with the durable cursor and closes cleanly", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, (event: Event) => void>();
+    const close = vi.fn();
+    class FakeEventSource {
+      static instance: FakeEventSource | null = null;
+      readonly url: string;
+      readonly withCredentials: boolean;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor(url: string | URL, init?: EventSourceInit) {
+        this.url = String(url);
+        this.withCredentials = Boolean(init?.withCredentials);
+        FakeEventSource.instance = this;
+      }
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        listeners.set(type, listener as (event: Event) => void);
+      }
+
+      close() { close(); }
+    }
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const polledEvent: ConversationEventView = {
+      id: "event-44",
+      run_id: "run-1",
+      sequence: 44,
+      branch_key: "main",
+      parent_event_id: null,
+      actor_kind: "assistant",
+      event_type: "agent.run.completed",
+      created_at: "2026-08-24T00:00:01Z",
+      schema_version: 1,
+      payload_json: { summary: "Done" },
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        conversation_id: "conversation / one",
+        active_branch_key: "main",
+        events: [polledEvent],
+        artifacts: [],
+        timeline_items: [],
+        active_run: null,
+      }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+    const events: ConversationEventView[] = [];
+    const errors: Error[] = [];
+
+    const controller = streamConversationEvents("conversation / one", 42, (event) => events.push(event), (error) => errors.push(error));
+    const instance = FakeEventSource.instance!;
+    expect(instance.url).toBe("/api/conversations/conversation%20%2F%20one/stream?after_sequence=42");
+    expect(instance.withCredentials).toBe(true);
+
+    listeners.get("conversation.event")?.(new MessageEvent("conversation.event", {
+      data: JSON.stringify({
+        type: "event",
+        event: {
+          id: "event-43",
+          run_id: "run-1",
+          sequence: 43,
+          branch_key: "main",
+          parent_event_id: null,
+          actor_kind: "assistant",
+          event_type: "conversation.assistant.message.completed",
+          created_at: "2026-08-24T00:00:00Z",
+          schema_version: 1,
+          payload_json: { content: "Done" },
+        },
+      }),
+    }));
+    expect(events).toHaveLength(1);
+    expect(events[0].sequence).toBe(43);
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/conversations/conversation%20%2F%20one/events?branch_key=main&after_sequence=43",
+      { credentials: "include", cache: "no-store" },
+    );
+    expect(events.map((event) => event.sequence)).toEqual([43, 44]);
+
+    instance.onerror?.(new Event("error"));
+    expect(errors[0]?.message).toBe("Conversation event stream disconnected");
+    expect(close).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+    expect(close).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 });

@@ -73,8 +73,8 @@ def _native_control_tool_definitions(*, include_delegate: bool = False) -> list[
             "function": {
                 "name": NATIVE_AGENT_FINALIZE_TOOL,
                 "description": (
-                    "Finish the current run after the task is complete. Put the final user-facing response in the "
-                    "assistant text for the same turn; this tool only records a compact completion summary. "
+                    "Finish the current run after the task is complete. Put the exact final user-facing response in "
+                    "final_text and a compact internal completion summary in summary. "
                     "Attached generated apps are production-build verified before completion is accepted, so describe "
                     "successful verification in the past tense."
                 ),
@@ -85,8 +85,12 @@ def _native_control_tool_definitions(*, include_delegate: bool = False) -> list[
                             "type": "string",
                             "description": "A short summary of what was completed.",
                         },
+                        "final_text": {
+                            "type": "string",
+                            "description": "The complete response to show or speak to the user, including the actual answer or result.",
+                        },
                     },
-                    "required": ["summary"],
+                    "required": ["summary", "final_text"],
                     "additionalProperties": False,
                 },
             },
@@ -187,7 +191,8 @@ def _repair_native_control_tool_arguments(raw_arguments: str, tool_name: str) ->
     if tool_name == NATIVE_AGENT_FINALIZE_TOOL:
         summary = _extract_string_field(raw_arguments, "summary") or _extract_string_field(raw_arguments, "result")
         if summary:
-            return {"summary": summary}
+            final_text = _extract_string_field(raw_arguments, "final_text")
+            return {"summary": summary, "final_text": final_text or summary}
         return None
     if tool_name == NATIVE_AGENT_DELEGATE_TOOL:
         goal = _extract_string_field(raw_arguments, "goal")

@@ -30,6 +30,7 @@ def test_native_agent_request_overrides_disable_reasoning_for_user_facing_progre
     anthropic = native_agent_request_overrides("anthropic/claude-sonnet-4.6")
     google = native_agent_request_overrides("google/gemini-2.5-pro")
     kimi = native_agent_request_overrides("moonshotai/kimi-k2.6")
+    local = native_agent_request_overrides("local/gemma-4-12b")
 
     assert anthropic is not None
     assert anthropic["parallel_tool_calls"] is False
@@ -41,6 +42,10 @@ def test_native_agent_request_overrides_disable_reasoning_for_user_facing_progre
     assert kimi is not None
     assert kimi["reasoning"] == {"exclude": True, "effort": "none"}
     assert kimi["provider"] == {"require_parameters": True, "sort": "throughput"}
+
+    assert local is not None
+    assert local["parallel_tool_calls"] is False
+    assert local["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_prompt_segments_render_explicit_breakpoint_for_anthropic():

@@ -146,6 +146,41 @@ async def test_conversation_events_expose_active_run_live_item_snapshot():
     assert active_run["live_item"]["item_id"] == "tool:run-1:1:file_read"
     assert active_run["live_item"]["content"] == "Preparing to read hooks.ts"
 
+
+@pytest.mark.asyncio
+async def test_conversation_events_support_lightweight_cursor_catch_up():
+    conversation = await conversation_store.create_conversation(mode_hint="voice")
+    first = await conversation_store.append_event(
+        conversation.id,
+        run_id=None,
+        actor_kind="system",
+        event_type="test.first",
+        payload_json={"value": 1},
+        branch_key="main",
+    )
+    second = await conversation_store.append_event(
+        conversation.id,
+        run_id=None,
+        actor_kind="system",
+        event_type="test.second",
+        payload_json={"value": 2},
+        branch_key="main",
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": "dev"})
+        response = await client.get(
+            f"/api/conversations/{conversation.id}/events",
+            params={"branch_key": "main", "after_sequence": first.sequence},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [event["id"] for event in body["events"]] == [second.id]
+    assert body["artifacts"] == []
+    assert body["timeline_items"] == []
+
 @pytest.mark.asyncio
 async def test_stream_single_response_emits_metadata_before_run_completion(monkeypatch):
     gate = asyncio.Event()

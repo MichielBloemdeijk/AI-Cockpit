@@ -92,6 +92,11 @@ async def test_bootstrap_generated_app_uses_contract_override_roots():
     ]
     app = await app_registry_service.get_app_by_slug("verifier-app")
     assert app is not None
+    persisted_contract = resolve_generated_app_contract(app.slug, app.manifest_json)
+    assert persisted_contract.frontend_root == "backend/data/verifier-runs/test-run/app/apps/verifier-app"
+    assert persisted_contract.asset_root == "backend/data/verifier-runs/test-run/public/apps/verifier-app"
+    verification = await verify_generated_app("verifier-app")
+    assert verification["verification_status"] == "passed"
     page = app_builder_module._page_template(app, bootstrap.route_path)
     layout = app_builder_module._root_layout_template(app)
     styles = app_builder_module._styles_template()

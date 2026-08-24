@@ -154,6 +154,8 @@ async def _next_available_identity(base_title: str) -> tuple[str, str]:
 
 def _manifest_payload(app: GeneratedAppRecord, bootstrap: AppBootstrapResult) -> dict[str, object]:
     return {
+        "kind": "frontend_generated_app",
+        "version": 1,
         "id": app.id,
         "slug": app.slug,
         "title": app.title,
@@ -164,6 +166,19 @@ def _manifest_payload(app: GeneratedAppRecord, bootstrap: AppBootstrapResult) ->
         "frontend_layout_path": bootstrap.frontend_layout_path,
         "asset_root": bootstrap.asset_root,
         "allowed_write_roots": bootstrap.allowed_write_roots,
+        # app_registry resolves this durable contract after the initial
+        # bootstrap request.  Keep it nested as well as retaining the legacy
+        # flat fields above; otherwise custom/verifier roots silently fall
+        # back to frontend/generated-apps on the next registry read.
+        "contract": {
+            "route_path": bootstrap.route_path,
+            "frontend_root": bootstrap.frontend_root,
+            "frontend_entry_path": bootstrap.frontend_entry_path,
+            "frontend_layout_path": bootstrap.frontend_layout_path,
+            "manifest_path": bootstrap.manifest_path,
+            "asset_root": bootstrap.asset_root,
+            "allowed_write_roots": bootstrap.allowed_write_roots,
+        },
         "conventions": {
             "default_entry": "page.tsx at the app root",
             "nested_pages": "Create additional page.tsx files under nested folders inside this app root",

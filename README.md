@@ -180,7 +180,7 @@ The main settings are:
 | `LOCAL_LLM_ALIAS` | local/gemma-4-12b | Public model alias used by AI Cockpit |
 | `LOCAL_LLM_MODEL` | Gemma 4 Q4 checkpoint ID | Upstream model ID sent to the local server |
 | `TASK_AGENT_MODEL` | local/gemma-4-12b | Default chat and multi-step Agent model; must support native tool calls |
-| `VOICE_STT_MODEL` | openai/whisper-large-v3-turbo | Local faster-whisper checkpoint |
+| `VOICE_STT_MODEL` | large-v3-turbo | faster-whisper's CTranslate2 Whisper Large V3 Turbo checkpoint |
 | `VOICE_TTS_VOICE` | af_heart | Kokoro voice used for speech responses |
 | `VOICE_CLOUD_MODEL` | openai/gpt-5.6-terra | Model used only when a turn explicitly requests cloud |
 | `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
@@ -237,7 +237,7 @@ tailscale serve status
 Open the HTTPS URL printed by Tailscale. Tailscale terminates HTTPS and forwards traffic to the Next.js server on port 3000. To remove the proxy:
 
 ```powershell
-tailscale serve off
+tailscale serve reset
 ```
 
 No router port forwarding is required for either approach.
