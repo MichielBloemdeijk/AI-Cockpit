@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Cpu, Lock } from "lucide-react";
 import { login } from "@/lib/api";
@@ -10,6 +10,16 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const [nextPath, setNextPath] = useState("/chat");
+
+  useEffect(() => {
+    const candidate = new URLSearchParams(window.location.search).get("next") || "/chat";
+    if (candidate.startsWith("/") && !candidate.startsWith("//") && !candidate.includes("://")) setNextPath(candidate);
+  }, []);
+
+  const safeNext = () => {
+    return nextPath;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,7 +35,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await login(submittedPassword);
-      router.push("/chat");
+      router.replace(safeNext());
     } catch (error) {
       setError(error instanceof Error ? error.message : "Login failed.");
     } finally {

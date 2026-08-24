@@ -1,7 +1,11 @@
 """Conversation-first APIs for transcript history and trace access."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from sse_starlette.sse import EventSourceResponse
 
 from app.config import settings
 from app.models.chat import Message
@@ -31,6 +35,7 @@ from app.models.conversations import (
 from app.models.settings import ConversationSessionMetadata
 from app.presenters.conversations import (
     present_conversation_branch,
+    present_conversation_event,
     present_conversation_message,
     present_memory_item,
 )
@@ -136,6 +141,41 @@ async def get_conversation_events(conversation_id: str, branch_key: str = Query(
     if response is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return response
+
+
+@router.get("/{conversation_id}/stream")
+async def stream_conversation_events(
+    conversation_id: str,
+    after_sequence: int = Query(default=0, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
+    """Replay durable events after a cursor, then keep the connection warm."""
+    if await conversation_store.get_conversation(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    async def event_generator():
+        cursor = max(after_sequence, int(last_event_id or 0)) if (last_event_id or "").isdigit() else after_sequence
+        while True:
+            events = await conversation_store.list_events_after(
+                conversation_id,
+                after_sequence=cursor,
+                limit=250,
+            )
+            for event in events:
+                cursor = event.sequence
+                payload = present_conversation_event(event).model_dump(mode="json")
+                yield {
+                    "id": str(event.sequence),
+                    "event": "conversation.event",
+                    "data": json.dumps({"type": "event", "event": payload}),
+                }
+            yield {"comment": "keepalive"}
+            await asyncio.sleep(0.25)
+
+    return EventSourceResponse(
+        event_generator(),
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{conversation_id}/messages", response_model=ConversationTurnResponse)

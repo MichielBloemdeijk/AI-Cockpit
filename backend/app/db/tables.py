@@ -25,10 +25,13 @@ class RunKind(str, Enum):
 
 
 class RunStatus(str, Enum):
+    queued = "queued"
     running = "running"
+    paused = "paused"
     completed = "completed"
     failed = "failed"
     interrupted = "interrupted"
+    cancelled = "cancelled"
 
 
 class ActorKind(str, Enum):
@@ -87,6 +90,8 @@ class Conversation(Base):
     mode_hint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     session_metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     workspace_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_primary_voice: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    last_event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -311,11 +316,46 @@ class GeneratedApp(Base):
     lease_conversation: Mapped[Conversation | None] = relationship(foreign_keys=[lease_conversation_id])
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    p256dh: Mapped[str] = mapped_column(Text, nullable=False)
+    auth: Mapped[str] = mapped_column(Text, nullable=False)
+    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (UniqueConstraint("subscription_id", "event_id", name="uq_notification_delivery_subscription_event"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    subscription_id: Mapped[str] = mapped_column(String(36), ForeignKey("push_subscriptions.id", ondelete="CASCADE"), nullable=False)
+    event_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversation_events.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 Index("ix_conversations_updated_at", Conversation.updated_at)
+Index(
+    "uq_conversations_primary_voice",
+    Conversation.is_primary_voice,
+    unique=True,
+    sqlite_where=Conversation.is_primary_voice.is_(True) & Conversation.archived_at.is_(None),
+)
 Index("ix_conversation_runs_conversation_started", ConversationRun.conversation_id, ConversationRun.started_at)
 Index("ix_conversation_runs_status", ConversationRun.status)
 Index("ix_conversation_branches_conversation_created", ConversationBranch.conversation_id, ConversationBranch.created_at)
 Index("ix_conversation_events_conversation_created", ConversationEvent.conversation_id, ConversationEvent.created_at)
+Index("uq_conversation_events_conversation_sequence", ConversationEvent.conversation_id, ConversationEvent.sequence, unique=True)
 Index("ix_conversation_events_run_sequence", ConversationEvent.run_id, ConversationEvent.sequence)
 Index("ix_conversation_events_event_type", ConversationEvent.event_type)
 Index("ix_conversation_messages_conversation_created", ConversationMessage.conversation_id, ConversationMessage.created_at)

@@ -25,7 +25,7 @@ def test_example_environment_is_safe_and_machine_independent() -> None:
     assert values["AUTH_PASSWORD_HASH"] == ""
     assert values["ALLOWED_DIRS"] == ""
     assert values["SESSION_SECRET_KEY"]
-    assert values["TASK_AGENT_MODEL"] == "openai/gpt-5.6-luna"
+    assert values["TASK_AGENT_MODEL"] == "local/gemma-4-12b"
     assert values["AVAILABLE_MODELS"].split(",") == Settings().available_model_list
     assert "Sander" not in (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
@@ -55,4 +55,4 @@ def test_default_models_use_current_openrouter_slugs() -> None:
     assert "openai/gpt-5.6-terra" in default_models
     assert "google/gemini-3.5-flash" in default_models
     assert "anthropic/claude-sonnet-5" in default_models
-    assert Settings.model_fields["task_agent_model"].default == "openai/gpt-5.6-luna"
+    assert Settings.model_fields["task_agent_model"].default == "local/gemma-4-12b"

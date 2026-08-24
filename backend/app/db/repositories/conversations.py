@@ -37,16 +37,39 @@ class ConversationRepository:
         mode_hint: str | None = None,
         session_metadata_json: dict | None = None,
         workspace_path: str | None = None,
+        is_primary_voice: bool = False,
     ) -> Conversation:
         conversation = Conversation(
             title=title,
             mode_hint=mode_hint,
             session_metadata_json=session_metadata_json,
             workspace_path=workspace_path,
+            is_primary_voice=is_primary_voice,
         )
         self.session.add(conversation)
         await self.session.flush()
         return conversation
+
+    async def get_primary_voice_conversation(self) -> Conversation | None:
+        stmt = (
+            select(Conversation)
+            .where(Conversation.is_primary_voice.is_(True))
+            .where(Conversation.archived_at.is_(None))
+            .order_by(Conversation.updated_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def set_primary_voice(self, conversation_id: str, value: bool) -> None:
+        stmt = (
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(is_primary_voice=value, updated_at=utc_now())
+        )
+        result = await self.session.execute(stmt)
+        if result.rowcount != 1:
+            raise ValueError(f"Conversation not found: {conversation_id}")
 
     async def touch_conversation(
         self,
@@ -170,6 +193,9 @@ class ConversationRepository:
     async def get_run(self, run_id: str) -> ConversationRun | None:
         return await self.session.get(ConversationRun, run_id)
 
+    async def get_event(self, event_id: str) -> ConversationEvent | None:
+        return await self.session.get(ConversationEvent, event_id)
+
     async def list_runs(self, conversation_id: str) -> Sequence[ConversationRun]:
         stmt = (
             select(ConversationRun)
@@ -213,6 +239,47 @@ class ConversationRepository:
         )
         await self.session.execute(stmt)
 
+    async def claim_run_for_execution(self, run_id: str) -> bool:
+        """Atomically claim a queued run so cancellation cannot race startup."""
+        stmt = (
+            update(ConversationRun)
+            .where(ConversationRun.id == run_id)
+            .where(ConversationRun.status == RunStatus.queued.value)
+            .values(status=RunStatus.running.value, error=None, finished_at=None)
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.rowcount)
+
+    async def transition_run_status(
+        self,
+        run_id: str,
+        *,
+        expected_statuses: set[str],
+        status: str,
+        error: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> bool:
+        if not expected_statuses:
+            return False
+        stmt = (
+            update(ConversationRun)
+            .where(ConversationRun.id == run_id)
+            .where(ConversationRun.status.in_(sorted(expected_statuses)))
+            .values(status=status, error=error, finished_at=finished_at)
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.rowcount)
+
+    async def cancel_queued_run(self, run_id: str) -> bool:
+        stmt = (
+            update(ConversationRun)
+            .where(ConversationRun.id == run_id)
+            .where(ConversationRun.status == RunStatus.queued.value)
+            .values(status=RunStatus.cancelled.value, error="Task cancelled by user", finished_at=utc_now())
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.rowcount)
+
     async def update_run_metadata(self, run_id: str, metadata_json: dict | None) -> None:
         stmt = (
             update(ConversationRun)
@@ -230,17 +297,30 @@ class ConversationRepository:
         finished_at = utc_now()
         stmt = (
             update(ConversationRun)
-            .where(ConversationRun.status == RunStatus.running.value)
+            .where(ConversationRun.status.in_([RunStatus.running.value, RunStatus.queued.value, RunStatus.paused.value]))
             .values(status=RunStatus.interrupted.value, finished_at=finished_at)
         )
         result = await self.session.execute(stmt)
         return result.rowcount or 0
 
     async def next_event_sequence(self, conversation_id: str) -> int:
-        stmt = select(func.max(ConversationEvent.sequence)).where(ConversationEvent.conversation_id == conversation_id)
-        result = await self.session.execute(stmt)
-        current = result.scalar_one_or_none() or 0
-        return current + 1
+        """Atomically reserve the next cursor for a conversation.
+
+        Event writers run in separate async sessions.  Allocating from a
+        conversation counter prevents concurrent voice/background writes from
+        receiving the same sequence (which would make cursor replay lossy).
+        """
+        update_stmt = (
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(last_event_sequence=Conversation.last_event_sequence + 1)
+        )
+        result = await self.session.execute(update_stmt)
+        if result.rowcount != 1:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+        sequence_stmt = select(Conversation.last_event_sequence).where(Conversation.id == conversation_id)
+        sequence_result = await self.session.execute(sequence_stmt)
+        return int(sequence_result.scalar_one())
 
     async def append_event(
         self,
@@ -345,6 +425,37 @@ class ConversationRepository:
             .where(ConversationEvent.conversation_id == conversation_id)
             .order_by(ConversationEvent.sequence.asc(), ConversationEvent.created_at.asc(), ConversationEvent.id.asc())
             .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def get_latest_event_sequence(self, conversation_id: str) -> int:
+        stmt = select(func.max(ConversationEvent.sequence)).where(ConversationEvent.conversation_id == conversation_id)
+        result = await self.session.execute(stmt)
+        return int(result.scalar_one_or_none() or 0)
+
+    async def list_unfinished_runs(self) -> Sequence[ConversationRun]:
+        stmt = (
+            select(ConversationRun)
+            .where(ConversationRun.status.in_([RunStatus.running.value, RunStatus.queued.value, RunStatus.paused.value]))
+            .order_by(ConversationRun.started_at.asc(), ConversationRun.id.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_events_after(
+        self,
+        conversation_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 250,
+    ) -> Sequence[ConversationEvent]:
+        stmt = (
+            select(ConversationEvent)
+            .where(ConversationEvent.conversation_id == conversation_id)
+            .where(ConversationEvent.sequence > max(0, int(after_sequence)))
+            .order_by(ConversationEvent.sequence.asc())
+            .limit(max(1, min(int(limit), 1000)))
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()

@@ -8,6 +8,7 @@ from app.services.agent_tools import get_agent_tool_definitions
 MAX_TOOL_SNIPPET_CHARS = 4_000
 NATIVE_AGENT_ASK_USER_TOOL = "task_ask_user"
 NATIVE_AGENT_FINALIZE_TOOL = "task_finalize"
+NATIVE_AGENT_DELEGATE_TOOL = "delegate_background_task"
 
 
 def _tool_spec_block() -> str:
@@ -18,8 +19,8 @@ def _tool_spec_block() -> str:
     return "\n".join(lines)
 
 
-def _native_control_tool_definitions() -> list[dict[str, Any]]:
-    return [
+def _native_control_tool_definitions(*, include_delegate: bool = False) -> list[dict[str, Any]]:
+    definitions = [
         {
             "type": "function",
             "function": {
@@ -34,6 +35,35 @@ def _native_control_tool_definitions() -> list[dict[str, Any]]:
                         }
                     },
                     "required": ["question"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": NATIVE_AGENT_DELEGATE_TOOL,
+                "description": (
+                    "Delegate a multi-step, mutating, executable, waiting, or explicitly background goal. "
+                    "The current voice turn ends immediately after the child is queued. Put a short acknowledgement "
+                    "for the user in assistant text and do not duplicate the full task details."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "description": "The complete goal for the background task."},
+                        "notify_policy": {
+                            "type": "string",
+                            "enum": ["important", "completion", "all", "none"],
+                            "description": "When the user should receive an away notification.",
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["normal", "high"],
+                            "description": "Whether completion is important enough for default alerts.",
+                        },
+                    },
+                    "required": ["goal", "notify_policy", "priority"],
                     "additionalProperties": False,
                 },
             },
@@ -62,6 +92,12 @@ def _native_control_tool_definitions() -> list[dict[str, Any]]:
             },
         },
     ]
+    if not include_delegate:
+        definitions = [
+            item for item in definitions
+            if item.get("function", {}).get("name") != NATIVE_AGENT_DELEGATE_TOOL
+        ]
+    return definitions
 
 
 def _extract_string_field(raw_arguments: str, field_name: str) -> str | None:
@@ -153,6 +189,13 @@ def _repair_native_control_tool_arguments(raw_arguments: str, tool_name: str) ->
         if summary:
             return {"summary": summary}
         return None
+    if tool_name == NATIVE_AGENT_DELEGATE_TOOL:
+        goal = _extract_string_field(raw_arguments, "goal")
+        if goal:
+            policy = _extract_string_field(raw_arguments, "notify_policy") or "important"
+            priority = _extract_string_field(raw_arguments, "priority") or "normal"
+            return {"goal": goal, "notify_policy": policy, "priority": priority}
+        return None
     return None
 
 
@@ -234,6 +277,34 @@ def _build_final_action_payload(*, thought: str, summary: str, final_text: str) 
         "thought": emitted_thought,
         "summary": normalized_summary,
         "final_text": normalized_final_text,
+    }
+
+
+def _build_delegate_action_payload(
+    *,
+    thought: str,
+    goal: str,
+    notify_policy: str,
+    priority: str,
+    acknowledgement: str,
+) -> dict[str, Any]:
+    normalized_goal = " ".join(str(goal or "").split()).strip()
+    if not normalized_goal:
+        raise ValueError("Background delegation requires a goal")
+    policy = str(notify_policy or "important").strip().lower()
+    if policy not in {"important", "completion", "all", "none"}:
+        policy = "important"
+    task_priority = "high" if str(priority or "").strip().lower() == "high" else "normal"
+    text = " ".join(str(acknowledgement or "").split()).strip()
+    if not text:
+        text = "I’m on it. I’ll let you know when there’s a useful update."
+    return {
+        "kind": "delegate",
+        "thought": str(thought or "").strip(),
+        "goal": normalized_goal,
+        "notify_policy": policy,
+        "priority": task_priority,
+        "acknowledgement": text,
     }
 
 

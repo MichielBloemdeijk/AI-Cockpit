@@ -1,6 +1,6 @@
 # AI Cockpit
 
-AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, and generated apps. The frontend is a Next.js application, the API is FastAPI, model requests go through OpenRouter, and local state is stored in SQLite.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and an early Jarvis voice surface. The frontend is a Next.js application, the API is FastAPI, and local state is stored in SQLite. OpenRouter remains available as an explicit cloud provider; the voice/task default is a loopback OpenAI-compatible server such as llama.cpp.
 
 This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
@@ -26,7 +26,7 @@ For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Node.js | 20.19+ or 22.13+ | Node.js 22 LTS is recommended |
 | uv | Current | Install with `python -m pip install uv` |
 
-You also need an [OpenRouter](https://openrouter.ai/) API key. Creating a key is free, but the default models are paid and require available credit. You can replace the configured model IDs with models accessible to your account.
+OpenRouter is optional for this branch. The default voice/task model is local and expects llama.cpp (or another OpenAI-compatible server) on `127.0.0.1:8080`.
 
 ### 2. Clone the repository
 
@@ -49,10 +49,13 @@ macOS/Linux:
 cp .env.example .env
 ```
 
-Open `.env` and replace the example OpenRouter key:
+Open `.env` and configure either the local server or the optional OpenRouter key:
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1
+LOCAL_LLM_ALIAS=local/gemma-4-12b
+LOCAL_LLM_MODEL=google/gemma-4-12B-it-qat-q4_0-gguf:Q4_0
 ```
 
 The copied file is safe for localhost development:
@@ -71,7 +74,7 @@ uv sync
 cd ..
 ```
 
-`uv sync` creates `backend/.venv` and installs the locked runtime and development dependencies.
+`uv sync` creates `backend/.venv` and installs the locked runtime and development dependencies. The speech endpoints load `faster-whisper` and `kokoro-onnx` lazily; install those packages separately when you are ready to run local speech inference.
 
 Frontend:
 
@@ -162,7 +165,7 @@ AUTH_PASSWORD_HASH=<generated-bcrypt-hash>
 
 ## Model Configuration and Cost
 
-The defaults are ordinary paid OpenRouter models. Model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) if a request returns a model-not-found or payment error.
+Voice and multi-step task turns default to the local provider. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
 
 The main settings are:
 
@@ -172,14 +175,45 @@ The main settings are:
 | `AVAILABLE_MODELS` | GPT-5.6 Luna/Terra/Sol, Gemini 3.5 Flash, Claude Sonnet/Opus 5, Grok 4.5 | Options shown in the model pickers |
 | `COUNCIL_MODELS` | GPT-5.6 Terra, Gemini 3.5 Flash, Claude Sonnet 5 | Models queried in Council mode |
 | `SYNTHESIZER_MODEL` | Claude Sonnet 5 | Combines Council responses |
-| `TASK_AGENT_MODEL` | GPT-5.6 Luna | Default chat and multi-step Agent model; must support native tool calls |
+| `LOCAL_LLM_ENABLED` | true | Enable the loopback OpenAI-compatible provider |
+| `LOCAL_LLM_BASE_URL` | http://127.0.0.1:8080/v1 | llama.cpp-compatible local endpoint |
+| `LOCAL_LLM_ALIAS` | local/gemma-4-12b | Public model alias used by AI Cockpit |
+| `LOCAL_LLM_MODEL` | Gemma 4 Q4 checkpoint ID | Upstream model ID sent to the local server |
+| `TASK_AGENT_MODEL` | local/gemma-4-12b | Default chat and multi-step Agent model; must support native tool calls |
+| `VOICE_STT_MODEL` | openai/whisper-large-v3-turbo | Local faster-whisper checkpoint |
+| `VOICE_TTS_VOICE` | af_heart | Kokoro voice used for speech responses |
+| `VOICE_CLOUD_MODEL` | openai/gpt-5.6-terra | Model used only when a turn explicitly requests cloud |
 | `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
 | `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
 | `ALLOWED_DIRS` | blank | Optional comma-separated absolute directories |
 | `TAILSCALE_HOST` | blank | Optional fixed Tailscale IP or MagicDNS hostname; normal same-origin tailnet access requires no per-device list |
 | `NTFY_TOPIC` | blank | Optional ntfy.sh topic |
+| `WEB_PUSH_ENABLED` | false | Enable authenticated Web Push delivery |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | blank | VAPID credentials for Web Push |
+| `SESSION_COOKIE_SECURE` | false | Set true when serving the app over HTTPS |
 
 Defaults for future conversations can also be changed from the Settings page after login.
+
+## Jarvis voice POC
+
+The `/voice` route is the Jarvis POC surface. It provides local browser VAD, wake-word extraction, local STT/TTS handoff, a persistent server-owned voice conversation, durable event replay, background task chips and controls, explicit cloud-next-turn routing, installable PWA support, and optional Web Push away notifications. Long-running or mutating work is delegated independently, so the phone can accept another turn while the PC continues working.
+
+Install the optional backend voice and notification dependencies from `backend` before testing the full local stack:
+
+```powershell
+uv sync --group voice --group notifications
+```
+
+Start llama.cpp with the Gemma checkpoint bound to loopback and a single slot, for example:
+
+```powershell
+llama-server.exe `
+  -m .\models\gemma-4-12b-it-qat-q4_0.gguf `
+  --host 127.0.0.1 --port 8080 `
+  -c 16384 -ngl 99 --jinja -np 1
+```
+
+Then open [http://localhost:3000/voice](http://localhost:3000/voice), or the HTTPS Tailscale Serve URL on the phone. Click Arm to enable the microphone; say “Jarvis” followed by a command, or use the text fallback. Click Enable alerts only after configuring VAPID keys. The health cards distinguish a missing optional speech dependency from an unavailable local model; no cloud fallback is performed automatically. Use “Use cloud for this…” or the Cloud next turn control to route one explicit turn to the configured cloud model.
 
 ## Phone Access with Tailscale
 
@@ -298,3 +332,4 @@ Interactive API details are available from `/docs` while the backend is running.
 - Agent mode can execute tools and write within configured conversation/app workspaces. Review model-produced changes before relying on them.
 - Generated apps do not yet have browser-driven verification and automatic repair loops.
 - Interrupted runs are persisted but are not automatically resumed after a backend restart.
+Jarvis voice POC implementation and verification contract: [docs/JARVIS_VOICE_POC.md](docs/JARVIS_VOICE_POC.md).

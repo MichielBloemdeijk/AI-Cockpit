@@ -26,9 +26,36 @@ class Settings(BaseSettings):
     openrouter_prompt_cache_ttl: Literal["5m", "1h"] = "5m"
     openrouter_explicit_cache_breakpoint_min_bytes: int = 4096
 
+    # Local OpenAI-compatible model server (for example llama.cpp)
+    local_llm_enabled: bool = True
+    local_llm_base_url: str = "http://127.0.0.1:8080/v1"
+    local_llm_api_key: str = "local"
+    local_llm_alias: str = "local/gemma-4-12b"
+    local_llm_model: str = "google/gemma-4-12B-it-qat-q4_0-gguf:Q4_0"
+    local_llm_context_size: int = 16384
+    local_llm_max_concurrency: int = 1
+
+    # Voice pipeline (optional local dependencies are loaded lazily)
+    voice_enabled: bool = True
+    voice_wake_word: str = "jarvis"
+    voice_stt_model: str = "openai/whisper-large-v3-turbo"
+    voice_stt_device: str = "cuda"
+    voice_stt_compute_type: str = "int8_float16"
+    voice_stt_language: str = "en"
+    voice_stt_beam_size: int = 1
+    voice_tts_enabled: bool = True
+    voice_tts_model_path: str = "models/kokoro-v1.0.onnx"
+    voice_tts_voices_path: str = "models/voices-v1.0.bin"
+    voice_tts_voice: str = "af_heart"
+    voice_tts_speed: float = 1.05
+    voice_cloud_model: str = "openai/gpt-5.6-terra"
+    voice_max_segment_seconds: float = 30.0
+    voice_max_upload_bytes: int = 4_000_000
+
     # Auth
     auth_password_hash: str = ""
     session_secret_key: str = "dev-secret-change-me"
+    session_cookie_secure: bool = False
 
     # LLM Council
     available_models: str = (
@@ -46,8 +73,9 @@ class Settings(BaseSettings):
         "anthropic/claude-sonnet-5"
     )
     synthesizer_model: str = "anthropic/claude-sonnet-5"
-    task_agent_model: str = "openai/gpt-5.6-luna"
+    task_agent_model: str = "local/gemma-4-12b"
     native_tool_model_prefixes: str = (
+        "local/,"
         "moonshotai/kimi-k2.6,"
         "anthropic/claude,"
         "openai/gpt-5,"
@@ -61,6 +89,11 @@ class Settings(BaseSettings):
 
     # Notifications
     ntfy_topic: str = ""
+    web_push_enabled: bool = False
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = "mailto:admin@localhost"
+    notification_retry_limit: int = 3
 
     # Tailscale
     tailscale_host: str = ""
@@ -96,7 +129,10 @@ class Settings(BaseSettings):
 
     @property
     def available_model_list(self) -> List[str]:
-        return [m.strip() for m in self.available_models.split(",") if m.strip()]
+        values = [m.strip() for m in self.available_models.split(",") if m.strip()]
+        if self.local_llm_enabled and self.local_llm_alias.strip():
+            values.insert(0, self.local_llm_alias.strip())
+        return list(dict.fromkeys(values))
 
     @property
     def native_tool_model_prefix_list(self) -> List[str]:

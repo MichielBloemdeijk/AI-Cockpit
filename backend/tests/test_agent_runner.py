@@ -31,6 +31,8 @@ from app.services.agent_tools import run_shell_command
 from app.services.agent_tools import run_workspace_search
 from app.services.app_verifier import AppVerificationInfrastructureError
 from app.services.conversation_store import conversation_store
+from app.services.run_lifecycle import run_lifecycle
+from app.db.repositories.conversations import ConversationRepository
 
 
 def test_finalize_tool_uses_visible_assistant_text_instead_of_a_result_argument():
@@ -48,6 +50,140 @@ def test_finalize_tool_uses_visible_assistant_text_instead_of_a_result_argument(
 def test_native_tool_turns_have_enough_output_budget_for_source_files():
     assert llm_module.native_decision_max_tokens("openai/gpt-5.6-luna") == 8192
     assert llm_module.native_decision_attempt_max_tokens("openai/gpt-5.6-luna", 1) == 16_384
+
+
+@pytest.mark.asyncio
+async def test_background_question_uses_requires_input_as_its_only_voice_projection() -> None:
+    conversation, run = await _create_agent_run()
+    metadata = dict((run.metadata_json or {}))
+    metadata.update({"execution_mode": "background", "voice_response": False, "title": "Background task"})
+    await conversation_store.update_run_metadata(run.id, metadata)
+
+    await agent_run_support_module._pause_for_question(
+        conversation_id=conversation.id,
+        run_id=run.id,
+        metadata=metadata,
+        question="Which environment should I use?",
+    )
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    question_event = next(event for event in events if event.event_type == "agent.question.asked")
+    requires_input = next(event for event in events if event.event_type == "task.requires_input")
+    assert "voice_delivery" not in (question_event.payload_json or {})
+    assert (requires_input.payload_json or {})["voice_delivery"]["speak"] is True
+    assert any(
+        event.event_type == "chat.timeline.item.committed"
+        and (event.payload_json or {}).get("kind") == "question"
+        and (event.payload_json or {}).get("content") == "Which environment should I use?"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_voice_interactive_question_remains_directly_speakable() -> None:
+    conversation, run = await _create_agent_run()
+    metadata = dict((run.metadata_json or {}))
+    metadata.update({"execution_mode": "voice_interactive", "voice_response": True})
+    await conversation_store.update_run_metadata(run.id, metadata)
+
+    await agent_run_support_module._pause_for_question(
+        conversation_id=conversation.id,
+        run_id=run.id,
+        metadata=metadata,
+        question="What should I call it?",
+    )
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    question_event = next(event for event in events if event.event_type == "agent.question.asked")
+    assert (question_event.payload_json or {})["voice_delivery"]["speak"] is True
+    assert not any(event.event_type == "task.requires_input" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_model_decision_prevents_delegation(monkeypatch) -> None:
+    conversation, run = await _create_agent_run()
+    cancel_event = asyncio.Event()
+
+    async def _fake_stream(messages, model, **kwargs):
+        cancel_event.set()
+        return ModelResponse(
+            model=model,
+            content="I'll take care of that in the background.",
+            usage=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_delegate",
+                    function=ToolCallFunction(
+                        name="delegate_background_task",
+                        arguments=json.dumps({"goal": "Do not start this", "notify_policy": "important", "priority": "normal"}),
+                    ),
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_stream)
+
+    await agent_runner_module.agent_runner.continue_run(run.id, cancel_event=cancel_event)
+
+    refreshed = await conversation_store.get_run(run.id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    assert len(await conversation_store.list_runs(conversation.id)) == 1
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    assert not any(event.event_type in {"task.queued", "agent.run.completed"} for event in events)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_cannot_be_overwritten_by_late_completion() -> None:
+    conversation, run = await _create_agent_run()
+    assert (await run_lifecycle.cancel(run.id)).changed is True
+
+    completed = await agent_run_support_module._complete_run(
+        conversation_id=conversation.id,
+        run_id=run.id,
+        metadata=dict(run.metadata_json or {}),
+        summary="Too late",
+        final_text="This must not be delivered.",
+        final_activity_id=f"assistant:{run.id}:late:text",
+    )
+
+    assert completed is False
+    refreshed = await conversation_store.get_run(run.id)
+    assert refreshed is not None
+    assert refreshed.status == "cancelled"
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    assert not any(event.event_type == "agent.run.completed" for event in events)
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    assert not any(message.content == "This must not be delivered." for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_completion_projection_failure_rolls_back_terminal_status(monkeypatch) -> None:
+    conversation, run = await _create_agent_run()
+
+    async def fail_artifact(self, **kwargs):
+        raise RuntimeError("artifact write failed")
+
+    monkeypatch.setattr(ConversationRepository, "create_artifact", fail_artifact)
+
+    with pytest.raises(RuntimeError, match="artifact write failed"):
+        await agent_run_support_module._complete_run(
+            conversation_id=conversation.id,
+            run_id=run.id,
+            metadata=dict(run.metadata_json or {}),
+            summary="Done",
+            final_text="Durable result",
+            final_activity_id=f"assistant:{run.id}:atomic:text",
+        )
+
+    refreshed = await conversation_store.get_run(run.id)
+    assert refreshed is not None
+    assert refreshed.status == "running"
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    assert not any(event.event_type in {"agent.run.completed", "conversation.assistant.message.completed"} for event in events)
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    assert not any(message.content == "Durable result" for message in messages)
 
 
 @pytest.mark.asyncio

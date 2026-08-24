@@ -12,7 +12,7 @@ This document describes the current architecture of AI Cockpit as it exists in t
 
 AI Cockpit is a locally hosted personal AI workspace built around these active capabilities:
 
-- authenticated chat against OpenRouter-backed models
+- authenticated chat against provider profiles for the loopback local OpenAI-compatible server or explicit OpenRouter cloud turns
 - council mode that fans a prompt out to multiple models and synthesizes the result
 - durable conversation history with runs, events, transcript messages, artifacts, branches, archive state, and reviewed memory items
 - configurable defaults for new chat sessions, including tool flags and council settings
@@ -21,6 +21,7 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
 - chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
+- a Jarvis voice PWA with browser VAD, local STT/TTS endpoints, a server-owned primary voice conversation, durable background-task runs, replayable event cursors, and optional Web Push delivery
 
 ## Required App-Builder Direction
 
@@ -33,7 +34,7 @@ The required product direction for generated apps is a chat-resident agent loop:
 5. the agent reads and writes files inside the app write roots from the same chat session
 6. the agent returns to the user in that same chat thread when the work is complete
 
-This is now the primary control plane for interactive generated-app work. Background runs remain intentionally disabled in the current product surface.
+This remains the primary control plane for interactive generated-app work. The `/voice` surface can also create independently supervised background task runs; those runs continue after an HTTP/SSE observer disconnects and are not automatically resumed after a process restart.
 
 The product is currently split into a FastAPI backend, a Next.js frontend, a local SQLite database for durable conversation state, and a file-backed knowledge directory.
 
@@ -41,13 +42,14 @@ The product is currently split into a FastAPI backend, a Next.js frontend, a loc
 Browser / Phone PWA
         |
         v
-Next.js frontend  ->  FastAPI backend  ->  OpenRouter
+Next.js frontend  ->  FastAPI backend  ->  loopback llama.cpp / explicit OpenRouter
                           |
                           +-> SQLite conversation store
                           |
                           +-> per-conversation workspace folders
                           |
                           +-> knowledge/notes markdown files
+                          +-> optional VAPID Web Push service
 ```
 
 ## Runtime Topology
@@ -85,7 +87,8 @@ On startup it:
 
 1. ensures the database exists and migrations are applied
 2. initializes the async SQLAlchemy engine
-3. marks any `running` conversation runs as `interrupted`
+3. marks any `running` or `queued` conversation runs as `interrupted`, preserving an interruption event and assistant projection
+4. starts local speech-model warmup and retries queued Web Push deliveries
 
 It then registers these active routers:
 
@@ -94,6 +97,8 @@ It then registers these active routers:
 - `conversations` for durable transcript, event, artifact, branch, tool, and memory operations
 - `knowledge` for review queue and approved knowledge APIs
 - `apps` for the generated app registry and runtime app metadata
+- `voice` for local speech, the primary voice conversation, asynchronous turns, and background-task control
+- `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
 
 ### Configuration
 
@@ -111,6 +116,7 @@ Key configuration areas:
 - conversation compaction, microcompaction, cold-cache pruning, and heavy-content guardrails
 - allowed directories for future file tooling
 - Tailscale host and notification settings
+- local LLM loopback URL/model alias, voice model paths, VAD/STT/TTS limits, and VAPID Web Push credentials
 - knowledge notes and preferences paths
 
 ### API Surface
@@ -169,6 +175,12 @@ Implemented responsibilities:
 - list approved knowledge documents from the file-backed knowledge layer
 - approve or reject memory items independently of the conversation detail page
 - delete approved knowledge and tombstone the backing memory item metadata
+
+#### `backend/app/api/voice.py` and `backend/app/api/notifications.py`
+
+The voice API keeps one server-recognizable `mode_hint="voice"` conversation marked as the active primary. Voice turns are accepted as queued runs and owned by `RunSupervisor`; the HTTP request and event-stream observer can disconnect without cancelling work. The event stream replays after a monotonic conversation cursor. Background task completion, failure, cancellation, and restart interruption are persisted as task events plus assistant messages, which lets the frontend speak them in the same conversation.
+
+The notification API stores browser subscriptions and deduplicated deliveries. Push payloads reference the durable event ID and the `/voice` deep link. Delivery is attempted only for requested, important, failed, interrupted, or explicitly tested updates; disabled or missing VAPID configuration never causes a cloud fallback.
 
 ### Service Layer
 

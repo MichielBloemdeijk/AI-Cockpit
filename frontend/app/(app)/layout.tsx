@@ -10,7 +10,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     checkAuth().then((ok) => {
-      if (!ok) router.push("/login");
+      if (!ok) {
+        const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        router.replace(`/login?next=${encodeURIComponent(next)}`);
+      }
     });
   }, [router]);
 

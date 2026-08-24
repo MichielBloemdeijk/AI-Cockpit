@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
+from app.config import settings
 from app.services.auth import (
     SESSION_COOKIE_NAME,
     SESSION_MAX_AGE,
@@ -30,7 +31,7 @@ async def login(req: LoginRequest, response: Response):
         max_age=SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=False,  # Set True when using HTTPS (Tailscale)
+        secure=settings.session_cookie_secure,
     )
     return {"status": "ok"}
 

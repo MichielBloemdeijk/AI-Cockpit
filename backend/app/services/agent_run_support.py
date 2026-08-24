@@ -28,6 +28,7 @@ from app.services.conversation_timeline import (
     set_live_item,
 )
 from app.services.llm import ensure_prompt_metrics
+from app.services.voice import sanitize_voice_response
 
 AGENT_METADATA_CHECKPOINT_INTERVAL_SECONDS = 5
 AGENT_METADATA_CHECKPOINT_STEP_INTERVAL = 10
@@ -462,9 +463,18 @@ async def _pause_for_question(
     kind: str = "question",
     current_action: str = "Waiting for user input",
     checkpoint_state: AgentMetadataCheckpointState | None = None,
-) -> None:
+) -> bool:
     if not question:
         raise ValueError("Question action requires a question")
+    transitioned = await conversation_store.transition_run_status(
+        run_id,
+        expected_statuses={"running"},
+        status="paused",
+        error=None,
+        finished_at=None,
+    )
+    if transitioned is None:
+        return False
     pending_question = {
         "id": str(uuid4()),
         "kind": kind,
@@ -476,13 +486,20 @@ async def _pause_for_question(
     metadata["task_status"] = "paused"
     metadata["current_action"] = current_action
     await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-    await conversation_store.update_run_status(run_id, status="paused", error=None, finished_at=None)
+    question_payload = dict(pending_question)
+    if metadata.get("voice_response") or metadata.get("execution_mode") == "voice_interactive":
+        question_payload["voice_delivery"] = {
+            "speak": True,
+            "kind": "question",
+            "speech_text": question,
+            "importance": "high" if kind != "question" else "normal",
+        }
     question_event = await conversation_store.append_event(
         conversation_id,
         run_id=run_id,
         actor_kind="assistant",
         event_type="agent.question.asked",
-        payload_json=pending_question,
+        payload_json=question_payload,
         branch_key=_metadata_branch_key(metadata),
     )
     await conversation_store.append_timeline_item(
@@ -492,7 +509,30 @@ async def _pause_for_question(
         branch_key=_metadata_branch_key(metadata),
         parent_event_id=question_event.id,
     )
+    current_run = await conversation_store.get_run(run_id)
+    if current_run is not None and metadata.get("execution_mode") == "background":
+        requires_input = await conversation_store.append_event_with_assistant_message(
+            conversation_id,
+            run_id=run_id,
+            event_type="task.requires_input",
+            content=question,
+            importance="high",
+            branch_key=_metadata_branch_key(metadata),
+            payload_json={
+                **pending_question,
+                "task_run_id": run_id,
+                "title": metadata.get("title") or "Background task",
+                "summary": question,
+                "speech_text": question,
+                "notify_policy": metadata.get("notify_policy", "important"),
+                "requested_notification": bool(metadata.get("requested_notification")),
+                "status": "paused",
+            },
+        )
+        from app.services.notifications import notify_event
+        await notify_event(requires_input[0].id)
     await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
+    return True
 
 
 async def _handle_tool_action(
@@ -748,9 +788,14 @@ async def _complete_run(
     final_text: str,
     final_activity_id: str,
     checkpoint_state: AgentMetadataCheckpointState | None = None,
-) -> None:
+) -> bool:
+    if metadata.get("voice_response"):
+        final_text = sanitize_voice_response(final_text)
+        summary = sanitize_voice_response(summary or final_text)
     final_summary = summary or final_text
+    final_text = final_text or final_summary
     run_summary = _build_run_summary(metadata, final_summary)
+    await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
     metadata["final_summary"] = final_summary
     metadata["result"] = {"output": final_text}
     metadata["run_summary"] = run_summary
@@ -758,33 +803,24 @@ async def _complete_run(
     metadata["pending_question"] = None
     metadata["current_action"] = "Completed"
     metadata["updated_at"] = _iso_now()
-    await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
-    await conversation_store.complete_message(
+    importance = "high" if str(metadata.get("task_priority")) == "high" else "normal"
+    completion_event = await conversation_store.complete_agent_run(
         conversation_id,
         run_id=run_id,
-        role="assistant",
-        content=final_text,
-        actor_kind="assistant",
-        event_type="conversation.assistant.message.completed",
-        author_label="agent",
-        branch_key=_metadata_branch_key(metadata),
-        timeline_item_id=final_activity_id,
+        metadata_json=_serialize_agent_metadata(metadata),
+        final_text=final_text,
+        final_summary=final_summary,
+        run_summary=run_summary,
+        final_activity_id=final_activity_id,
+        background=metadata.get("execution_mode") == "background",
+        importance=importance,
     )
-    await conversation_store.append_event(
-        conversation_id,
-        run_id=run_id,
-        actor_kind="assistant",
-        event_type="agent.run.completed",
-        payload_json={"summary": final_summary, "run_summary": run_summary},
-        branch_key=_metadata_branch_key(metadata),
-    )
-    await conversation_store.attach_artifact(
-        conversation_id,
-        run_id=run_id,
-        artifact_type="agent.run.summary",
-        mime_type="application/json",
-        content_json=run_summary,
-    )
+    if completion_event is None:
+        return False
+    if metadata.get("execution_mode") == "background":
+        from app.services.notifications import notify_event
+
+        await notify_event(completion_event.id)
     app_verification = metadata.get("app_verification") if isinstance(metadata.get("app_verification"), dict) else {}
     verification_passed = app_verification.get("verification_status") == "passed"
     await _sync_bound_app_state(
@@ -795,8 +831,7 @@ async def _complete_run(
         verification_status="passed" if verification_passed else "not_started",
         last_error=None,
     )
-    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-    await conversation_store.mark_run_completed(run_id)
+    return True
 
 
 async def _fail_run(
@@ -806,20 +841,22 @@ async def _fail_run(
     error: str,
     checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> None:
+    await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
     metadata["task_status"] = "failed"
     metadata["error"] = error
     metadata["current_action"] = "Failed"
-    await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
-    await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-    await conversation_store.append_event(
+    failure_text = "The local task brain failed on that turn. I did not switch to cloud automatically."
+    failure_event = await conversation_store.fail_agent_run(
         conversation_id,
         run_id=run_id,
-        actor_kind="system",
-        event_type="agent.run.failed",
-        payload_json={"error": error},
-        branch_key=_metadata_branch_key(metadata),
+        metadata_json=_serialize_agent_metadata(metadata),
+        error=error,
+        voice_failure_text=failure_text,
     )
-    await conversation_store.mark_run_failed(run_id, error)
+    if failure_event is not None and metadata.get("execution_mode") == "background":
+        from app.services.notifications import notify_event
+
+        await notify_event(failure_event.id)
 
 
 async def _cancel_run(
@@ -832,12 +869,9 @@ async def _cancel_run(
     metadata["current_action"] = "Cancelled"
     await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
     await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-    await conversation_store.append_event(
-        conversation_id,
-        run_id=run_id,
-        actor_kind="system",
-        event_type="agent.run.failed",
-        payload_json={"error": "Task cancelled by user"},
-        branch_key=_metadata_branch_key(metadata),
-    )
-    await conversation_store.update_run_status(run_id, status="cancelled", error="Task cancelled by user", finished_at=_utc_now())
+    # Cancellation can race with the HTTP control path and the supervisor.  The
+    # lifecycle service owns the conditional state transition and its durable
+    # projection so only the winner emits a terminal event/message.
+    from app.services.run_lifecycle import run_lifecycle
+
+    await run_lifecycle.cancel(run_id)

@@ -19,6 +19,7 @@ from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import EventRecord, MessageRecord, RunRecord, conversation_store
 from app.services.conversation_timeline import TIMELINE_ITEM_EVENT_TYPE
 from app.services.conversation_workspace import MAIN_BRANCH_KEY
+from app.services.run_supervisor import run_supervisor
 from app.services.llm import PromptSegment, aggregate_usage, chat_completion, chat_completion_stream, ensure_prompt_metrics
 
 
@@ -265,8 +266,9 @@ class ChatOrchestrator:
         conversation_id: str,
         goal: str,
         session_metadata: ConversationSessionMetadata,
+        model_override: str | None = None,
     ) -> dict[str, object]:
-        task_agent_model = await chat_settings_service.get_task_agent_model()
+        task_agent_model = model_override or await chat_settings_service.get_task_agent_model()
         conversation = await conversation_store.get_conversation(conversation_id)
         workspace_path = conversation.workspace_path if conversation and conversation.workspace_path else ".cockpit/conversations"
         context = build_tool_context(conversation_id, workspace_path)
@@ -448,6 +450,7 @@ class ChatOrchestrator:
         metadata_json: dict | None = None,
         branch_key: str = MAIN_BRANCH_KEY,
         parent_event_id: str | None = None,
+        status: str = "running",
     ) -> PreparedTurn:
         conversation = await conversation_store.get_conversation(conversation_id) if conversation_id else None
         if conversation is None:
@@ -459,6 +462,7 @@ class ChatOrchestrator:
         run = await conversation_store.start_run(
             conversation.id,
             kind=run_kind,
+            status=status,
             metadata_json={**(metadata_json or {}), "branch_key": branch_key},
         )
         user_message = _latest_user_message(messages)
@@ -473,6 +477,47 @@ class ChatOrchestrator:
             conversation_id=conversation.id,
             run=run,
             session_metadata=session_metadata,
+        )
+
+    async def prepare_voice_turn(
+        self,
+        *,
+        conversation_id: str,
+        content: str,
+        model: str,
+        requested_notification: bool = False,
+    ) -> PreparedTurn:
+        conversation = await conversation_store.get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError("Voice conversation not found")
+        defaults = await chat_settings_service.get_defaults()
+        session_metadata = chat_settings_service.build_requested_metadata(
+            defaults=defaults,
+            session_metadata=None,
+            council_mode=False,
+            model=model,
+        )
+        metadata = await self._build_agent_metadata(
+            conversation_id=conversation_id,
+            goal=content,
+            session_metadata=session_metadata,
+            model_override=model,
+        )
+        metadata.update(
+            {
+                "execution_mode": "voice_interactive",
+                "llm_priority": "interactive",
+                "voice_response": True,
+                "requested_notification": bool(requested_notification),
+            }
+        )
+        return await self.prepare_turn(
+            messages=[Message(role="user", content=content)],
+            conversation_id=conversation_id,
+            run_kind="assistant",
+            session_metadata=session_metadata,
+            metadata_json=metadata,
+            status="queued",
         )
 
     async def _resolve_session_metadata(
@@ -529,7 +574,7 @@ class ChatOrchestrator:
             continue_run_kwargs = {}
             if "stream_callback" in inspect.signature(agent_runner.continue_run).parameters:
                 continue_run_kwargs["stream_callback"] = _emit_stream_update
-            run_task = asyncio.create_task(agent_runner.continue_run(prepared.run.id, **continue_run_kwargs))
+            run_task = run_supervisor.start(prepared.run.id, runner=agent_runner, **continue_run_kwargs)
             last_event_sequence = 0
 
             async def _drain_run_events() -> AsyncIterator[dict]:
@@ -644,7 +689,7 @@ class ChatOrchestrator:
         )
         error_text: str | None = None
         try:
-            await agent_runner.continue_run(prepared.run.id)
+            await asyncio.shield(run_supervisor.start(prepared.run.id, runner=agent_runner))
         except Exception as exc:
             error_text = str(exc) or "Agent run failed."
 

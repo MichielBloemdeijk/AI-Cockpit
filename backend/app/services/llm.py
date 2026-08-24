@@ -1,7 +1,9 @@
-"""LLM service: single-model calls + council mode via OpenRouter."""
+"""Provider-neutral OpenAI-compatible LLM service."""
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -66,6 +68,55 @@ class _PromptSessionState:
 
 _PROMPT_SESSION_STATES: dict[str, _PromptSessionState] = {}
 _PROMPT_SESSION_STATE_LIMIT = 256
+_CURRENT_REQUEST_MODEL: ContextVar[str | None] = ContextVar("current_llm_request_model", default=None)
+
+
+class LocalLLMPriorityGate:
+    """Serialize local generations while letting interactive turns jump the queue."""
+
+    def __init__(self, max_concurrency: int = 1) -> None:
+        self.max_concurrency = max(1, int(max_concurrency or 1))
+        self._condition = asyncio.Condition()
+        self._active = 0
+        self._sequence = 0
+        self._waiters: list[tuple[int, int, asyncio.Event]] = []
+
+    @staticmethod
+    def _priority_rank(priority: str) -> int:
+        return 0 if str(priority or "").strip().lower() in {"interactive", "voice", "urgent"} else 1
+
+    @asynccontextmanager
+    async def slot(self, priority: str = "interactive"):
+        waiter = asyncio.Event()
+        entry: tuple[int, int, asyncio.Event] | None = None
+        acquired = False
+        async with self._condition:
+            entry = (self._priority_rank(priority), self._sequence, waiter)
+            self._sequence += 1
+            self._waiters.append(entry)
+            self._waiters.sort(key=lambda item: (item[0], item[1]))
+            try:
+                while self._active >= self.max_concurrency or self._waiters[0][2] is not waiter:
+                    await self._condition.wait()
+                self._waiters.pop(0)
+                self._active += 1
+                acquired = True
+            except BaseException:
+                if entry in self._waiters:
+                    self._waiters.remove(entry)
+                self._condition.notify_all()
+                raise
+
+        try:
+            yield
+        finally:
+            if acquired:
+                async with self._condition:
+                    self._active -= 1
+                    self._condition.notify_all()
+
+
+_LOCAL_LLM_PRIORITY_GATE = LocalLLMPriorityGate(settings.local_llm_max_concurrency)
 
 
 def _prompt_content_chars(messages: List[Message]) -> int:
@@ -526,6 +577,23 @@ def model_provider_prefix(model: str) -> str:
     return prefix.strip().lower()
 
 
+def is_local_model(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    alias = settings.local_llm_alias.strip().lower()
+    return bool(alias and normalized == alias) or normalized.startswith("local/")
+
+
+def resolve_upstream_model(model: str) -> str:
+    """Map a public model alias to the ID expected by its provider."""
+    if is_local_model(model):
+        return settings.local_llm_model
+    return model
+
+
+def provider_label(model: str) -> str:
+    return "local model server" if is_local_model(model) else "OpenRouter"
+
+
 def supports_native_tool_calls(model: str) -> bool:
     normalized = str(model or "").strip().lower()
     return any(normalized.startswith(prefix) for prefix in settings.native_tool_model_prefix_list)
@@ -556,17 +624,23 @@ def use_streaming_native_decision(model: str) -> bool:
 
 
 def native_decision_max_tokens(model: str) -> int:
+    if is_local_model(model):
+        return 1024
     return 8192
 
 
 def native_decision_attempt_max_tokens(model: str, attempt: int) -> int:
     base = native_decision_max_tokens(model)
+    if is_local_model(model):
+        return base
     if attempt <= 0:
         return base
     return max(base * 2, 16_384)
 
 
 def resolve_prompt_cache_policy(model: str) -> PromptCachePolicy:
+    if is_local_model(model):
+        return PromptCachePolicy(strategy="disabled")
     if not settings.openrouter_prompt_caching_enabled:
         return PromptCachePolicy(strategy="disabled")
 
@@ -587,6 +661,18 @@ def resolve_prompt_cache_policy(model: str) -> PromptCachePolicy:
 
 
 def _build_client() -> httpx.AsyncClient:
+    model = _CURRENT_REQUEST_MODEL.get()
+    if model and is_local_model(model):
+        if not settings.local_llm_enabled:
+            raise RuntimeError("The local LLM provider is disabled")
+        return httpx.AsyncClient(
+            base_url=settings.local_llm_base_url,
+            headers={
+                "Authorization": f"Bearer {settings.local_llm_api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        )
     return httpx.AsyncClient(
         base_url=settings.openrouter_base_url,
         headers={
@@ -596,6 +682,21 @@ def _build_client() -> httpx.AsyncClient:
         },
         timeout=httpx.Timeout(120.0, connect=10.0),
     )
+
+
+@asynccontextmanager
+async def _model_client(model: str, *, priority: str = "interactive"):
+    token = _CURRENT_REQUEST_MODEL.set(model)
+    try:
+        if is_local_model(model):
+            async with _LOCAL_LLM_PRIORITY_GATE.slot(priority):
+                async with _build_client() as client:
+                    yield client
+        else:
+            async with _build_client() as client:
+                yield client
+    finally:
+        _CURRENT_REQUEST_MODEL.reset(token)
 
 
 def aggregate_usage(usages: list[dict[str, Any] | None]) -> dict[str, Any] | None:
@@ -675,7 +776,10 @@ def _build_chat_completion_payload(
     stream: bool = False,
 ) -> dict[str, Any]:
     payload = {
-        "model": model,
+        # The public alias is useful to the rest of AI-Cockpit, but providers
+        # receive the concrete model identifier they expose.  This keeps the
+        # local llama.cpp alias stable even when its checkpoint changes.
+        "model": resolve_upstream_model(model),
         "messages": rendered_messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -858,6 +962,7 @@ async def chat_completion(
     session_id: str | None = None,
     prompt_segments: list[PromptSegment] | None = None,
     request_overrides: dict[str, Any] | None = None,
+    priority: str = "interactive",
 ) -> ModelResponse:
     """Single non-streaming chat completion."""
     cache_policy = resolve_prompt_cache_policy(model)
@@ -875,7 +980,7 @@ async def chat_completion(
         request_overrides=request_overrides,
     )
     retry_count = 0
-    async with _build_client() as client:
+    async with _model_client(model, priority=priority) as client:
         for attempt in range(settings.llm_transport_retry_attempts + 1):
             try:
                 resp = await client.post("/chat/completions", json=payload)
@@ -888,13 +993,13 @@ async def chat_completion(
                 if not content and not tool_calls and not reasoning:
                     if attempt < settings.llm_transport_retry_attempts:
                         retry_count += 1
-                        logger.warning("Retrying OpenRouter empty-content response for model %s", model)
+                        logger.warning("Retrying %s empty-content response for model %s", provider_label(model), model)
                         await asyncio.sleep(_retry_delay_seconds(attempt))
                         continue
                     return ModelResponse(
                         model=model,
                         content="",
-                        error="OpenRouter returned empty message content",
+                        error=f"{provider_label(model)} returned empty message content",
                         prompt_metrics=build_prompt_metrics(
                             messages=messages,
                             model=model,
@@ -928,10 +1033,10 @@ async def chat_completion(
             except httpx.HTTPStatusError as e:
                 if attempt < settings.llm_transport_retry_attempts and _is_retryable_http_status(e.response.status_code):
                     retry_count += 1
-                    logger.warning("Retrying OpenRouter HTTP error %s for model %s", e.response.status_code, model)
+                    logger.warning("Retrying %s HTTP error %s for model %s", provider_label(model), e.response.status_code, model)
                     await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
-                logger.error("OpenRouter HTTP error %s: %s", e.response.status_code, e.response.text)
+                logger.error("%s HTTP error %s: %s", provider_label(model), e.response.status_code, e.response.text)
                 error_text = str(e)
                 response_text = (e.response.text or "").strip()
                 if response_text:
@@ -956,7 +1061,7 @@ async def chat_completion(
                     logger.warning("Retrying transport error for model %s: %s", model, e)
                     await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
-                logger.error("OpenRouter transport error for model %s: %s", model, e)
+                logger.error("%s transport error for model %s: %s", provider_label(model), model, e)
                 return ModelResponse(
                     model=model,
                     content="",
@@ -972,7 +1077,7 @@ async def chat_completion(
                     ),
                 )
             except Exception as e:
-                logger.error("OpenRouter error for model %s: %s", model, e)
+                logger.error("%s error for model %s: %s", provider_label(model), model, e)
                 return ModelResponse(
                     model=model,
                     content="",
@@ -1000,6 +1105,7 @@ async def chat_completion_stream_response(
     session_id: str | None = None,
     prompt_segments: list[PromptSegment] | None = None,
     request_overrides: dict[str, Any] | None = None,
+    priority: str = "interactive",
     on_content_delta: Callable[[str], Awaitable[None] | None] | None = None,
     on_reasoning_delta: Callable[[str], Awaitable[None] | None] | None = None,
     on_tool_call_delta: Callable[[ToolCall], Awaitable[None] | None] | None = None,
@@ -1021,7 +1127,7 @@ async def chat_completion_stream_response(
         stream=True,
     )
     retry_count = 0
-    async with _build_client() as client:
+    async with _model_client(model, priority=priority) as client:
         for attempt in range(settings.llm_transport_retry_attempts + 1):
             observed_any = False
             content_parts: list[str] = []
@@ -1086,13 +1192,13 @@ async def chat_completion_stream_response(
                 if not content and not tool_calls and not reasoning:
                     if attempt < settings.llm_transport_retry_attempts:
                         retry_count += 1
-                        logger.warning("Retrying OpenRouter empty streaming response for model %s", model)
+                        logger.warning("Retrying %s empty streaming response for model %s", provider_label(model), model)
                         await asyncio.sleep(_retry_delay_seconds(attempt))
                         continue
                     return ModelResponse(
                         model=model,
                         content="",
-                        error="OpenRouter returned empty streaming message content",
+                        error=f"{provider_label(model)} returned empty streaming message content",
                         prompt_metrics=build_prompt_metrics(
                             messages=messages,
                             model=model,
@@ -1133,7 +1239,7 @@ async def chat_completion_stream_response(
                     response_text = (await e.response.aread()).decode("utf-8", errors="replace").strip()
                 except Exception:
                     response_text = _safe_response_text(e.response).strip()
-                logger.error("OpenRouter streaming response HTTP error %s: %s", e.response.status_code, response_text)
+                logger.error("%s streaming response HTTP error %s: %s", provider_label(model), e.response.status_code, response_text)
                 if response_text:
                     error_text = f"{error_text}: {response_text}"
                 return ModelResponse(
@@ -1156,7 +1262,7 @@ async def chat_completion_stream_response(
                     logger.warning("Retrying streaming response transport error for model %s: %s", model, e)
                     await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
-                logger.error("OpenRouter streaming response transport error for model %s: %s", model, e)
+                logger.error("%s streaming response transport error for model %s: %s", provider_label(model), model, e)
                 return ModelResponse(
                     model=model,
                     content="",
@@ -1172,7 +1278,7 @@ async def chat_completion_stream_response(
                     ),
                 )
             except Exception as e:
-                logger.error("OpenRouter streaming response error for model %s: %s", model, e)
+                logger.error("%s streaming response error for model %s: %s", provider_label(model), model, e)
                 return ModelResponse(
                     model=model,
                     content="",
@@ -1270,6 +1376,7 @@ async def chat_completion_stream(
     max_tokens: int = 4096,
     session_id: str | None = None,
     prompt_segments: list[PromptSegment] | None = None,
+    priority: str = "interactive",
 ) -> AsyncIterator[str]:
     """Streaming chat completion — yields text chunks."""
     cache_policy = resolve_prompt_cache_policy(model)
@@ -1284,7 +1391,7 @@ async def chat_completion_stream(
         stream=True,
     )
     retry_count = 0
-    async with _build_client() as client:
+    async with _model_client(model, priority=priority) as client:
         for attempt in range(settings.llm_transport_retry_attempts + 1):
             yielded_any = False
             try:
@@ -1316,7 +1423,7 @@ async def chat_completion_stream(
                 except Exception:
                     response_text = _safe_response_text(e.response).strip()
                 logger.error("Stream HTTP error %s: %s", e.response.status_code, response_text)
-                error_text = f"OpenRouter stream HTTP error: {e.response.status_code}"
+                error_text = f"{provider_label(model)} stream HTTP error: {e.response.status_code}"
                 if response_text:
                     error_text = f"{error_text} - {response_text}"
                 raise RuntimeError(error_text) from e
@@ -1327,10 +1434,10 @@ async def chat_completion_stream(
                     await asyncio.sleep(_retry_delay_seconds(attempt))
                     continue
                 logger.error("Stream error: %s", e)
-                raise RuntimeError(f"OpenRouter stream error: {e}") from e
+                raise RuntimeError(f"{provider_label(model)} stream error: {e}") from e
             except Exception as e:
                 logger.error("Stream error: %s", e)
-                raise RuntimeError(f"OpenRouter stream error: {e}") from e
+                raise RuntimeError(f"{provider_label(model)} stream error: {e}") from e
 
 
 async def council_completion(
