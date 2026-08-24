@@ -2,6 +2,33 @@ import { describe, expect, it, vi } from "vitest";
 import { JarvisVoiceStateMachine } from "./jarvis-voice-state";
 
 describe("Jarvis voice state machine", () => {
+  it("invokes browser timers with their required global receiver", () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    const setTimeoutSpy = vi.fn(function (this: unknown, callback: () => void, delay?: number) {
+      expect(this).toBe(globalThis);
+      handle = originalSetTimeout.call(globalThis, callback, delay);
+      return handle;
+    });
+    const clearTimeoutSpy = vi.fn(function (this: unknown, timer: ReturnType<typeof setTimeout>) {
+      expect(this).toBe(globalThis);
+      return originalClearTimeout.call(globalThis, timer);
+    });
+    vi.stubGlobal("setTimeout", setTimeoutSpy);
+    vi.stubGlobal("clearTimeout", clearTimeoutSpy);
+    try {
+      const machine = new JarvisVoiceStateMachine();
+      machine.setMicEnabled(true);
+      expect(() => machine.openFollowUp()).not.toThrow();
+      machine.destroy();
+      expect(setTimeoutSpy).toHaveBeenCalledOnce();
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(handle);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("expires follow-up mode and requires the wake word again", () => {
     vi.useFakeTimers();
     const machine = new JarvisVoiceStateMachine(() => Date.now());

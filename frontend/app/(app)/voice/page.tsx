@@ -27,7 +27,7 @@ import { JarvisTurnGate } from "@/lib/jarvis-turn-gate";
 import { JarvisVoiceStateMachine, type VoicePhase } from "@/lib/jarvis-voice-state";
 import { restartJarvisVad, type JarvisVadInstance } from "@/lib/jarvis-vad";
 
-type InstallPrompt = Event & { prompt: () => Promise<void> };
+type InstallPrompt = { prompt: () => Promise<void> };
 const CURSOR_PREFIX = "ai-cockpit-voice-cursor:";
 
 function formatSpeechError(reason: unknown): string {
@@ -84,7 +84,9 @@ export default function VoicePage() {
   const [error, setError] = useState("");
   const [textDraft, setTextDraft] = useState("");
   const [answerDraft, setAnswerDraft] = useState("");
-  const [installPrompt, setInstallPrompt] = useState<InstallPrompt | null>(null);
+  const [installPrompt, setInstallPrompt] = useState<InstallPrompt | null>(() => ({
+    prompt: async () => setLastReply("In Android Chrome, open the three-dot menu and choose Add to Home screen or Install app."),
+  }));
   const [alertsEnabled, setAlertsEnabled] = useState(false);
   const vadRef = useRef<JarvisVadInstance | null>(null);
   const streamRef = useRef<AbortController | null>(null);
@@ -335,7 +337,7 @@ export default function VoicePage() {
       if (cancelled) return;
       connectStream(id, value.latest_sequence);
     }).catch((reason) => setError(String(reason)));
-    const onInstall = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPrompt); };
+    const onInstall = (event: Event) => { event.preventDefault(); setInstallPrompt(event as unknown as InstallPrompt); };
     window.addEventListener("beforeinstallprompt", onInstall);
     return () => {
       cancelled = true;

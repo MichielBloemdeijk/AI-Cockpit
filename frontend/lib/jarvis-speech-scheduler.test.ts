@@ -104,6 +104,21 @@ describe("Jarvis speech scheduler", () => {
     expect(dependencies.synthesize).toHaveBeenCalledOnce();
   });
 
+  it("waits for an explicit user gesture before speaking recovered audio", async () => {
+    const first = setup("listening");
+    await first.scheduler.enqueue({ eventId: "event-recovered", text: "Recovered update." });
+    const second = setup("armed");
+
+    await second.scheduler.recover();
+    await flush();
+    expect(second.dependencies.synthesize).not.toHaveBeenCalled();
+
+    second.scheduler.retryPending();
+    await flush();
+    expect(second.dependencies.synthesize).toHaveBeenCalledOnce();
+    expect((await getVoiceDelivery("event-recovered"))?.state).toBe("spoken");
+  });
+
   it("activates answer routing when question playback starts, not while it is queued", async () => {
     const { machine, scheduler } = setup("listening");
     await scheduler.enqueue({ eventId: "event-question", text: "Which environment?", answerRunId: "run-question" });

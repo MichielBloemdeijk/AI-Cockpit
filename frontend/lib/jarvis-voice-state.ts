@@ -33,8 +33,8 @@ export class JarvisVoiceStateMachine {
 
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly schedule: (callback: () => void, delay: number) => TimerHandle = setTimeout,
-    private readonly cancelSchedule: (handle: TimerHandle) => void = clearTimeout,
+    private readonly schedule: (callback: () => void, delay: number) => TimerHandle = (callback, delay) => globalThis.setTimeout(callback, delay),
+    private readonly cancelSchedule: (handle: TimerHandle) => void = (handle) => globalThis.clearTimeout(handle),
     private readonly followUpMs = 45_000,
   ) {}
 

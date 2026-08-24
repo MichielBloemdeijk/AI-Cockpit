@@ -91,7 +91,10 @@ export class JarvisSpeechScheduler {
         continue;
       }
       await setVoiceDeliveryState(record.eventId, "queued", record.deliveryId);
-      const item: SpeechQueueItem = { eventId: record.eventId, deliveryId: record.deliveryId, text: record.text, urgent: record.urgent, answerRunId: record.answerRunId, persist: true };
+      // Recovered audio is never allowed to autoplay as soon as the page opens.
+      // Mobile browsers require a gesture, and old updates speaking on load are
+      // surprising even where autoplay happens to be permitted.
+      const item: SpeechQueueItem = { eventId: record.eventId, deliveryId: record.deliveryId, text: record.text, urgent: record.urgent, answerRunId: record.answerRunId, persist: true, retryAfterGesture: true };
       this.queue = item.urgent ? [item, ...this.queue] : [...this.queue, item];
     }
     void this.drain();
