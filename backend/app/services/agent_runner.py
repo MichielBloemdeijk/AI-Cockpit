@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 from typing import Any
 
 from app.models.chat import Message
@@ -57,6 +58,7 @@ from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_compaction import TASK_HISTORY_SUMMARY_PREFIX, build_agent_history_context
 from app.services.conversation_timeline import (
+    build_background_task_timeline_item,
     build_thought_timeline_item,
     build_timeline_item,
 )
@@ -81,6 +83,62 @@ _NATIVE_CONTROL_TOOL_NAMES = {
     NATIVE_AGENT_FINALIZE_TOOL,
     NATIVE_AGENT_DELEGATE_TOOL,
 }
+
+_VOICE_TASK_STATUS_RE = re.compile(
+    r"\b(?:background tasks?|active tasks?|task status|task update|any updates?|still (?:going|running)|"
+    r"(?:is|has) (?:it|the task|that task).*(?:done|complete|completed|running))\b",
+    re.IGNORECASE,
+)
+_VOICE_TASK_NOTIFICATION_FOLLOWUP_RE = re.compile(
+    r"\b(?:tell me|notify me|let me know) when (?:it|the task|that task|this task|the background task)"
+    r"(?: is| has)? (?:done|complete|completed|finished)\b",
+    re.IGNORECASE,
+)
+_VOICE_NEW_TASK_RE = re.compile(
+    r"\b(?:start|create|run|perform|do|write|build|fix|test|make|compare|read|analy[sz]e|review|inspect)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_voice_task_status_query(goal: str) -> bool:
+    normalized = " ".join(str(goal or "").split())
+    return bool(_VOICE_TASK_STATUS_RE.search(normalized) and not _VOICE_NEW_TASK_RE.search(normalized))
+
+
+def _is_voice_task_notification_followup(goal: str) -> bool:
+    normalized = " ".join(str(goal or "").split())
+    return bool(_VOICE_TASK_NOTIFICATION_FOLLOWUP_RE.search(normalized) and not _VOICE_NEW_TASK_RE.search(normalized))
+
+
+def _repeated_tool_without_progress(metadata: dict[str, Any], action: dict[str, Any]) -> bool:
+    tool_name = str(action.get("tool") or "").strip()
+    arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+    signature = json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
+    history = metadata.get("history") if isinstance(metadata.get("history"), list) else []
+    prior = [item for item in history[-2:] if isinstance(item, dict) and item.get("kind") == "tool"]
+    if len(prior) != 2:
+        return False
+    return all(
+        str(item.get("tool") or "").strip() == tool_name
+        and json.dumps(item.get("arguments") or {}, sort_keys=True, separators=(",", ":"), default=str) == signature
+        for item in prior
+    )
+
+
+def _task_status_response(tasks: list[Any]) -> str:
+    active = [task for task in tasks if str(getattr(task, "status", "")) not in {"completed", "failed", "cancelled", "interrupted"}]
+    if len(active) == 1:
+        task = active[0]
+        return f"{task.title} is {task.status}."
+    if len(active) > 1:
+        titles = ", ".join(task.title for task in active[:2])
+        suffix = "" if len(active) <= 2 else f", plus {len(active) - 2} more"
+        return f"You have {len(active)} background tasks running: {titles}{suffix}."
+    if tasks:
+        latest = tasks[0]
+        detail = latest.summary or latest.error
+        return f"Your latest background task, {latest.title}, is {latest.status}." + (f" {detail}" if detail else "")
+    return "You don't have any background tasks yet."
 
 
 def _text_completion_summary(final_text: str) -> str:
@@ -140,6 +198,31 @@ class AgentRunner:
         step_number: int,
         stream_callback: AgentStreamCallback | None = None,
     ) -> dict[str, Any]:
+        if step_number == 1 and metadata.get("execution_mode") == "voice_interactive":
+            goal = str(metadata.get("goal") or "")
+            if _is_voice_task_notification_followup(goal):
+                from app.services.background_tasks import request_completion_notification
+
+                task = await request_completion_notification(conversation_id)
+                response = (
+                    f"Okay. I'll let you know when {task.title} is complete."
+                    if task is not None
+                    else "There isn't an active background task to notify you about."
+                )
+                return _build_final_action_payload(
+                    thought="Handled the task notification preference directly.",
+                    summary=response,
+                    final_text=response,
+                )
+            if _is_voice_task_status_query(goal):
+                from app.services.background_tasks import list_tasks
+
+                response = _task_status_response(await list_tasks(conversation_id, include_finished=True))
+                return _build_final_action_payload(
+                    thought="Read the durable background task state directly.",
+                    summary=response,
+                    final_text=response,
+                )
         if (
             step_number == 1
             and metadata.get("execution_mode") == "voice_interactive"
@@ -161,6 +244,11 @@ class AgentRunner:
 
         model = str(metadata.get("model") or await chat_settings_service.get_task_agent_model())
         recent_messages = await conversation_store.list_messages(conversation_id, final_only=True)
+
+        async def _history_completion(messages, history_model, **kwargs):
+            kwargs["priority"] = str(metadata.get("llm_priority") or "interactive")
+            return await chat_completion(messages, history_model, **kwargs)
+
         async with _timed_agent_phase(
             phase="native_turn.history_context",
             conversation_id=conversation_id,
@@ -176,7 +264,7 @@ class AgentRunner:
                 update_run_metadata=_update_run_metadata,
                 record_llm_metrics=_record_llm_metrics,
                 record_llm_visible_output=_record_llm_visible_output,
-                chat_completion_fn=chat_completion,
+                chat_completion_fn=_history_completion,
             )
         history_summary = history_context.history_summary
         rendered_history = history_context.rendered_history
@@ -617,7 +705,7 @@ class AgentRunner:
             if active_run is None:
                 return
             if metadata.get("execution_mode") == "background" and not metadata.get("task_started_event_recorded"):
-                await conversation_store.append_event(
+                started_event = await conversation_store.append_event(
                     run.conversation_id,
                     run_id=run.id,
                     actor_kind="task",
@@ -630,6 +718,22 @@ class AgentRunner:
                         "priority": metadata.get("task_priority", "normal"),
                     },
                     branch_key=str(metadata.get("branch_key") or "main"),
+                )
+                await conversation_store.append_timeline_item(
+                    run.conversation_id,
+                    run_id=run.id,
+                    item_payload=build_background_task_timeline_item(
+                        run_id=run.id,
+                        title=str(metadata.get("title") or "Background task"),
+                        goal=str(metadata.get("goal") or ""),
+                        status="running",
+                        active_step=str(metadata.get("active_step") or "Planning next step"),
+                        updates=list(metadata.get("task_updates") or []),
+                        notify_policy=str(metadata.get("notify_policy") or "important"),
+                        requested_notification=bool(metadata.get("requested_notification")),
+                    ),
+                    branch_key=str(metadata.get("branch_key") or "main"),
+                    parent_event_id=started_event.id,
                 )
                 metadata["task_started_event_recorded"] = True
 
@@ -689,17 +793,18 @@ class AgentRunner:
                         payload_json={"step": current_step + 1, "thought": thought},
                         branch_key=str(metadata.get("branch_key") or "main"),
                     )
-                    await conversation_store.append_timeline_item(
-                        run.conversation_id,
-                        run_id=run.id,
-                        item_payload=build_thought_timeline_item(
+                    if metadata.get("execution_mode") != "background":
+                        await conversation_store.append_timeline_item(
+                            run.conversation_id,
                             run_id=run.id,
-                            step=current_step + 1,
-                            content=thought,
-                        ),
-                        branch_key=str(metadata.get("branch_key") or "main"),
-                        parent_event_id=thought_event.id,
-                    )
+                            item_payload=build_thought_timeline_item(
+                                run_id=run.id,
+                                step=current_step + 1,
+                                content=thought,
+                            ),
+                            branch_key=str(metadata.get("branch_key") or "main"),
+                            parent_event_id=thought_event.id,
+                        )
 
                 action_kind = str(action.get("kind", "")).strip()
                 if action_kind == "delegate":
@@ -763,6 +868,11 @@ class AgentRunner:
                                 checkpoint_state=checkpoint_state,
                             )
                             return
+                        if _repeated_tool_without_progress(metadata, tool_action):
+                            repeated_tool = str(tool_action.get("tool") or "tool")
+                            raise ValueError(
+                                f"Stopped because the agent repeated {repeated_tool} without making progress."
+                            )
                         metadata = await _handle_tool_action(
                             conversation_id=run.conversation_id,
                             run_id=run.id,

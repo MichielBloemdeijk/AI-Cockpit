@@ -11,7 +11,7 @@ export interface ChatMessage {
   runId?: string | null;
   step?: number;
   role: "user" | "assistant" | "system";
-  kind?: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error";
+  kind?: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error" | "task";
   label?: string;
   title?: string;
   content: string;
@@ -25,6 +25,7 @@ export interface ChatMessage {
   councilData?: CouncilResponse;
   usage?: UsageStats;
   streaming?: boolean;
+  status?: string | null;
 }
 
 export interface AgentStatus {

@@ -9,10 +9,23 @@ from app.services.agent_tools.base import AgentTool, ToolExecutionContext, ToolE
 from app.services.background_tasks import cancel_task, get_task, list_tasks, publish_update
 
 
-def _render(snapshot: Any) -> str:
+def _render(snapshot: Any) -> dict[str, Any] | Any:
     if is_dataclass(snapshot):
-        return json.dumps(asdict(snapshot), default=str)
-    return json.dumps(snapshot, default=str)
+        return asdict(snapshot)
+    return snapshot
+
+
+def _compact_task(snapshot: Any) -> dict[str, Any]:
+    rendered = _render(snapshot)
+    if not isinstance(rendered, dict):
+        return {"value": rendered}
+    return {
+        "run_id": rendered.get("run_id"),
+        "title": rendered.get("title"),
+        "status": rendered.get("status"),
+        "summary": rendered.get("summary"),
+        "error": rendered.get("error"),
+    }
 
 
 async def _publish(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
@@ -30,21 +43,29 @@ async def _publish(context: ToolExecutionContext, arguments: dict[str, Any]) -> 
 
 async def _list(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
     tasks = await list_tasks(context.conversation_id, include_finished=bool(arguments.get("include_finished")))
-    return ToolExecutionResult(tool="list_background_tasks", output=json.dumps([_render(task) for task in tasks]), metadata={"count": len(tasks)})
+    return ToolExecutionResult(
+        tool="list_background_tasks",
+        output=json.dumps([_compact_task(task) for task in tasks], default=str),
+        metadata={"count": len(tasks)},
+    )
 
 
 async def _get(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
     task = await get_task(context.conversation_id, str(arguments.get("run_id") or ""))
     if task is None:
         raise ValueError("Background task not found")
-    return ToolExecutionResult(tool="get_background_task", output=_render(task), metadata={})
+    return ToolExecutionResult(tool="get_background_task", output=json.dumps(_render(task), default=str), metadata={})
 
 
 async def _cancel(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
     task = await cancel_task(context.conversation_id, str(arguments.get("run_id") or ""))
     if task is None:
         raise ValueError("Background task not found")
-    return ToolExecutionResult(tool="cancel_background_task", output=_render(task), metadata={"status": task.status})
+    return ToolExecutionResult(
+        tool="cancel_background_task",
+        output=json.dumps(_render(task), default=str),
+        metadata={"status": task.status},
+    )
 
 
 TASK_TOOLS = [

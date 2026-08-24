@@ -88,6 +88,42 @@ describe("chat UI components", () => {
     expect(container.textContent).toContain("Inspecting the existing timeline projector.");
   });
 
+  it("renders one expandable running background task card", async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: "task:run-1",
+            activityId: "task:run-1",
+            role: "assistant",
+            kind: "task",
+            title: "Repository review",
+            content: "Reading documentation",
+            status: "running",
+            sections: [
+              { title: "Goal", items: ["Review the repository"] },
+              { title: "Updates", items: ["Reading documentation"] },
+            ],
+          }}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Repository review");
+    expect(container.textContent).toContain("running");
+    expect(container.textContent).not.toContain("Review the repository");
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Review the repository");
+    expect(container.textContent).toContain("Reading documentation");
+  });
+
   it("renders assistant Markdown without a progress label", async () => {
     await act(async () => {
       root.render(

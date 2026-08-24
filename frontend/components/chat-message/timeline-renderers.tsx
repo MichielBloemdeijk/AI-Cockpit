@@ -28,6 +28,14 @@ function toneClasses(message: ChatMessage) {
 
 function messageIcon(message: ChatMessage) {
   switch (message.kind) {
+    case "task":
+      if (message.status === "queued" || message.status === "running") {
+        return <Loader2 size={15} className="animate-spin" />;
+      }
+      if (message.status === "completed") {
+        return <CheckCircle2 size={15} />;
+      }
+      return <AlertTriangle size={15} />;
     case "question":
       return <CircleHelp size={15} />;
     case "tool_call":
@@ -148,6 +156,55 @@ export function ToolActivityMessageRenderer({ message }: { message: ChatMessage 
 
 export function ToolCallMessageRenderer({ message }: { message: ChatMessage }) {
   return <ToolActivityMessageRenderer message={message} />;
+}
+
+export function BackgroundTaskMessageRenderer({ message }: { message: ChatMessage }) {
+  const [expanded, setExpanded] = useState(false);
+  const tones = toneClasses(message);
+  const active = message.status === "queued" || message.status === "running";
+
+  return (
+    <TimelineShell message={message}>
+      <div className="overflow-hidden rounded-xl border border-zinc-800/90 bg-zinc-950/35">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+          className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-zinc-900/60"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-sm font-medium text-zinc-200">{message.title || "Background task"}</span>
+              <span className={clsx("shrink-0 text-[11px] capitalize", tones.text)}>{message.status || "running"}</span>
+            </div>
+            <div className="mt-0.5 truncate text-xs text-zinc-500">
+              {active && message.status === "queued" ? "Waiting to start" : (message.content || "Working in the background")}
+            </div>
+          </div>
+          {expanded
+            ? <ChevronDown size={14} className="shrink-0 text-zinc-500" />
+            : <ChevronRight size={14} className="shrink-0 text-zinc-600" />}
+        </button>
+        {expanded && (
+          <div className="space-y-3 border-t border-zinc-800/80 px-3 py-3">
+            {message.sections?.map((section) => (
+              <div key={section.title}>
+                <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">{section.title}</div>
+                <ul className="mt-1 space-y-1 text-sm leading-5 text-zinc-300">
+                  {section.items.map((entry, index) => (
+                    <li key={`${section.title}-${index}`} className="whitespace-pre-wrap">{entry}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+            {!message.sections?.length && (
+              <div className="text-sm text-zinc-400">{message.content}</div>
+            )}
+          </div>
+        )}
+      </div>
+    </TimelineShell>
+  );
 }
 
 export function ToolResultMessageRenderer({ message }: { message: ChatMessage }) {

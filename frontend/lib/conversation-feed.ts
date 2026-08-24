@@ -21,6 +21,7 @@ function mapTimelineItemToChatMessage(item: TimelineItemView, id: string, stream
     code: item.code ?? undefined,
     sections: item.sections,
     streaming,
+    status: item.status,
   };
 }
 

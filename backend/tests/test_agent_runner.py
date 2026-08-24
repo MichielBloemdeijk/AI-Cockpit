@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +15,7 @@ import app.services.agent_runner as agent_runner_module
 import app.services.agent_run_support as agent_run_support_module
 import app.services.agent_tools.execution as agent_execution_module
 import app.services.llm as llm_module
+import app.services.agent_tools.tasks as task_tools_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 from tests.agent_runner_fixtures import (
     create_agent_run as _create_agent_run,
@@ -34,6 +37,7 @@ from app.services.conversation_store import conversation_store
 from app.services.chat_orchestrator import should_delegate_voice_goal
 from app.services.run_lifecycle import run_lifecycle
 from app.db.repositories.conversations import ConversationRepository
+from app.services.background_tasks import BackgroundTaskSnapshot
 
 
 def test_finalize_tool_requires_a_user_facing_result_and_internal_summary():
@@ -66,6 +70,43 @@ def test_native_tool_turns_have_enough_output_budget_for_source_files():
 )
 def test_voice_background_routing_policy(goal: str, requested_notification: bool, expected: bool) -> None:
     assert should_delegate_voice_goal(goal, requested_notification=requested_notification) is expected
+
+
+@pytest.mark.asyncio
+async def test_background_task_list_tool_returns_objects_not_json_strings(monkeypatch) -> None:
+    async def _tasks(*args, **kwargs):
+        return [
+            BackgroundTaskSnapshot(
+                run_id="run-1",
+                conversation_id="conversation-1",
+                parent_run_id=None,
+                title="Repository review",
+                goal="Review the repository",
+                status="running",
+                priority="normal",
+                notify_policy="important",
+                requested_notification=False,
+                summary=None,
+                error=None,
+                started_at=datetime.now(timezone.utc),
+                finished_at=None,
+            )
+        ]
+
+    monkeypatch.setattr(task_tools_module, "list_tasks", _tasks)
+    result = await task_tools_module._list(SimpleNamespace(conversation_id="conversation-1"), {})
+    payload = json.loads(result.output)
+
+    assert payload == [
+        {
+            "run_id": "run-1",
+            "title": "Repository review",
+            "status": "running",
+            "summary": None,
+            "error": None,
+        }
+    ]
+    assert isinstance(payload[0], dict)
 
 
 @pytest.mark.asyncio
@@ -102,6 +143,116 @@ async def test_forced_voice_background_route_skips_model_and_queues_child(monkey
     assert parent is not None and parent.status == "completed"
     messages = await conversation_store.list_messages(conversation.id, final_only=True)
     assert messages[-1].content == "I'm on it. I'll let you know when it's done."
+
+
+@pytest.mark.asyncio
+async def test_voice_task_status_question_bypasses_model() -> None:
+    conversation, run = await _create_agent_run()
+    await conversation_store.start_run(
+        conversation.id,
+        kind="task",
+        status="running",
+        parent_run_id=run.id,
+        metadata_json={
+            "execution_mode": "background",
+            "title": "Repository review",
+            "goal": "Review the repository",
+        },
+    )
+    metadata = dict(run.metadata_json or {})
+    metadata.update(
+        {
+            "execution_mode": "voice_interactive",
+            "goal": "Any updates on the background task? Is it still running?",
+            "force_background_delegation": False,
+        }
+    )
+
+    action = await agent_runner_module.agent_runner._request_native_turn(
+        metadata=metadata,
+        checkpoint_state=None,
+        context=None,
+        conversation_id=conversation.id,
+        run_id=run.id,
+        step_number=1,
+    )
+
+    assert action["kind"] == "final"
+    assert action["final_text"] == "Repository review is running."
+
+
+@pytest.mark.asyncio
+async def test_notification_only_followup_updates_existing_task_without_delegating() -> None:
+    conversation, run = await _create_agent_run()
+    child = await conversation_store.start_run(
+        conversation.id,
+        kind="task",
+        status="running",
+        parent_run_id=run.id,
+        metadata_json={
+            "execution_mode": "background",
+            "title": "Long review",
+            "goal": "Review everything",
+            "notify_policy": "important",
+            "requested_notification": False,
+        },
+    )
+    metadata = dict(run.metadata_json or {})
+    metadata.update(
+        {
+            "execution_mode": "voice_interactive",
+            "goal": "Okay, just let me know when the task is complete.",
+            "force_background_delegation": True,
+            "requested_notification": True,
+        }
+    )
+
+    action = await agent_runner_module.agent_runner._request_native_turn(
+        metadata=metadata,
+        checkpoint_state=None,
+        context=None,
+        conversation_id=conversation.id,
+        run_id=run.id,
+        step_number=1,
+    )
+
+    assert action["kind"] == "final"
+    assert "Long review" in action["final_text"]
+    refreshed = await conversation_store.get_run(child.id)
+    assert refreshed is not None
+    assert refreshed.metadata_json["notify_policy"] == "completion"
+    assert refreshed.metadata_json["requested_notification"] is True
+    assert len(await conversation_store.list_runs(conversation.id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_background_tool_call_is_stopped_after_two_executions(monkeypatch) -> None:
+    conversation, run = await _create_agent_run()
+    metadata = dict(run.metadata_json or {})
+    metadata.update({"execution_mode": "background", "voice_response": False, "title": "Looping task"})
+    await conversation_store.update_run_metadata(run.id, metadata)
+    model_calls = 0
+
+    async def _repeat_tool(*args, **kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        return _tool_response("list_background_tasks", {"include_finished": False})
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _repeat_tool)
+
+    with pytest.raises(ValueError, match="repeated list_background_tasks"):
+        await agent_runner_module.agent_runner.continue_run(run.id)
+
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    assert model_calls == 3
+    assert sum(event.event_type == "agent.tool.called" for event in events) == 2
+    assert not any(
+        event.event_type == "chat.timeline.item.committed"
+        and (event.payload_json or {}).get("kind") in {"tool_call", "tool_result"}
+        for event in events
+    )
+    refreshed = await conversation_store.get_run(run.id)
+    assert refreshed is not None and refreshed.status == "failed"
 
 
 @pytest.mark.asyncio

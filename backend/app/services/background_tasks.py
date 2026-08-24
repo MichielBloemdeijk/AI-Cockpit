@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.conversation_store import EventRecord, RunRecord, conversation_store
+from app.services.conversation_timeline import build_background_task_timeline_item
 from app.services.voice import sanitize_voice_response
 
 
@@ -105,6 +106,7 @@ async def delegate_background_task(
             "result": None,
             "error": None,
             "parent_run_id": parent.id,
+            "task_updates": [],
         }
     )
     child = await conversation_store.start_run(
@@ -131,7 +133,37 @@ async def delegate_background_task(
         },
         branch_key=str(parent_metadata.get("branch_key") or "main"),
     )
+    await conversation_store.append_timeline_item(
+        parent.conversation_id,
+        run_id=child.id,
+        item_payload=build_background_task_timeline_item(
+            run_id=child.id,
+            title=str(child_metadata["title"]),
+            goal=normalized_goal,
+            status="queued",
+            active_step="Queued",
+            notify_policy=normalized_policy,
+            requested_notification=bool(child_metadata["requested_notification"]),
+        ),
+        branch_key=str(parent_metadata.get("branch_key") or "main"),
+        parent_event_id=event.id,
+    )
     return child, event
+
+
+async def request_completion_notification(conversation_id: str) -> BackgroundTaskSnapshot | None:
+    """Apply a notification-only follow-up to the most recent active task."""
+    runs = await conversation_store.list_runs(conversation_id)
+    for run in runs:
+        metadata = _metadata(run)
+        if metadata.get("execution_mode") != "background" or run.status in TERMINAL_STATUSES:
+            continue
+        metadata["notify_policy"] = "completion"
+        metadata["requested_notification"] = True
+        await conversation_store.update_run_metadata(run.id, metadata)
+        refreshed = await conversation_store.get_run(run.id)
+        return snapshot(refreshed) if refreshed is not None else snapshot(run)
+    return None
 
 
 async def publish_update(run_id: str, summary: str, importance: str = "normal") -> EventRecord:
@@ -147,6 +179,11 @@ async def publish_update(run_id: str, summary: str, importance: str = "normal") 
     normalized_importance = str(importance or "normal").strip().lower()
     if normalized_importance not in {"low", "normal", "high", "urgent"}:
         normalized_importance = "normal"
+    updates = list(metadata.get("task_updates") or [])
+    updates.append(text)
+    metadata["task_updates"] = updates[-20:]
+    metadata["active_step"] = text
+    await conversation_store.update_run_metadata(run.id, metadata)
     event, _message = await conversation_store.append_event_with_assistant_message(
         run.conversation_id,
         run_id=run.id,
@@ -164,6 +201,17 @@ async def publish_update(run_id: str, summary: str, importance: str = "normal") 
             "requested_notification": bool(metadata.get("requested_notification")),
             "status": run.status,
         },
+        timeline_item_payload=build_background_task_timeline_item(
+            run_id=run.id,
+            title=str(metadata.get("title") or _title(str(metadata.get("goal") or ""))),
+            goal=str(metadata.get("goal") or ""),
+            status=run.status,
+            summary=text,
+            active_step=text,
+            updates=metadata["task_updates"],
+            notify_policy=str(metadata.get("notify_policy") or "important"),
+            requested_notification=bool(metadata.get("requested_notification")),
+        ),
     )
     await _schedule_notification(event.id)
     return event
@@ -201,6 +249,17 @@ async def publish_terminal_update(
             "requested_notification": bool(metadata.get("requested_notification")),
             "status": status,
         },
+        timeline_item_payload=build_background_task_timeline_item(
+            run_id=run.id,
+            title=str(metadata.get("title") or _title(str(metadata.get("goal") or ""))),
+            goal=str(metadata.get("goal") or ""),
+            status=status,
+            summary=text,
+            active_step=str(metadata.get("active_step") or ""),
+            updates=[*list(metadata.get("task_updates") or []), text],
+            notify_policy=str(metadata.get("notify_policy") or "important"),
+            requested_notification=bool(metadata.get("requested_notification")),
+        ),
     )
     await _schedule_notification(event.id)
     return event

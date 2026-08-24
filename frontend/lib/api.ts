@@ -208,7 +208,7 @@ export interface TimelineItemView {
   run_id: string | null;
   sequence: number;
   role: "user" | "assistant" | "system";
-  kind: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error";
+  kind: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error" | "task";
   content: string;
   title?: string | null;
   label?: string | null;

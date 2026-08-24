@@ -281,6 +281,24 @@ class ConversationRepository:
         return bool(result.rowcount)
 
     async def update_run_metadata(self, run_id: str, metadata_json: dict | None) -> None:
+        if isinstance(metadata_json, dict):
+            run = await self.get_run(run_id)
+            current = run.metadata_json if run is not None and isinstance(run.metadata_json, dict) else {}
+            metadata_json = dict(metadata_json)
+            if current.get("requested_notification"):
+                metadata_json["requested_notification"] = True
+                current_policy = str(current.get("notify_policy") or "important")
+                incoming_policy = str(metadata_json.get("notify_policy") or "important")
+                if current_policy in {"completion", "all"} and incoming_policy not in {"completion", "all"}:
+                    metadata_json["notify_policy"] = current_policy
+            current_updates = current.get("task_updates") if isinstance(current.get("task_updates"), list) else []
+            incoming_updates = metadata_json.get("task_updates") if isinstance(metadata_json.get("task_updates"), list) else []
+            if current_updates or incoming_updates:
+                merged_updates: list = []
+                for task_update in [*current_updates, *incoming_updates]:
+                    if task_update not in merged_updates:
+                        merged_updates.append(task_update)
+                metadata_json["task_updates"] = merged_updates[-20:]
         stmt = (
             update(ConversationRun)
             .where(ConversationRun.id == run_id)

@@ -164,6 +164,68 @@ def build_visible_text_timeline_item(*, run_id: str, step: int, content: str) ->
     )
 
 
+def build_background_task_timeline_item(
+    *,
+    run_id: str,
+    title: str,
+    goal: str,
+    status: str,
+    summary: str | None = None,
+    active_step: str | None = None,
+    updates: list[str] | None = None,
+    notify_policy: str | None = None,
+    requested_notification: bool = False,
+) -> dict[str, Any]:
+    normalized_status = str(status or "queued").strip().lower() or "queued"
+    normalized_summary = str(summary or "").strip()
+    normalized_step = str(active_step or "").strip()
+    if normalized_status == "queued":
+        content = "Queued"
+    elif normalized_status == "running":
+        content = normalized_step if normalized_step and normalized_step != "Queued" else "Working in the background"
+    elif normalized_status == "paused":
+        content = normalized_step or normalized_summary or "Waiting for input"
+    elif normalized_status == "completed":
+        content = normalized_summary or "Completed"
+    elif normalized_status == "cancelled":
+        content = normalized_summary or "Cancelled"
+    elif normalized_status == "interrupted":
+        content = normalized_summary or "Interrupted"
+    else:
+        content = normalized_summary or "Failed"
+
+    tone = {
+        "completed": "success",
+        "failed": "error",
+        "cancelled": "warning",
+        "interrupted": "warning",
+        "paused": "warning",
+    }.get(normalized_status, "info")
+    normalized_updates = [str(item).strip() for item in (updates or []) if str(item).strip()]
+    sections: list[dict[str, Any]] = []
+    if str(goal or "").strip():
+        sections.append({"title": "Goal", "items": [str(goal).strip()]})
+    if normalized_updates:
+        sections.append({"title": "Updates", "items": normalized_updates})
+    return build_timeline_item(
+        item_id=f"task:{run_id}",
+        role="assistant",
+        kind="task",
+        title=str(title or "Background task").strip() or "Background task",
+        label="Background task",
+        content=content,
+        tone=tone,
+        status=normalized_status,
+        badges=[normalized_status],
+        sections=sections,
+        metadata={
+            "task_run_id": run_id,
+            "notify_policy": notify_policy,
+            "requested_notification": requested_notification,
+        },
+    )
+
+
 def build_thought_timeline_item(*, run_id: str, step: int, content: str) -> dict[str, Any]:
     return build_timeline_item(
         item_id=f"thought:{run_id}:{step}",

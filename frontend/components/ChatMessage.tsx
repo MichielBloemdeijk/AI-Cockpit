@@ -4,6 +4,7 @@ import type { ChatMessage as ChatMsg } from "@/lib/hooks";
 
 import { AssistantMessageRenderer, UserMessageRenderer } from "./chat-message/plain-renderers";
 import {
+  BackgroundTaskMessageRenderer,
   GenericTimelineMessageRenderer,
   StatusMessageRenderer,
   ThoughtMessageRenderer,
@@ -25,6 +26,8 @@ export function ChatMessage({ message, onEdit }: Props) {
   }
 
   switch (message.kind) {
+    case "task":
+      return <BackgroundTaskMessageRenderer message={message} />;
     case "thought":
       return <ThoughtMessageRenderer message={message} />;
     case "tool_call":

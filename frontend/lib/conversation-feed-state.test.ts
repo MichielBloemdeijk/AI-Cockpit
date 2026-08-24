@@ -7,6 +7,33 @@ import {
 import type { ChatMessage } from "./chat-state-types";
 
 describe("conversation feed state", () => {
+  it("updates a background task card in place", () => {
+    const queued: ChatMessage = {
+      id: "task:run-task-1",
+      activityId: "task:run-task-1",
+      runId: "run-task-1",
+      role: "assistant",
+      kind: "task",
+      title: "Repository review",
+      content: "Queued",
+      status: "queued",
+    };
+
+    const next = appendCommittedTimelineMessage([queued], {
+      ...queued,
+      content: "Reading documentation",
+      status: "running",
+      sections: [{ title: "Updates", items: ["Reading documentation"] }],
+    });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toEqual(expect.objectContaining({
+      activityId: "task:run-task-1",
+      status: "running",
+      content: "Reading documentation",
+    }));
+  });
+
   it("inserts committed timeline rows before the live row", () => {
     const currentMessages: ChatMessage[] = [
       {

@@ -18,6 +18,7 @@ from app.services.agent_tools import ToolExecutionContext, build_tool_context, e
 from app.services.app_registry import app_registry_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_timeline import (
+    build_background_task_timeline_item,
     build_question_timeline_item,
     build_timeline_item,
     build_tool_activity_id,
@@ -552,6 +553,7 @@ async def _handle_tool_action(
     if not isinstance(arguments, dict):
         raise ValueError("Tool arguments must be a JSON object")
     arguments = _normalize_tool_arguments(metadata, tool_name, arguments)
+    show_tool_timeline = metadata.get("execution_mode") != "background"
 
     next_step = int(metadata.get("current_step", 0) or 0) + 1
     activity_id = build_tool_activity_id(
@@ -575,25 +577,26 @@ async def _handle_tool_action(
                 "content": tool_start_summary,
             },
         )
-        await _set_live_timeline_item(
-            run_id,
-            metadata,
-            checkpoint_state,
-            build_timeline_item(
-                item_id=activity_id,
-                role="assistant",
-                kind="tool_call",
-                label="Tool call",
-                title=humanize_tool_name(tool_name),
-                content=tool_start_summary,
-                tone="info",
-                step=next_step,
-                tool_name=tool_name,
-                badges=[f"step {next_step}"],
-                status="streaming",
-            ),
-            force=True,
-        )
+        if show_tool_timeline:
+            await _set_live_timeline_item(
+                run_id,
+                metadata,
+                checkpoint_state,
+                build_timeline_item(
+                    item_id=activity_id,
+                    role="assistant",
+                    kind="tool_call",
+                    label="Tool call",
+                    title=humanize_tool_name(tool_name),
+                    content=tool_start_summary,
+                    tone="info",
+                    step=next_step,
+                    tool_name=tool_name,
+                    badges=[f"step {next_step}"],
+                    status="streaming",
+                ),
+                force=True,
+            )
     metadata["current_action"] = f"Running {tool_name}"
     metadata["updated_at"] = _iso_now()
     previous_progress_callback = context.progress_callback
@@ -611,25 +614,26 @@ async def _handle_tool_action(
                 "content": message,
             },
         )
-        await _set_live_timeline_item(
-            run_id,
-            metadata,
-            checkpoint_state,
-            build_timeline_item(
-                item_id=activity_id,
-                role="assistant",
-                kind="tool_call",
-                label="Tool call",
-                title=humanize_tool_name(tool_name),
-                content=message,
-                tone="info",
-                step=next_step,
-                tool_name=tool_name,
-                badges=[f"step {next_step}"],
-                status="streaming",
-            ),
-            force=False,
-        )
+        if show_tool_timeline:
+            await _set_live_timeline_item(
+                run_id,
+                metadata,
+                checkpoint_state,
+                build_timeline_item(
+                    item_id=activity_id,
+                    role="assistant",
+                    kind="tool_call",
+                    label="Tool call",
+                    title=humanize_tool_name(tool_name),
+                    content=message,
+                    tone="info",
+                    step=next_step,
+                    tool_name=tool_name,
+                    badges=[f"step {next_step}"],
+                    status="streaming",
+                ),
+                force=False,
+            )
 
     context.progress_callback = _handle_tool_progress
 
@@ -701,10 +705,28 @@ async def _handle_tool_action(
                 artifact_content_json={"metadata": result.metadata},
                 run_metadata_json=_serialize_agent_metadata(metadata) if should_persist_metadata else None,
                 branch_key=_metadata_branch_key(metadata),
+                emit_timeline_item=show_tool_timeline,
             )
         if should_persist_metadata and checkpoint_state is not None:
             _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
         history_entry["artifact_id"] = persisted_tool_result.artifact.id if persisted_tool_result.artifact is not None else None
+        if not show_tool_timeline:
+            await conversation_store.append_timeline_item(
+                conversation_id,
+                run_id=run_id,
+                item_payload=build_background_task_timeline_item(
+                    run_id=run_id,
+                    title=str(metadata.get("title") or "Background task"),
+                    goal=str(metadata.get("goal") or ""),
+                    status="running",
+                    active_step=summarize_tool_progress_content(tool_name, arguments, True),
+                    updates=list(metadata.get("task_updates") or []),
+                    notify_policy=str(metadata.get("notify_policy") or "important"),
+                    requested_notification=bool(metadata.get("requested_notification")),
+                ),
+                branch_key=_metadata_branch_key(metadata),
+                parent_event_id=persisted_tool_result.completed_event.id,
+            )
         await _emit_agent_stream_update(
             stream_callback,
             {
@@ -718,7 +740,8 @@ async def _handle_tool_action(
                 "content": summarize_tool_progress_content(tool_name, arguments, True),
             },
         )
-        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
+        if show_tool_timeline:
+            await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     except Exception as exc:
         error_text = str(exc)
         fatal = bool(getattr(exc, "fatal", False))
@@ -746,7 +769,7 @@ async def _handle_tool_action(
             ok=False,
             persist_metadata=True,
         ):
-            await conversation_store.record_agent_tool_result(
+            persisted_tool_result = await conversation_store.record_agent_tool_result(
                 conversation_id,
                 run_id=run_id,
                 step=next_step,
@@ -757,9 +780,27 @@ async def _handle_tool_action(
                 error=error_text,
                 run_metadata_json=_serialize_agent_metadata(metadata),
                 branch_key=_metadata_branch_key(metadata),
+                emit_timeline_item=show_tool_timeline,
             )
         if checkpoint_state is not None:
             _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
+        if not show_tool_timeline:
+            await conversation_store.append_timeline_item(
+                conversation_id,
+                run_id=run_id,
+                item_payload=build_background_task_timeline_item(
+                    run_id=run_id,
+                    title=str(metadata.get("title") or "Background task"),
+                    goal=str(metadata.get("goal") or ""),
+                    status="running",
+                    active_step=summarize_tool_progress_content(tool_name, arguments, False),
+                    updates=list(metadata.get("task_updates") or []),
+                    notify_policy=str(metadata.get("notify_policy") or "important"),
+                    requested_notification=bool(metadata.get("requested_notification")),
+                ),
+                branch_key=_metadata_branch_key(metadata),
+                parent_event_id=persisted_tool_result.completed_event.id,
+            )
         await _emit_agent_stream_update(
             stream_callback,
             {
@@ -773,7 +814,8 @@ async def _handle_tool_action(
                 "content": summarize_tool_progress_content(tool_name, arguments, False),
             },
         )
-        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
+        if show_tool_timeline:
+            await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     finally:
         context.progress_callback = previous_progress_callback
     return metadata

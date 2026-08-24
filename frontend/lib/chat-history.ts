@@ -12,7 +12,7 @@ export interface ChatHistoryMessage {
   id: string;
   runId?: string | null;
   role: "user" | "assistant" | "system";
-  kind?: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error";
+  kind?: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error" | "task";
   label?: string;
   title?: string;
   content: string;
