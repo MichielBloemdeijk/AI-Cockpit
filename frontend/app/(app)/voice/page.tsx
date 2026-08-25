@@ -125,7 +125,7 @@ export default function VoicePage() {
     const payload = event.payload_json || {};
     const delivery = (payload.voice_delivery || {}) as Record<string, unknown>;
     const runId = event.run_id || "";
-    if (event.event_type.startsWith("task.")) {
+    if (event.event_type.startsWith("task.") && runId) {
       setTasks((current) => {
         const existing = current.find((task) => task.run_id === runId);
         const next: VoiceTaskView = {

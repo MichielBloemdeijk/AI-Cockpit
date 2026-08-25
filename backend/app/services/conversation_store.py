@@ -1553,13 +1553,15 @@ class ConversationStore:
             return _event_record(event)
 
     async def mark_running_runs_interrupted(self) -> int:
-        interrupted_background_events: list[str] = []
+        interruption_summary_event_ids: list[str] = []
         async with session_scope() as session:
             repo = ConversationRepository(session)
             runs = list(await repo.list_unfinished_runs())
+            interrupted_background_by_conversation: dict[str, dict[str, object]] = {}
             for run in runs:
                 metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
                 branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
+                is_background = metadata.get("execution_mode") == "background"
                 await repo.update_run_status(
                     run.id,
                     status=RunStatus.interrupted.value,
@@ -1574,6 +1576,8 @@ class ConversationStore:
                     payload_json={
                         "run_id": run.id,
                         "task_run_id": run.id,
+                        "title": metadata.get("title") or "Background task",
+                        "goal": metadata.get("goal") or "",
                         "status": RunStatus.interrupted.value,
                         "summary": "AI-Cockpit restarted before this run completed.",
                         "speech_text": "AI-Cockpit restarted before this task completed.",
@@ -1581,7 +1585,7 @@ class ConversationStore:
                         "notify_policy": metadata.get("notify_policy", "important"),
                         "requested_notification": bool(metadata.get("requested_notification")),
                         "voice_delivery": {
-                            "speak": metadata.get("execution_mode") in {"background", "voice_interactive"},
+                            "speak": False,
                             "kind": "task_update",
                             "speech_text": "AI-Cockpit restarted before this task completed.",
                             "importance": "urgent",
@@ -1589,20 +1593,18 @@ class ConversationStore:
                     },
                     branch_key=branch_key,
                 )
-                if metadata.get("execution_mode") == "background":
-                    interrupted_background_events.append(event.id)
-                if metadata.get("execution_mode") in {"background", "voice_interactive"}:
-                    message = await repo.create_message(
+                if is_background:
+                    group = interrupted_background_by_conversation.setdefault(
+                        run.conversation_id,
+                        {"count": 0, "branch_key": branch_key},
+                    )
+                    group["count"] = int(group["count"]) + 1
+                    await repo.append_event(
                         conversation_id=run.conversation_id,
                         run_id=run.id,
-                        source_event_id=event.id,
-                        role=MessageRole.assistant.value,
-                        author_label="Jarvis",
-                        content="AI-Cockpit restarted before this task completed.",
-                        content_format="text",
-                    )
-                    timeline_payload = (
-                        build_background_task_timeline_item(
+                        actor_kind=ActorKind.assistant.value,
+                        event_type=TIMELINE_ITEM_EVENT_TYPE,
+                        payload_json=build_background_task_timeline_item(
                             run_id=run.id,
                             title=str(metadata.get("title") or "Background task"),
                             goal=str(metadata.get("goal") or ""),
@@ -1615,28 +1617,67 @@ class ConversationStore:
                             ],
                             notify_policy=str(metadata.get("notify_policy") or "important"),
                             requested_notification=bool(metadata.get("requested_notification")),
-                        )
-                        if metadata.get("execution_mode") == "background"
-                        else build_assistant_message_timeline_item(
-                            message_id=message.id,
-                            content=message.content,
-                            item_id=f"assistant:{run.id}:interrupted",
-                        )
-                    )
-                    await repo.append_event(
-                        conversation_id=run.conversation_id,
-                        run_id=run.id,
-                        actor_kind=ActorKind.assistant.value,
-                        event_type=TIMELINE_ITEM_EVENT_TYPE,
-                        payload_json=timeline_payload,
+                        ),
                         branch_key=branch_key,
                         parent_event_id=event.id,
                     )
+            for conversation_id, group in interrupted_background_by_conversation.items():
+                count = int(group["count"])
+                content = (
+                    "AI-Cockpit restarted before one background task completed."
+                    if count == 1
+                    else f"AI-Cockpit restarted before {count} background tasks completed."
+                )
+                branch_key = str(group["branch_key"] or MAIN_BRANCH_KEY)
+                summary_event = await repo.append_event(
+                    conversation_id=conversation_id,
+                    run_id=None,
+                    actor_kind=ActorKind.assistant.value,
+                    event_type="task.interruptions_summarized",
+                    payload_json={
+                        "count": count,
+                        "title": "Interrupted background work",
+                        "summary": content,
+                        "speech_text": content,
+                        "importance": "urgent",
+                        "notify_policy": "important",
+                        "requested_notification": True,
+                        "voice_delivery": {
+                            "speak": True,
+                            "kind": "task_update",
+                            "speech_text": content,
+                            "importance": "urgent",
+                        },
+                    },
+                    branch_key=branch_key,
+                )
+                message = await repo.create_message(
+                    conversation_id=conversation_id,
+                    run_id=None,
+                    source_event_id=summary_event.id,
+                    role=MessageRole.assistant.value,
+                    author_label="Jarvis",
+                    content=content,
+                    content_format="text",
+                )
+                await repo.append_event(
+                    conversation_id=conversation_id,
+                    run_id=None,
+                    actor_kind=ActorKind.assistant.value,
+                    event_type=TIMELINE_ITEM_EVENT_TYPE,
+                    payload_json=build_assistant_message_timeline_item(
+                        message_id=message.id,
+                        content=content,
+                    ),
+                    branch_key=branch_key,
+                    parent_event_id=summary_event.id,
+                )
+                interruption_summary_event_ids.append(summary_event.id)
             interrupted_count = len(runs)
-        if interrupted_background_events:
+        if interruption_summary_event_ids:
             from app.services.notifications import notify_event
 
-            for event_id in interrupted_background_events:
+            for event_id in interruption_summary_event_ids:
                 await notify_event(event_id)
         return interrupted_count
 

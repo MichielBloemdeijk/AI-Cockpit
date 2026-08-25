@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JarvisSpeechScheduler, type SpeechSchedulerDependencies } from "./jarvis-speech-scheduler";
 import { JarvisVoiceStateMachine } from "./jarvis-voice-state";
-import { getVoiceDelivery } from "./voice-delivery";
+import { getVoiceDelivery, setVoiceDeliveryState } from "./voice-delivery";
 
 const storage = new Map<string, string>();
 const localStorageMock = { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } };
@@ -117,6 +117,51 @@ describe("Jarvis speech scheduler", () => {
     await flush();
     expect(second.dependencies.synthesize).toHaveBeenCalledOnce();
     expect((await getVoiceDelivery("event-recovered"))?.state).toBe("spoken");
+  });
+
+  it("collapses duplicate legacy restart speech during recovery", async () => {
+    setup("listening");
+    const restartText = "AI-Cockpit restarted before this task completed.";
+    await setVoiceDeliveryState("restart-old", "pending", undefined, restartText);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await setVoiceDeliveryState("restart-new", "pending", undefined, restartText);
+    const second = setup("armed");
+
+    await second.scheduler.recover();
+    second.scheduler.retryPending();
+    await flush();
+
+    expect(second.dependencies.synthesize).toHaveBeenCalledOnce();
+    expect((await getVoiceDelivery("restart-old"))?.state).toBe("dismissed");
+    expect((await getVoiceDelivery("restart-new"))?.state).toBe("spoken");
+  });
+
+  it("collapses duplicate legacy restart events arriving from the live stream", async () => {
+    const { machine, scheduler, dependencies } = setup("listening");
+    const restartText = "AI-Cockpit restarted before this task completed.";
+
+    expect(await scheduler.enqueue({ eventId: "restart-live-one", text: restartText })).toBe(true);
+    expect(await scheduler.enqueue({ eventId: "restart-live-two", text: restartText })).toBe(false);
+    machine.setPhase("armed");
+    scheduler.onStateChanged();
+    await flush();
+
+    expect(dependencies.synthesize).toHaveBeenCalledOnce();
+    expect((await getVoiceDelivery("restart-live-two"))?.state).toBe("dismissed");
+  });
+
+  it("does not collapse unrelated identical recovered task results", async () => {
+    const first = setup("listening");
+    await first.scheduler.enqueue({ eventId: "result-one", text: "Task complete." });
+    await first.scheduler.enqueue({ eventId: "result-two", text: "Task complete." });
+    const second = setup("armed");
+
+    await second.scheduler.recover();
+    second.scheduler.retryPending();
+    await flush();
+    await flush();
+
+    expect(second.dependencies.synthesize).toHaveBeenCalledTimes(2);
   });
 
   it("activates answer routing when question playback starts, not while it is queued", async () => {

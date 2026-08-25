@@ -109,9 +109,56 @@ async def test_restart_interrupts_paused_background_run_without_resuming_it() ->
     interrupted = [event for event in events if event.event_type == "task.interrupted"]
     assert len(interrupted) == 1
     assert interrupted[0].payload_json is not None
-    assert interrupted[0].payload_json["voice_delivery"]["speak"] is True
+    assert interrupted[0].payload_json["voice_delivery"]["speak"] is False
+    all_events = await conversation_store.list_events(conversation.id, limit=100)
+    summaries = [event for event in all_events if event.event_type == "task.interruptions_summarized"]
+    assert len(summaries) == 1
+    assert summaries[0].payload_json is not None
+    assert summaries[0].payload_json["count"] == 1
+    assert summaries[0].payload_json["voice_delivery"]["speak"] is True
     messages = await conversation_store.list_messages(conversation.id, final_only=True)
-    assert any(message.source_event_id == interrupted[0].id for message in messages)
+    assert not any(message.source_event_id == interrupted[0].id for message in messages)
+    assert [message.source_event_id for message in messages].count(summaries[0].id) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_consolidates_multiple_background_interruptions_into_one_spoken_update() -> None:
+    conversation = await conversation_store.create_conversation(mode_hint="voice")
+    runs = [
+        await conversation_store.start_run(
+            conversation.id,
+            kind="assistant",
+            status=status,
+            metadata_json={
+                "execution_mode": "background",
+                "branch_key": "main",
+                "goal": f"Background goal {index}",
+                "title": f"Background task {index}",
+            },
+        )
+        for index, status in enumerate(("queued", "running", "paused"), start=1)
+    ]
+
+    assert await conversation_store.mark_running_runs_interrupted() == 3
+
+    all_events = await conversation_store.list_events(conversation.id, limit=200)
+    interrupted = [event for event in all_events if event.event_type == "task.interrupted"]
+    summaries = [event for event in all_events if event.event_type == "task.interruptions_summarized"]
+    assert {event.run_id for event in interrupted} == {run.id for run in runs}
+    assert all((event.payload_json or {})["voice_delivery"]["speak"] is False for event in interrupted)
+    assert len(summaries) == 1
+    assert summaries[0].payload_json is not None
+    assert summaries[0].payload_json["count"] == 3
+    assert summaries[0].payload_json["speech_text"] == "AI-Cockpit restarted before 3 background tasks completed."
+
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    interruption_messages = [
+        message
+        for message in messages
+        if message.content.startswith("AI-Cockpit restarted before")
+    ]
+    assert len(interruption_messages) == 1
+    assert interruption_messages[0].source_event_id == summaries[0].id
 
 
 @pytest.mark.asyncio

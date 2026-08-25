@@ -34,7 +34,7 @@ from app.services.agent_tools import run_shell_command
 from app.services.agent_tools import run_workspace_search
 from app.services.app_verifier import AppVerificationInfrastructureError
 from app.services.conversation_store import conversation_store
-from app.services.chat_orchestrator import should_delegate_voice_goal
+from app.services.chat_orchestrator import goal_targets_app_context, should_delegate_voice_goal
 from app.services.run_lifecycle import run_lifecycle
 from app.db.repositories.conversations import ConversationRepository
 from app.services.background_tasks import BackgroundTaskSnapshot
@@ -70,6 +70,50 @@ def test_native_tool_turns_have_enough_output_budget_for_source_files():
 )
 def test_voice_background_routing_policy(goal: str, requested_notification: bool, expected: bool) -> None:
     assert should_delegate_voice_goal(goal, requested_notification=requested_notification) is expected
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected"),
+    [
+        ("Write a short story about philosophy.", False),
+        ("Can you hear me in a different app?", False),
+        ("Fix the broken button in Legion App.", True),
+        ("Update the frontend page layout.", True),
+    ],
+)
+def test_recent_app_context_is_attached_only_to_app_work(goal: str, expected: bool) -> None:
+    assert goal_targets_app_context(goal, app_title="Legion App", app_slug="legion-app") is expected
+
+
+def test_story_background_task_cannot_inspect_other_tasks_or_unrelated_apps() -> None:
+    metadata = {
+        "execution_mode": "background",
+        "goal": "Write a short story about philosophy and return it.",
+        "payload": {},
+    }
+    names = {
+        str(item.get("function", {}).get("name") or "")
+        for item in agent_runner_module._provider_tools_for_metadata(metadata)
+    }
+
+    assert "task_publish_update" in names
+    assert names.isdisjoint({"list_background_tasks", "get_background_task", "cancel_background_task"})
+    assert names.isdisjoint({"app_list", "app_initialize", "app_verify"})
+
+
+def test_attached_app_background_task_keeps_app_tools_but_not_task_control_tools() -> None:
+    metadata = {
+        "execution_mode": "background",
+        "goal": "Fix the app button.",
+        "payload": {"app": {"slug": "legion-app"}},
+    }
+    names = {
+        str(item.get("function", {}).get("name") or "")
+        for item in agent_runner_module._provider_tools_for_metadata(metadata)
+    }
+
+    assert {"app_list", "app_initialize"}.issubset(names)
+    assert names.isdisjoint({"list_background_tasks", "get_background_task", "cancel_background_task"})
 
 
 @pytest.mark.asyncio
@@ -236,11 +280,11 @@ async def test_repeated_identical_background_tool_call_is_stopped_after_two_exec
     async def _repeat_tool(*args, **kwargs):
         nonlocal model_calls
         model_calls += 1
-        return _tool_response("list_background_tasks", {"include_finished": False})
+        return _tool_response("workspace_search", {"query": "needle"})
 
     monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _repeat_tool)
 
-    with pytest.raises(ValueError, match="repeated list_background_tasks"):
+    with pytest.raises(ValueError, match="repeated workspace_search"):
         await agent_runner_module.agent_runner.continue_run(run.id)
 
     events = await conversation_store.list_events_for_run(conversation.id, run.id)
@@ -253,6 +297,61 @@ async def test_repeated_identical_background_tool_call_is_stopped_after_two_exec
     )
     refreshed = await conversation_store.get_run(run.id)
     assert refreshed is not None and refreshed.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_story_background_task_publishes_once_then_finalizes_without_self_inspection(monkeypatch) -> None:
+    conversation, run = await _create_agent_run()
+    metadata = dict(run.metadata_json or {})
+    metadata.update(
+        {
+            "execution_mode": "background",
+            "voice_response": False,
+            "title": "Philosophy story",
+            "goal": "Write a short story about philosophy and return it.",
+            "payload": {},
+        }
+    )
+    await conversation_store.update_run_metadata(run.id, metadata)
+    responses = [
+        _tool_response("get_background_task", {"run_id": run.id}),
+        _tool_response(
+            "task_publish_update",
+            {"summary": "The story is taking shape.", "importance": "normal"},
+        ),
+        _finalize_response("A philosopher found that the question was the doorway, not the obstacle."),
+    ]
+    offered_tool_names: list[set[str]] = []
+
+    async def _next_turn(*args, **kwargs):
+        offered_tool_names.append(
+            {
+                str(item.get("function", {}).get("name") or "")
+                for item in kwargs.get("tools", [])
+            }
+        )
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _next_turn)
+
+    await agent_runner_module.agent_runner.continue_run(run.id)
+
+    refreshed = await conversation_store.get_run(run.id)
+    assert refreshed is not None and refreshed.status == "completed"
+    assert len(offered_tool_names) == 3
+    assert all(
+        names.isdisjoint({"list_background_tasks", "get_background_task", "cancel_background_task"})
+        for names in offered_tool_names
+    )
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    assert messages[-1].content == "A philosopher found that the question was the doorway, not the obstacle."
+    events = await conversation_store.list_events_for_run(conversation.id, run.id)
+    assert [event.event_type for event in events].count("task.progress") == 1
+    assert not any(
+        event.event_type == "agent.tool.called"
+        and (event.payload_json or {}).get("tool") == "get_background_task"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

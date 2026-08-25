@@ -32,6 +32,10 @@ function splitSentences(text: string): string[] {
   return (compact.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || []).map((part) => part.trim()).filter(Boolean);
 }
 
+function isLegacyRestartSpeech(text: string): boolean {
+  return text.replace(/\s+/g, " ").trim().toLowerCase() === "ai-cockpit restarted before this task completed.";
+}
+
 export class JarvisSpeechScheduler {
   private queue: SpeechQueueItem[] = [];
   private draining = false;
@@ -41,6 +45,7 @@ export class JarvisSpeechScheduler {
   private shuttingDown = false;
   private suppressNextDrain = false;
   private transientCounter = 0;
+  private legacyRestartHandled = false;
 
   constructor(
     private readonly machine: JarvisVoiceStateMachine,
@@ -50,6 +55,13 @@ export class JarvisSpeechScheduler {
   async enqueue(item: SpeechQueueItem): Promise<boolean> {
     const normalized = { ...item, text: item.text.trim(), persist: item.persist !== false };
     if (!normalized.text) return false;
+    if (isLegacyRestartSpeech(normalized.text)) {
+      if (this.legacyRestartHandled) {
+        if (normalized.persist) await setVoiceDeliveryState(normalized.eventId, "dismissed", normalized.deliveryId, normalized.text);
+        return false;
+      }
+      this.legacyRestartHandled = true;
+    }
     const existingItem = this.queue.find((candidate) => candidate.eventId === normalized.eventId) || (this.current?.eventId === normalized.eventId ? this.current : undefined);
     if (existingItem) {
       if (normalized.deliveryId && !existingItem.deliveryId) existingItem.deliveryId = normalized.deliveryId;
@@ -83,9 +95,15 @@ export class JarvisSpeechScheduler {
   }
 
   async recover(validQuestionRunIds?: ReadonlySet<string>): Promise<void> {
-    const records = await listRecoverableVoiceDeliveries();
+    const records = (await listRecoverableVoiceDeliveries()).sort((left, right) => right.updatedAt - left.updatedAt);
     for (const record of records) {
       if (!record.text || this.queue.some((item) => item.eventId === record.eventId) || this.current?.eventId === record.eventId) continue;
+      const isLegacyRestart = isLegacyRestartSpeech(record.text);
+      if (isLegacyRestart && this.legacyRestartHandled) {
+        await setVoiceDeliveryState(record.eventId, "dismissed", record.deliveryId);
+        continue;
+      }
+      this.legacyRestartHandled ||= isLegacyRestart;
       if (record.answerRunId && validQuestionRunIds && !validQuestionRunIds.has(record.answerRunId)) {
         await setVoiceDeliveryState(record.eventId, "dismissed", record.deliveryId);
         continue;

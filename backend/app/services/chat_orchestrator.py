@@ -24,11 +24,34 @@ from app.services.llm import PromptSegment, aggregate_usage, chat_completion, ch
 
 
 _APP_CONTEXT_HINT_RE = re.compile(r"(?:/apps/|started app task|app root:|entry page:|allowed write roots:|app has been updated)", re.IGNORECASE)
+_APP_WORK_REQUEST_RE = re.compile(
+    r"(?:/apps/|\b(?:build|create|edit|fix|update|change|test|verify|open|show|inspect|review|deploy)\b"
+    r".{0,80}\b(?:app|application|website|webpage|page|frontend|ui|component|route|layout)\b|"
+    r"\b(?:app|application|website|webpage|frontend|ui|component|route|layout)\b"
+    r".{0,80}\b(?:code|file|button|screen|status|error|bug|design)\b)",
+    re.IGNORECASE,
+)
 _VOICE_BACKGROUND_DIRECTIVE_RE = re.compile(
     r"\b(?:in the background|keep (?:working|going)|take your time|monitor|watch for|wait until|"
     r"tell me when|notify me when|let me know when)\b",
     re.IGNORECASE,
 )
+
+
+def goal_targets_app_context(goal: str, *, app_title: str = "", app_slug: str = "") -> bool:
+    normalized_goal = " ".join(str(goal or "").split()).lower()
+    app_identifiers = {
+        identifier
+        for identifier in (
+            " ".join(str(app_title or "").split()).lower(),
+            " ".join(str(app_slug or "").split()).lower(),
+        )
+        if identifier
+    }
+    return bool(
+        _APP_WORK_REQUEST_RE.search(normalized_goal)
+        or any(identifier in normalized_goal for identifier in app_identifiers)
+    )
 _VOICE_MUTATING_REQUEST_RE = re.compile(
     r"^\s*(?:please\s+)?(?:create|edit|update|change|fix|install|download|run|execute|test|build|"
     r"commit|deploy|start|stop|restart|delete|remove|move|rename|send|publish|configure)\b",
@@ -313,7 +336,15 @@ class ChatOrchestrator:
         app_context: dict[str, object] | None = None
         write_roots = list(default_write_roots)
         recent_app = await app_registry_service.get_recent_app_for_conversation(conversation_id)
-        if recent_app is not None:
+        goal_targets_recent_app = bool(
+            recent_app is not None
+            and goal_targets_app_context(
+                goal,
+                app_title=str(recent_app.title or ""),
+                app_slug=str(recent_app.slug or ""),
+            )
+        )
+        if recent_app is not None and goal_targets_recent_app:
             contract = resolve_generated_app_contract(recent_app.slug, recent_app.manifest_json)
             app_payload = {
                 "app_id": recent_app.id,

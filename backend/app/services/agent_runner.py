@@ -98,6 +98,17 @@ _VOICE_NEW_TASK_RE = re.compile(
     r"\b(?:start|create|run|perform|do|write|build|fix|test|make|compare|read|analy[sz]e|review|inspect)\b",
     re.IGNORECASE,
 )
+_BACKGROUND_TASK_CONTROL_TOOLS = {
+    "list_background_tasks",
+    "get_background_task",
+    "cancel_background_task",
+}
+_APP_TOOL_NAMES = {"app_list", "app_initialize", "app_verify"}
+_BACKGROUND_APP_WORK_REQUEST_RE = re.compile(
+    r"(?:/apps/|\b(?:build|create|edit|fix|update|change|test|verify|deploy)\b"
+    r".{0,80}\b(?:app|application|website|webpage|page|frontend|ui|component|route|layout)\b)",
+    re.IGNORECASE,
+)
 
 
 def _is_voice_task_status_query(goal: str) -> bool:
@@ -184,6 +195,25 @@ def _app_verification_failed_since_last_mutation(metadata: dict[str, Any]) -> bo
         if tool_name == "app_verify" and item.get("ok") is False:
             last_failed_verification_index = index
     return last_failed_verification_index > last_mutation_index
+
+
+def _provider_tools_for_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    provider_tools = get_agent_tool_provider_definitions("openai")
+    if metadata.get("execution_mode") != "background":
+        return provider_tools
+
+    has_app_context = bool(
+        _attached_app_slug(metadata)
+        or _BACKGROUND_APP_WORK_REQUEST_RE.search(str(metadata.get("goal") or ""))
+    )
+    blocked_tools = set(_BACKGROUND_TASK_CONTROL_TOOLS)
+    if not has_app_context:
+        blocked_tools.update(_APP_TOOL_NAMES)
+    return [
+        item
+        for item in provider_tools
+        if str(item.get("function", {}).get("name") or "") not in blocked_tools
+    ]
 
 
 class AgentRunner:
@@ -314,7 +344,12 @@ class AgentRunner:
                 for item in native_controls
                 if item.get("function", {}).get("name") != NATIVE_AGENT_DELEGATE_TOOL
             ]
-        tools = [*get_agent_tool_provider_definitions("openai"), *native_controls]
+        provider_tools = _provider_tools_for_metadata(metadata)
+        tools = [*provider_tools, *native_controls]
+        allowed_tool_names = {
+            str(item.get("function", {}).get("name") or "").strip()
+            for item in tools
+        }
         session_id = f"task:{conversation_id}"
         request_kind = "task.agent.native_decision"
 
@@ -557,6 +592,10 @@ class AgentRunner:
             try:
                 for tool_call in raw_tool_calls:
                     failing_tool_call = tool_call
+                    if tool_call.function.name not in allowed_tool_names:
+                        raise ValueError(
+                            f"Tool {tool_call.function.name} is not available for this run"
+                        )
                     arguments = _parse_native_tool_arguments(
                         tool_call.function.arguments,
                         tool_name=tool_call.function.name,

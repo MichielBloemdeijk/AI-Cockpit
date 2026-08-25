@@ -28,6 +28,7 @@ def test_notification_policy_only_alerts_requested_or_material_updates() -> None
     assert should_notify("task.progress", {"notify_policy": "all", "requested_notification": True})
     assert not should_notify("task.progress", {"notify_policy": "important", "importance": "normal"})
     assert not should_notify("task.completed", {"notify_policy": "none", "importance": "urgent"})
+    assert should_notify("task.interruptions_summarized", {"notify_policy": "important", "importance": "urgent"})
     assert should_notify("notification.test", {})
 
 
@@ -39,7 +40,30 @@ def test_required_input_is_not_suppressed_by_completion_policy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_restart_recovers_eligible_event_missing_its_delivery_outbox_row(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        (
+            "task.completed",
+            {
+                "summary": "Requested task complete",
+                "importance": "normal",
+                "notify_policy": "completion",
+                "requested_notification": True,
+            },
+        ),
+        (
+            "task.interruptions_summarized",
+            {
+                "summary": "AI-Cockpit restarted before two background tasks completed.",
+                "importance": "urgent",
+                "notify_policy": "important",
+                "requested_notification": True,
+            },
+        ),
+    ],
+)
+async def test_restart_recovers_eligible_event_missing_its_delivery_outbox_row(monkeypatch, event_type, payload) -> None:
     original_enabled = settings.web_push_enabled
     settings.web_push_enabled = True
     send_started = asyncio.Event()
@@ -56,13 +80,8 @@ async def test_restart_recovers_eligible_event_missing_its_delivery_outbox_row(m
             conversation.id,
             run_id=run.id,
             actor_kind="assistant",
-            event_type="task.completed",
-            payload_json={
-                "summary": "Requested task complete",
-                "importance": "normal",
-                "notify_policy": "completion",
-                "requested_notification": True,
-            },
+            event_type=event_type,
+            payload_json=payload,
         )
 
         assert await recover_pending_deliveries() == 1

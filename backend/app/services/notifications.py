@@ -42,7 +42,13 @@ def should_notify(event_type: str, payload: dict[str, Any]) -> bool:
     # notifications. Keep this check ahead of that policy's terminal-only return.
     if event_type == "task.requires_input":
         return True
-    terminal = event_type in {"task.completed", "task.failed", "task.cancelled", "task.interrupted"}
+    terminal = event_type in {
+        "task.completed",
+        "task.failed",
+        "task.cancelled",
+        "task.interrupted",
+        "task.interruptions_summarized",
+    }
     importance = str(payload.get("importance") or "normal").lower()
     if policy == "all":
         return True
@@ -195,6 +201,7 @@ async def recover_pending_deliveries() -> int:
             "task.failed",
             "task.cancelled",
             "task.interrupted",
+            "task.interruptions_summarized",
             "task.progress",
             "task.requires_input",
         }
