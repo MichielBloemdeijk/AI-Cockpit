@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from app.main import app
 import app.api.voice as voice_api_module
+from app.services.conversation_store import conversation_store
 
 
 @pytest.mark.asyncio
@@ -31,6 +32,29 @@ async def test_voice_conversation_and_notification_routes_are_authenticated_and_
         test_event = await client.post("/api/notifications/test")
         assert test_event.status_code == 200
         assert test_event.json()["event_id"]
+
+
+@pytest.mark.asyncio
+async def test_wake_word_acknowledgement_is_persisted_once_in_the_primary_voice_conversation() -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": "dev"})
+        conversation = (await client.get("/api/voice/conversation")).json()
+        response = await client.post("/api/voice/acknowledgements")
+
+    assert response.status_code == 200
+    message = response.json()
+    assert message["role"] == "assistant"
+    assert message["author_label"] == "Jarvis"
+    assert message["content"] == "Yes?"
+    assert message["source_event_id"]
+
+    messages = await conversation_store.list_messages(conversation["conversation_id"], final_only=True)
+    events = await conversation_store.list_events(conversation["conversation_id"])
+    assert [item.content for item in messages] == ["Yes?"]
+    acknowledgement = next(item for item in events if item.event_type == "voice.acknowledgement")
+    assert acknowledgement.id == message["source_event_id"]
+    assert acknowledgement.payload_json == {"content": "Yes?", "speech_text": "Yes?"}
 
 
 @pytest.mark.asyncio

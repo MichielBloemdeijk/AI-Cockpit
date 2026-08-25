@@ -911,6 +911,49 @@ class ConversationStore:
             await repo.touch_conversation(conversation_id)
             return _event_record(event), _message_record(message)
 
+    async def append_voice_acknowledgement(self, conversation_id: str) -> tuple[EventRecord, MessageRecord]:
+        """Record the fixed wake-word acknowledgement in the voice transcript.
+
+        The browser synthesizes this response directly after the user's wake
+        word.  Deliberately omit ``voice_delivery`` here so replaying the
+        durable event cannot make a second "Yes?" play.
+        """
+        content = "Yes?"
+        async with session_scope() as session:
+            repo = ConversationRepository(session)
+            event = await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=None,
+                actor_kind=ActorKind.assistant.value,
+                event_type="voice.acknowledgement",
+                payload_json={"content": content, "speech_text": content},
+                branch_key=MAIN_BRANCH_KEY,
+            )
+            message = await repo.create_message(
+                conversation_id=conversation_id,
+                run_id=None,
+                source_event_id=event.id,
+                role=MessageRole.assistant.value,
+                author_label="Jarvis",
+                content=content,
+                content_format="text",
+            )
+            await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=None,
+                actor_kind=ActorKind.assistant.value,
+                event_type=TIMELINE_ITEM_EVENT_TYPE,
+                payload_json=build_assistant_message_timeline_item(
+                    message_id=message.id,
+                    content=content,
+                    item_id=f"assistant:voice-acknowledgement:{event.sequence}:text",
+                ),
+                branch_key=MAIN_BRANCH_KEY,
+                parent_event_id=event.id,
+            )
+            await repo.touch_conversation(conversation_id)
+            return _event_record(event), _message_record(message)
+
     async def attach_artifact(
         self,
         conversation_id: str,

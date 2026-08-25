@@ -708,6 +708,15 @@ export async function resetVoiceConversation(): Promise<VoiceConversationRespons
   return res.json();
 }
 
+export async function recordVoiceAcknowledgement(): Promise<ConversationMessageView> {
+  const res = await fetch(`${BASE}/api/voice/acknowledgements`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function getVoiceUpdate(eventId: string): Promise<ConversationEventView> {
   const res = await fetch(`${BASE}/api/voice/updates/${encodeURIComponent(eventId)}`, {
     credentials: "include",

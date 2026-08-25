@@ -217,6 +217,56 @@ describe("Jarvis speech scheduler", () => {
     expect((await getVoiceDelivery("event-after-barge"))?.state).toBe("spoken");
   });
 
+  it("mutes active playback immediately and dismisses both current and queued durable speech", async () => {
+    const { scheduler, dependencies } = setup();
+    let rejectPlayback: ((reason?: unknown) => void) | null = null;
+    const stop = vi.fn(() => rejectPlayback?.(new Error("Muted")));
+    vi.mocked(dependencies.play).mockReturnValue({
+      finished: new Promise<void>((_resolve, reject) => { rejectPlayback = reject; }),
+      stop,
+    });
+    await scheduler.enqueue({ eventId: "event-current-mute", text: "Speaking now." });
+    await flush();
+    await scheduler.enqueue({ eventId: "event-queued-mute", text: "Do not play later." });
+
+    await scheduler.silence();
+    await flush();
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect((await getVoiceDelivery("event-current-mute"))?.state).toBe("dismissed");
+    expect((await getVoiceDelivery("event-queued-mute"))?.state).toBe("dismissed");
+    expect(dependencies.synthesize).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses events arriving while muted without synthesizing or replaying them after unmute", async () => {
+    const { machine, scheduler, dependencies } = setup();
+    machine.setMuted(true);
+
+    expect(await scheduler.enqueue({ eventId: "event-muted", text: "Show this only." })).toBe(false);
+    await flush();
+    expect(dependencies.synthesize).not.toHaveBeenCalled();
+    expect((await getVoiceDelivery("event-muted"))?.state).toBe("dismissed");
+
+    machine.setMuted(false);
+    scheduler.onStateChanged();
+    await flush();
+    expect(dependencies.synthesize).not.toHaveBeenCalled();
+  });
+
+  it("plays a new update normally after unmuting", async () => {
+    const { machine, scheduler, dependencies } = setup();
+    machine.setMuted(true);
+    await scheduler.enqueue({ eventId: "event-missed", text: "Missed update." });
+    machine.setMuted(false);
+
+    expect(await scheduler.enqueue({ eventId: "event-after-unmute", text: "New update." })).toBe(true);
+    await flush();
+
+    expect(dependencies.synthesize).toHaveBeenCalledWith("New update.");
+    expect((await getVoiceDelivery("event-missed"))?.state).toBe("dismissed");
+    expect((await getVoiceDelivery("event-after-unmute"))?.state).toBe("spoken");
+  });
+
   it("retries transient playback failures only after a user-safe retry boundary", async () => {
     const { scheduler, dependencies } = setup();
     vi.mocked(dependencies.play)

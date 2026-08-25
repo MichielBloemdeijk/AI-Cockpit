@@ -20,7 +20,7 @@ from app.models.voice import (
     VoiceTurnAccepted,
     VoiceTurnRequest,
 )
-from app.models.conversations import ConversationEventView
+from app.models.conversations import ConversationEventView, ConversationMessageView
 from app.services.auth import require_auth
 from app.services.background_tasks import cancel_task, get_task, list_tasks, snapshot
 from app.services.chat_orchestrator import chat_orchestrator
@@ -28,7 +28,7 @@ from app.services.conversation_store import conversation_store
 from app.services.run_supervisor import run_supervisor
 from app.services.voice import InvalidVoiceAudio, VoiceDependencyUnavailable, strip_wake_word, voice_service
 from app.services.voice_conversation import get_or_create_primary, reset_primary
-from app.presenters.conversations import present_conversation_event
+from app.presenters.conversations import present_conversation_event, present_conversation_message
 
 router = APIRouter(prefix="/api/voice", tags=["voice"], dependencies=[Depends(require_auth)])
 
@@ -104,6 +104,14 @@ async def reset_voice_conversation() -> VoiceConversationResponse:
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return _voice_conversation_view(conversation)
+
+
+@router.post("/acknowledgements", response_model=ConversationMessageView)
+async def record_voice_acknowledgement() -> ConversationMessageView:
+    """Persist the spoken wake-word-only response exactly once."""
+    conversation = await get_or_create_primary()
+    _event, message = await conversation_store.append_voice_acknowledgement(conversation.id)
+    return present_conversation_message(message)
 
 
 @router.get("/updates/{event_id}", response_model=ConversationEventView)

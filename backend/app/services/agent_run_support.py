@@ -495,21 +495,34 @@ async def _pause_for_question(
             "speech_text": question,
             "importance": "high" if kind != "question" else "normal",
         }
-    question_event = await conversation_store.append_event(
-        conversation_id,
-        run_id=run_id,
-        actor_kind="assistant",
-        event_type="agent.question.asked",
-        payload_json=question_payload,
-        branch_key=_metadata_branch_key(metadata),
-    )
-    await conversation_store.append_timeline_item(
-        conversation_id,
-        run_id=run_id,
-        item_payload=build_question_timeline_item(run_id=run_id, pending_question=pending_question),
-        branch_key=_metadata_branch_key(metadata),
-        parent_event_id=question_event.id,
-    )
+    interactive_voice_question = bool(metadata.get("voice_response") or metadata.get("execution_mode") == "voice_interactive")
+    if interactive_voice_question:
+        question_event, _message = await conversation_store.append_event_with_assistant_message(
+            conversation_id,
+            run_id=run_id,
+            event_type="agent.question.asked",
+            content=question,
+            importance="high" if kind != "question" else "normal",
+            payload_json=question_payload,
+            branch_key=_metadata_branch_key(metadata),
+            timeline_item_payload=build_question_timeline_item(run_id=run_id, pending_question=pending_question),
+        )
+    else:
+        question_event = await conversation_store.append_event(
+            conversation_id,
+            run_id=run_id,
+            actor_kind="assistant",
+            event_type="agent.question.asked",
+            payload_json=question_payload,
+            branch_key=_metadata_branch_key(metadata),
+        )
+        await conversation_store.append_timeline_item(
+            conversation_id,
+            run_id=run_id,
+            item_payload=build_question_timeline_item(run_id=run_id, pending_question=pending_question),
+            branch_key=_metadata_branch_key(metadata),
+            parent_event_id=question_event.id,
+        )
     current_run = await conversation_store.get_run(run_id)
     if current_run is not None and metadata.get("execution_mode") == "background":
         requires_input = await conversation_store.append_event_with_assistant_message(

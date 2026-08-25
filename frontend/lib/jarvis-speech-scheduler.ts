@@ -62,6 +62,10 @@ export class JarvisSpeechScheduler {
       }
       this.legacyRestartHandled = true;
     }
+    if (this.machine.current.muted) {
+      await this.dismissForMute(normalized);
+      return false;
+    }
     const existingItem = this.queue.find((candidate) => candidate.eventId === normalized.eventId) || (this.current?.eventId === normalized.eventId ? this.current : undefined);
     if (existingItem) {
       if (normalized.deliveryId && !existingItem.deliveryId) existingItem.deliveryId = normalized.deliveryId;
@@ -82,6 +86,12 @@ export class JarvisSpeechScheduler {
           }
         }
       }
+      return false;
+    }
+    // Muting can happen while an IndexedDB claim is in flight. The event is
+    // still durable for the transcript, but must never become audible later.
+    if (this.machine.current.muted) {
+      await this.dismissForMute(normalized);
       return false;
     }
     this.queue = normalized.urgent ? [normalized, ...this.queue] : [...this.queue, normalized];
@@ -105,6 +115,10 @@ export class JarvisSpeechScheduler {
       }
       this.legacyRestartHandled ||= isLegacyRestart;
       if (record.answerRunId && validQuestionRunIds && !validQuestionRunIds.has(record.answerRunId)) {
+        await setVoiceDeliveryState(record.eventId, "dismissed", record.deliveryId);
+        continue;
+      }
+      if (this.machine.current.muted) {
         await setVoiceDeliveryState(record.eventId, "dismissed", record.deliveryId);
         continue;
       }
@@ -144,6 +158,23 @@ export class JarvisSpeechScheduler {
     this.stopDisposition = "dismissed";
     this.suppressNextDrain = true;
     this.playback?.stop();
+  }
+
+  /**
+   * Immediately silence current browser audio and make every unheard update
+   * show-only. Unlike ``interrupt``, mute intentionally discards queued
+   * speech: unmuting must not replay anything the user chose not to hear.
+   */
+  async silence(): Promise<void> {
+    const discarded = this.queue.splice(0);
+    if (this.current) {
+      this.stopDisposition = "dismissed";
+      discarded.push(this.current);
+    }
+    this.playback?.stop();
+    await Promise.all(discarded.filter((item) => item.persist).map((item) =>
+      setVoiceDeliveryState(item.eventId, "dismissed", item.deliveryId, item.text),
+    ));
   }
 
   async dismissQuestion(runId: string): Promise<void> {
@@ -226,6 +257,7 @@ export class JarvisSpeechScheduler {
         }
       }
       if (yieldedToUrgent) return;
+      if (this.stopDisposition) throw new Error("Speech stopped");
       if (item.persist) {
         await setVoiceDeliveryState(item.eventId, "spoken", item.deliveryId);
         if (item.deliveryId) {
@@ -265,5 +297,13 @@ export class JarvisSpeechScheduler {
       this.suppressNextDrain = false;
       if (!this.shuttingDown && !suppressDrain) void this.drain();
     }
+  }
+
+  private async dismissForMute(item: SpeechQueueItem): Promise<void> {
+    if (!item.persist) return;
+    const existing = await getVoiceDelivery(item.eventId);
+    // A late Push copy of audio the user already heard is not a missed event.
+    if (existing?.state === "spoken") return;
+    await setVoiceDeliveryState(item.eventId, "dismissed", item.deliveryId, item.text);
   }
 }

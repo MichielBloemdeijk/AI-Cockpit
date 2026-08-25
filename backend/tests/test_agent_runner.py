@@ -373,6 +373,9 @@ async def test_background_question_uses_requires_input_as_its_only_voice_project
     requires_input = next(event for event in events if event.event_type == "task.requires_input")
     assert "voice_delivery" not in (question_event.payload_json or {})
     assert (requires_input.payload_json or {})["voice_delivery"]["speak"] is True
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    assert [message.source_event_id for message in messages] == [requires_input.id]
+    assert [message.content for message in messages] == ["Which environment should I use?"]
     assert any(
         event.event_type == "chat.timeline.item.committed"
         and (event.payload_json or {}).get("kind") == "question"
@@ -399,6 +402,9 @@ async def test_voice_interactive_question_remains_directly_speakable() -> None:
     question_event = next(event for event in events if event.event_type == "agent.question.asked")
     assert (question_event.payload_json or {})["voice_delivery"]["speak"] is True
     assert not any(event.event_type == "task.requires_input" for event in events)
+    messages = await conversation_store.list_messages(conversation.id, final_only=True)
+    assert [message.source_event_id for message in messages] == [question_event.id]
+    assert [message.content for message in messages] == ["What should I call it?"]
 
 
 @pytest.mark.asyncio
