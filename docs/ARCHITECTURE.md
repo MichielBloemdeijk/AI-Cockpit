@@ -7,6 +7,11 @@ This document describes the current architecture of AI Cockpit as it exists in t
 ## Related Docs
 
 - [README.md](../README.md) for setup, runtime entrypoints, and the high-level product overview
+- [JARVIS_VOICE_POC.md](JARVIS_VOICE_POC.md) for the implemented Jarvis voice prototype contract and acceptance evidence
+- [JARVIS_TARGET_ARCHITECTURE.md](JARVIS_TARGET_ARCHITECTURE.md) for the agreed Jarvis end-state architecture
+- [JARVIS_EVOLUTION_ARCHITECTURE.md](JARVIS_EVOLUTION_ARCHITECTURE.md) for the high-level POC-to-target assessment
+- [JARVIS_IMPLEMENTATION_PLAN.md](JARVIS_IMPLEMENTATION_PLAN.md) for the approved phased Jarvis implementation contract
+- [JARVIS_IMPLEMENTATION_LEDGER.md](JARVIS_IMPLEMENTATION_LEDGER.md) for checkpoint evidence and the next-session entry point
 
 ## System Overview
 
