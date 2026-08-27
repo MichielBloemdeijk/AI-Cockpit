@@ -9,6 +9,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import (
@@ -159,6 +160,48 @@ class TaskService:
             repo = TaskRepository(session)
             events = list(await repo.list_events_after(after_sequence=after_sequence, limit=limit))
             return await repo.get_latest_event_sequence(), events
+
+    async def record_event(
+        self,
+        task_id: str,
+        *,
+        event_type: str,
+        payload: dict | None,
+        idempotency_key: str,
+        attempt_id: str | None = None,
+    ) -> TaskEvent:
+        async with session_scope() as session:
+            task = await self._lock_task(session, task_id)
+            return await TaskRepository(session).append_event(
+                task_id=task.id,
+                attempt_id=attempt_id or task.current_attempt_id,
+                event_type=event_type,
+                payload_json=payload,
+                idempotency_key=idempotency_key,
+            )
+
+    async def save_checkpoint(self, task_id: str, *, checkpoint: dict) -> None:
+        async with session_scope() as session:
+            task = await self._lock_task(session, task_id)
+            attempt = await self._current_attempt(session, task)
+            if attempt is None or attempt.ended_at is not None:
+                raise ValueError("Task has no active attempt")
+            attempt.checkpoint_json = checkpoint
+            attempt.heartbeat_at = utc_now()
+            await session.flush()
+
+    async def cancellation_requested(self, task_id: str) -> bool:
+        async with session_scope() as session:
+            task = await TaskRepository(session).get_task(task_id)
+            return bool(
+                task is not None
+                and task.status == "running"
+                and task.cancellation_requested_at is not None
+            )
+
+    async def worker_health(self) -> WorkerHealth:
+        async with session_scope() as session:
+            return await self._worker_health(session)
 
     async def cancel(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
         async with session_scope() as session:
@@ -586,7 +629,13 @@ class TaskService:
 
     async def _worker_health(self, session: AsyncSession) -> WorkerHealth:
         result = await session.execute(
-            select(WorkerInstance).order_by(WorkerInstance.heartbeat_at.desc()).limit(1)
+            select(WorkerInstance)
+            .where(
+                WorkerInstance.stopped_at.is_(None),
+                WorkerInstance.state.in_(["starting", "idle", "busy"]),
+            )
+            .order_by(WorkerInstance.heartbeat_at.desc())
+            .limit(1)
         )
         worker = result.scalar_one_or_none()
         if worker is None:
@@ -594,7 +643,12 @@ class TaskService:
         heartbeat = worker.heartbeat_at
         if heartbeat.tzinfo is None:
             heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-        status = "online" if heartbeat >= utc_now() - timedelta(seconds=20) and worker.stopped_at is None else "offline"
+        status = (
+            "online"
+            if heartbeat >= utc_now() - timedelta(seconds=settings.worker_stale_after_seconds)
+            and worker.stopped_at is None
+            else "offline"
+        )
         return WorkerHealth(status=status, worker_id=worker.id, heartbeat_at=worker.heartbeat_at)
 
 

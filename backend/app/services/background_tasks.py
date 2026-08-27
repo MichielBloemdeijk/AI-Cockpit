@@ -304,18 +304,54 @@ async def publish_terminal_update(
 
 
 async def list_tasks(conversation_id: str, *, include_finished: bool = False) -> list[BackgroundTaskSnapshot]:
+    global_snapshots: list[BackgroundTaskSnapshot] = []
+    for task_snapshot in await task_service.list_tasks():
+        task = task_snapshot.task
+        if task.origin_conversation_id != conversation_id:
+            continue
+        if not include_finished and task.status in TERMINAL_STATUSES:
+            continue
+        detail = await task_service.get_task(task.id)
+        if detail is None:
+            continue
+        current_attempt = next(
+            (attempt for attempt in detail.attempts if attempt.id == task.current_attempt_id),
+            detail.attempts[-1] if detail.attempts else None,
+        )
+        runtime_reference = str(current_attempt.agent_runtime_reference or "").strip() if current_attempt else ""
+        compatibility_run = await conversation_store.get_run(runtime_reference) if runtime_reference else None
+        global_snapshots.append(BackgroundTaskSnapshot(
+            run_id=runtime_reference or task.id,
+            conversation_id=conversation_id,
+            parent_run_id=compatibility_run.parent_run_id if compatibility_run else None,
+            title=_title(task.goal),
+            goal=task.goal,
+            status=task.status,
+            priority=task.importance,
+            notify_policy=task.presentation_policy,
+            requested_notification=task.presentation_policy in {"completion", "all"},
+            summary=task.terminal_summary,
+            error=task.terminal_summary if task.status in {"failed", "interrupted"} else None,
+            started_at=task.created_at,
+            finished_at=task.finished_at,
+            task_id=task.id,
+        ))
     runs = await conversation_store.list_runs(conversation_id)
-    snapshots = [
+    legacy_snapshots = [
         snapshot(run)
         for run in runs
         if isinstance(run.metadata_json, dict)
         and run.metadata_json.get("execution_mode") == "background"
+        and not run.metadata_json.get("global_task_id")
         and (include_finished or run.status not in TERMINAL_STATUSES)
     ]
-    return snapshots
+    return [*global_snapshots, *legacy_snapshots]
 
 
 async def get_task(conversation_id: str, run_id: str) -> BackgroundTaskSnapshot | None:
+    for task in await list_tasks(conversation_id, include_finished=True):
+        if task.run_id == run_id or task.task_id == run_id:
+            return task
     run = await conversation_store.get_run(run_id)
     if run is None or run.conversation_id != conversation_id:
         return None
@@ -330,6 +366,12 @@ async def cancel_task(conversation_id: str, run_id: str) -> BackgroundTaskSnapsh
         return None
     if task.status in TERMINAL_STATUSES:
         return task
+    if task.task_id:
+        await task_service.cancel(
+            task.task_id,
+            idempotency_key=f"voice-cancel:{task.task_id}:{uuid4()}",
+        )
+        return await get_task(conversation_id, task.task_id)
     from app.services.run_supervisor import run_supervisor
 
     if run_supervisor.get(run_id) is not None:

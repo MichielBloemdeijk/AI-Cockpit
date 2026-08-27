@@ -76,9 +76,11 @@ Assert-File $npm "npm"
 
 $llamaArgs = @("-m", $gemma, "--host", "127.0.0.1", "--port", "$LlamaPort", "--ctx-size", "$ContextSize", "--n-gpu-layers", "all", "--jinja", "--parallel", "1", "--reasoning", "off")
 $backendArgs = @("run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$BackendPort")
+$workerArgs = @("run", "python", "-m", "app.worker")
 $frontendArgs = @("run", "dev", "--", "--hostname", "127.0.0.1", "--port", "$FrontendPort")
 Write-Host "llama-server: $llama $($llamaArgs -join ' ')"
 Write-Host "backend: uv $($backendArgs -join ' ')"
+Write-Host "worker: uv $($workerArgs -join ' ')"
 Write-Host "frontend: npm $($frontendArgs -join ' ')"
 
 if ($DryRun) {
@@ -116,6 +118,7 @@ function Stop-StartedProcessTree([int]$ProcessId) {
 try {
   Start-LoggedProcess $llama $llamaArgs $repo "llama-server"
   Start-LoggedProcess $uv $backendArgs $backend "backend"
+  Start-LoggedProcess $uv $workerArgs $backend "worker"
   Start-LoggedProcess $npm $frontendArgs $frontend "frontend"
   New-Item -ItemType Directory -Path (Split-Path -Parent $pidFile) -Force | Out-Null
   $payload = [pscustomobject]@{ version = 1; processes = @($records) }

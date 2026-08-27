@@ -1646,12 +1646,19 @@ class ConversationStore:
         async with session_scope() as session:
             repo = ConversationRepository(session)
             runs = list(await repo.list_unfinished_runs())
+            interrupted_count = 0
             interrupted_background_by_conversation: dict[str, dict[str, object]] = {}
             for run in runs:
                 metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
                 branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
                 is_background = metadata.get("execution_mode") == "background"
                 global_task_id = str(metadata.get("global_task_id") or "").strip()
+                # First-class tasks are owned by the separate worker. An API
+                # restart must not alter either their task state or their
+                # compatibility child-run projection.
+                if is_background and global_task_id:
+                    continue
+                interrupted_count += 1
                 if is_background and global_task_id:
                     interrupted_global_tasks.append((global_task_id, run.id))
                 await repo.update_run_status(
@@ -1767,7 +1774,6 @@ class ConversationStore:
                     parent_event_id=summary_event.id,
                 )
                 interruption_summary_event_ids.append(summary_event.id)
-            interrupted_count = len(runs)
         if interruption_summary_event_ids:
             from app.services.notifications import notify_event
 

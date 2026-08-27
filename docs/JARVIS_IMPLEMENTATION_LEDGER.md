@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 4 — not started
-- **Last completed phase:** Phase 3
+- **Current phase:** Phase 5 — not started
+- **Last completed phase:** Phase 4
 - **Product implementation started:** yes
-- **Next session entry point:** implement Phase 4 worker ownership, FIFO claims, runtime sink seam, attempt workspaces, heartbeats, cancellation observation, and generalized leases; recheck worktree status before editing
+- **Next session entry point:** implement Phase 5 coordinator, deterministic fake provider, live Jarvis workspace projections, command lab, and provider-independent state-machine scenarios; recheck worktree status before editing
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -21,8 +21,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 0. Plan and reversible cutover preparation | Complete | Passed 2026-08-27 | 5b9aa8c |
 | 1. Clean schema and ordered-domain contracts | Complete | Passed 2026-08-27 | 70c15e7 |
 | 2. Standard conversations and Jarvis daily lifecycle | Complete | Passed 2026-08-27 | 8d72f15 |
-| 3. First-class tasks and task UI | Complete | Passed 2026-08-27 | Phase completion commit |
-| 4. Worker, runtime seam, and resource leases | Not started | — | — |
+| 3. First-class tasks and task UI | Complete | Passed 2026-08-27 | 5e1b75d |
+| 4. Worker, runtime seam, and resource leases | Complete | Passed 2026-08-27 | Phase completion commit |
 | 5. Coordinator, fake provider, and live workspace | Not started | — | — |
 | 6. OpenAI Realtime and WebRTC | Not started | — | — |
 | 7. Barge-in and audible-history truth | Not started | — | — |
@@ -277,8 +277,80 @@ The Tasks UI can accept work before the worker exists and honestly reports worke
 
 - Status: passed 2026-08-27
 - Commit subject: `feat(jarvis): add first-class tasks`
-- Commit hash: resolve from git history in the next phase session
+- Commit hash: 5e1b75d6408319c8bffa7ffbb48c2f1ec9d5a469
 - Next entry point: Phase 4 worker process, runtime context/sink extraction, FIFO claiming, heartbeats, isolated workspaces, cancellation observation, and typed resource leases
+- Blockers: none
+
+## Phase 4 record
+
+### Scope completed
+
+- Added `AgentExecutionContext` and `AgentExecutionSink` as the execution boundary, retained a conversation sink adapter, and added a task sink that writes ordered global events, checkpoints, questions, artifacts, terminal state, and presentations.
+- Added a worker-native agent loop that reuses the existing model boundary, native control tools, provider tool schemas, and tool execution registry inside an isolated task-attempt workspace.
+- Added `python -m app.worker` as a process entry point; FastAPI no longer starts delegated background execution.
+- Added transactionally serialized worker registration, one-active-worker enforcement, independent idle/busy heartbeat, and stopped/rejected/stale worker states.
+- Added strict FIFO head claiming by task creation order and stable ID. A lease-blocked head is never bypassed.
+- Added typed, exclusive, sorted, all-or-nothing resource acquisition over every mutable task target, lease renewal, expiry cleanup, and release on all worker exits.
+- Added durable attempt ownership, claim/start/heartbeat timestamps, runtime references, isolated workspace paths, checkpoints, and globally ordered claim/runtime events.
+- Added checkpoint-and-requeue with idempotent target expansion, complete lease release, and a new attempt under the same task.
+- Added running-cancellation observation and safe executor exit; queued/waiting cancellation remains immediate.
+- Added stale-worker takeover that interrupts owned tasks, ends attempts, expires leases, emits a durable event, and never retries automatically.
+- Kept API restart ownership-neutral by excluding first-class worker-owned task projections from legacy run interruption recovery.
+- Updated the voice/background compatibility surface to read and cancel global tasks while preserving old run-only records.
+- Added live worker-health API and Tasks-page projection.
+- Added standalone and all-services PowerShell worker launch paths plus VS Code `Start Task Worker`/`Start All` integration.
+- Updated README and shipped architecture documentation for the three-process backend/worker/frontend runtime.
+
+### Repository state at start
+
+- Branch: codex/jarvis-voice-poc
+- HEAD: 5e1b75d6408319c8bffa7ffbb48c2f1ec9d5a469
+- Commit subject: feat(jarvis): add first-class tasks
+- Existing unrelated user-owned changes remained untouched.
+
+### Verification evidence
+
+Run on 2026-08-27:
+
+1. Phase 4 worker, lifecycle, and compatibility gate: `uv run pytest tests/test_worker_coordinator.py tests/test_task_worker.py tests/test_task_service.py tests/test_agent_runner.py tests/test_conversation_store.py tests/test_run_lifecycle.py tests/test_voice_api.py -q`
+   - Result: PASS
+   - 84 passed in 92.46 seconds
+2. focused coordination/worker gate after final lifecycle changes: `uv run pytest tests/test_worker_coordinator.py tests/test_task_worker.py -q`
+   - Result: PASS
+   - 10 passed in 4.36 seconds
+3. deterministic native-tool worker scenario: `uv run pytest tests/test_task_worker.py::test_deterministic_real_agent_task_completes_through_worker -q`
+   - Result: PASS
+   - The worker executed `file_write` inside `attempt-1`, persisted its trace/checkpoint, and finalized a result artifact
+4. metadata parity: `uv run alembic check`
+   - Result: PASS
+   - No new upgrade operations detected
+5. complete backend gate: `uv run pytest`
+   - Result: PASS
+   - 209 passed in 229.79 seconds
+6. frontend task health/API and regression gate: `npm run test -- --run`
+   - Result: PASS
+   - 20 files and 117 tests passed
+7. frontend lint and production build: `npm run lint` and `npm run build`
+   - Result: PASS
+   - Next.js 16.2.3 build and TypeScript checks completed; 30 routes generated
+8. PowerShell parser gate for `scripts/start-worker.ps1` and `scripts/start-jarvis-local.ps1`
+   - Result: PASS
+   - Both scripts parsed without errors
+
+### Phase 4 deviations and rationale
+
+The Phase 1 schema already contained worker, target, lease, attempt, and checkpoint fields, so Phase 4 required no Alembic revision. `alembic check` confirms model/DDL parity.
+
+The native agent decision path is shared through the existing model boundary, control-tool definitions, provider schemas, and tool registry rather than moving the interactive conversation loop wholesale. This keeps standard chat behavior stable while the new context/sink boundary gives task execution its own durable projection and cancellation ownership.
+
+The legacy background child run remains a status-only compatibility projection for the POC voice API. The worker synchronizes its coarse state, but global tasks, attempts, events, questions, artifacts, and leases are authoritative. The child is never scheduled by FastAPI.
+
+### Checkpoint
+
+- Status: passed 2026-08-27
+- Commit subject: `feat(jarvis): add durable task worker`
+- Commit hash: resolve from git history in the next phase session
+- Next entry point: Phase 5 coordinator contract, deterministic fake provider, live Jarvis workspace, and command lab
 - Blockers: none
 
 ## Phase 1 entry checklist (completed)

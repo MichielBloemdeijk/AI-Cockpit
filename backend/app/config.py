@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     knowledge_notes_dir: str = "../knowledge/notes"
     knowledge_preferences_file: str = "../knowledge/preferences.yaml"
     verifier_generated_apps_dir: str = "data/verifier-runs"
+    task_workspaces_dir: str = "data/task-workspaces"
+    worker_heartbeat_interval_seconds: float = 5.0
+    worker_stale_after_seconds: float = 20.0
+    worker_lease_ttl_seconds: float = 30.0
+    worker_poll_interval_seconds: float = 0.5
     conversation_context_message_limit: int = 24
     conversation_compaction_enabled: bool = True
     conversation_compaction_trigger_messages: int = 18
@@ -191,6 +196,13 @@ class Settings(BaseSettings):
     @property
     def verifier_generated_apps_path(self) -> Path:
         configured_path = Path(self.verifier_generated_apps_dir)
+        if configured_path.is_absolute():
+            return configured_path
+        return self.backend_root / configured_path
+
+    @property
+    def task_workspaces_path(self) -> Path:
+        configured_path = Path(self.task_workspaces_dir)
         if configured_path.is_absolute():
             return configured_path
         return self.backend_root / configured_path

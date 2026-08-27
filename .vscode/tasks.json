@@ -36,6 +36,41 @@
       }
     },
 
+    // ─── Task Worker ────────────────────────────────────────────────────────
+    {
+      "label": "Start Task Worker",
+      "type": "shell",
+      "command": "uv run python -m app.worker",
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^ERROR.*$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Task worker active",
+          "endsPattern": "Task worker active"
+        }
+      },
+      "presentation": {
+        "label": "Task Worker",
+        "group": "cockpit",
+        "reveal": "always",
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      },
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    },
+
     // ─── Frontend ────────────────────────────────────────────────────────────
     {
       "label": "Start Frontend",
@@ -74,7 +109,7 @@
     // ─── Start All ───────────────────────────────────────────────────────────
     {
       "label": "Start All",
-      "dependsOn": ["Start Backend", "Start Frontend"],
+      "dependsOn": ["Start Backend", "Start Task Worker", "Start Frontend"],
       "dependsOrder": "parallel",
       "group": {
         "kind": "build",

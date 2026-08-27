@@ -885,9 +885,8 @@ class AgentRunner:
 
                         await run_lifecycle.cancel(child_run.id)
                         return
-                    from app.services.run_supervisor import run_supervisor
-
-                    run_supervisor.start(child_run.id, runner=agent_runner)
+                    # The child run is retained only as a compatibility
+                    # projection. The separate task worker owns execution.
                     return
                 if action_kind == "tool":
                     batched_tools = action.get("batched_tools") if isinstance(action.get("batched_tools"), list) else []

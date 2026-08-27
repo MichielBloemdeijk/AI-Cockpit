@@ -745,6 +745,12 @@ export async function getTask(taskId: string): Promise<TaskDetail> {
   return res.json();
 }
 
+export async function getTaskWorkerHealth(): Promise<{ status: string; worker_id: string | null; heartbeat_at: string | null }> {
+  const res = await fetch(`${BASE}/api/tasks/worker`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function dispatchTask(request: TaskDispatch): Promise<TaskSummary> {
   const res = await fetch(`${BASE}/api/tasks`, {
     method: "POST",

@@ -204,6 +204,16 @@ async def replay_task_events(
     )
 
 
+@router.get("/worker", response_model=WorkerHealthView)
+async def get_worker_health() -> WorkerHealthView:
+    worker = await task_service.worker_health()
+    return WorkerHealthView(
+        status=worker.status,
+        worker_id=worker.worker_id,
+        heartbeat_at=worker.heartbeat_at,
+    )
+
+
 @router.get("/{task_id}", response_model=TaskDetailView)
 async def get_task(task_id: str) -> TaskDetailView:
     snapshot = await task_service.get_task(task_id)

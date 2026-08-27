@@ -7,6 +7,7 @@ import {
   getGeneratedAppBySlug,
   getJarvisState,
   getTask,
+  getTaskWorkerHealth,
   listConversations,
   listGeneratedApps,
   listTasks,
@@ -64,6 +65,20 @@ describe("global task api", () => {
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({ idempotency_key: "cancel-key" }),
+    });
+  });
+
+  it("reads worker health from the task domain", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "online", worker_id: "worker-1", heartbeat_at: "2026-08-27T12:00:00Z" }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getTaskWorkerHealth()).resolves.toMatchObject({ status: "online" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/worker", {
+      credentials: "include",
+      cache: "no-store",
     });
   });
 });

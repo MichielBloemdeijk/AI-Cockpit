@@ -192,6 +192,7 @@ async def test_task_trace_is_exposed_without_polluting_conversation_history() ->
         listing = await client.get("/api/tasks")
         detail = await client.get(f"/api/tasks/{created.task.id}")
         replay = await client.get("/api/tasks/events", params={"after": 0})
+        worker = await client.get("/api/tasks/worker")
 
     assert listing.status_code == 200
     assert listing.json()[0]["id"] == created.task.id
@@ -205,3 +206,5 @@ async def test_task_trace_is_exposed_without_polluting_conversation_history() ->
     assert body["presentations"][0]["candidate_type"] == "terminal_result"
     assert replay.status_code == 200
     assert replay.json()["latest_sequence"] == body["events"][-1]["sequence"]
+    assert worker.status_code == 200
+    assert worker.json()["status"] == "offline"

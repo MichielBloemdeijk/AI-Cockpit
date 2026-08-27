@@ -12,6 +12,7 @@ This repository currently targets local development. Windows has convenience scr
 - Keep conversations, branches, tool activity, reasoning summaries, and final responses across restarts.
 - Review proposed knowledge before promoting it into local files.
 - Reach the development UI from another device through Tailscale.
+- Dispatch durable background tasks with ordered traces, isolated attempts, and explicit cancel/retry controls.
 
 For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -86,7 +87,7 @@ cd ..
 
 ### 5. Start the application
 
-On Windows, open two PowerShell terminals in the repository root:
+On Windows, open three PowerShell terminals in the repository root:
 
 ```powershell
 # Terminal 1
@@ -95,6 +96,11 @@ On Windows, open two PowerShell terminals in the repository root:
 
 ```powershell
 # Terminal 2
+.\scripts\start-worker.ps1 -Foreground
+```
+
+```powershell
+# Terminal 3
 .\start-frontend.ps1
 ```
 
@@ -110,6 +116,12 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ```bash
 # Terminal 2
+cd backend
+uv run python -m app.worker
+```
+
+```bash
+# Terminal 3
 cd frontend
 npm run dev
 ```

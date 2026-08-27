@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronRight, ListTodo, Loader2, Plus } from "lucide-react";
 
-import { dispatchTask, listTasks, type TaskSummary } from "@/lib/api";
+import { dispatchTask, getTaskWorkerHealth, listTasks, type TaskSummary } from "@/lib/api";
 
 const ACTIVE = new Set(["queued", "running", "waiting_for_input"]);
 
@@ -22,10 +22,13 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workerStatus, setWorkerStatus] = useState("offline");
 
   const refresh = useCallback(async () => {
     try {
-      setTasks(await listTasks());
+      const [nextTasks, worker] = await Promise.all([listTasks(), getTaskWorkerHealth()]);
+      setTasks(nextTasks);
+      setWorkerStatus(worker.status);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to load tasks");
@@ -70,6 +73,7 @@ export default function TasksPage() {
               <ListTodo size={19} className="text-blue-400" />
               <h1 className="font-semibold">Tasks</h1>
               <span className="text-xs text-zinc-500">{tasks.filter((task) => ACTIVE.has(task.status)).length} active</span>
+              <span className={workerStatus === "online" ? "text-xs text-emerald-400" : "text-xs text-zinc-500"}>worker {workerStatus}</span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">Global background work, independent from conversation history.</p>
           </div>

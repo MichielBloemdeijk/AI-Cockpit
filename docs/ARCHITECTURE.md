@@ -39,7 +39,7 @@ The required product direction for generated apps is a chat-resident agent loop:
 5. the agent reads and writes files inside the app write roots from the same chat session
 6. the agent returns to the user in that same chat thread when the work is complete
 
-This remains the primary control plane for interactive generated-app work. Background delegation from chat or the compatibility `/voice` surface now creates a first-class global task and a temporary child run linked as its execution reference. The child-run bridge continues after an HTTP/SSE observer disconnects; Phase 4 replaces that execution ownership with the separate worker.
+This remains the primary control plane for interactive generated-app work. Background delegation from chat or the compatibility `/voice` surface creates a first-class global task. A separate `python -m app.worker` process claims and executes global tasks; the temporary child run is retained only as a compatibility projection and never owns execution.
 
 The product is currently split into a FastAPI backend, a Next.js frontend, a local SQLite database for durable conversation state, and a file-backed knowledge directory.
 
@@ -92,7 +92,7 @@ On startup it:
 
 1. ensures the database exists and migrations are applied
 2. initializes the async SQLAlchemy engine
-3. marks any `running` or `queued` conversation runs as `interrupted`, preserving an interruption event and assistant projection
+3. marks unfinished interactive and legacy conversation runs as `interrupted` while leaving worker-owned global tasks untouched
 4. starts local speech-model warmup and retries queued Web Push deliveries
 
 It then registers these active routers:
@@ -105,6 +105,8 @@ It then registers these active routers:
 - `voice` for local speech, the primary voice conversation, asynchronous turns, and background-task control
 - `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
+
+The separate worker process registers through `worker_instances`, heartbeats independently of FastAPI, claims the strict FIFO head, acquires the complete sorted mutable target set, and executes through `AgentExecutionContext` plus `AgentExecutionSink`. Attempt checkpoints, task events, questions, results, and terminal state remain in SQLite, so an API restart has no ownership effect.
 
 ### Configuration
 
@@ -728,7 +730,7 @@ The frontend also includes API, chat-history, hook, stream-state, and chat-compo
 
 These are not accidental omissions; they are the main boundaries of the current implementation.
 
-- Task execution still uses the temporary in-process child-run bridge; the separate FIFO worker, heartbeats, claims, leases, and restart-safe execution arrive in Phase 4.
+- The v1 worker is intentionally single-active and does not automatically retry interrupted work; stale takeover records interruption and waits for explicit user retry.
 - The current durable agent runtime is intentionally single-agent and does not yet include subagents, MCP integration, or plugin loading.
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
