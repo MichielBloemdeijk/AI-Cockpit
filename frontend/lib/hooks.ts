@@ -9,6 +9,7 @@ import { checkAuth } from "./api";
 import { useConversationActions } from "./use-conversation-actions";
 import { useConversationDetail } from "./use-conversation-detail";
 import { useConversationList } from "./use-conversation-list";
+import type { ConversationKindFilter } from "./use-conversation-list";
 import { useConversationPolling } from "./use-conversation-polling";
 
 export type { AgentStatus, ChatActionError, ChatMessage } from "./chat-state-types";
@@ -28,6 +29,7 @@ export function useAuth() {
 export function useChat() {
   const [activeBranchKey, setActiveBranchKey] = useState("main");
   const [showArchived, setShowArchived] = useState(false);
+  const [conversationKindFilter, setConversationKindFilter] = useState<ConversationKindFilter>("all");
   const [loading, setLoading] = useState(false);
   const [canStop, setCanStop] = useState(false);
   const activeStreamRunIdRef = useRef<string | null>(null);
@@ -36,7 +38,7 @@ export function useChat() {
     activeConversationId,
     setActiveConversationId,
     refreshConversations,
-  } = useConversationList(showArchived);
+  } = useConversationList(showArchived, conversationKindFilter);
   const {
     activeConversation,
     artifacts,
@@ -108,6 +110,7 @@ export function useChat() {
     events,
     artifacts,
     showArchived,
+    conversationKindFilter,
     loading,
     canStop,
     loadingConversation,
@@ -121,6 +124,7 @@ export function useChat() {
     selectConversation,
     selectBranch,
     setShowArchived,
+    setConversationKindFilter,
   };
 }
 

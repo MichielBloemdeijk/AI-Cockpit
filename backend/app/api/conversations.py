@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sse_starlette.sse import EventSourceResponse
@@ -59,11 +60,17 @@ async def list_conversations(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     include_archived: bool = Query(default=False),
+    kind: Literal["all", "standard", "jarvis"] = Query(default="all"),
+    lifecycle: Literal["all", "open", "closed"] = Query(default="all"),
 ):
     conversations = await conversation_store.list_conversations(
         limit=limit,
         offset=offset,
         include_archived=include_archived,
+        conversation_kind=(
+            None if kind == "all" else "jarvis_daily" if kind == "jarvis" else "standard"
+        ),
+        lifecycle_status=None if lifecycle == "all" else lifecycle,
     )
     return [await conversation_read_model.present_summary(conversation) for conversation in conversations]
 
@@ -204,6 +211,11 @@ async def create_conversation_message(conversation_id: str, req: ConversationMes
     conversation = await conversation_store.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation.conversation_kind != "standard":
+        raise HTTPException(
+            status_code=409,
+            detail="Jarvis daily logs accept turns only through the Jarvis workspace",
+        )
 
     user_messages = [Message(role="user", content=req.content)]
     _, session_metadata = await chat_orchestrator._resolve_session_metadata(
@@ -280,6 +292,11 @@ async def execute_conversation_tool(conversation_id: str, req: ConversationToolR
     conversation = await conversation_store.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation.conversation_kind != "standard":
+        raise HTTPException(
+            status_code=409,
+            detail="Jarvis daily logs do not support inline conversation tools",
+        )
 
     defaults = await chat_settings_service.get_defaults()
     session_metadata = chat_settings_service.resolve_conversation_metadata(conversation, defaults)
@@ -468,6 +485,11 @@ async def branch_resend(conversation_id: str, req: ConversationBranchResendReque
     conversation = await conversation_store.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation.conversation_kind != "standard":
+        raise HTTPException(
+            status_code=409,
+            detail="Jarvis daily logs cannot be branched or resent",
+        )
 
     source_message = await conversation_store.get_message(req.source_message_id)
     if source_message is None or source_message.conversation_id != conversation_id or source_message.role != "user":

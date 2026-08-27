@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 
 from app.db.repositories.conversations import ConversationRepository
@@ -42,6 +42,11 @@ class ConversationRecord:
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
+    conversation_kind: str = "standard"
+    lifecycle_status: str = "open"
+    closed_at: datetime | None = None
+    jarvis_day_key: date | None = None
+    jarvis_day_sequence: int | None = None
 
 
 @dataclass(slots=True)
@@ -96,6 +101,12 @@ class MessageRecord:
     content_format: str
     is_final: bool
     created_at: datetime
+    modality: str = "text"
+    execution_mode: str = "agent"
+    communication_state: str = "completed"
+    source_task_id: str | None = None
+    source_task_event_id: str | None = None
+    presented_in_turn_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -151,6 +162,11 @@ def _conversation_record(model) -> ConversationRecord:
         session_metadata_json=model.session_metadata_json,
         workspace_path=model.workspace_path,
         is_primary_voice=bool(model.is_primary_voice),
+        conversation_kind=model.conversation_kind,
+        lifecycle_status=model.lifecycle_status,
+        closed_at=model.closed_at,
+        jarvis_day_key=model.jarvis_day_key,
+        jarvis_day_sequence=model.jarvis_day_sequence,
         created_at=model.created_at,
         updated_at=model.updated_at,
         archived_at=model.archived_at,
@@ -211,6 +227,12 @@ def _message_record(model) -> MessageRecord:
         content=model.content,
         content_format=model.content_format,
         is_final=model.is_final,
+        modality=model.modality,
+        execution_mode=model.execution_mode,
+        communication_state=model.communication_state,
+        source_task_id=model.source_task_id,
+        source_task_event_id=model.source_task_event_id,
+        presented_in_turn_id=model.presented_in_turn_id,
         created_at=model.created_at,
     )
 
@@ -410,6 +432,10 @@ class ConversationStore:
         mode_hint: str | None = None,
         session_metadata_json: dict | None = None,
         is_primary_voice: bool = False,
+        conversation_kind: str = "standard",
+        lifecycle_status: str = "open",
+        jarvis_day_key: date | None = None,
+        jarvis_day_sequence: int | None = None,
     ) -> ConversationRecord:
         async with session_scope() as session:
             repo = ConversationRepository(session)
@@ -418,6 +444,10 @@ class ConversationStore:
                 mode_hint=mode_hint,
                 session_metadata_json=session_metadata_json,
                 is_primary_voice=is_primary_voice,
+                conversation_kind=conversation_kind,
+                lifecycle_status=lifecycle_status,
+                jarvis_day_key=jarvis_day_key,
+                jarvis_day_sequence=jarvis_day_sequence,
             )
             relative_workspace_path = workspace_relative_path(conversation.id)
             await repo.touch_conversation(conversation.id, workspace_path=relative_workspace_path)
@@ -460,12 +490,22 @@ class ConversationStore:
                     return None
             return _conversation_record(conversation)
 
+    async def get_jarvis_history_state(self, conversation_id: str) -> tuple[bool, bool]:
+        async with session_scope() as session:
+            repo = ConversationRepository(session)
+            state = await repo.get_jarvis_state()
+            is_current = state is not None and state.current_log_id == conversation_id
+            is_live = is_current and await repo.has_live_realtime_session(conversation_id)
+            return is_current, is_live
+
     async def list_conversations(
         self,
         *,
         limit: int = 20,
         offset: int = 0,
         include_archived: bool = False,
+        conversation_kind: str | None = None,
+        lifecycle_status: str | None = None,
     ) -> list[ConversationRecord]:
         async with session_scope() as session:
             repo = ConversationRepository(session)
@@ -473,6 +513,8 @@ class ConversationStore:
                 limit=limit,
                 offset=offset,
                 include_archived=include_archived,
+                conversation_kind=conversation_kind,
+                lifecycle_status=lifecycle_status,
             )
             records: list[ConversationRecord] = []
             for conversation in conversations:

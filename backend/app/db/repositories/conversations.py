@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.tables import (
@@ -15,7 +15,9 @@ from app.db.tables import (
     ConversationEvent,
     ConversationMessage,
     ConversationRun,
+    JarvisState,
     MemoryItem,
+    RealtimeSession,
     RunStatus,
 )
 
@@ -30,6 +32,17 @@ class ConversationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def assert_content_mutable(self, conversation_id: str) -> Conversation:
+        conversation = await self.get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+        if (
+            conversation.conversation_kind == "jarvis_daily"
+            and conversation.lifecycle_status == "closed"
+        ):
+            raise ValueError(f"Closed Jarvis log is read-only: {conversation_id}")
+        return conversation
+
     async def create_conversation(
         self,
         *,
@@ -38,6 +51,10 @@ class ConversationRepository:
         session_metadata_json: dict | None = None,
         workspace_path: str | None = None,
         is_primary_voice: bool = False,
+        conversation_kind: str = "standard",
+        lifecycle_status: str = "open",
+        jarvis_day_key: date | None = None,
+        jarvis_day_sequence: int | None = None,
     ) -> Conversation:
         conversation = Conversation(
             title=title,
@@ -45,6 +62,10 @@ class ConversationRepository:
             session_metadata_json=session_metadata_json,
             workspace_path=workspace_path,
             is_primary_voice=is_primary_voice,
+            conversation_kind=conversation_kind,
+            lifecycle_status=lifecycle_status,
+            jarvis_day_key=jarvis_day_key,
+            jarvis_day_sequence=jarvis_day_sequence,
         )
         self.session.add(conversation)
         await self.session.flush()
@@ -96,16 +117,45 @@ class ConversationRepository:
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         return await self.session.get(Conversation, conversation_id)
 
+    async def get_jarvis_state(self) -> JarvisState | None:
+        return await self.session.get(JarvisState, "current")
+
+    async def has_live_realtime_session(self, conversation_id: str) -> bool:
+        statement = (
+            select(RealtimeSession.id)
+            .where(RealtimeSession.conversation_id == conversation_id)
+            .where(RealtimeSession.lifecycle_state.in_(["connecting", "ready"]))
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none() is not None
+
     async def list_conversations(
         self,
         *,
         limit: int = 20,
         offset: int = 0,
         include_archived: bool = False,
+        conversation_kind: str | None = None,
+        lifecycle_status: str | None = None,
+        include_empty_jarvis: bool = False,
     ) -> Sequence[Conversation]:
         stmt = select(Conversation)
         if not include_archived:
             stmt = stmt.where(Conversation.archived_at.is_(None))
+        if conversation_kind is not None:
+            stmt = stmt.where(Conversation.conversation_kind == conversation_kind)
+        if lifecycle_status is not None:
+            stmt = stmt.where(Conversation.lifecycle_status == lifecycle_status)
+        if not include_empty_jarvis:
+            has_messages = exists(
+                select(ConversationMessage.id).where(
+                    ConversationMessage.conversation_id == Conversation.id
+                )
+            )
+            stmt = stmt.where(
+                or_(Conversation.conversation_kind != "jarvis_daily", has_messages)
+            )
         stmt = (
             stmt
             .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc())
@@ -140,6 +190,7 @@ class ConversationRepository:
         parent_branch_key: str | None = None,
         branched_from_message_id: str | None = None,
     ) -> ConversationBranch:
+        await self.assert_content_mutable(conversation_id)
         branch = ConversationBranch(
             conversation_id=conversation_id,
             branch_key=branch_key,
@@ -179,6 +230,7 @@ class ConversationRepository:
         parent_run_id: str | None = None,
         metadata_json: dict | None = None,
     ) -> ConversationRun:
+        await self.assert_content_mutable(conversation_id)
         run = ConversationRun(
             conversation_id=conversation_id,
             kind=kind,
@@ -238,6 +290,17 @@ class ConversationRepository:
             .values(status=status, error=error, finished_at=finished_at)
         )
         await self.session.execute(stmt)
+
+    async def close_conversation(self, conversation_id: str, *, closed_at: datetime) -> None:
+        stmt = (
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .where(Conversation.lifecycle_status == "open")
+            .values(lifecycle_status="closed", closed_at=closed_at, updated_at=closed_at)
+        )
+        result = await self.session.execute(stmt)
+        if result.rowcount != 1:
+            raise ValueError(f"Open conversation not found: {conversation_id}")
 
     async def claim_run_for_execution(self, run_id: str) -> bool:
         """Atomically claim a queued run so cancellation cannot race startup."""
@@ -331,10 +394,17 @@ class ConversationRepository:
         update_stmt = (
             update(Conversation)
             .where(Conversation.id == conversation_id)
+            .where(
+                or_(
+                    Conversation.conversation_kind != "jarvis_daily",
+                    Conversation.lifecycle_status == "open",
+                )
+            )
             .values(last_event_sequence=Conversation.last_event_sequence + 1)
         )
         result = await self.session.execute(update_stmt)
         if result.rowcount != 1:
+            await self.assert_content_mutable(conversation_id)
             raise ValueError(f"Conversation not found: {conversation_id}")
         sequence_stmt = select(Conversation.last_event_sequence).where(Conversation.id == conversation_id)
         sequence_result = await self.session.execute(sequence_stmt)
@@ -360,10 +430,17 @@ class ConversationRepository:
             lock_stmt = (
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
+                .where(
+                    or_(
+                        Conversation.conversation_kind != "jarvis_daily",
+                        Conversation.lifecycle_status == "open",
+                    )
+                )
                 .values(last_event_sequence=Conversation.last_event_sequence)
             )
             lock_result = await self.session.execute(lock_stmt)
             if lock_result.rowcount != 1:
+                await self.assert_content_mutable(conversation_id)
                 raise ValueError(f"Conversation not found: {conversation_id}")
             existing_stmt = (
                 select(ConversationEvent)
@@ -403,7 +480,14 @@ class ConversationRepository:
         author_label: str | None = None,
         content_format: str = "markdown",
         is_final: bool = True,
+        modality: str = "text",
+        execution_mode: str = "agent",
+        communication_state: str = "completed",
+        source_task_id: str | None = None,
+        source_task_event_id: str | None = None,
+        presented_in_turn_id: str | None = None,
     ) -> ConversationMessage:
+        await self.assert_content_mutable(conversation_id)
         message = ConversationMessage(
             conversation_id=conversation_id,
             run_id=run_id,
@@ -413,6 +497,12 @@ class ConversationRepository:
             content=content,
             content_format=content_format,
             is_final=is_final,
+            modality=modality,
+            execution_mode=execution_mode,
+            communication_state=communication_state,
+            source_task_id=source_task_id,
+            source_task_event_id=source_task_event_id,
+            presented_in_turn_id=presented_in_turn_id,
         )
         self.session.add(message)
         await self.session.flush()
@@ -525,6 +615,7 @@ class ConversationRepository:
         content_text: str | None = None,
         content_json: dict | None = None,
     ) -> ConversationArtifact:
+        await self.assert_content_mutable(conversation_id)
         artifact = ConversationArtifact(
             conversation_id=conversation_id,
             run_id=run_id,

@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 2 — not started
-- **Last completed phase:** Phase 1
+- **Current phase:** Phase 3 — not started
+- **Last completed phase:** Phase 2
 - **Product implementation started:** yes
-- **Next session entry point:** implement the Phase 2 standard-conversation and Jarvis daily-log lifecycle on the Phase 1 repositories; recheck worktree status before editing
+- **Next session entry point:** implement Phase 3 first-class task services, APIs, event replay, and task UI on the Phase 1 task schema; recheck worktree status before editing
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -19,8 +19,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | Phase | Status | Exit gate | Commit |
 | --- | --- | --- | --- |
 | 0. Plan and reversible cutover preparation | Complete | Passed 2026-08-27 | 5b9aa8c |
-| 1. Clean schema and ordered-domain contracts | Complete | Passed 2026-08-27 | Phase completion commit |
-| 2. Standard conversations and Jarvis daily lifecycle | Not started | — | — |
+| 1. Clean schema and ordered-domain contracts | Complete | Passed 2026-08-27 | 70c15e7 |
+| 2. Standard conversations and Jarvis daily lifecycle | Complete | Passed 2026-08-27 | Phase completion commit |
 | 3. First-class tasks and task UI | Not started | — | — |
 | 4. Worker, runtime seam, and resource leases | Not started | — | — |
 | 5. Coordinator, fake provider, and live workspace | Not started | — | — |
@@ -158,8 +158,67 @@ Cross-domain causal IDs whose foreign keys would introduce circular DDL dependen
 
 - Status: passed 2026-08-27
 - Commit subject: `feat(jarvis): establish durable domain schema`
-- Commit hash: resolve from git history in the next phase session
+- Commit hash: 70c15e7f8e5459f037167d7b59aa8307ab5edac0
 - Next entry point: Phase 2 operational-day function, transactional current-log resolution, and lazy first durable turn
+- Blockers: none
+
+## Phase 2 record
+
+### Scope completed
+
+- Added the authoritative timezone-aware Europe/Amsterdam operational-day function with the 04:00 boundary.
+- Added transactional singleton-state locking, lazy first-turn log creation, competing-first-turn serialization, active-exchange rollover deferral, idle rollover, daily titles, and same-day explicit fresh starts.
+- Persisted typed Jarvis turns with modality, `jarvis_shell` execution mode, communication state, and idempotent accepted-turn events.
+- Added explicit fresh-start acknowledgement on the old log, closure and pointer replacement in one transaction, and retry-safe fresh-start handling.
+- Enforced closed Jarvis log immutability in repositories and rejected standard Agent, Council, inline-tool, branch, and resend entry points for every Jarvis log.
+- Added `GET /api/jarvis/state`, `POST /api/jarvis/turns/text`, and `POST /api/jarvis/logs/new` typed contracts.
+- Extended shared conversation summaries/messages with kind, lifecycle, day, current/live, read-only, modality, execution, communication, and causal metadata.
+- Added All/Standard/Jarvis history filters, Jarvis lifecycle badges, current-log routing to `/jarvis`, and read-only rendering for closed logs without composer, branch, or resend controls.
+- Added the initial typed `/jarvis` workspace needed for the Phase 2 routing contract. Page load reads state only; the first accepted turn remains the lazy creation boundary.
+- Preserved archive/closure independence, standard conversation behavior, and global task identity across rollover.
+
+### Repository state at start
+
+- Branch: codex/jarvis-voice-poc
+- HEAD: 70c15e7f8e5459f037167d7b59aa8307ab5edac0
+- Commit subject: feat(jarvis): establish durable domain schema
+- Existing unrelated user-owned changes remained untouched.
+
+### Verification evidence
+
+Run on 2026-08-27:
+
+1. Phase 2 backend lifecycle/API gate: `uv run pytest tests/test_jarvis_daily.py tests/test_jarvis_schema.py tests/test_conversation_api.py -q`
+   - Result: PASS
+   - 25 passed in 12.11 seconds
+2. metadata parity: `uv run alembic check`
+   - Result: PASS
+   - No new upgrade operations detected
+3. complete backend gate: `uv run pytest`
+   - First run found one backward-compatibility fixture failure after 193 passes; new `MessageRecord` truth fields received legacy-safe defaults.
+   - Final result: PASS
+   - 194 passed in 122.01 seconds
+4. frontend state/component/API gate: `npm run test -- --run`
+   - Result: PASS
+   - 19 files and 112 tests passed
+5. frontend lint: `npm run lint`
+   - Result: PASS
+6. frontend production build: `npm run build`
+   - Result: PASS
+   - Next.js 16.2.3 build and TypeScript checks completed; 29 routes generated, including `/jarvis`
+
+### Phase 2 deviations and rationale
+
+Windows Python does not include an IANA timezone database, so the cross-platform `tzdata` dependency was added to make the locked Europe/Amsterdam and DST behavior deterministic. The installed lock resolved `tzdata` 2026.3. This is an implementation dependency, not an architecture change.
+
+The initial typed `/jarvis` page landed in Phase 2 rather than waiting for the full Phase 5 live workspace because the Phase 2 routing contract requires current history entries to open `/jarvis`. It intentionally contains no fake coordinator or voice state: it reads the current durable log, accepts typed shell turns, and exposes explicit fresh start. Phase 5 still owns the full conversation/tasks/activity/header projections.
+
+### Checkpoint
+
+- Status: passed 2026-08-27
+- Commit subject: `feat(jarvis): add daily log lifecycle`
+- Commit hash: resolve from git history in the next phase session
+- Next entry point: Phase 3 global task service, normalized task trace, APIs, and dedicated task UI
 - Blockers: none
 
 ## Phase 1 entry checklist (completed)
@@ -180,6 +239,14 @@ Cross-domain causal IDs whose foreign keys would introduce circular DDL dependen
 - Add a Jarvis application service that owns lazy current-log creation, rollover, explicit fresh start, and closed-log mutation guards.
 - Extend shared history/API projections without changing standard-chat behavior.
 - Complete the Phase 2 backend/frontend deterministic gate before starting first-class task UI work.
+
+## Phase 3 entry checklist
+
+- Resolve and record the Phase 2 completion commit hash.
+- Define typed task/question/artifact API projections over the Phase 1 schema without reusing conversation list identity.
+- Implement dispatch, cancel, answer, explicit retry, target declaration, and atomic task-state/event transitions.
+- Add global task event replay and `/tasks` plus `/tasks/{id}` UI surfaces.
+- Keep old background-run endpoints available only as compatibility surfaces until their later retirement phase.
 
 ## Session update template
 

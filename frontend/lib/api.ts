@@ -111,6 +111,14 @@ export interface ConversationSummary {
   archived_at: string | null;
   last_message_preview: string | null;
   latest_run_status: string | null;
+  conversation_kind?: "standard" | "jarvis_daily";
+  lifecycle_status?: "open" | "closed";
+  closed_at?: string | null;
+  jarvis_day_key?: string | null;
+  jarvis_day_sequence?: number | null;
+  is_current_jarvis?: boolean;
+  is_live?: boolean;
+  is_read_only?: boolean;
 }
 
 export interface ConversationBranchView {
@@ -141,6 +149,12 @@ export interface ConversationMessageView {
   content: string;
   content_format: string;
   is_final: boolean;
+  modality?: "voice" | "text" | "system";
+  execution_mode?: "jarvis_shell" | "agent" | "council";
+  communication_state?: "completed" | "interrupted" | "unheard" | "transcription_failed";
+  source_task_id?: string | null;
+  source_task_event_id?: string | null;
+  presented_in_turn_id?: string | null;
   created_at: string;
 }
 
@@ -557,10 +571,49 @@ export async function councilChat(
   return res.json();
 }
 
-export async function listConversations(includeArchived = false): Promise<ConversationSummary[]> {
-  const res = await fetch(`${BASE}/api/conversations?include_archived=${includeArchived ? "true" : "false"}`, { credentials: "include", cache: "no-store" });
+export async function listConversations(
+  includeArchived = false,
+  kind: "all" | "standard" | "jarvis" = "all",
+): Promise<ConversationSummary[]> {
+  const params = new URLSearchParams({
+    include_archived: includeArchived ? "true" : "false",
+    kind,
+  });
+  const res = await fetch(`${BASE}/api/conversations?${params}`, { credentials: "include", cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export async function getJarvisState(): Promise<JarvisStateResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/state`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function acceptJarvisTextTurn(
+  content: string,
+  idempotencyKey: string,
+): Promise<JarvisTurnAcceptedResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/turns/text`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ content, idempotency_key: idempotencyKey }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function startFreshJarvisLog(idempotencyKey: string): Promise<ConversationSummary> {
+  const res = await fetch(`${BASE}/api/jarvis/logs/new`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const payload = await res.json() as { current_log: ConversationSummary };
+  return payload.current_log;
 }
 
 export async function getConversation(conversationId: string, branchKey = "main"): Promise<ConversationDetail> {
@@ -678,6 +731,18 @@ export async function updateChatSettings(
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export interface JarvisStateResponse {
+  operational_day: string;
+  state_revision: number;
+  current_log: ConversationDetail | null;
+}
+
+export interface JarvisTurnAcceptedResponse {
+  conversation: ConversationSummary;
+  message: ConversationMessageView;
+  event_sequence: number;
 }
 
 export async function getVoiceHealth(): Promise<VoiceHealthResponse> {

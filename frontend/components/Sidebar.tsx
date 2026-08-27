@@ -2,12 +2,13 @@
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { MessageSquare, ListTodo, BookOpen, Settings, LogOut, Cpu, Blocks } from "lucide-react";
+import { AudioLines, MessageSquare, ListTodo, BookOpen, Settings, LogOut, Cpu, Blocks } from "lucide-react";
 import clsx from "clsx";
 import { logout } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 const NAV = [
+  { href: "/jarvis", label: "Jarvis", icon: AudioLines },
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/background", label: "Background", icon: ListTodo },
   { href: "/workspace/apps", label: "Apps", icon: Blocks },

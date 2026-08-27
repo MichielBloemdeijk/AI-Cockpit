@@ -5,7 +5,7 @@ import json
 import logging
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models.chat import ChatRequest, ChatResponse, CouncilResponse
@@ -13,6 +13,7 @@ from app.models.settings import ChatSettingsUpdateRequest, ConversationSessionMe
 from app.services.auth import require_auth
 from app.services.chat_settings import chat_settings_service
 from app.services.chat_orchestrator import chat_orchestrator
+from app.services.conversation_store import conversation_store
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,16 @@ async def chat(req: ChatRequest):
     - council_mode=False + stream=False → single JSON response
     - council_mode=True                 → JSON with all model responses + synthesized
     """
+    if req.conversation_id:
+        conversation = await conversation_store.get_conversation(req.conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        if conversation.conversation_kind != "standard":
+            raise HTTPException(
+                status_code=409,
+                detail="Jarvis daily logs cannot run standard Agent or Council turns",
+            )
+
     if req.council_mode:
         response = await chat_orchestrator.run_council_response(
             messages=req.messages,

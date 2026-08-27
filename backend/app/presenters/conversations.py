@@ -26,6 +26,12 @@ def present_conversation_message(record) -> ConversationMessageView:
         content=record.content,
         content_format=record.content_format,
         is_final=record.is_final,
+        modality=record.modality,
+        execution_mode=record.execution_mode,
+        communication_state=record.communication_state,
+        source_task_id=record.source_task_id,
+        source_task_event_id=record.source_task_event_id,
+        presented_in_turn_id=record.presented_in_turn_id,
         created_at=record.created_at,
     )
 
@@ -92,6 +98,8 @@ def present_conversation_summary(
     session_metadata,
     last_message_preview: str | None,
     latest_run_status: str | None,
+    is_current_jarvis: bool = False,
+    is_live: bool = False,
 ) -> ConversationSummary:
     return ConversationSummary(
         id=conversation_record.id,
@@ -102,6 +110,19 @@ def present_conversation_summary(
         created_at=conversation_record.created_at,
         updated_at=conversation_record.updated_at,
         archived_at=conversation_record.archived_at,
+        conversation_kind=conversation_record.conversation_kind,
+        lifecycle_status=conversation_record.lifecycle_status,
+        closed_at=conversation_record.closed_at,
+        jarvis_day_key=(
+            None if conversation_record.jarvis_day_key is None else conversation_record.jarvis_day_key.isoformat()
+        ),
+        jarvis_day_sequence=conversation_record.jarvis_day_sequence,
+        is_current_jarvis=is_current_jarvis,
+        is_live=is_live,
+        is_read_only=(
+            conversation_record.conversation_kind == "jarvis_daily"
+            and conversation_record.lifecycle_status == "closed"
+        ),
         last_message_preview=last_message_preview,
         latest_run_status=latest_run_status,
     )

@@ -1,15 +1,71 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  acceptJarvisTextTurn,
   createGeneratedApp,
   getGeneratedAppBySlug,
+  getJarvisState,
+  listConversations,
   listGeneratedApps,
   login,
   streamChat,
   streamConversationEvents,
+  startFreshJarvisLog,
   type ConversationEventView,
   updateChatSettings,
 } from "./api";
+
+describe("Jarvis daily-log api", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("loads Jarvis state without creating a log and filters shared history", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ operational_day: "2026-08-27", state_revision: 0, current_log: null }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getJarvisState();
+    await listConversations(true, "jarvis");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/jarvis/state", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/conversations?include_archived=true&kind=jarvis",
+      { credentials: "include", cache: "no-store" },
+    );
+  });
+
+  it("sends idempotency keys for text turns and explicit fresh starts", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ current_log: { id: "jarvis-2" } }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await acceptJarvisTextTurn("Status check", "turn-key");
+    const fresh = await startFreshJarvisLog("fresh-key");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/jarvis/turns/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ content: "Status check", idempotency_key: "turn-key" }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/jarvis/logs/new", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ idempotency_key: "fresh-key" }),
+    });
+    expect(fresh).toEqual({ id: "jarvis-2" });
+  });
+});
 
 describe("login", () => {
   afterEach(() => {

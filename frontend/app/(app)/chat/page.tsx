@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, GitBranch, Layers3, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import clsx from "clsx";
+import { useRouter } from "next/navigation";
 import { ChatActionErrorBanner } from "@/components/chat/ChatActionErrorBanner";
 import { ConversationDetailsPanel } from "@/components/chat/ConversationDetailsPanel";
 import { ConversationListPanel } from "@/components/chat/ConversationListPanel";
@@ -18,6 +19,7 @@ function buildNewConversationMetadata(defaults: ConversationSessionMetadata): Co
 }
 
 export default function ChatPage() {
+  const router = useRouter();
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [defaultSessionMetadata, setDefaultSessionMetadata] = useState<ConversationSessionMetadata | null>(null);
@@ -36,6 +38,7 @@ export default function ChatPage() {
     events,
     artifacts,
     showArchived,
+    conversationKindFilter,
     loading,
     canStop,
     loadingConversation,
@@ -49,6 +52,7 @@ export default function ChatPage() {
     selectConversation,
     selectBranch,
     setShowArchived,
+    setConversationKindFilter,
   } = useChat();
   const messagesViewportRef = useRef<HTMLDivElement>(null);
 
@@ -93,9 +97,10 @@ export default function ChatPage() {
   const sessionCostLabel = formatUsageCost(usageSummary.totalUsage?.cost);
   const hasUsageSummary = usageSummary.requestCount > 0;
   const hasConversationDetails = Boolean(activeConversationId && (events.length > 0 || artifacts.length > 0 || activeConversation?.workspace?.files.length));
+  const readOnlyJarvisLog = Boolean(activeConversation?.is_read_only);
 
   const handleSend = async (payload: { mode: ChatComposerMode; value: string }) => {
-    if (!activeSessionMetadata) return;
+    if (!activeSessionMetadata || readOnlyJarvisLog) return;
     if (payload.mode === "chat" || activeSessionMetadata.mode === "council") {
       await sendMessage(payload.value, activeSessionMetadata);
       return;
@@ -134,15 +139,26 @@ export default function ChatPage() {
 
   const closeMobileDrawer = () => setMobileDrawer(null);
 
+  const handleSelectConversation = (conversationId: string) => {
+    const selected = conversations.find((conversation) => conversation.id === conversationId);
+    if (selected?.is_current_jarvis) {
+      router.push("/jarvis");
+      return;
+    }
+    selectConversation(conversationId);
+  };
+
   return (
     <div className="flex h-full min-h-0 bg-zinc-900">
       <ConversationListPanel
         conversations={conversations}
         activeConversationId={activeConversationId}
         showArchived={showArchived}
+        conversationKindFilter={conversationKindFilter}
         onNewConversation={handleNewConversation}
-        onSelectConversation={selectConversation}
+        onSelectConversation={handleSelectConversation}
         onToggleShowArchived={() => setShowArchived(!showArchived)}
+        onChangeKindFilter={setConversationKindFilter}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -240,15 +256,17 @@ export default function ChatPage() {
                   conversations={conversations}
                   activeConversationId={activeConversationId}
                   showArchived={showArchived}
+                  conversationKindFilter={conversationKindFilter}
                   onNewConversation={() => {
                     handleNewConversation();
                     closeMobileDrawer();
                   }}
                   onSelectConversation={(conversationId) => {
-                    selectConversation(conversationId);
+                    handleSelectConversation(conversationId);
                     closeMobileDrawer();
                   }}
                   onToggleShowArchived={() => setShowArchived(!showArchived)}
+                  onChangeKindFilter={setConversationKindFilter}
                 />
               ) : (
                 <ConversationDetailsPanel
@@ -327,7 +345,7 @@ export default function ChatPage() {
             </div>
           ) : (
             <>
-              {activeConversation && activeConversation.branches.length > 1 && (
+              {activeConversation && !readOnlyJarvisLog && activeConversation.branches.length > 1 && (
                 <div className="mb-4 px-3 md:px-4">
                   <div className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
                     <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
@@ -354,7 +372,7 @@ export default function ChatPage() {
                 </div>
               )}
 
-              {editingMessageId && (
+              {editingMessageId && !readOnlyJarvisLog && (
                 <div className="mb-4 px-3 md:px-4">
                   <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
                     <div className="text-sm font-medium text-amber-100">Edit this user turn and resend into a new branch</div>
@@ -398,25 +416,38 @@ export default function ChatPage() {
                 />
               )}
               {actionError && <ChatActionErrorBanner error={actionError} onDismiss={clearActionError} />}
+              {readOnlyJarvisLog && (
+                <div className="mb-4 px-3 md:px-4">
+                  <div className="rounded-2xl border border-violet-500/30 bg-violet-500/10 px-4 py-3 text-sm text-violet-100">
+                    This Jarvis daily log is closed and read-only. The current conversation continues in the Jarvis workspace.
+                  </div>
+                </div>
+              )}
               {messages.map((msg) => (
                 <ChatMessage
                   key={msg.activityId ?? msg.id}
                   message={msg}
-                  onEdit={msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
+                  onEdit={!readOnlyJarvisLog && msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
                 />
               ))}
             </>
           )}
         </div>
 
-        <ChatInput
-          onSend={handleSend}
-          onStop={stopStreaming}
-          loading={loading}
-          canStop={canStop}
-          disabled={loadingConversation || !settingsLoaded || !activeSessionMetadata}
-          allowAgentTools={activeSessionMetadata?.mode !== "council"}
-        />
+        {readOnlyJarvisLog ? (
+          <div className="border-t border-zinc-700 bg-zinc-900 px-4 py-3 text-center text-xs text-zinc-500">
+            Closed Jarvis logs cannot be continued, branched, or resent.
+          </div>
+        ) : (
+          <ChatInput
+            onSend={handleSend}
+            onStop={stopStreaming}
+            loading={loading}
+            canStop={canStop}
+            disabled={loadingConversation || !settingsLoaded || !activeSessionMetadata}
+            allowAgentTools={activeSessionMetadata?.mode !== "council"}
+          />
+        )}
       </div>
     </div>
   );

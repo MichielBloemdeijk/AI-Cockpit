@@ -345,11 +345,14 @@ class ConversationReadModel:
         preview = None if last_message is None else last_message.content[:120]
         defaults = await chat_settings_service.get_defaults()
         session_metadata = chat_settings_service.resolve_conversation_metadata(conversation_record, defaults)
+        is_current_jarvis, is_live = await conversation_store.get_jarvis_history_state(conversation_record.id)
         return present_conversation_summary(
             conversation_record,
             session_metadata=session_metadata,
             last_message_preview=preview,
             latest_run_status=None if latest_run is None else latest_run.status,
+            is_current_jarvis=is_current_jarvis,
+            is_live=is_live,
         )
 
     async def list_conversation_summaries(

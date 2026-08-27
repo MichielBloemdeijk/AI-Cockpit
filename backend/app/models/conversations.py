@@ -18,6 +18,14 @@ class ConversationSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None = None
+    conversation_kind: str = "standard"
+    lifecycle_status: str = "open"
+    closed_at: datetime | None = None
+    jarvis_day_key: str | None = None
+    jarvis_day_sequence: int | None = None
+    is_current_jarvis: bool = False
+    is_live: bool = False
+    is_read_only: bool = False
     last_message_preview: str | None = None
     latest_run_status: str | None = None
 
@@ -58,6 +66,12 @@ class ConversationMessageView(BaseModel):
     content: str
     content_format: str
     is_final: bool
+    modality: str = "text"
+    execution_mode: str = "agent"
+    communication_state: str = "completed"
+    source_task_id: str | None = None
+    source_task_event_id: str | None = None
+    presented_in_turn_id: str | None = None
     created_at: datetime
 
 
