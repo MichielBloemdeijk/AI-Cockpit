@@ -4,10 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from app.services.conversation_store import EventRecord, RunRecord, conversation_store
 from app.services.conversation_timeline import build_background_task_timeline_item
 from app.services.voice import sanitize_voice_response
+from app.services.task_service import task_service
 
 
 async def _schedule_notification(event_id: str) -> None:
@@ -36,6 +38,7 @@ class BackgroundTaskSnapshot:
     error: str | None
     started_at: datetime
     finished_at: datetime | None
+    task_id: str | None = None
 
 
 def _metadata(run: RunRecord) -> dict[str, Any]:
@@ -63,6 +66,7 @@ def snapshot(run: RunRecord) -> BackgroundTaskSnapshot:
         error=str(run.error or metadata.get("error") or "").strip() or None,
         started_at=run.started_at,
         finished_at=run.finished_at,
+        task_id=str(metadata.get("global_task_id") or "").strip() or None,
     )
 
 
@@ -73,6 +77,7 @@ async def delegate_background_task(
     notify_policy: str = "important",
     priority: str = "normal",
     requested_notification: bool = False,
+    idempotency_key: str | None = None,
 ) -> tuple[RunRecord, EventRecord]:
     parent = await conversation_store.get_run(parent_run_id)
     if parent is None:
@@ -85,6 +90,18 @@ async def delegate_background_task(
     if normalized_policy not in {"important", "completion", "all", "none"}:
         normalized_policy = "important"
     normalized_priority = "high" if str(priority or "").strip().lower() == "high" else "normal"
+    task = await task_service.dispatch(
+        goal=normalized_goal,
+        origin_surface=(
+            "jarvis" if parent_metadata.get("execution_mode") in {"voice_interactive", "jarvis_shell"}
+            else "standard_chat"
+        ),
+        origin_conversation_id=parent.conversation_id,
+        origin_turn_id=str(parent_metadata.get("origin_turn_id") or "").strip() or None,
+        importance=normalized_priority,
+        presentation_policy=normalized_policy,
+        idempotency_key=idempotency_key or f"legacy-background:{parent.id}:{uuid4()}",
+    )
     child_metadata = dict(parent_metadata)
     child_metadata.update(
         {
@@ -107,6 +124,7 @@ async def delegate_background_task(
             "error": None,
             "parent_run_id": parent.id,
             "task_updates": [],
+            "global_task_id": task.task.id,
         }
     )
     child = await conversation_store.start_run(
@@ -116,12 +134,14 @@ async def delegate_background_task(
         parent_run_id=parent.id,
         metadata_json=child_metadata,
     )
+    await task_service.attach_runtime_reference(task.task.id, child.id)
     event = await conversation_store.append_event(
         parent.conversation_id,
         run_id=child.id,
         actor_kind="task",
         event_type="task.queued",
         payload_json={
+            "task_id": task.task.id,
             "task_run_id": child.id,
             "parent_run_id": parent.id,
             "title": child_metadata["title"],
@@ -138,6 +158,7 @@ async def delegate_background_task(
         run_id=child.id,
         item_payload=build_background_task_timeline_item(
             run_id=child.id,
+            task_id=task.task.id,
             title=str(child_metadata["title"]),
             goal=normalized_goal,
             status="queued",
@@ -181,6 +202,13 @@ async def publish_update(run_id: str, summary: str, importance: str = "normal") 
         normalized_importance = "normal"
     updates = list(metadata.get("task_updates") or [])
     updates.append(text)
+    global_task_id = str(metadata.get("global_task_id") or "").strip()
+    if global_task_id:
+        await task_service.publish_progress(
+            global_task_id,
+            summary=text,
+            idempotency_key=f"legacy-progress:{run.id}:{len(updates)}",
+        )
     metadata["task_updates"] = updates[-20:]
     metadata["active_step"] = text
     await conversation_store.update_run_metadata(run.id, metadata)
@@ -203,6 +231,7 @@ async def publish_update(run_id: str, summary: str, importance: str = "normal") 
         },
         timeline_item_payload=build_background_task_timeline_item(
             run_id=run.id,
+            task_id=global_task_id or None,
             title=str(metadata.get("title") or _title(str(metadata.get("goal") or ""))),
             goal=str(metadata.get("goal") or ""),
             status=run.status,
@@ -232,6 +261,14 @@ async def publish_terminal_update(
         "interrupted": "task.interrupted",
     }.get(status, "task.progress")
     text = " ".join(str(summary or "Background task update").split()).strip()
+    global_task_id = str(metadata.get("global_task_id") or "").strip()
+    if global_task_id and status in {"completed", "failed", "interrupted"}:
+        await task_service.complete(
+            global_task_id,
+            status=status,
+            summary=text,
+            idempotency_key=f"legacy-terminal:{run.id}:{status}",
+        )
     event, _message = await conversation_store.append_event_with_assistant_message(
         run.conversation_id,
         run_id=run.id,
@@ -251,6 +288,7 @@ async def publish_terminal_update(
         },
         timeline_item_payload=build_background_task_timeline_item(
             run_id=run.id,
+            task_id=global_task_id or None,
             title=str(metadata.get("title") or _title(str(metadata.get("goal") or ""))),
             goal=str(metadata.get("goal") or ""),
             status=status,

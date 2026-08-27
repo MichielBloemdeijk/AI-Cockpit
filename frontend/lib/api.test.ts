@@ -2,18 +2,71 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   acceptJarvisTextTurn,
+  cancelTask,
   createGeneratedApp,
   getGeneratedAppBySlug,
   getJarvisState,
+  getTask,
   listConversations,
   listGeneratedApps,
+  listTasks,
   login,
   streamChat,
   streamConversationEvents,
   startFreshJarvisLog,
+  dispatchTask,
   type ConversationEventView,
   updateChatSettings,
 } from "./api";
+
+describe("global task api", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("lists, dispatches, and loads first-class task identities", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "task-1" }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listTasks(["queued", "running"]);
+    await dispatchTask({ goal: "Review", idempotency_key: "dispatch-1" });
+    await getTask("task/1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/tasks?status=queued&status=running", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ goal: "Review", idempotency_key: "dispatch-1" }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/tasks/task%2F1", {
+      credentials: "include",
+      cache: "no-store",
+    });
+  });
+
+  it("sends an idempotency key for task actions", async () => {
+    vi.stubGlobal("crypto", { randomUUID: () => "cancel-key" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: "task-1" }) } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await cancelTask("task-1");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task-1/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ idempotency_key: "cancel-key" }),
+    });
+  });
+});
 
 describe("Jarvis daily-log api", () => {
   afterEach(() => {

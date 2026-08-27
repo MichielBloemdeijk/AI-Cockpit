@@ -483,6 +483,16 @@ async def _pause_for_question(
         "asked_at": _iso_now(),
         "answer": None,
     }
+    global_task_id = str(metadata.get("global_task_id") or "").strip()
+    if global_task_id:
+        from app.services.task_service import task_service
+
+        saved_question = await task_service.ask_question(
+            global_task_id,
+            question=question,
+            idempotency_key=f"agent-question:{run_id}:{pending_question['id']}",
+        )
+        pending_question["global_task_question_id"] = saved_question.id
     metadata["pending_question"] = pending_question
     metadata["task_status"] = "paused"
     metadata["current_action"] = current_action
@@ -729,6 +739,7 @@ async def _handle_tool_action(
                 run_id=run_id,
                 item_payload=build_background_task_timeline_item(
                     run_id=run_id,
+                    task_id=str(metadata.get("global_task_id") or "").strip() or None,
                     title=str(metadata.get("title") or "Background task"),
                     goal=str(metadata.get("goal") or ""),
                     status="running",
@@ -803,6 +814,7 @@ async def _handle_tool_action(
                 run_id=run_id,
                 item_payload=build_background_task_timeline_item(
                     run_id=run_id,
+                    task_id=str(metadata.get("global_task_id") or "").strip() or None,
                     title=str(metadata.get("title") or "Background task"),
                     goal=str(metadata.get("goal") or ""),
                     status="running",
@@ -872,6 +884,15 @@ async def _complete_run(
     )
     if completion_event is None:
         return False
+    global_task_id = str(metadata.get("global_task_id") or "").strip()
+    if global_task_id:
+        from app.services.task_service import task_service
+
+        await task_service.complete(
+            global_task_id,
+            summary=final_summary,
+            idempotency_key=f"agent-complete:{run_id}",
+        )
     if metadata.get("execution_mode") == "background":
         from app.services.notifications import notify_event
 
@@ -909,6 +930,16 @@ async def _fail_run(
         voice_failure_text=failure_text,
     )
     if failure_event is not None and metadata.get("execution_mode") == "background":
+        global_task_id = str(metadata.get("global_task_id") or "").strip()
+        if global_task_id:
+            from app.services.task_service import task_service
+
+            await task_service.complete(
+                global_task_id,
+                status="failed",
+                summary=error,
+                idempotency_key=f"agent-failed:{run_id}",
+            )
         from app.services.notifications import notify_event
 
         await notify_event(failure_event.id)

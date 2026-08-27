@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.api import apps, auth, chat, jarvis, notifications, voice
+from app.api import apps, auth, chat, jarvis, notifications, tasks, voice
 from app.api import conversations, knowledge
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
 from app.services.conversation_store import conversation_store
@@ -61,6 +61,7 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(jarvis.router)
+app.include_router(tasks.router)
 app.include_router(knowledge.router)
 app.include_router(apps.router)
 app.include_router(voice.router)

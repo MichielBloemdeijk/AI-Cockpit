@@ -205,6 +205,7 @@ class ConversationReadModel:
             updates = list(dict.fromkeys(updates))[-20:]
             task_payload = build_background_task_timeline_item(
                 run_id=run.id,
+                task_id=str(metadata.get("global_task_id") or "").strip() or None,
                 title=str(metadata.get("title") or "Background task"),
                 goal=str(metadata.get("goal") or ""),
                 status=run.status,

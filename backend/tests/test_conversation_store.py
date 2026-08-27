@@ -106,7 +106,10 @@ async def test_background_run_projects_as_one_task_card_and_hides_low_level_tool
     task_items = [item for item in timeline_items if item["kind"] == "task"]
 
     assert len(task_items) == 1
-    assert task_items[0]["item_id"] == f"task:{child.id}"
+    global_task_id = str(child.metadata_json["global_task_id"])
+    assert task_items[0]["item_id"] == f"task:{global_task_id}"
+    assert task_items[0]["metadata"]["task_id"] == global_task_id
+    assert task_items[0]["metadata"]["task_run_id"] == child.id
     assert task_items[0]["status"] == "running"
     assert not any(item["kind"] in {"tool_call", "tool_result"} for item in timeline_items)
 

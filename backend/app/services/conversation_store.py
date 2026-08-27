@@ -1272,6 +1272,7 @@ class ConversationStore:
             )
             task_timeline_payload = build_background_task_timeline_item(
                 run_id=run_id,
+                task_id=str(metadata_json.get("global_task_id") or "").strip() or None,
                 title=str(metadata_json.get("title") or "Background task"),
                 goal=str(metadata_json.get("goal") or ""),
                 status=RunStatus.completed.value,
@@ -1381,6 +1382,7 @@ class ConversationStore:
                     event_type=TIMELINE_ITEM_EVENT_TYPE,
                     payload_json=build_background_task_timeline_item(
                         run_id=run_id,
+                        task_id=str(metadata.get("global_task_id") or "").strip() or None,
                         title=str(metadata.get("title") or "Background task"),
                         goal=str(metadata.get("goal") or ""),
                         status=RunStatus.cancelled.value,
@@ -1517,6 +1519,7 @@ class ConversationStore:
                     event_type=TIMELINE_ITEM_EVENT_TYPE,
                     payload_json=build_background_task_timeline_item(
                         run_id=run_id,
+                        task_id=str(metadata_json.get("global_task_id") or "").strip() or None,
                         title=str(metadata_json.get("title") or "Background task"),
                         goal=str(metadata_json.get("goal") or ""),
                         status=RunStatus.failed.value,
@@ -1639,6 +1642,7 @@ class ConversationStore:
 
     async def mark_running_runs_interrupted(self) -> int:
         interruption_summary_event_ids: list[str] = []
+        interrupted_global_tasks: list[tuple[str, str]] = []
         async with session_scope() as session:
             repo = ConversationRepository(session)
             runs = list(await repo.list_unfinished_runs())
@@ -1647,6 +1651,9 @@ class ConversationStore:
                 metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
                 branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
                 is_background = metadata.get("execution_mode") == "background"
+                global_task_id = str(metadata.get("global_task_id") or "").strip()
+                if is_background and global_task_id:
+                    interrupted_global_tasks.append((global_task_id, run.id))
                 await repo.update_run_status(
                     run.id,
                     status=RunStatus.interrupted.value,
@@ -1661,6 +1668,7 @@ class ConversationStore:
                     payload_json={
                         "run_id": run.id,
                         "task_run_id": run.id,
+                        "task_id": global_task_id or None,
                         "title": metadata.get("title") or "Background task",
                         "goal": metadata.get("goal") or "",
                         "status": RunStatus.interrupted.value,
@@ -1691,6 +1699,7 @@ class ConversationStore:
                         event_type=TIMELINE_ITEM_EVENT_TYPE,
                         payload_json=build_background_task_timeline_item(
                             run_id=run.id,
+                            task_id=str(metadata.get("global_task_id") or "").strip() or None,
                             title=str(metadata.get("title") or "Background task"),
                             goal=str(metadata.get("goal") or ""),
                             status=RunStatus.interrupted.value,
@@ -1764,6 +1773,16 @@ class ConversationStore:
 
             for event_id in interruption_summary_event_ids:
                 await notify_event(event_id)
+        if interrupted_global_tasks:
+            from app.services.task_service import task_service
+
+            for task_id, run_id in interrupted_global_tasks:
+                await task_service.complete(
+                    task_id,
+                    status="interrupted",
+                    summary="AI-Cockpit restarted before this task completed.",
+                    idempotency_key=f"legacy-restart-interrupted:{run_id}",
+                )
         return interrupted_count
 
     async def get_latest_run(self, conversation_id: str) -> RunRecord | None:

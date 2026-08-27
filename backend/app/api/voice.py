@@ -220,6 +220,17 @@ async def answer_voice_question(run_id: str, request: VoiceAnswerRequest) -> Voi
     )
     if resumed is None:
         raise HTTPException(status_code=409, detail="Run is no longer waiting for an answer")
+    global_task_id = str(metadata.get("global_task_id") or "").strip()
+    global_question_id = str(pending.get("global_task_question_id") or "").strip()
+    if global_task_id and global_question_id:
+        from app.services.task_service import task_service
+
+        await task_service.answer_question(
+            global_task_id,
+            global_question_id,
+            answer=answer,
+            idempotency_key=f"voice-answer:{run.id}:{pending.get('id')}",
+        )
     run_supervisor.start(run.id)
     refreshed = await conversation_store.get_run(run.id)
     if refreshed is None:

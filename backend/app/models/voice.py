@@ -58,6 +58,7 @@ class VoiceRunControlResponse(BaseModel):
 
 class VoiceTaskView(BaseModel):
     run_id: str
+    task_id: str | None = None
     conversation_id: str
     parent_run_id: str | None = None
     title: str

@@ -584,6 +584,117 @@ export async function listConversations(
   return res.json();
 }
 
+export interface TaskSummary {
+  id: string;
+  origin_surface: string;
+  origin_conversation_id: string | null;
+  origin_turn_id: string | null;
+  goal: string;
+  status: "queued" | "running" | "waiting_for_input" | "completed" | "failed" | "interrupted" | "cancelled";
+  creation_order: number;
+  current_attempt_id: string | null;
+  cancellation_requested_at: string | null;
+  importance: string;
+  presentation_policy: string;
+  terminal_summary: string | null;
+  queue_position: number | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export interface TaskAttempt {
+  id: string;
+  attempt_number: number;
+  worker_id: string | null;
+  workspace_path: string | null;
+  checkpoint: Record<string, unknown> | null;
+  claimed_at: string | null;
+  heartbeat_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  terminal_reason: string | null;
+  agent_runtime_reference: string | null;
+  usage_summary: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TaskEvent {
+  id: string;
+  sequence: number;
+  task_id: string;
+  attempt_id: string | null;
+  event_type: string;
+  payload: Record<string, unknown> | null;
+  causality: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TaskQuestion {
+  id: string;
+  asked_attempt_id: string | null;
+  answered_attempt_id: string | null;
+  source_task_event_id: string | null;
+  question: string;
+  answer: string | null;
+  state: string;
+  asked_at: string;
+  answered_at: string | null;
+}
+
+export interface TaskArtifact {
+  id: string;
+  attempt_id: string | null;
+  source_task_event_id: string | null;
+  artifact_type: string;
+  mime_type: string;
+  title: string | null;
+  uri: string | null;
+  content_text: string | null;
+  content_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TaskTarget {
+  id: string;
+  resource_type: string;
+  resource_key: string;
+  mutable: boolean;
+  discovered_at: string;
+}
+
+export interface TaskPresentation {
+  id: string;
+  candidate_type: string;
+  coalescing_key: string;
+  importance: string;
+  state: string;
+  source_task_event_id: string | null;
+  created_at: string;
+  presented_at: string | null;
+}
+
+export interface TaskDetail extends TaskSummary {
+  attempts: TaskAttempt[];
+  events: TaskEvent[];
+  questions: TaskQuestion[];
+  artifacts: TaskArtifact[];
+  targets: TaskTarget[];
+  presentations: TaskPresentation[];
+  worker_health: { status: string; worker_id: string | null; heartbeat_at: string | null };
+}
+
+export interface TaskDispatch {
+  goal: string;
+  idempotency_key: string;
+  origin_surface?: string;
+  origin_conversation_id?: string;
+  origin_turn_id?: string;
+  importance?: string;
+  presentation_policy?: string;
+  targets?: Array<{ resource_type: string; resource_key: string; mutable?: boolean }>;
+}
+
 export async function getJarvisState(): Promise<JarvisStateResponse> {
   const res = await fetch(`${BASE}/api/jarvis/state`, { credentials: "include", cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -614,6 +725,72 @@ export async function startFreshJarvisLog(idempotencyKey: string): Promise<Conve
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const payload = await res.json() as { current_log: ConversationSummary };
   return payload.current_log;
+}
+
+export async function listTasks(statuses: string[] = []): Promise<TaskSummary[]> {
+  const params = new URLSearchParams();
+  statuses.forEach((status) => params.append("status", status));
+  const suffix = params.size ? `?${params}` : "";
+  const res = await fetch(`${BASE}/api/tasks${suffix}`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getTask(taskId: string): Promise<TaskDetail> {
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function dispatchTask(request: TaskDispatch): Promise<TaskSummary> {
+  const res = await fetch(`${BASE}/api/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function taskAction(taskId: string, action: "cancel" | "retry"): Promise<TaskSummary> {
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function cancelTask(taskId: string): Promise<TaskSummary> {
+  return taskAction(taskId, "cancel");
+}
+
+export async function retryTask(taskId: string): Promise<TaskSummary> {
+  return taskAction(taskId, "retry");
+}
+
+export async function answerTaskQuestion(
+  taskId: string,
+  questionId: string,
+  answer: string,
+): Promise<TaskSummary> {
+  const res = await fetch(
+    `${BASE}/api/tasks/${encodeURIComponent(taskId)}/questions/${encodeURIComponent(questionId)}/answer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ answer, idempotency_key: crypto.randomUUID() }),
+    },
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 export async function getConversation(conversationId: string, branchKey = "main"): Promise<ConversationDetail> {

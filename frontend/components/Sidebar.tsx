@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 const NAV = [
   { href: "/jarvis", label: "Jarvis", icon: AudioLines },
   { href: "/chat", label: "Chat", icon: MessageSquare },
-  { href: "/background", label: "Background", icon: ListTodo },
+  { href: "/tasks", label: "Tasks", icon: ListTodo },
   { href: "/workspace/apps", label: "Apps", icon: Blocks },
   { href: "/knowledge", label: "Knowledge", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },

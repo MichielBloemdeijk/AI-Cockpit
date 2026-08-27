@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 3 — not started
-- **Last completed phase:** Phase 2
+- **Current phase:** Phase 4 — not started
+- **Last completed phase:** Phase 3
 - **Product implementation started:** yes
-- **Next session entry point:** implement Phase 3 first-class task services, APIs, event replay, and task UI on the Phase 1 task schema; recheck worktree status before editing
+- **Next session entry point:** implement Phase 4 worker ownership, FIFO claims, runtime sink seam, attempt workspaces, heartbeats, cancellation observation, and generalized leases; recheck worktree status before editing
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -20,8 +20,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | --- | --- | --- | --- |
 | 0. Plan and reversible cutover preparation | Complete | Passed 2026-08-27 | 5b9aa8c |
 | 1. Clean schema and ordered-domain contracts | Complete | Passed 2026-08-27 | 70c15e7 |
-| 2. Standard conversations and Jarvis daily lifecycle | Complete | Passed 2026-08-27 | Phase completion commit |
-| 3. First-class tasks and task UI | Not started | — | — |
+| 2. Standard conversations and Jarvis daily lifecycle | Complete | Passed 2026-08-27 | 8d72f15 |
+| 3. First-class tasks and task UI | Complete | Passed 2026-08-27 | Phase completion commit |
 | 4. Worker, runtime seam, and resource leases | Not started | — | — |
 | 5. Coordinator, fake provider, and live workspace | Not started | — | — |
 | 6. OpenAI Realtime and WebRTC | Not started | — | — |
@@ -217,8 +217,68 @@ The initial typed `/jarvis` page landed in Phase 2 rather than waiting for the f
 
 - Status: passed 2026-08-27
 - Commit subject: `feat(jarvis): add daily log lifecycle`
-- Commit hash: resolve from git history in the next phase session
+- Commit hash: 8d72f15ae6b3f3b531d7d51f8337fae3aa4f9087
 - Next entry point: Phase 3 global task service, normalized task trace, APIs, and dedicated task UI
+- Blockers: none
+
+## Phase 3 record
+
+### Scope completed
+
+- Added the authoritative global task service over the Phase 1 schema with idempotent dispatch, attempts, normalized lifecycle transitions, questions, answers, artifacts, targets, terminal results, presentations, cancellation, and explicit retry.
+- Added the globally ordered, replayable, idempotent task event stream and queue-position plus worker-health projections.
+- Implemented the cancellation state machine: queued or waiting work cancels immediately, while running work records a cancellation request until the executor confirms safe exit.
+- Added typed authenticated `/api/tasks` list, dispatch, detail, global event replay, cancellation, retry, question creation, and one-time answer endpoints.
+- Added `/tasks` dispatch/list and `/tasks/{id}` full Agent trace pages with attempts, worker health, queue position, targets, questions, artifacts, results, cancel, and retry controls.
+- Redirected the retired `/background` routes to `/tasks` and changed shared navigation to the global Tasks surface.
+- Reused the shared `ChatMessage` Agent-trace renderers through a deterministic task-event projection.
+- Added a compatibility bridge that gives every newly delegated standard-chat or Jarvis background run a global task identity immediately, links the temporary run as the current attempt runtime reference, and mirrors start, progress, questions, answers, terminal state, cancellation, and restart interruption into the task domain.
+- Changed conversation task-card identity from the temporary child run to the global task while retaining the child run only as compatibility execution metadata.
+- Kept global task rows out of conversation history; conversational presentation remains an explicit causal projection.
+- Updated the shipped architecture document to describe first-class tasks and the bounded Phase 4 worker gap.
+
+### Repository state at start
+
+- Branch: codex/jarvis-voice-poc
+- HEAD: 8d72f15ae6b3f3b531d7d51f8337fae3aa4f9087
+- Commit subject: feat(jarvis): add daily log lifecycle
+- Existing unrelated user-owned changes remained untouched.
+
+### Verification evidence
+
+Run on 2026-08-27:
+
+1. Phase 3 service, integration, and lifecycle gate: `uv run pytest tests/test_task_service.py tests/test_conversation_store.py tests/test_agent_runner.py tests/test_run_lifecycle.py -q`
+   - Result: PASS
+   - 71 passed in 29.63 seconds
+2. metadata parity: `uv run alembic check`
+   - Result: PASS
+   - No new upgrade operations detected
+3. complete backend gate: `uv run pytest`
+   - First run exposed one obsolete assertion that expected `/api/tasks` to be absent; its Phase 3 expectation was updated to HTTP 200.
+   - Final result: PASS
+   - 199 passed in 135.77 seconds
+4. frontend task trace/API and regression gate: `npm run test -- --run`
+   - Result: PASS
+   - 20 files and 116 tests passed
+5. frontend lint: `npm run lint`
+   - Result: PASS
+6. frontend production build: `npm run build`
+   - Result: PASS
+   - Next.js 16.2.3 build and TypeScript checks completed; 30 routes generated, including `/tasks` and `/tasks/[taskId]`
+
+### Phase 3 deviations and rationale
+
+The existing in-process child run remains temporarily linked as `agent_runtime_reference` for execution compatibility. It is no longer the product task identity or task-state source. Removing that runtime path before Phase 4 supplies the separate worker and execution sink would leave delegated tasks unexecutable; the bridge is bounded to the explicitly planned worker cutover.
+
+The Tasks UI can accept work before the worker exists and honestly reports worker health as offline. Dispatch remains durable and queued; Phase 4 owns claiming and execution rather than hiding or faking worker state.
+
+### Checkpoint
+
+- Status: passed 2026-08-27
+- Commit subject: `feat(jarvis): add first-class tasks`
+- Commit hash: resolve from git history in the next phase session
+- Next entry point: Phase 4 worker process, runtime context/sink extraction, FIFO claiming, heartbeats, isolated workspaces, cancellation observation, and typed resource leases
 - Blockers: none
 
 ## Phase 1 entry checklist (completed)

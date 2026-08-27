@@ -763,6 +763,7 @@ class AgentRunner:
                     run_id=run.id,
                     item_payload=build_background_task_timeline_item(
                         run_id=run.id,
+                        task_id=str(metadata.get("global_task_id") or "").strip() or None,
                         title=str(metadata.get("title") or "Background task"),
                         goal=str(metadata.get("goal") or ""),
                         status="running",
@@ -774,6 +775,15 @@ class AgentRunner:
                     branch_key=str(metadata.get("branch_key") or "main"),
                     parent_event_id=started_event.id,
                 )
+                global_task_id = str(metadata.get("global_task_id") or "").strip()
+                if global_task_id:
+                    from app.services.task_service import task_service
+
+                    await task_service.publish_progress(
+                        global_task_id,
+                        summary=str(metadata.get("active_step") or "Planning next step"),
+                        idempotency_key=f"agent-started:{run.id}",
+                    )
                 metadata["task_started_event_recorded"] = True
 
         try:
@@ -858,6 +868,7 @@ class AgentRunner:
                         notify_policy=str(action.get("notify_policy") or "important"),
                         priority=str(action.get("priority") or "normal"),
                         requested_notification=requested_notification,
+                        idempotency_key=f"agent-delegate:{run.id}:{current_step + 1}",
                     )
                     acknowledgement = str(action.get("acknowledgement") or "").strip()
                     completed = await _complete_run(

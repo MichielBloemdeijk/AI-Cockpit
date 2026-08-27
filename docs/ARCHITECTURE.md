@@ -26,7 +26,7 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
 - chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
-- a Jarvis voice PWA with browser VAD, local STT/TTS endpoints, a server-owned primary voice conversation, durable background-task runs, replayable event cursors, and optional Web Push delivery
+- a Jarvis voice PWA with browser VAD, local STT/TTS endpoints, a server-owned primary voice conversation, first-class global tasks with replayable traces, and optional Web Push delivery
 
 ## Required App-Builder Direction
 
@@ -39,7 +39,7 @@ The required product direction for generated apps is a chat-resident agent loop:
 5. the agent reads and writes files inside the app write roots from the same chat session
 6. the agent returns to the user in that same chat thread when the work is complete
 
-This remains the primary control plane for interactive generated-app work. The `/voice` surface can also create independently supervised background task runs; those runs continue after an HTTP/SSE observer disconnects and are not automatically resumed after a process restart.
+This remains the primary control plane for interactive generated-app work. Background delegation from chat or the compatibility `/voice` surface now creates a first-class global task and a temporary child run linked as its execution reference. The child-run bridge continues after an HTTP/SSE observer disconnects; Phase 4 replaces that execution ownership with the separate worker.
 
 The product is currently split into a FastAPI backend, a Next.js frontend, a local SQLite database for durable conversation state, and a file-backed knowledge directory.
 
@@ -103,6 +103,7 @@ It then registers these active routers:
 - `knowledge` for review queue and approved knowledge APIs
 - `apps` for the generated app registry and runtime app metadata
 - `voice` for local speech, the primary voice conversation, asynchronous turns, and background-task control
+- `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
 
 ### Configuration
@@ -526,7 +527,7 @@ Current route groups:
 - `frontend/app/apps` for synchronized generated app routes and the metadata/error fallback
 - `frontend/app/(app)/chat` for the main chat surface
 - `frontend/app/(app)/workspace/apps` for cockpit app management and app detail pages
-- `frontend/app/(app)/background` for the background run dashboard
+- `frontend/app/(app)/tasks` for the global task list and full task trace; the old background routes redirect here
 - `frontend/app/(app)/settings` for editable model and task-agent defaults for future sessions
 - `frontend/app/(app)/knowledge` for the review queue, approved knowledge list, and file-backed document browser
 
@@ -541,6 +542,7 @@ It currently provides typed functions for:
 - auth requests
 - chat streaming and council execution
 - conversation listing, transcript/event retrieval, archive controls, branching, and tool execution
+- global task listing, dispatch, detail, cancellation, retry, and question answers
 - generated app registry reads and writes
 - knowledge review and approved document browsing
 - model discovery
@@ -582,15 +584,16 @@ Current behavior:
 
 Artifacts and durable transcript events are mapped into UI-ready message data via `frontend/lib/chat-history.ts`, while transient agent status lives outside the transcript projection.
 
-### Background UI Flow
+### Task UI Flow
 
-The background page is currently a placeholder shell.
+The task pages live under `frontend/app/(app)/tasks`; `/background` is now a compatibility redirect.
 
 Current behavior:
 
-- shows that background runs are intentionally disabled in the current product mode
-- directs the user back to the main chat surface for all active agent work
-- keeps the route surface available without reintroducing a second active control plane
+- lists global tasks independently from conversations and accepts direct task dispatches
+- exposes queue position, worker health, attempts, targets, questions, artifacts, results, cancellation, and explicit retry
+- renders the ordered task event stream through the reusable Agent trace components
+- keeps legacy child-run identifiers only as execution references while new conversation task cards project the global task identity
 
 ### Generated Apps UI Flow
 
@@ -725,7 +728,7 @@ The frontend also includes API, chat-history, hook, stream-state, and chat-compo
 
 These are not accidental omissions; they are the main boundaries of the current implementation.
 
-- The background route remains intentionally disabled while the product stays chat-first for active agent work.
+- Task execution still uses the temporary in-process child-run bridge; the separate FIFO worker, heartbeats, claims, leases, and restart-safe execution arrive in Phase 4.
 - The current durable agent runtime is intentionally single-agent and does not yet include subagents, MCP integration, or plugin loading.
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.

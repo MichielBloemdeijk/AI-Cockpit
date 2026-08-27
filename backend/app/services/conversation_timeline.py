@@ -167,6 +167,7 @@ def build_visible_text_timeline_item(*, run_id: str, step: int, content: str) ->
 def build_background_task_timeline_item(
     *,
     run_id: str,
+    task_id: str | None = None,
     title: str,
     goal: str,
     status: str,
@@ -207,8 +208,9 @@ def build_background_task_timeline_item(
         sections.append({"title": "Goal", "items": [str(goal).strip()]})
     if normalized_updates:
         sections.append({"title": "Updates", "items": normalized_updates})
+    identity = str(task_id or run_id).strip() or run_id
     return build_timeline_item(
-        item_id=f"task:{run_id}",
+        item_id=f"task:{identity}",
         role="assistant",
         kind="task",
         title=str(title or "Background task").strip() or "Background task",
@@ -219,6 +221,7 @@ def build_background_task_timeline_item(
         badges=[normalized_status],
         sections=sections,
         metadata={
+            "task_id": identity,
             "task_run_id": run_id,
             "notify_policy": notify_policy,
             "requested_notification": requested_notification,

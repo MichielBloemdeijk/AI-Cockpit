@@ -412,7 +412,7 @@ async def test_collection_routes_accept_requests_without_trailing_slashes(monkey
         assert listing.status_code == 200
 
         tasks = await client.get("/api/tasks")
-        assert tasks.status_code == 404
+        assert tasks.status_code == 200
 
 
 @pytest.mark.asyncio
