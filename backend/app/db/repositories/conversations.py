@@ -351,7 +351,31 @@ class ConversationRepository:
         branch_key: str | None = None,
         parent_event_id: str | None = None,
         schema_version: int = 1,
+        idempotency_key: str | None = None,
     ) -> ConversationEvent:
+        if idempotency_key is not None:
+            # Take the conversation row's SQLite write lock before checking the
+            # key. Concurrent retries then serialize without consuming a cursor
+            # for the losing writer.
+            lock_stmt = (
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(last_event_sequence=Conversation.last_event_sequence)
+            )
+            lock_result = await self.session.execute(lock_stmt)
+            if lock_result.rowcount != 1:
+                raise ValueError(f"Conversation not found: {conversation_id}")
+            existing_stmt = (
+                select(ConversationEvent)
+                .where(ConversationEvent.conversation_id == conversation_id)
+                .where(ConversationEvent.idempotency_key == idempotency_key)
+                .limit(1)
+            )
+            existing_result = await self.session.execute(existing_stmt)
+            existing = existing_result.scalar_one_or_none()
+            if existing is not None:
+                return existing
+
         event = ConversationEvent(
             conversation_id=conversation_id,
             run_id=run_id,
@@ -362,6 +386,7 @@ class ConversationRepository:
             event_type=event_type,
             schema_version=schema_version,
             payload_json=payload_json,
+            idempotency_key=idempotency_key,
         )
         self.session.add(event)
         await self.session.flush()

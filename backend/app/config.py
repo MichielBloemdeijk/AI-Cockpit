@@ -107,7 +107,9 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Persistence
-    database_url: str = "sqlite+aiosqlite:///./data/ai_cockpit.db"
+    # Phase 1 intentionally starts from a clean Jarvis-era database. The
+    # pre-Jarvis database remains untouched as the reversible POC fallback.
+    database_url: str = "sqlite+aiosqlite:///./data/ai_cockpit_jarvis.db"
     alembic_ini_path: str = "alembic.ini"
     conversation_workspaces_dir: str = "../.cockpit/conversations"
     knowledge_notes_dir: str = "../knowledge/notes"

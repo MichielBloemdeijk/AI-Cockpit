@@ -6,20 +6,20 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 1 — not started
-- **Last completed phase:** Phase 0
-- **Product implementation started:** no
-- **Next session entry point:** design and implement the Phase 1 clean Jarvis-era schema and ordered-domain contracts; recheck worktree status before editing
+- **Current phase:** Phase 2 — not started
+- **Last completed phase:** Phase 1
+- **Product implementation started:** yes
+- **Next session entry point:** implement the Phase 2 standard-conversation and Jarvis daily-log lifecycle on the Phase 1 repositories; recheck worktree status before editing
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
-- **Phase 0 completion commit:** resolve with git log -1 --format=%H -- docs/JARVIS_IMPLEMENTATION_PLAN.md
+- **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
 
 ## Phase status
 
 | Phase | Status | Exit gate | Commit |
 | --- | --- | --- | --- |
-| 0. Plan and reversible cutover preparation | Complete | Passed 2026-08-27 | Phase completion commit |
-| 1. Clean schema and ordered-domain contracts | Not started | — | — |
+| 0. Plan and reversible cutover preparation | Complete | Passed 2026-08-27 | 5b9aa8c |
+| 1. Clean schema and ordered-domain contracts | Complete | Passed 2026-08-27 | Phase completion commit |
 | 2. Standard conversations and Jarvis daily lifecycle | Not started | — | — |
 | 3. First-class tasks and task UI | Not started | — | — |
 | 4. Worker, runtime seam, and resource leases | Not started | — | — |
@@ -102,7 +102,67 @@ The original phase wording said to move the active database to a backup. Phase 0
 
 None.
 
-## Phase 1 entry checklist
+## Phase 1 record
+
+### Scope completed
+
+- Added the Jarvis-era schema head with conversation lifecycle/day fields, the singleton Jarvis pointer, audible-delivery records, Realtime sessions and ordered events, global tasks and attempts, questions, artifacts, targets, leases, presentations, worker instances, and the notification outbox.
+- Preserved standard conversations, Council runs, branches, artifacts, generated apps, reviewed memory/Wiki provenance, Web Push compatibility, and the POC-only columns that later phases explicitly retire.
+- Added per-conversation and per-session atomic cursor allocation plus a transactionally ordered global task stream.
+- Added idempotent conversation event append, task dispatch, task event append, and atomic task state/event repository primitives.
+- Added a consistent multi-domain snapshot projection whose advertised cursors come from committed event rows.
+- Changed the default runtime path from `data/ai_cockpit.db` to the fresh `data/ai_cockpit_jarvis.db` only after the blank-database and regression gates passed.
+- Initialized the ignored fresh runtime database at revision `20260827_0010`; the original POC database and Phase 0 backup were not overwritten or migrated.
+
+### Repository state at start
+
+- Branch: codex/jarvis-voice-poc
+- HEAD: 5b9aa8c707324d9be079266fc7ee8afc5b2134db
+- Commit subject: docs: establish Jarvis implementation contract
+- Existing unrelated changes preserved: `.env.example`, `PLAN.md`, `claude-code reference/`, `data/`, `frontend/AGENTS.md`, `frontend/CLAUDE.md`, and the existing knowledge note.
+
+### Verification evidence
+
+Run on 2026-08-27:
+
+1. backend narrow schema/persistence gate: `uv run pytest tests/test_jarvis_schema.py tests/test_conversation_store.py tests/test_db_session.py -q`
+   - Result: PASS
+   - 13 passed in 4.46 seconds
+2. blank migration and metadata parity: `uv run alembic upgrade head` followed by `uv run alembic check` against a fresh temporary database
+   - Result: PASS
+   - Revision `20260827_0010`; no new upgrade operations detected
+3. generated-app preservation gate: `uv run pytest tests/test_jarvis_schema.py tests/test_apps_api.py -q`
+   - Result: PASS
+   - 28 passed in 17.38 seconds
+4. complete backend gate: `uv run pytest`
+   - Result: PASS
+   - 183 passed in 222.08 seconds
+5. fresh runtime cutover:
+   - `data/ai_cockpit_jarvis.db` created at revision `20260827_0010`
+   - SQLite `integrity_check`: ok
+   - Size: 487,424 bytes
+   - SHA-256: AF404002A3FF50064BAF0ECB0B1023BA9C4509FD650BA2A405A7BF1E4E898039
+6. Phase 0 backup revalidation in read-only mode:
+   - Revision: `20260504_0009`
+   - SQLite `integrity_check`: ok
+   - Size: 10,907,648 bytes
+   - SHA-256: EA94761D5E9189295E2596CDD5125AF401E6D6F94A0C567735AEF227D5E8991E
+
+### Phase 1 deviations and rationale
+
+The clean Jarvis-era schema is delivered as one new Alembic head on the proven historical revision chain rather than deleting the old migration files. Runtime data still receives the required semantic clean cutover because the application now targets a new database file. Retaining the historical chain keeps the POC schema reproducible and makes the Phase 0 fallback materially safer without changing any locked data-model invariant.
+
+Cross-domain causal IDs whose foreign keys would introduce circular DDL dependencies remain typed ID columns, while ownership and lifecycle foreign keys remain enforced. Repository transactions and contract tests enforce their write boundaries. This avoids an unresolvable Alembic dependency cycle and keeps future blank-database migrations deterministic.
+
+### Checkpoint
+
+- Status: passed 2026-08-27
+- Commit subject: `feat(jarvis): establish durable domain schema`
+- Commit hash: resolve from git history in the next phase session
+- Next entry point: Phase 2 operational-day function, transactional current-log resolution, and lazy first durable turn
+- Blockers: none
+
+## Phase 1 entry checklist (completed)
 
 - Read the implementation plan, this ledger, and applicable repository instructions.
 - Confirm the Phase 0 docs commit and record its hash in this ledger as part of the Phase 1 commit.
@@ -111,6 +171,15 @@ None.
 - Decide the mechanical clean-baseline migration layout without reopening the locked data model.
 - Add blank-database and concurrency tests before switching the active database.
 - Do not delete or overwrite the Phase 0 backup.
+
+## Phase 2 entry checklist
+
+- Resolve and record the Phase 1 completion commit hash.
+- Recheck worktree state and preserve the unrelated user-owned files.
+- Implement the Europe/Amsterdam 04:00 operational-day function with DST boundary tests.
+- Add a Jarvis application service that owns lazy current-log creation, rollover, explicit fresh start, and closed-log mutation guards.
+- Extend shared history/API projections without changing standard-chat behavior.
+- Complete the Phase 2 backend/frontend deterministic gate before starting first-class task UI work.
 
 ## Session update template
 
