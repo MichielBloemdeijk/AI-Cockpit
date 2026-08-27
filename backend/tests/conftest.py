@@ -9,6 +9,7 @@ from alembic.config import Config
 
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
+from app.services.voice_session_adapter import fake_voice_session_adapter
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -33,6 +34,7 @@ async def configured_database(tmp_path: Path):
 
     await ensure_database_ready()
     initialize_engine(settings.database_url)
+    fake_voice_session_adapter.reset()
 
     alembic_config = Config(settings.alembic_config_path)
     alembic_config.set_main_option("sqlalchemy.url", settings.database_url.replace("+aiosqlite", ""))
@@ -41,6 +43,7 @@ async def configured_database(tmp_path: Path):
     try:
         yield
     finally:
+        fake_voice_session_adapter.reset()
         await close_engine()
         settings.database_url = original_database_url
         settings.alembic_ini_path = original_alembic_path

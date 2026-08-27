@@ -27,6 +27,12 @@ class DomainSnapshot:
     session_cursor: int
 
 
+@dataclass(frozen=True)
+class SessionEventAppendResult:
+    event: VoiceSessionEvent
+    created: bool
+
+
 class JarvisDomainRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -39,6 +45,23 @@ class JarvisDomainRepository:
         payload_json: dict | None = None,
         idempotency_key: str | None = None,
     ) -> VoiceSessionEvent:
+        return (
+            await self.append_session_event_once(
+                session_id=session_id,
+                event_type=event_type,
+                payload_json=payload_json,
+                idempotency_key=idempotency_key,
+            )
+        ).event
+
+    async def append_session_event_once(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        payload_json: dict | None = None,
+        idempotency_key: str | None = None,
+    ) -> SessionEventAppendResult:
         # A no-op update acquires the same writer lock used for the counter.
         # Checking the idempotency key while holding that lock prevents a
         # concurrent retry from consuming a sequence or creating a gap.
@@ -60,7 +83,7 @@ class JarvisDomainRepository:
             )
             existing = existing_result.scalar_one_or_none()
             if existing is not None:
-                return existing
+                return SessionEventAppendResult(event=existing, created=False)
 
         counter_statement = (
             update(RealtimeSession)
@@ -81,7 +104,7 @@ class JarvisDomainRepository:
         )
         self.session.add(event)
         await self.session.flush()
-        return event
+        return SessionEventAppendResult(event=event, created=True)
 
     async def read_snapshot(
         self,

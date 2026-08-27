@@ -13,6 +13,7 @@ This repository currently targets local development. Windows has convenience scr
 - Review proposed knowledge before promoting it into local files.
 - Reach the development UI from another device through Tailscale.
 - Dispatch durable background tasks with ordered traces, isolated attempts, and explicit cancel/retry controls.
+- Exercise the complete Jarvis coordinator state machine at `/jarvis` with the deterministic fake provider and developer conversation lab.
 
 For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -145,9 +146,11 @@ Expected response:
 Then open:
 
 - UI: [http://localhost:3000](http://localhost:3000)
+- Jarvis live workspace: [http://localhost:3000/jarvis](http://localhost:3000/jarvis)
 - API documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 With the default development configuration, enter any non-empty password on the login page.
+The first typed Jarvis turn creates the current daily log and starts the fake provider. Prefix a turn with `delegate:` to exercise immediate background-task acknowledgement without a microphone or external provider.
 
 The backend creates and migrates its SQLite database automatically on first startup. No separate migration command is required.
 

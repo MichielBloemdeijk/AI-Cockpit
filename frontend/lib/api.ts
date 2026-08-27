@@ -727,6 +727,92 @@ export async function startFreshJarvisLog(idempotencyKey: string): Promise<Conve
   return payload.current_log;
 }
 
+export async function getJarvisLogEvents(
+  conversationId: string,
+  after = 0,
+): Promise<JarvisConversationEventReplayResponse> {
+  const params = new URLSearchParams({ after: String(after) });
+  const res = await fetch(`${BASE}/api/jarvis/logs/${encodeURIComponent(conversationId)}/events?${params}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getJarvisSessionEvents(
+  sessionId: string,
+  after = 0,
+): Promise<JarvisSessionEventReplayResponse> {
+  const params = new URLSearchParams({ after: String(after) });
+  const res = await fetch(`${BASE}/api/jarvis/sessions/${encodeURIComponent(sessionId)}/events?${params}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getTaskEvents(after = 0): Promise<TaskEventReplayResponse> {
+  const params = new URLSearchParams({ after: String(after) });
+  const res = await fetch(`${BASE}/api/tasks/events?${params}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function createJarvisRealtimeCall(
+  controllerId: string,
+  role: "controller" | "observer" = "controller",
+): Promise<JarvisRealtimeCallResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/realtime/calls`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ controller_id: controllerId, role, provider_adapter: "fake" }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function injectFakeJarvisEvent(
+  sessionId: string,
+  request: JarvisFakeProviderEventRequest,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/jarvis/fake/sessions/${encodeURIComponent(sessionId)}/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
+export async function reserveJarvisPresentations(
+  sessionId: string,
+  generation: number,
+): Promise<JarvisPresentationReservationResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/sessions/${encodeURIComponent(sessionId)}/presentations/reserve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ generation }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function closeJarvisRealtimeSession(sessionId: string, generation: number): Promise<void> {
+  const params = new URLSearchParams({ generation: String(generation) });
+  const res = await fetch(`${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}?${params}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
 export async function listTasks(statuses: string[] = []): Promise<TaskSummary[]> {
   const params = new URLSearchParams();
   statuses.forEach((status) => params.append("status", status));
@@ -920,6 +1006,102 @@ export interface JarvisStateResponse {
   operational_day: string;
   state_revision: number;
   current_log: ConversationDetail | null;
+  tasks: TaskSummary[];
+  pending_questions: JarvisPendingQuestion[];
+  pending_presentations: JarvisPresentation[];
+  session: JarvisSession | null;
+  worker_health: { status: string; worker_id: string | null; heartbeat_at: string | null };
+  cursors: JarvisDomainCursors;
+}
+
+export interface JarvisDomainCursors {
+  conversation: number;
+  task: number;
+  session: number;
+}
+
+export interface JarvisSession {
+  id: string;
+  conversation_id: string;
+  generation: number;
+  provider_adapter: string;
+  lifecycle_state: string;
+  controller_id: string | null;
+  floor_state: string;
+  last_event_sequence: number;
+  created_at: string;
+  ready_at: string | null;
+  disconnected_at: string | null;
+}
+
+export interface JarvisPendingQuestion {
+  task_id: string;
+  question_id: string;
+  question: string;
+  asked_at: string;
+}
+
+export interface JarvisPresentation {
+  id: string;
+  task_id: string;
+  candidate_type: string;
+  importance: string;
+  state: string;
+  required_facts: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface JarvisSessionEvent {
+  id: string;
+  session_id: string;
+  sequence: number;
+  event_type: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface JarvisConversationEventReplayResponse {
+  conversation_id: string;
+  latest_sequence: number;
+  events: ConversationEventView[];
+}
+
+export interface JarvisSessionEventReplayResponse {
+  session_id: string;
+  latest_sequence: number;
+  events: JarvisSessionEvent[];
+}
+
+export interface TaskEventReplayResponse {
+  latest_sequence: number;
+  events: TaskEvent[];
+}
+
+export interface JarvisRealtimeCallResponse {
+  role: "controller" | "observer";
+  session: JarvisSession | null;
+}
+
+export interface JarvisFakeProviderEventRequest {
+  generation: number;
+  event_id: string;
+  kind:
+    | "ready"
+    | "user_speaking"
+    | "user_stopped"
+    | "assistant_generating"
+    | "assistant_speaking"
+    | "assistant_response"
+    | "assistant_interrupted"
+    | "shell_call"
+    | "disconnected"
+    | "provider_error";
+  payload?: Record<string, unknown>;
+}
+
+export interface JarvisPresentationReservationResponse {
+  presentation_ids: string[];
+  facts: Record<string, unknown>[];
 }
 
 export interface JarvisTurnAcceptedResponse {

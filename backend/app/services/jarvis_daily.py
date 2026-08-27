@@ -104,6 +104,7 @@ class JarvisDailyService:
             if existing_turn_id:
                 existing_message = await repo.get_message(existing_turn_id)
                 if existing_message is not None:
+                    await session.refresh(conversation)
                     return JarvisAcceptedTurn(
                         conversation=_conversation_record(conversation),
                         message=_message_record(existing_message),

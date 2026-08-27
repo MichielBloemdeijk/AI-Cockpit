@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 5 — not started
-- **Last completed phase:** Phase 4
+- **Current phase:** Phase 6 — not started
+- **Last completed phase:** Phase 5
 - **Product implementation started:** yes
-- **Next session entry point:** implement Phase 5 coordinator, deterministic fake provider, live Jarvis workspace projections, command lab, and provider-independent state-machine scenarios; recheck worktree status before editing
+- **Next session entry point:** begin Phase 6 by rereading current official OpenAI Realtime/WebRTC/server-control documentation, record API drift, then implement the OpenAI adapter without changing coordinator ownership; recheck worktree status before editing
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -22,8 +22,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 1. Clean schema and ordered-domain contracts | Complete | Passed 2026-08-27 | 70c15e7 |
 | 2. Standard conversations and Jarvis daily lifecycle | Complete | Passed 2026-08-27 | 8d72f15 |
 | 3. First-class tasks and task UI | Complete | Passed 2026-08-27 | 5e1b75d |
-| 4. Worker, runtime seam, and resource leases | Complete | Passed 2026-08-27 | Phase completion commit |
-| 5. Coordinator, fake provider, and live workspace | Not started | — | — |
+| 4. Worker, runtime seam, and resource leases | Complete | Passed 2026-08-27 | e98f15e |
+| 5. Coordinator, fake provider, and live workspace | Complete | Passed 2026-08-27 | Phase completion commit |
 | 6. OpenAI Realtime and WebRTC | Not started | — | — |
 | 7. Barge-in and audible-history truth | Not started | — | — |
 | 8. Brain delegation and proactive updates | Not started | — | — |
@@ -349,8 +349,79 @@ The legacy background child run remains a status-only compatibility projection f
 
 - Status: passed 2026-08-27
 - Commit subject: `feat(jarvis): add durable task worker`
-- Commit hash: resolve from git history in the next phase session
+- Commit hash: e98f15e749d5570c223f983e68bd0b72f12a68a6
 - Next entry point: Phase 5 coordinator contract, deterministic fake provider, live Jarvis workspace, and command lab
+- Blockers: none
+
+## Phase 5 record
+
+### Scope completed
+
+- Added provider-neutral `VoiceSessionAdapter` and normalized provider events plus a deterministic fake adapter that crosses the same callback boundary planned for OpenAI.
+- Added a durable Jarvis coordinator that owns controller generations, provider session lifecycle, floor projection, hydration context, speech-delivery truth, restricted shell mediation, presentation reservations, and fresh-log/session coordination.
+- Enforced one mutable controller generation, observer-only reads, deterministic supersession, reconnect through a new generation, and stale-session rejection before and after brain calls.
+- Added completed, interrupted, and unheard delivery persistence. Only heard content becomes transcript/context, duplicate deliveries are idempotent, and late generating/speaking events after terminal delivery are retained only as ignored diagnostics.
+- Added a restricted brain gateway with exactly `dispatch_task`, `get_task`, `answer_task_question`, `cancel_task`, `start_new_jarvis_log`, and `end_voice_session`; it has no agent registry, filesystem, browser, code, app, or Wiki access.
+- Added task-presentation projection with deterministic progress coalescing, terminal supersession, question preservation/folding after answer, safe-floor deferral, generation-bound reservation, interrupted-delivery retry, and once-only presentation completion.
+- Expanded `GET /api/jarvis/state` with transcript, active tasks/questions, pending presentations, latest session/floor state, worker health, and independent conversation/task/session cursors.
+- Added independent conversation and session replay endpoints alongside the global task replay endpoint, fake-provider event injection, controller/observer establishment, presentation reservation, and session-close APIs.
+- Rebuilt `/jarvis` as a responsive conversation/tasks/activity workspace with controller state, worker health, typed shell input, task actions, questions, pending-update state, explicit fresh/sleep/arm controls, and display-only merged activity.
+- Added a developer conversation lab for deterministic user-floor, direct-response, interruption, delegation, presentation, controller-supersession, and provider-error injection.
+- Added frontend independent-domain state that sorts and deduplicates replay, advances only the owning cursor, resets session state on controller replacement, resets log/session state on rollover, and preserves global task activity.
+- Fixed the daily-turn idempotent-read refresh path surfaced by browser retry testing.
+
+### Repository state at start
+
+- Branch: codex/jarvis-voice-poc
+- HEAD: e98f15e749d5570c223f983e68bd0b72f12a68a6
+- Commit subject: feat(jarvis): add durable task worker
+- Existing unrelated user-owned changes remained untouched.
+
+### Verification evidence
+
+Run on 2026-08-27:
+
+1. focused coordinator/daily/schema/task/worker/compatibility gate: `uv run pytest tests/test_jarvis_coordinator.py tests/test_jarvis_daily.py tests/test_jarvis_schema.py tests/test_task_service.py tests/test_task_worker.py tests/test_worker_coordinator.py tests/test_voice_api.py -q`
+   - Result: PASS
+   - 42 passed in 18.60 seconds
+2. complete backend gate: `uv run pytest -q`
+   - Result: PASS
+   - 216 passed in 232.80 seconds
+3. metadata parity: `uv run alembic check`
+   - Result: PASS
+   - No new upgrade operations detected
+4. frontend state/API/regression gate: `npm run test -- --run`
+   - Result: PASS
+   - 21 files and 122 tests passed
+5. frontend lint and production build: `npm run lint` and `npm run build`
+   - Result: PASS
+   - Next.js 16.2.3 build and TypeScript checks completed; 30 routes generated
+
+### Required simulated scenario evidence
+
+- Direct shell response and delegation/immediate acknowledgement pass through the fake adapter and restricted brain gateway.
+- Fast completion, slow progress/completion, and completion while the user owns the floor produce deterministic presentation state.
+- Task questions are preserved and answered once through the restricted shell.
+- Explicit fresh log and the existing active-task daily-rollover scenario preserve global task identity.
+- Interrupted heard-prefix delivery supports a later natural continuation without exposing unheard text to hydration.
+- Duplicate provider events and reordered late delivery-state events remain idempotent and diagnostic.
+- Controller replacement/reconnect rejects stale generations while observer reads never take ownership.
+- Progress coalescing, user-floor deferral, interrupted-presentation retry, and once-only completion are covered end to end.
+
+### Phase 5 deviations and rationale
+
+The Phase 1 schema already contained realtime sessions, voice events, speech deliveries, and task presentations, so Phase 5 required no Alembic revision. Metadata parity confirms no missing DDL.
+
+The fake workspace consumes each domain through ordered cursor replay polling rather than holding three long-lived transport connections. Ordering, dedupe, independent resume cursors, and session replacement are complete; Phase 6 can carry the same contracts over its WebRTC/sideband transport without changing domain ownership.
+
+Typed turns lazily establish a fake `typed-bridge` controller after creating the first durable log. This makes the Phase 5 workspace immediately usable without microphone/provider setup while retaining explicit controller supersession semantics.
+
+### Checkpoint
+
+- Status: passed 2026-08-27
+- Commit subject: `feat(jarvis): add provider-independent live workspace`
+- Commit hash: resolve from git history in the next phase session
+- Next entry point: Phase 6 official OpenAI Realtime documentation review, API-drift record, WebRTC call bootstrap, sideband adapter, secret-safe projections, reconnect/rotation, and fake/openai contract parity
 - Blockers: none
 
 ## Phase 1 entry checklist (completed)

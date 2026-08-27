@@ -3,11 +3,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptJarvisTextTurn,
   cancelTask,
+  closeJarvisRealtimeSession,
+  createJarvisRealtimeCall,
   createGeneratedApp,
   getGeneratedAppBySlug,
   getJarvisState,
+  getJarvisLogEvents,
+  getJarvisSessionEvents,
   getTask,
   getTaskWorkerHealth,
+  getTaskEvents,
+  injectFakeJarvisEvent,
   listConversations,
   listGeneratedApps,
   listTasks,
@@ -132,6 +138,54 @@ describe("Jarvis daily-log api", () => {
       body: JSON.stringify({ idempotency_key: "fresh-key" }),
     });
     expect(fresh).toEqual({ id: "jarvis-2" });
+  });
+
+  it("replays independent domains and controls the fake provider lab", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ events: [], latest_sequence: 0, role: "controller", session: null }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getJarvisLogEvents("log/1", 4);
+    await getTaskEvents(8);
+    await getJarvisSessionEvents("session/1", 3);
+    await createJarvisRealtimeCall("browser-1");
+    await injectFakeJarvisEvent("session/1", {
+      generation: 2,
+      event_id: "event-1",
+      kind: "user_speaking",
+    });
+    await closeJarvisRealtimeSession("session/1", 2);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/jarvis/logs/log%2F1/events?after=4", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/tasks/events?after=8", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/jarvis/sessions/session%2F1/events?after=3", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/jarvis/realtime/calls", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ controller_id: "browser-1", role: "controller", provider_adapter: "fake" }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/jarvis/fake/sessions/session%2F1/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ generation: 2, event_id: "event-1", kind: "user_speaking" }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/jarvis/realtime/sessions/session%2F1?generation=2", {
+      method: "DELETE",
+      credentials: "include",
+    });
   });
 });
 

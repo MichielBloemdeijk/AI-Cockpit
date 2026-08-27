@@ -103,10 +103,13 @@ It then registers these active routers:
 - `knowledge` for review queue and approved knowledge APIs
 - `apps` for the generated app registry and runtime app metadata
 - `voice` for local speech, the primary voice conversation, asynchronous turns, and background-task control
+- `jarvis` for the current daily log, provider-neutral controller sessions, independent conversation/session replay, fake-provider injection, and presentation reservation
 - `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
 
 The separate worker process registers through `worker_instances`, heartbeats independently of FastAPI, claims the strict FIFO head, acquires the complete sorted mutable target set, and executes through `AgentExecutionContext` plus `AgentExecutionSink`. Attempt checkpoints, task events, questions, results, and terminal state remain in SQLite, so an API restart has no ownership effect.
+
+The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the future OpenAI adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation, rejects stale callbacks, persists heard delivery truth, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation.
 
 ### Configuration
 
@@ -597,6 +600,21 @@ Current behavior:
 - renders the ordered task event stream through the reusable Agent trace components
 - keeps legacy child-run identifiers only as execution references while new conversation task cards project the global task identity
 
+### Jarvis Live UI Flow
+
+The live workspace lives at `frontend/app/(app)/jarvis` and uses the common conversation/task contracts rather than the legacy `/voice` projection.
+
+Current behavior:
+
+- lazily creates a daily log on the first accepted typed turn and automatically attaches the deterministic fake provider
+- renders header/controller state, durable transcript, active tasks and questions, pending presentations, worker health, and normalized activity
+- replays conversation, global task, and per-session domains with independent cursors; session replacement resets only the session cursor and daily rollover preserves global task activity
+- exposes controller take-over and observer semantics, explicit sleep/fresh-log controls, and stale-generation rejection
+- records completed, interrupted, and unheard speech deliveries while adding only heard content to the transcript/context projection
+- exposes a restricted shell gateway containing only task control, fresh-log, and session-end capabilities
+- coalesces task progress, preserves questions, defers presentation while the user owns the floor, and marks facts presented only through a generation-bound delivery
+- includes a developer conversation lab for deterministic floor, response, interruption, delegation, presentation, supersession, and provider-error injection
+
 ### Generated Apps UI Flow
 
 The apps surfaces are split intentionally:
@@ -704,6 +722,7 @@ Current behavior:
 - `frontend/lib/use-conversation-*.ts`: narrower chat state ownership hooks
 - `frontend/lib/chat-history.ts`: durable persisted timeline projection
 - `frontend/lib/agent-stream-state.ts`: transient live overlay state
+- `frontend/lib/jarvis-live-state.ts`: independent Jarvis domain cursors and merged display-only activity
 
 ### Knowledge and Documentation
 
@@ -723,8 +742,9 @@ Current backend test coverage lives under `backend/tests/` and includes:
 - agent runtime and reviewed memory behavior
 - workspace and limited-tool boundaries
 - slashless collection route coverage for the frontend rewrite path
+- provider-independent Jarvis controller, delivery, session-generation, brain-gateway, presentation, rollover, and fake-provider scenarios
 
-The frontend also includes API, chat-history, hook, stream-state, and chat-component tests, while production `next build` validates the route tree and TypeScript surfaces.
+The frontend also includes API, chat-history, hook, stream-state, Jarvis independent-cursor, and chat-component tests, while production `next build` validates the route tree and TypeScript surfaces.
 
 ## Current Gaps and Intentional Incompleteness
 
@@ -735,10 +755,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
+- The live Jarvis workspace currently uses the deterministic fake adapter and cursor replay polling. OpenAI Realtime/WebRTC media, sideband transport, rotation/reconnect backoff, and browser playback telemetry enter in Phase 6 and Phase 7.
 
 ## Architectural Direction
 
-The codebase has already crossed the main runtime, persistence, and frontend decomposition boundaries for the current architecture. The next architectural step is not another large chat/runtime rewrite. It is to extend the generated-app substrate into stronger verification and cleaner generated-app storage without introducing a second trace system.
+The codebase has crossed the durable conversation, global task, separate worker, and provider-neutral Jarvis coordinator boundaries. The next Jarvis step is to connect the proven coordinator to OpenAI Realtime over WebRTC and sideband control without moving provider-specific event shapes into conversation or task services.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 
