@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.config import settings
 from app.models.jarvis import (
     JarvisFreshLogRequest,
     JarvisFreshLogResponse,
@@ -30,6 +31,7 @@ from app.services.auth import require_auth
 from app.services.conversation_read_model import conversation_read_model
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.jarvis_daily import jarvis_daily_service
+from app.services.openai_realtime_adapter import OpenAIRealtimeConfigurationError
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import ACTIVE_TASK_STATUSES, task_service
 from app.models.tasks import TaskSummaryView, WorkerHealthView
@@ -67,6 +69,8 @@ def _task_summary(snapshot) -> TaskSummaryView:
 def _http_error(exc: ValueError) -> HTTPException:
     if isinstance(exc, StaleSessionError):
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, OpenAIRealtimeConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
     return HTTPException(
         status_code=404 if "not found" in str(exc).lower() else 409,
         detail=str(exc),
@@ -203,14 +207,29 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
     if state.current_log is None:
         raise HTTPException(status_code=409, detail="Accept a Jarvis turn before starting a controller")
     try:
-        session = await jarvis_coordinator.open_controller(
+        bootstrap = await jarvis_coordinator.bootstrap_controller(
             conversation_id=state.current_log.id,
             controller_id=request.controller_id,
             adapter_name=request.provider_adapter,
+            sdp_offer=request.sdp_offer,
         )
     except ValueError as exc:
         raise _http_error(exc) from exc
-    return JarvisRealtimeCallResponse(role="controller", session=_session_view(session))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Realtime provider connection failed",
+        ) from exc
+    return JarvisRealtimeCallResponse(
+        role="controller",
+        session=_session_view(bootstrap.session),
+        sdp_answer=bootstrap.sdp_answer,
+        rotate_after_seconds=(
+            settings.openai_realtime_rotation_minutes * 60
+            if request.provider_adapter == "openai"
+            else None
+        ),
+    )
 
 
 @router.get(

@@ -391,3 +391,17 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         assert injected.status_code == 202
         refreshed = await client.get("/api/jarvis/state")
         assert refreshed.json()["session"]["floor_state"] == "user_speaking"
+
+        transcript = await client.post(
+            f"/api/jarvis/fake/sessions/{body['session']['id']}/events",
+            json={
+                "generation": body["session"]["generation"],
+                "event_id": str(uuid4()),
+                "kind": "user_transcript",
+                "payload": {"item_id": "provider-user-1", "transcript": "A live voice turn"},
+            },
+        )
+        assert transcript.status_code == 202
+        with_transcript = (await client.get("/api/jarvis/state")).json()
+        assert with_transcript["current_log"]["messages"][-1]["content"] == "A live voice turn"
+        assert with_transcript["current_log"]["messages"][-1]["modality"] == "voice"

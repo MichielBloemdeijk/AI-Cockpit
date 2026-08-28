@@ -38,6 +38,7 @@ FLOOR_EVENT_TYPES = {
     "ready": "listening",
     "user_speaking": "user_speaking",
     "user_stopped": "thinking",
+    "user_transcript": "thinking",
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",
     "assistant_response": "listening",
@@ -75,6 +76,12 @@ class DeliveryRecord:
     id: str
     turn_id: str | None
     state: str
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerBootstrap:
+    session: SessionRecord
+    sdp_answer: str | None = None
 
 
 class JarvisCoordinator:
@@ -122,6 +129,21 @@ class JarvisCoordinator:
         controller_id: str,
         adapter_name: str = "fake",
     ) -> SessionRecord:
+        bootstrap = await self.bootstrap_controller(
+            conversation_id=conversation_id,
+            controller_id=controller_id,
+            adapter_name=adapter_name,
+        )
+        return bootstrap.session
+
+    async def bootstrap_controller(
+        self,
+        *,
+        conversation_id: str,
+        controller_id: str,
+        adapter_name: str = "fake",
+        sdp_offer: str | None = None,
+    ) -> ControllerBootstrap:
         adapter = get_voice_session_adapter(adapter_name)
         superseded_adapters: list[tuple[str, int, str]] = []
         await task_presentation_service.sync_candidates()
@@ -186,13 +208,26 @@ class JarvisCoordinator:
                     session_id=old_session_id,
                     generation=old_generation,
                 )
+            else:
+                try:
+                    await get_voice_session_adapter(old_adapter).close(
+                        session_id=old_session_id,
+                        generation=old_generation,
+                        reason="superseded",
+                        emit_event=False,
+                    )
+                except Exception:
+                    # The durable generation is already superseded. Provider
+                    # cleanup is best-effort and cannot restore its authority.
+                    pass
 
         try:
-            await adapter.connect(
+            connection = await adapter.connect(
                 session_id=record.id,
                 generation=record.generation,
                 context=context,
                 on_event=self.handle_provider_event,
+                sdp_offer=sdp_offer,
             )
         except Exception:
             async with session_scope() as session:
@@ -204,7 +239,7 @@ class JarvisCoordinator:
         refreshed = await self.get_session(record.id)
         if refreshed is None:
             raise RuntimeError("Realtime session disappeared after connection")
-        return refreshed
+        return ControllerBootstrap(session=refreshed, sdp_answer=connection.sdp_answer)
 
     async def observe(self) -> SessionRecord | None:
         """Return the active controller projection without taking ownership."""
@@ -273,7 +308,9 @@ class JarvisCoordinator:
                 realtime.lifecycle_state = "disconnected"
                 realtime.disconnected_at = utc_now()
 
-            if event.kind in {"assistant_response", "assistant_interrupted"}:
+            if event.kind == "user_transcript":
+                await self._persist_user_transcript(session, realtime, event)
+            elif event.kind in {"assistant_response", "assistant_interrupted"}:
                 delivery = await self._persist_delivery(session, realtime, event)
                 raw_presentation_ids = payload.get("presentation_ids")
                 presentation_ids = tuple(
@@ -376,6 +413,16 @@ class JarvisCoordinator:
             )
         if realtime.provider_adapter == "fake":
             fake_voice_session_adapter.detach(session_id=session_id, generation=generation)
+        else:
+            try:
+                await get_voice_session_adapter(realtime.provider_adapter).close(
+                    session_id=session_id,
+                    generation=generation,
+                    reason=reason,
+                    emit_event=False,
+                )
+            except Exception:
+                pass
 
     async def close_session(self, session_id: str, *, generation: int, reason: str = "requested") -> None:
         session = await self.get_session(session_id)
@@ -383,7 +430,12 @@ class JarvisCoordinator:
             raise ValueError("Realtime session not found")
         await self._assert_generation(session_id, generation)
         adapter = get_voice_session_adapter(session.provider_adapter)
-        await adapter.close(session_id=session_id, generation=generation, reason=reason)
+        await adapter.close(
+            session_id=session_id,
+            generation=generation,
+            reason=reason,
+            emit_event=True,
+        )
 
     async def replay_session_events(
         self,
@@ -488,7 +540,15 @@ class JarvisCoordinator:
                 },
                 idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
             )
-        if control == "start_new_jarvis_log":
+        if control is None:
+            adapter = get_voice_session_adapter(realtime.provider_adapter)
+            await adapter.send_tool_result(
+                session_id=session_id,
+                generation=generation,
+                call_id=call_id,
+                output={"ok": ok, "result": output},
+            )
+        elif control == "start_new_jarvis_log":
             await self.start_fresh_log(idempotency_key=f"brain:{call_id}:fresh")
         elif control == "end_voice_session":
             await self.close_session(session_id, generation=generation, reason="shell_requested")
@@ -574,6 +634,49 @@ class JarvisCoordinator:
             }
             turn_id = message.id
         return DeliveryRecord(delivery.id, turn_id, delivery_state)
+
+    @staticmethod
+    async def _persist_user_transcript(
+        session,
+        realtime: RealtimeSession,
+        event: VoiceProviderEvent,
+    ) -> None:
+        transcript = str(event.payload.get("transcript") or "").strip()
+        if not transcript:
+            return
+        item_id = str(event.payload.get("item_id") or event.event_id)
+        repo = ConversationRepository(session)
+        conversation_event = await repo.append_event(
+            conversation_id=realtime.conversation_id,
+            run_id=None,
+            actor_kind="user",
+            event_type="conversation.user_message.accepted",
+            payload_json={
+                "content": transcript,
+                "modality": "voice",
+                "provider_item_id": item_id,
+            },
+            branch_key="main",
+            idempotency_key=f"provider-transcript:{realtime.id}:{item_id}",
+        )
+        existing_turn_id = str((conversation_event.payload_json or {}).get("turn_id") or "")
+        if existing_turn_id:
+            return
+        message = await repo.create_message(
+            conversation_id=realtime.conversation_id,
+            source_event_id=conversation_event.id,
+            role="user",
+            author_label="You",
+            content=transcript,
+            modality="voice",
+            execution_mode="jarvis_shell",
+            communication_state="completed",
+        )
+        conversation_event.payload_json = {
+            **(conversation_event.payload_json or {}),
+            "turn_id": message.id,
+        }
+        await repo.touch_conversation(realtime.conversation_id, updated_at=utc_now())
 
     @staticmethod
     def _first_presentation_id(payload: dict[str, Any]) -> str | None:

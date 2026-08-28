@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 6 — not started
+- **Current phase:** Phase 6 — implementation complete; manual exit pending
 - **Last completed phase:** Phase 5
 - **Product implementation started:** yes
-- **Next session entry point:** begin Phase 6 by rereading current official OpenAI Realtime/WebRTC/server-control documentation, record API drift, then implement the OpenAI adapter without changing coordinator ownership; recheck worktree status before editing
+- **Next session entry point:** complete the short physical-microphone, audible Marin, typed-shell, and reconnect acceptance pass; then close Phase 6 and begin Phase 7 playback telemetry/barge-in work
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -23,8 +23,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 2. Standard conversations and Jarvis daily lifecycle | Complete | Passed 2026-08-27 | 8d72f15 |
 | 3. First-class tasks and task UI | Complete | Passed 2026-08-27 | 5e1b75d |
 | 4. Worker, runtime seam, and resource leases | Complete | Passed 2026-08-27 | e98f15e |
-| 5. Coordinator, fake provider, and live workspace | Complete | Passed 2026-08-27 | Phase completion commit |
-| 6. OpenAI Realtime and WebRTC | Not started | — | — |
+| 5. Coordinator, fake provider, and live workspace | Complete | Passed 2026-08-27 | 71f78e9 |
+| 6. OpenAI Realtime and WebRTC | Manual exit pending | Automated and live provider path passed 2026-08-28; physical audio/reconnect acceptance pending | — |
 | 7. Barge-in and audible-history truth | Not started | — | — |
 | 8. Brain delegation and proactive updates | Not started | — | — |
 | 9. Browser-local wake and follow-up | Not started | — | — |
@@ -420,9 +420,72 @@ Typed turns lazily establish a fake `typed-bridge` controller after creating the
 
 - Status: passed 2026-08-27
 - Commit subject: `feat(jarvis): add provider-independent live workspace`
-- Commit hash: resolve from git history in the next phase session
+- Commit hash: 71f78e97d1ca73b8b5595b12ee0ccee0ebdaf1b6
 - Next entry point: Phase 6 official OpenAI Realtime documentation review, API-drift record, WebRTC call bootstrap, sideband adapter, secret-safe projections, reconnect/rotation, and fake/openai contract parity
 - Blockers: none
+
+## Phase 6 record
+
+### Official API review and adapter deviations
+
+Reviewed the current official OpenAI `gpt-realtime-2.1`, WebRTC, server-side controls, Realtime conversations, and VAD documentation on 2026-08-27 before product code changes.
+
+- The unified WebRTC bootstrap is a backend-authenticated multipart request to `/v1/realtime/calls` containing `sdp` and a JSON `session` field. This matches the planned backend proxy but replaces older raw-SDP/ephemeral-key examples at the provider boundary.
+- The provider call ID is returned only in the HTTP `Location` response header. The OpenAI adapter will retain it in process memory solely to bind `wss://api.openai.com/v1/realtime?call_id=...`; neither the durable public session projection nor the browser response will contain it.
+- Current session configuration nests turn detection under `session.audio.input.turn_detection`, uses `output_modalities`, and names transcript lifecycle events `response.output_audio_transcript.delta` and `.done`. These are adapter-only schema details and do not change the provider-neutral coordinator contract.
+- `semantic_vad` supports `eagerness`, `create_response`, and `interrupt_response`; the implementation will use low eagerness as planned. Marin remains a current recommended voice.
+
+These are provider adapter details, not contradictions of a locked invariant, so Phase 6 continues without an architecture decision point.
+
+### Checkpoint
+
+- Status: implementation complete; manual exit pending 2026-08-28
+- Starting HEAD: 71f78e97d1ca73b8b5595b12ee0ccee0ebdaf1b6
+- Existing unrelated user-owned changes remain untouched
+- Blockers: none
+
+### Scope completed
+
+- Added the backend-authenticated unified-call SDP proxy and retained the provider call ID only in adapter memory for the sideband connection and best-effort hangup.
+- Added an explicit OpenAI sideband adapter with authenticated readiness, current nested Realtime session configuration, context hydration, normalized coordinator events, restricted tool-result submission, provider failure handling, and partial-call cleanup.
+- Kept the OpenAI key, provider call ID, and provider error bodies out of browser-facing models and responses.
+- Persisted committed provider user transcripts through the same atomic conversation/event path used by the provider-neutral coordinator.
+- Added browser WebRTC offer/answer, microphone capture, remote audio, data-channel setup, teardown, bounded 0/0.5/1/2-second retry, typed fallback, failed/disconnected-peer reconnect, and 55-minute normal supersession.
+- Wired `/jarvis` Arm/Sleep controls and controller-state feedback to the Realtime lifecycle without changing the fake-provider development surface.
+- Added backend adapter/coordinator contracts and frontend WebRTC lifecycle tests.
+
+### Implementation deviations and rationale
+
+- Unified-call creation uses `aiohttp.FormData(default_to_multipart=True)` rather than the existing `httpx` client. A live provider probe on 2026-08-28 showed that the `httpx` multipart encoding used here was rejected as invalid SDP while browser-standard FormData and `aiohttp` both returned HTTP 201. This is isolated inside the provider adapter.
+- The browser SDP offer is preserved byte-for-byte, including its terminal CRLF. Trimming it caused the live provider to reject the otherwise valid offer with an SDP EOF parse error.
+- A successful authenticated sideband WebSocket handshake is the explicit readiness boundary. The provider did not reliably replay `session.created` to a sideband socket attached after unified-call creation, so waiting for that event made a healthy call time out. Session lifecycle events are still normalized when received.
+
+These are provider-transport details and do not change a locked architecture invariant.
+
+### Verification evidence
+
+Run on 2026-08-28:
+
+1. backend adapter/coordinator/API contracts
+   - Result: PASS — full backend suite, 220 tests
+2. frontend unit and state tests
+   - Result: PASS — 22 files, 127 tests
+3. frontend production build
+   - Result: PASS — TypeScript and 30 routes
+4. migration and bytecode checks
+   - Result: PASS — no new Alembic operations and application modules compile
+5. secret boundary
+   - Result: PASS — zero `OPENAI_API_KEY` references in frontend source and zero configured-key matches in emitted frontend server/static files
+6. live OpenAI call using the configured root `.env` key and an isolated silent browser track
+   - Result: PASS — WebRTC/data channel and sideband connected, OpenAI produced `Phase six live smoke passed.`, the normalized assistant response was persisted, and the provider call was closed
+
+### Manual exit still required
+
+- Speak through a physical microphone and confirm the committed user transcript plus an audible Marin response.
+- Submit a typed `/jarvis` turn and confirm it stays on the restricted shell path.
+- Briefly interrupt and restore connectivity and confirm reconnect preserves conversational continuity.
+
+No new product decision or hard implementation blocker was found. Phase 6 remains open only for these real-device acceptance checks.
 
 ## Phase 1 entry checklist (completed)
 

@@ -103,12 +103,15 @@ class JarvisFreshLogResponse(BaseModel):
 class JarvisRealtimeCallRequest(BaseModel):
     controller_id: str = Field(min_length=1, max_length=255)
     role: Literal["controller", "observer"] = "controller"
-    provider_adapter: Literal["fake"] = "fake"
+    provider_adapter: Literal["fake", "openai"] = "fake"
+    sdp_offer: str | None = Field(default=None, min_length=1, max_length=1_000_000)
 
 
 class JarvisRealtimeCallResponse(BaseModel):
     role: Literal["controller", "observer"]
     session: JarvisSessionView | None = None
+    sdp_answer: str | None = None
+    rotate_after_seconds: int | None = None
 
 
 class JarvisFakeProviderEventRequest(BaseModel):
@@ -118,6 +121,7 @@ class JarvisFakeProviderEventRequest(BaseModel):
         "ready",
         "user_speaking",
         "user_stopped",
+        "user_transcript",
         "assistant_generating",
         "assistant_speaking",
         "assistant_response",

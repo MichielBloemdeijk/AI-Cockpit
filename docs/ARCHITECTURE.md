@@ -109,7 +109,7 @@ It then registers these active routers:
 
 The separate worker process registers through `worker_instances`, heartbeats independently of FastAPI, claims the strict FIFO head, acquires the complete sorted mutable target set, and executes through `AgentExecutionContext` plus `AgentExecutionSink`. Attempt checkpoints, task events, questions, results, and terminal state remain in SQLite, so an API restart has no ownership effect.
 
-The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the future OpenAI adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation, rejects stale callbacks, persists heard delivery truth, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation.
+The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the OpenAI Realtime sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation, rejects stale callbacks, persists heard delivery truth, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation. OpenAI credentials and provider call IDs remain backend-only.
 
 ### Configuration
 
@@ -606,7 +606,9 @@ The live workspace lives at `frontend/app/(app)/jarvis` and uses the common conv
 
 Current behavior:
 
-- lazily creates a daily log on the first accepted typed turn and automatically attaches the deterministic fake provider
+- lazily creates a daily log on the first accepted typed turn and supports either the deterministic fake provider or an armed OpenAI Realtime controller
+- lets the browser own microphone permission, WebRTC offer/answer, remote audio playback, data-channel establishment, bounded reconnect, typed fallback, and 55-minute rotation through normal controller supersession
+- proxies unified-call SDP through the authenticated backend and binds a backend-only sideband socket to the provider call
 - renders header/controller state, durable transcript, active tasks and questions, pending presentations, worker health, and normalized activity
 - replays conversation, global task, and per-session domains with independent cursors; session replacement resets only the session cursor and daily rollover preserves global task activity
 - exposes controller take-over and observer semantics, explicit sleep/fresh-log controls, and stale-generation rejection
@@ -755,11 +757,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- The live Jarvis workspace currently uses the deterministic fake adapter and cursor replay polling. OpenAI Realtime/WebRTC media, sideband transport, rotation/reconnect backoff, and browser playback telemetry enter in Phase 6 and Phase 7.
+- OpenAI Realtime/WebRTC media, sideband transport, and browser rotation/reconnect are implemented. Physical-microphone, audible voice, typed-shell, and live reconnect acceptance remain before Phase 6 closes; accurate playback telemetry and local barge-in remain Phase 7 work.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, and provider-neutral Jarvis coordinator boundaries. The next Jarvis step is to connect the proven coordinator to OpenAI Realtime over WebRTC and sideband control without moving provider-specific event shapes into conversation or task services.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, and OpenAI Realtime/WebRTC boundaries without moving provider-specific event shapes into conversation or task services. The next Jarvis step is a short real-device Phase 6 acceptance pass, followed by Phase 7 barge-in and audible-history truth.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 

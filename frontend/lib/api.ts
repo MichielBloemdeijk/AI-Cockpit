@@ -766,14 +766,25 @@ export async function getTaskEvents(after = 0): Promise<TaskEventReplayResponse>
 export async function createJarvisRealtimeCall(
   controllerId: string,
   role: "controller" | "observer" = "controller",
+  providerAdapter: "fake" | "openai" = "fake",
+  sdpOffer?: string,
 ): Promise<JarvisRealtimeCallResponse> {
   const res = await fetch(`${BASE}/api/jarvis/realtime/calls`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ controller_id: controllerId, role, provider_adapter: "fake" }),
+    body: JSON.stringify({
+      controller_id: controllerId,
+      role,
+      provider_adapter: providerAdapter,
+      ...(sdpOffer ? { sdp_offer: sdpOffer } : {}),
+    }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json() as { detail?: string }).detail || detail; } catch {}
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -1080,6 +1091,8 @@ export interface TaskEventReplayResponse {
 export interface JarvisRealtimeCallResponse {
   role: "controller" | "observer";
   session: JarvisSession | null;
+  sdp_answer: string | null;
+  rotate_after_seconds: number | null;
 }
 
 export interface JarvisFakeProviderEventRequest {
@@ -1089,6 +1102,7 @@ export interface JarvisFakeProviderEventRequest {
     | "ready"
     | "user_speaking"
     | "user_stopped"
+    | "user_transcript"
     | "assistant_generating"
     | "assistant_speaking"
     | "assistant_response"

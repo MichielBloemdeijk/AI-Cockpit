@@ -26,6 +26,19 @@ class Settings(BaseSettings):
     openrouter_prompt_cache_ttl: Literal["5m", "1h"] = "5m"
     openrouter_explicit_cache_breakpoint_min_bytes: int = 4096
 
+    # OpenAI Realtime (standard keys remain backend-only)
+    openai_api_key: str = ""
+    openai_realtime_base_url: str = "https://api.openai.com/v1"
+    openai_realtime_websocket_url: str = "wss://api.openai.com/v1/realtime"
+    openai_realtime_model: str = "gpt-realtime-2.1"
+    openai_realtime_voice: str = "marin"
+    openai_realtime_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
+    openai_realtime_noise_reduction: Literal["near_field", "far_field"] = "near_field"
+    openai_realtime_vad_eagerness: Literal["low", "medium", "high", "auto"] = "low"
+    openai_realtime_transcription_model: str = "gpt-live-transcribe"
+    openai_realtime_connect_timeout_seconds: float = 12.0
+    openai_realtime_rotation_minutes: int = 55
+
     # Local OpenAI-compatible model server (for example llama.cpp)
     local_llm_enabled: bool = True
     local_llm_base_url: str = "http://127.0.0.1:8080/v1"

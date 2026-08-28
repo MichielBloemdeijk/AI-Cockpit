@@ -18,6 +18,13 @@ class VoiceProviderEvent:
 ProviderEventHandler = Callable[[str, int, VoiceProviderEvent], Awaitable[None]]
 
 
+@dataclass(frozen=True, slots=True)
+class VoiceSessionConnection:
+    """Safe connection material returned to the coordinator/browser boundary."""
+
+    sdp_answer: str | None = None
+
+
 class VoiceSessionAdapter(Protocol):
     """The coordinator-facing surface implemented by any realtime provider."""
 
@@ -30,7 +37,8 @@ class VoiceSessionAdapter(Protocol):
         generation: int,
         context: dict[str, Any],
         on_event: ProviderEventHandler,
-    ) -> None: ...
+        sdp_offer: str | None = None,
+    ) -> VoiceSessionConnection: ...
 
     async def send_user_text(
         self,
@@ -41,7 +49,23 @@ class VoiceSessionAdapter(Protocol):
         text: str,
     ) -> None: ...
 
-    async def close(self, *, session_id: str, generation: int, reason: str) -> None: ...
+    async def send_tool_result(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        call_id: str,
+        output: dict[str, Any],
+    ) -> None: ...
+
+    async def close(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        reason: str,
+        emit_event: bool = True,
+    ) -> None: ...
 
 
 class FakeVoiceSessionAdapter:
@@ -64,7 +88,8 @@ class FakeVoiceSessionAdapter:
         generation: int,
         context: dict[str, Any],
         on_event: ProviderEventHandler,
-    ) -> None:
+        sdp_offer: str | None = None,
+    ) -> VoiceSessionConnection:
         self._handlers[(session_id, generation)] = on_event
         await self.inject(
             session_id=session_id,
@@ -75,6 +100,7 @@ class FakeVoiceSessionAdapter:
                 payload={"context_cursors": context.get("cursors", {})},
             ),
         )
+        return VoiceSessionConnection()
 
     async def send_user_text(
         self,
@@ -127,19 +153,40 @@ class FakeVoiceSessionAdapter:
             ),
         )
 
-    async def close(self, *, session_id: str, generation: int, reason: str) -> None:
+    async def send_tool_result(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        call_id: str,
+        output: dict[str, Any],
+    ) -> None:
+        # The fake adapter emits its deterministic acknowledgement before the
+        # shell call. Keeping this a no-op still exercises the shared method.
+        if (session_id, generation) not in self._handlers:
+            raise ValueError("Fake provider session is not connected")
+
+    async def close(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        reason: str,
+        emit_event: bool = True,
+    ) -> None:
         key = (session_id, generation)
         if key not in self._handlers:
             return
-        await self.inject(
-            session_id=session_id,
-            generation=generation,
-            event=VoiceProviderEvent(
-                event_id=f"fake-disconnected:{session_id}:{generation}:{reason}",
-                kind="disconnected",
-                payload={"reason": reason},
-            ),
-        )
+        if emit_event:
+            await self.inject(
+                session_id=session_id,
+                generation=generation,
+                event=VoiceProviderEvent(
+                    event_id=f"fake-disconnected:{session_id}:{generation}:{reason}",
+                    kind="disconnected",
+                    payload={"reason": reason},
+                ),
+            )
         self._handlers.pop(key, None)
 
     async def inject(
@@ -168,4 +215,8 @@ fake_voice_session_adapter = FakeVoiceSessionAdapter()
 def get_voice_session_adapter(name: str) -> VoiceSessionAdapter:
     if name == fake_voice_session_adapter.name:
         return fake_voice_session_adapter
+    if name == "openai":
+        from app.services.openai_realtime_adapter import openai_realtime_adapter
+
+        return openai_realtime_adapter
     raise ValueError(f"Unsupported voice session adapter: {name}")

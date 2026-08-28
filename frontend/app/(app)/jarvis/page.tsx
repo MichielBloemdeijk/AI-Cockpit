@@ -42,6 +42,10 @@ import {
   resetJarvisSessionStream,
   type JarvisLiveStreamState,
 } from "@/lib/jarvis-live-state";
+import {
+  JarvisRealtimeController,
+  type JarvisRealtimeSnapshot,
+} from "@/lib/jarvis-realtime";
 
 
 const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input"]);
@@ -73,10 +77,18 @@ export default function JarvisPage() {
   const [submitting, setSubmitting] = useState(false);
   const [labOpen, setLabOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [realtime, setRealtime] = useState<JarvisRealtimeSnapshot>({
+    status: "idle",
+    attempt: 0,
+    session: null,
+    error: null,
+  });
   const streamsRef = useRef<JarvisLiveStreamState>(EMPTY_JARVIS_LIVE_STREAMS);
   const logIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const controllerIdRef = useRef("");
+  const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const setLiveStreams = useCallback((next: JarvisLiveStreamState) => {
     streamsRef.current = next;
@@ -123,9 +135,23 @@ export default function JarvisPage() {
 
   useEffect(() => {
     controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`;
+    realtimeControllerRef.current = new JarvisRealtimeController({
+      controllerId: controllerIdRef.current,
+      onSnapshot: setRealtime,
+      onRemoteStream: (stream) => {
+        const audio = remoteAudioRef.current;
+        if (!audio) return;
+        audio.srcObject = stream;
+        if (stream) void audio.play().catch(() => undefined);
+      },
+    });
     void refresh();
     const timer = window.setInterval(() => void refresh(), 1500);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      void realtimeControllerRef.current?.stop();
+      realtimeControllerRef.current = null;
+    };
   }, [refresh]);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -184,6 +210,7 @@ export default function JarvisPage() {
   const session = state?.session ?? null;
   const sessionReady = session?.lifecycle_state === "ready";
   const ownsController = session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
+  const realtimeBusy = realtime.status === "connecting" || realtime.status === "reconnecting";
 
   if (loading) {
     return <div className="flex h-full items-center justify-center bg-zinc-950 text-zinc-400"><Loader2 className="animate-spin" /></div>;
@@ -191,6 +218,7 @@ export default function JarvisPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-zinc-950 text-zinc-100">
+      <audio ref={remoteAudioRef} autoPlay className="hidden" aria-hidden="true" />
       <header className="border-b border-zinc-800 bg-zinc-900/95 px-3 py-3 md:px-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
@@ -203,6 +231,11 @@ export default function JarvisPage() {
               <span className={state?.worker_health.status === "online" ? "text-xs text-emerald-400" : "text-xs text-zinc-500"}>
                 worker {state?.worker_health.status || "offline"}
               </span>
+              {realtime.status !== "idle" && (
+                <span className={realtime.status === "connected" ? "text-xs text-emerald-400" : realtime.status === "text_fallback" ? "text-xs text-amber-300" : "text-xs text-violet-300"}>
+                  voice {realtime.status.replaceAll("_", " ")}{realtimeBusy ? ` · attempt ${realtime.attempt}` : ""}
+                </span>
+              )}
             </div>
             <p className="mt-1 text-xs text-zinc-500">
               {session ? `${ownsController ? "Controller" : "Observer"} · generation ${session.generation} · ${session.provider_adapter}` : "No live controller"}
@@ -214,9 +247,10 @@ export default function JarvisPage() {
               type="button"
               onClick={() => void run(async () => {
                 if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
-                await createJarvisRealtimeCall(controllerIdRef.current, "controller");
+                if (!realtimeControllerRef.current) throw new Error("Realtime controller is unavailable");
+                await realtimeControllerRef.current.start();
               })}
-              disabled={submitting || !currentLog}
+              disabled={submitting || realtimeBusy || realtime.status === "connected" || !currentLog}
               className="inline-flex items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200 disabled:opacity-40"
             >
               <Mic size={13} /> Arm
@@ -224,10 +258,13 @@ export default function JarvisPage() {
             <button
               type="button"
               onClick={() => void run(async () => {
-                if (!session) return;
-                await closeJarvisRealtimeSession(session.id, session.generation);
+                if (realtime.status !== "idle") {
+                  await realtimeControllerRef.current?.stop();
+                } else if (session) {
+                  await closeJarvisRealtimeSession(session.id, session.generation);
+                }
               })}
-              disabled={submitting || !sessionReady}
+              disabled={submitting || (!sessionReady && realtime.status === "idle")}
               className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 disabled:opacity-40"
             >
               <MicOff size={13} /> Sleep
