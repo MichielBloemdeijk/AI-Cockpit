@@ -328,7 +328,7 @@ Activation resolution is transactional:
 
 The assistant transcript represents what the user probably heard, not everything the model generated.
 
-During playback, the browser maintains local playout telemetry and immediately mutes output when local speech activity indicates user barge-in. The coordinator combines browser telemetry with provider interruption/truncation. The initial heard-prefix estimate includes transcript deltas whose estimated playout time is at least 250 ms older than the interruption boundary; this margin remains configurable.
+During playback, the browser maintains local playout telemetry and immediately mutes output when local speech activity indicates user barge-in. The coordinator combines browser telemetry with provider interruption/truncation. A configurable 250 ms transcript-delta margin is only the initial fallback estimator; it is not considered the final accuracy mechanism unless measured browser/provider traces show that it meets the manual heard-prefix gate.
 
 On interruption:
 
@@ -687,18 +687,26 @@ Each phase begins only after its predecessor's exit checkpoint passes. If a chec
 
 **Objective:** make interruption immediate, natural, and truthful in durable history.
 
+**Research checkpoint before implementation tuning:**
+
+- reproduce the observed sentence-scale cutoff drift and capture monotonic browser timestamps for received audio, actual playout, local mute, provider interruption, transcript deltas, and final truncation;
+- compare Web Audio playout-clock instrumentation, applicable WebRTC inbound/jitter-buffer statistics, and provider `audio_end_ms` truncation acknowledgement instead of assuming generated transcript timing equals audible timing;
+- measure early and late cutoff error over short and long responses, different speaking rates, and at least desktop Chrome plus the intended phone/PWA path;
+- write the selected estimator and fallback hierarchy into the ledger before fixing the durable delivery contract;
+- retain the 250 ms delta-age heuristic only as a bounded fallback when more direct playout evidence is unavailable.
+
 **Scope:**
 
 - keep local speech activity detection active while Jarvis speaks;
 - immediately mute output on detected user speech;
 - combine playback telemetry with provider truncation;
-- estimate heard prefix using configurable 250 ms playout margin;
+- estimate heard prefix from measured playout/truncation evidence, with the configurable 250 ms delta-age margin as fallback;
 - persist generated and heard transcripts separately;
 - hydrate only heard content;
 - regenerate natural continuations;
 - return incompletely heard task facts to pending.
 
-**Automated exit tests:** deterministic telemetry/provider timelines cover completed, interrupted, unheard, late/double events, reconnect, task-fact recovery, and hydration.
+**Automated exit tests:** deterministic telemetry/provider timelines cover completed, interrupted, unheard, late/double events, reconnect, task-fact recovery, and hydration. The selected estimator must also have trace-fixture tests for both early and late cutoff error; a full-sentence discrepancy is a failed gate, not an acceptable approximation.
 
 **Manual exit checks:**
 
@@ -797,7 +805,7 @@ Allow at most two tuning passes. If acceptance still fails, retain the current o
 - remove faster-whisper unless the documented wake fallback was selected;
 - remove JarvisSpeechScheduler, primary-voice flags, cloud-next-turn toggle, and browser-only delivery truth;
 - remove API-process ownership of background tasks;
-- redirect /voice, /background, and /knowledge;
+- retain the completed `/voice` to `/jarvis` redirect and redirect `/background` and `/knowledge` to their final destinations;
 - update README, architecture, startup, configuration, and POC-versus-target documentation;
 - run dead-code and dependency checks;
 - record latency and Realtime cost observations without making them release gates.
@@ -892,7 +900,7 @@ The POC database receives no semantic migration. Phase 1 creates and validates t
 No blocking architectural decision remains. The following are bounded implementation investigations with predefined fallbacks:
 
 - verify current OpenAI event/config schemas in Phase 6;
-- calibrate heard-prefix timing around the 250 ms initial margin;
+- complete the Phase 7 measured playout/truncation comparison and calibrate the 250 ms heuristic only as its fallback;
 - validate SQLite transaction/locking behavior with the separate worker under deterministic load;
 - exercise browser reconnect and provider interruption edge cases;
 - evaluate PRESENT/FOLD/DEFER consistency behind the replaceable timing policy;

@@ -198,6 +198,7 @@ The main settings are:
 | `VOICE_STT_MODEL` | large-v3-turbo | faster-whisper's CTranslate2 Whisper Large V3 Turbo checkpoint |
 | `VOICE_TTS_VOICE` | af_heart | Kokoro voice used for speech responses |
 | `VOICE_CLOUD_MODEL` | openai/gpt-5.6-terra | Model used only when a turn explicitly requests cloud |
+| `OPENAI_API_KEY` | blank | Backend-only key used to create OpenAI Realtime Jarvis calls |
 | `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
 | `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
 | `ALLOWED_DIRS` | blank | Optional comma-separated absolute directories |
@@ -209,26 +210,11 @@ The main settings are:
 
 Defaults for future conversations can also be changed from the Settings page after login.
 
-## Jarvis voice POC
+## Jarvis
 
-The `/voice` route is the Jarvis POC surface. It provides local browser VAD, wake-word extraction, local STT/TTS handoff, a persistent server-owned voice conversation, durable event replay, background task chips and controls, explicit cloud-next-turn routing, installable PWA support, and optional Web Push away notifications. Long-running or mutating work is delegated independently, so the phone can accept another turn while the PC continues working.
+The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs, typed fallback, task delegation, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
 
-Install the optional backend voice and notification dependencies from `backend` before testing the full local stack:
-
-```powershell
-uv sync --group voice --group notifications
-```
-
-Start llama.cpp with the Gemma checkpoint bound to loopback and a single slot, for example:
-
-```powershell
-llama-server.exe `
-  -m .\models\gemma-4-12b-it-qat-q4_0.gguf `
-  --host 127.0.0.1 --port 8080 `
-  -c 16384 -ngl 99 --jinja -np 1
-```
-
-Then open [http://localhost:3000/voice](http://localhost:3000/voice), or the HTTPS Tailscale Serve URL on the phone. Click Arm to enable the microphone; say “Jarvis” followed by a command, or use the text fallback. Click Enable alerts only after configuring VAPID keys. The health cards distinguish a missing optional speech dependency from an unavailable local model; no cloud fallback is performed automatically. Use “Use cloud for this…” or the Cloud next turn control to route one explicit turn to the configured cloud model.
+Set `OPENAI_API_KEY` in the repository root `.env`, start the normal backend and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and separate worker remain necessary for delegated background tasks, but the legacy local STT/TTS voice groups are not required for the Realtime path.
 
 ## Phone Access with Tailscale
 

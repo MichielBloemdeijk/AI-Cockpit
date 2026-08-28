@@ -18,6 +18,7 @@ import {
 
 import { ChatMessage } from "@/components/ChatMessage";
 import {
+  acknowledgePushDelivery,
   acceptJarvisTextTurn,
   answerTaskQuestion,
   cancelTask,
@@ -46,6 +47,7 @@ import {
   JarvisRealtimeController,
   type JarvisRealtimeSnapshot,
 } from "@/lib/jarvis-realtime";
+import { useConversationAutoScroll } from "@/lib/conversation-auto-scroll";
 
 
 const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input"]);
@@ -89,6 +91,19 @@ export default function JarvisPage() {
   const controllerIdRef = useRef("");
   const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const conversationScrollRef = useRef<HTMLDivElement | null>(null);
+  const currentConversationId = state?.current_log?.id ?? null;
+  const currentMessages = state?.current_log?.messages ?? [];
+  const newestMessageId = currentMessages.length
+    ? currentMessages[currentMessages.length - 1].id
+    : null;
+
+  useConversationAutoScroll(
+    conversationScrollRef,
+    !loading,
+    currentConversationId,
+    newestMessageId,
+  );
 
   const setLiveStreams = useCallback((next: JarvisLiveStreamState) => {
     streamsRef.current = next;
@@ -152,6 +167,35 @@ export default function JarvisPage() {
       void realtimeControllerRef.current?.stop();
       realtimeControllerRef.current = null;
     };
+  }, [refresh]);
+
+  useEffect(() => {
+    navigator.serviceWorker
+      ?.register("/sw.js", { scope: "/", updateViaCache: "none" })
+      .catch(() => undefined);
+    const onMessage = (
+      event: MessageEvent<{
+        type?: string;
+        payload?: { delivery_id?: string };
+      }>,
+    ) => {
+      if (
+        event.data?.type !== "jarvis-push"
+        && event.data?.type !== "jarvis-open-update"
+      ) return;
+      const deliveryId = event.data.payload?.delivery_id;
+      if (deliveryId) void acknowledgePushDelivery(deliveryId, "opened");
+      void refresh();
+    };
+    navigator.serviceWorker?.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
+  }, [refresh]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const deliveryId = params.get("delivery");
+    if (deliveryId) void acknowledgePushDelivery(deliveryId, "opened");
+    if (params.has("update")) void refresh();
   }, [refresh]);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -293,7 +337,7 @@ export default function JarvisPage() {
             <div className="flex items-center gap-2 text-sm font-medium"><Radio size={15} className="text-violet-400" /> Conversation</div>
             <span className="text-[11px] text-zinc-500">cursor {streams.cursors.conversation}</span>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-5 md:px-6">
+          <div ref={conversationScrollRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-5 md:px-6">
             <div className="mx-auto max-w-3xl space-y-3">
               {!currentLog?.messages.length ? (
                 <div className="flex min-h-80 flex-col items-center justify-center text-center text-zinc-500">

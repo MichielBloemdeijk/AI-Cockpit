@@ -25,11 +25,11 @@ function loadWorker(windowClients: Array<Record<string, unknown>> = []) {
 }
 
 describe("Jarvis service worker", () => {
-  it("delivers a push to a visible voice page without also showing a notification", async () => {
+  it("delivers a push to a visible Jarvis page without also showing a notification", async () => {
     const postMessage = vi.fn();
     const { listeners, showNotification } = loadWorker([{
       visibilityState: "visible",
-      url: "https://jarvis.test/voice",
+      url: "https://jarvis.test/jarvis",
       postMessage,
     }]);
     let work: Promise<unknown> = Promise.resolve();
@@ -51,11 +51,11 @@ describe("Jarvis service worker", () => {
     listeners.notificationclick({
       notification: {
         close: vi.fn(),
-        data: { event_id: "event-2", delivery_id: "delivery-2", url: "/voice?update=event-2" },
+        data: { event_id: "event-2", delivery_id: "delivery-2", url: "/jarvis?update=event-2" },
       },
       waitUntil: (promise: Promise<unknown>) => { work = promise; },
     });
     await work;
-    expect(openWindow).toHaveBeenCalledWith("https://jarvis.test/voice?update=event-2&delivery=delivery-2");
+    expect(openWindow).toHaveBeenCalledWith("https://jarvis.test/jarvis?update=event-2&delivery=delivery-2");
   });
 });

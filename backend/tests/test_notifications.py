@@ -10,7 +10,7 @@ from app.db.session import session_scope
 from app.db.tables import NotificationDelivery
 from app.services.conversation_store import conversation_store
 import app.services.notifications as notifications_module
-from app.services.notifications import acknowledge_delivery, notify_event, recover_pending_deliveries, sanitize_summary, should_notify, upsert_subscription
+from app.services.notifications import acknowledge_delivery, notify_event, payload_for_event, recover_pending_deliveries, sanitize_summary, should_notify, upsert_subscription
 
 
 def test_notification_summary_is_plain_text_and_bounded() -> None:
@@ -37,6 +37,22 @@ def test_required_input_is_not_suppressed_by_completion_policy() -> None:
     assert not should_notify("task.requires_input", {"notify_policy": "none"})
     assert not should_notify("agent.question.asked", {"notify_policy": "completion"})
     assert not should_notify("task.progress", {"notify_policy": "completion", "importance": "urgent"})
+
+
+@pytest.mark.asyncio
+async def test_notification_payload_targets_jarvis_workspace() -> None:
+    conversation = await conversation_store.create_conversation(mode_hint="voice")
+    event = await conversation_store.append_event(
+        conversation.id,
+        run_id=None,
+        actor_kind="assistant",
+        event_type="task.completed",
+        payload_json={"summary": "Done"},
+    )
+
+    assert payload_for_event(event, "delivery-1")["url"] == (
+        f"/jarvis?update={event.id}&delivery=delivery-1"
+    )
 
 
 @pytest.mark.asyncio

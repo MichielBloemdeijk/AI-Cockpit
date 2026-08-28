@@ -2,7 +2,7 @@
   "name": "AI Cockpit",
   "short_name": "AI Cockpit",
   "description": "Personal AI command center",
-  "start_url": "/voice",
+  "start_url": "/jarvis",
   "display": "standalone",
   "background_color": "#09090b",
   "theme_color": "#18181b",

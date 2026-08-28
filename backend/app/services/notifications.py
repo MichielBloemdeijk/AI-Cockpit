@@ -71,7 +71,7 @@ def payload_for_event(event: ConversationEvent, delivery_id: str) -> dict[str, A
         "task_title": title,
         "importance": str(payload.get("importance") or "normal"),
         "summary": summary,
-        "url": f"/voice?update={event.id}&delivery={delivery_id}",
+        "url": f"/jarvis?update={event.id}&delivery={delivery_id}",
     }
 
 

@@ -26,7 +26,7 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
 - chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
-- a Jarvis voice PWA with browser VAD, local STT/TTS endpoints, a server-owned primary voice conversation, first-class global tasks with replayable traces, and optional Web Push delivery
+- a `/jarvis` PWA with OpenAI Realtime WebRTC plus backend sideband control, durable daily logs, first-class global tasks with replayable traces, and optional Web Push delivery; the legacy local STT/TTS API remains only until Phase 11 cleanup
 
 ## Required App-Builder Direction
 
@@ -39,7 +39,7 @@ The required product direction for generated apps is a chat-resident agent loop:
 5. the agent reads and writes files inside the app write roots from the same chat session
 6. the agent returns to the user in that same chat thread when the work is complete
 
-This remains the primary control plane for interactive generated-app work. Background delegation from chat or the compatibility `/voice` surface creates a first-class global task. A separate `python -m app.worker` process claims and executes global tasks; the temporary child run is retained only as a compatibility projection and never owns execution.
+This remains the primary control plane for interactive generated-app work. Background delegation from chat or the compatibility voice API creates a first-class global task; the retired `/voice` page permanently redirects to `/jarvis`. A separate `python -m app.worker` process claims and executes global tasks; the temporary child run is retained only as a compatibility projection and never owns execution.
 
 The product is currently split into a FastAPI backend, a Next.js frontend, a local SQLite database for durable conversation state, and a file-backed knowledge directory.
 
@@ -102,7 +102,7 @@ It then registers these active routers:
 - `conversations` for durable transcript, event, artifact, branch, tool, and memory operations
 - `knowledge` for review queue and approved knowledge APIs
 - `apps` for the generated app registry and runtime app metadata
-- `voice` for local speech, the primary voice conversation, asynchronous turns, and background-task control
+- `voice` for the legacy local-speech compatibility API pending Phase 11 removal; there is no longer a separate `/voice` UI
 - `jarvis` for the current daily log, provider-neutral controller sessions, independent conversation/session replay, fake-provider injection, and presentation reservation
 - `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
@@ -191,7 +191,7 @@ Implemented responsibilities:
 
 The voice API keeps one server-recognizable `mode_hint="voice"` conversation marked as the active primary. Voice turns are accepted as queued runs and owned by `RunSupervisor`; the HTTP request and event-stream observer can disconnect without cancelling work. The event stream replays after a monotonic conversation cursor. Background task completion, failure, cancellation, and restart interruption are persisted as task events plus assistant messages, which lets the frontend speak them in the same conversation.
 
-The notification API stores browser subscriptions and deduplicated deliveries. Push payloads reference the durable event ID and the `/voice` deep link. Delivery is attempted only for requested, important, failed, interrupted, or explicitly tested updates; disabled or missing VAPID configuration never causes a cloud fallback.
+The notification API stores browser subscriptions and deduplicated deliveries. Push payloads reference the durable event ID and the `/jarvis` deep link. Delivery is attempted only for requested, important, failed, interrupted, or explicitly tested updates; disabled or missing VAPID configuration never causes a cloud fallback.
 
 ### Service Layer
 
@@ -609,6 +609,8 @@ Current behavior:
 - lazily creates a daily log on the first accepted typed turn and supports either the deterministic fake provider or an armed OpenAI Realtime controller
 - lets the browser own microphone permission, WebRTC offer/answer, remote audio playback, data-channel establishment, bounded reconnect, typed fallback, and 55-minute rotation through normal controller supersession
 - proxies unified-call SDP through the authenticated backend and binds a backend-only sideband socket to the provider call
+- opens existing logs at their newest message and follows new user or assistant messages automatically
+- owns the installable PWA start route and notification deep links; `/voice` is now a permanent compatibility redirect
 - renders header/controller state, durable transcript, active tasks and questions, pending presentations, worker health, and normalized activity
 - replays conversation, global task, and per-session domains with independent cursors; session replacement resets only the session cursor and daily rollover preserves global task activity
 - exposes controller take-over and observer semantics, explicit sleep/fresh-log controls, and stale-generation rejection
@@ -757,11 +759,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, and browser rotation/reconnect are implemented. Physical-microphone, audible voice, typed-shell, and live reconnect acceptance remain before Phase 6 closes; accurate playback telemetry and local barge-in remain Phase 7 work.
+- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, and real-device acceptance are complete. Accurate playback telemetry and local barge-in remain Phase 7 work; user testing confirmed the pre-Phase 7 generated-transcript approach can be more than a sentence early or late.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, and OpenAI Realtime/WebRTC boundaries without moving provider-specific event shapes into conversation or task services. The next Jarvis step is a short real-device Phase 6 acceptance pass, followed by Phase 7 barge-in and audible-history truth.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, and OpenAI Realtime/WebRTC boundaries without moving provider-specific event shapes into conversation or task services. The current Jarvis step is Phase 7: measure actual playout/truncation evidence, select a bounded heard-prefix estimator, and then implement barge-in and audible-history truth.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 

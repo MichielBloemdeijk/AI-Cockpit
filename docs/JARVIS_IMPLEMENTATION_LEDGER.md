@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 6 — implementation complete; manual exit pending
-- **Last completed phase:** Phase 5
+- **Current phase:** Phase 7 — heard-prefix measurement and estimator research
+- **Last completed phase:** Phase 6
 - **Product implementation started:** yes
-- **Next session entry point:** complete the short physical-microphone, audible Marin, typed-shell, and reconnect acceptance pass; then close Phase 6 and begin Phase 7 playback telemetry/barge-in work
+- **Next session entry point:** reproduce and instrument the reported sentence-scale early/late interruption cutoff drift, compare direct playout/truncation signals, then record the chosen Phase 7 estimator before changing durable delivery truth
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -24,8 +24,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 3. First-class tasks and task UI | Complete | Passed 2026-08-27 | 5e1b75d |
 | 4. Worker, runtime seam, and resource leases | Complete | Passed 2026-08-27 | e98f15e |
 | 5. Coordinator, fake provider, and live workspace | Complete | Passed 2026-08-27 | 71f78e9 |
-| 6. OpenAI Realtime and WebRTC | Manual exit pending | Automated and live provider path passed 2026-08-28; physical audio/reconnect acceptance pending | — |
-| 7. Barge-in and audible-history truth | Not started | — | — |
+| 6. OpenAI Realtime and WebRTC | Complete | Passed 2026-08-29 | 58b2a78 |
+| 7. Barge-in and audible-history truth | Research in progress | Measured estimator and implementation pending | — |
 | 8. Brain delegation and proactive updates | Not started | — | — |
 | 9. Browser-local wake and follow-up | Not started | — | — |
 | 10. Wiki/search, notifications, and archive UX | Not started | — | — |
@@ -439,7 +439,7 @@ These are provider adapter details, not contradictions of a locked invariant, so
 
 ### Checkpoint
 
-- Status: implementation complete; manual exit pending 2026-08-28
+- Status: passed 2026-08-29
 - Starting HEAD: 71f78e97d1ca73b8b5595b12ee0ccee0ebdaf1b6
 - Existing unrelated user-owned changes remain untouched
 - Blockers: none
@@ -479,13 +479,32 @@ Run on 2026-08-28:
 6. live OpenAI call using the configured root `.env` key and an isolated silent browser track
    - Result: PASS — WebRTC/data channel and sideband connected, OpenAI produced `Phase six live smoke passed.`, the normalized assistant response was persisted, and the provider call was closed
 
-### Manual exit still required
+### Manual exit evidence
 
-- Speak through a physical microphone and confirm the committed user transcript plus an audible Marin response.
-- Submit a typed `/jarvis` turn and confirm it stays on the restricted shell path.
-- Briefly interrupt and restore connectivity and confirm reconnect preserves conversational continuity.
+- On 2026-08-29 the user confirmed that the real-device Phase 6 experience works successfully after exercising the delivered build.
+- Physical microphone input, audible Realtime response, typed workspace use, and reconnect no longer block the phase gate.
+- The user separately reported sentence-scale early/late transcript cutoff drift during barge-in. That does not reopen Phase 6: precise audible-history truth was deliberately assigned to Phase 7 and the current Phase 6 path contains no final playout estimator.
 
-No new product decision or hard implementation blocker was found. Phase 6 remains open only for these real-device acceptance checks.
+No new product decision or hard implementation blocker was found. Phase 6 is complete at `58b2a78`.
+
+## Phase 7 record
+
+### 2026-08-29 — measured heard-prefix research entry
+
+- Starting HEAD: 58b2a78be2ea2fd8c5ff54951d0a7faf6ff37579
+- User evidence: interruption can leave the durable assistant transcript more than a sentence early or late relative to what was actually heard.
+- Interpretation: provider-side interruption and generated transcript completion are insufficient evidence of browser playout. The current result is expected pre-Phase 7 behavior, not the planned final accuracy.
+- Research checkpoint: capture synchronized receive/play/mute/provider/truncate traces; compare Web Audio playout timing, usable WebRTC receive statistics, and provider truncation acknowledgement; retain the 250 ms transcript-age rule only as fallback.
+- Acceptance clarification: a full-sentence discrepancy fails Phase 7. Deterministic trace fixtures must cover both over-commit and under-commit before the durable transcript path changes.
+- Safe workspace polish started alongside the checkpoint: conversation auto-scroll, `/voice` to `/jarvis` retirement redirect, and Jarvis PWA/notification deep-link targeting.
+- Architecture decisions required: none yet. Stop only if measured browser/provider capabilities contradict the locked rule that durable assistant history contains what was probably heard.
+
+Verification on 2026-08-29:
+
+- backend: PASS — 221 tests, Alembic metadata parity, and application bytecode compilation
+- frontend: PASS — 23 test files/129 tests, ESLint, TypeScript, and 30-route production build
+- retired route: PASS — production `/voice` returned HTTP 308 with `Location: /jarvis`
+- cleanup: the temporary production verification server was stopped; no application service was left running
 
 ## Phase 1 entry checklist (completed)
 
