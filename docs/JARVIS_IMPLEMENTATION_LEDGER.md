@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 7 — heard-prefix measurement and estimator research
+- **Current phase:** Phase 7 — real-device cutoff calibration and manual acceptance
 - **Last completed phase:** Phase 6
 - **Product implementation started:** yes
-- **Next session entry point:** reproduce and instrument the reported sentence-scale early/late interruption cutoff drift, compare direct playout/truncation signals, then record the chosen Phase 7 estimator before changing durable delivery truth
+- **Next session entry point:** run the implemented barge-in path on desktop Chrome and the intended phone/PWA, download the developer voice traces, and calibrate only if cutoff error still reaches a sentence
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -498,6 +498,26 @@ No new product decision or hard implementation blocker was found. Phase 6 is com
 - Acceptance clarification: a full-sentence discrepancy fails Phase 7. Deterministic trace fixtures must cover both over-commit and under-commit before the durable transcript path changes.
 - Safe workspace polish started alongside the checkpoint: conversation auto-scroll, `/voice` to `/jarvis` retirement redirect, and Jarvis PWA/notification deep-link targeting.
 - Architecture decisions required: none yet. Stop only if measured browser/provider capabilities contradict the locked rule that durable assistant history contains what was probably heard.
+
+### 2026-08-29 — Phase 7 estimator selection and automated implementation
+
+- Official Realtime behavior resolves the primary clock choice: for WebRTC, OpenAI manages the output buffer and automatically truncates unplayed audio; `conversation.item.truncated.audio_end_ms` is the provider's played-audio boundary. The provider deliberately removes its stored audio transcript after truncation and does not return an exact truncated text prefix.
+- Selected hierarchy: use provider `audio_end_ms` as authoritative playout duration; align it to complete transcript words with generated PCM duration when sideband audio deltas are available, otherwise use a session-calibrated speech-duration model; use transcript-delta age with the `OPENAI_REALTIME_TRANSCRIPT_MARGIN_MS` safety margin (250 ms by default) only when the provider cutoff is missing; commit no assistant text when no playout evidence exists.
+- Completion truth now waits for `output_audio_buffer.stopped`. `response.output_audio_transcript.done` and `response.done` retain generated response state but no longer create a durable assistant message before playback drains.
+- Interruption truth now waits for `conversation.item.truncated` and stores generated and heard transcripts separately with the estimator source, provider cutoff, generated-audio duration when available, playout duration when available, cutoff character, margin, and duration scale in `speech_delivery.timing_summary_json`.
+- A bounded delayed fallback handles a missing truncation acknowledgement. Exact provider evidence wins whenever it arrives in the normal event window; duplicate and late terminal events remain idempotent.
+- Browser-local Silero VAD now remains active on the WebRTC microphone stream while Jarvis speaks. Local speech immediately mutes the audio element and sends `output_audio_buffer.clear`; provider speech-start remains a secondary immediate-mute signal.
+- The browser retains a bounded downloadable trace of provider events, transcript-delta sizes, local VAD/mute/control timestamps, audio-element state/current time, and applicable inbound WebRTC jitter/sample statistics. The trace contains no microphone audio.
+- Deterministic early- and late-cutoff fixtures cover slow and fast utterance alignment. Adapter/coordinator tests cover deferred completion, provider truncation, missing-tail exclusion, timing persistence, duplicate terminal handling, reconnect, task-fact retry, and heard-only hydration through the existing suites.
+- Manual calibration is still required on desktop Chrome and the intended phone/PWA path. The default speech-duration model is not promoted past Phase 7 until real traces show less than a sentence of cutoff error and immediate mute/no-talk-over behavior.
+
+Focused verification on 2026-08-29:
+
+- backend Phase 7 gate: PASS — 17 coordinator, OpenAI adapter, and heard-prefix tests
+- complete backend gate: PASS — 227 tests, Alembic metadata parity, and application bytecode compilation
+- frontend controller/VAD gate: PASS — 9 tests
+- complete frontend gate: PASS — 23 files / 131 tests, ESLint, Next.js production TypeScript/build, and all 30 routes generated
+- standalone `tsc --noEmit`: known repository test-fixture typing errors remain; production TypeScript passed through the Next.js build
 
 Verification on 2026-08-29:
 

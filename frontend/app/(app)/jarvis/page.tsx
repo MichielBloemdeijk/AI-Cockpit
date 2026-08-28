@@ -157,7 +157,24 @@ export default function JarvisPage() {
         const audio = remoteAudioRef.current;
         if (!audio) return;
         audio.srcObject = stream;
-        if (stream) void audio.play().catch(() => undefined);
+        if (stream) {
+          audio.muted = false;
+          void audio.play()
+            .then(() => realtimeControllerRef.current?.recordPlaybackSignal(
+              "audio_play_resolved",
+              `media_current_time_ms:${Math.round(audio.currentTime * 1_000)}`,
+            ))
+            .catch(() => undefined);
+        }
+      },
+      onPlaybackMuted: (muted) => {
+        const audio = remoteAudioRef.current;
+        if (!audio) return;
+        audio.muted = muted;
+        realtimeControllerRef.current?.recordPlaybackSignal(
+          muted ? "audio_element_muted" : "audio_element_unmuted",
+          `media_current_time_ms:${Math.round(audio.currentTime * 1_000)}`,
+        );
       },
     });
     void refresh();
@@ -221,6 +238,19 @@ export default function JarvisPage() {
     });
   };
 
+  const downloadRealtimeTrace = () => {
+    const entries = realtimeControllerRef.current?.traceSnapshot() ?? [];
+    const url = URL.createObjectURL(new Blob(
+      [JSON.stringify({ captured_at: new Date().toISOString(), entries }, null, 2)],
+      { type: "application/json" },
+    ));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `jarvis-realtime-trace-${Date.now()}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const inject = async (
     kind: JarvisFakeProviderEventRequest["kind"],
     payload: Record<string, unknown> = {},
@@ -262,7 +292,20 @@ export default function JarvisPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-zinc-950 text-zinc-100">
-      <audio ref={remoteAudioRef} autoPlay className="hidden" aria-hidden="true" />
+      <audio
+        ref={remoteAudioRef}
+        autoPlay
+        className="hidden"
+        aria-hidden="true"
+        onPlaying={(event) => realtimeControllerRef.current?.recordPlaybackSignal(
+          "audio_element_playing",
+          `media_current_time_ms:${Math.round(event.currentTarget.currentTime * 1_000)}`,
+        )}
+        onPause={(event) => realtimeControllerRef.current?.recordPlaybackSignal(
+          "audio_element_paused",
+          `media_current_time_ms:${Math.round(event.currentTarget.currentTime * 1_000)}`,
+        )}
+      />
       <header className="border-b border-zinc-800 bg-zinc-900/95 px-3 py-3 md:px-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
@@ -446,6 +489,7 @@ export default function JarvisPage() {
                   <LabButton label="Present updates" disabled={!sessionReady || submitting} onClick={() => void run(presentPending)} />
                   <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisRealtimeCall(controllerIdRef.current, "controller"); })} />
                   <LabButton label="Provider error" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("provider_error", { reason: "simulated_failure" }))} />
+                  <LabButton label="Download voice trace" disabled={realtime.status === "idle"} onClick={downloadRealtimeTrace} />
                 </div>
               )}
             </div>

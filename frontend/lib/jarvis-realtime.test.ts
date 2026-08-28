@@ -20,7 +20,10 @@ class FakeStream {
 
 class FakeChannel {
   closed = false;
+  readyState: RTCDataChannelState = "open";
+  sent: string[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
+  send(message: string) { this.sent.push(message); }
   close() { this.closed = true; }
 }
 
@@ -78,6 +81,8 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
   const createCall = vi.fn().mockResolvedValue(response(1));
   const closeSession = vi.fn().mockResolvedValue(undefined);
   const wait = vi.fn().mockResolvedValue(undefined);
+  const detector = { destroy: vi.fn() };
+  let speechStart: (() => void) | null = null;
   const value: JarvisRealtimeDependencies = {
     createPeer: () => {
       const peer = new FakePeer();
@@ -97,9 +102,24 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
       return timers.length;
     },
     clearTimer: vi.fn(),
+    now: vi.fn().mockReturnValue(1_000),
+    createBargeInDetector: vi.fn(async (_stream, onSpeechStart) => {
+      speechStart = onSpeechStart;
+      return detector;
+    }),
     ...overrides,
   };
-  return { value, peers, streams, timers, createCall, closeSession, wait };
+  return {
+    value,
+    peers,
+    streams,
+    timers,
+    createCall,
+    closeSession,
+    wait,
+    detector,
+    triggerSpeechStart: () => speechStart?.(),
+  };
 }
 
 describe("JarvisRealtimeController", () => {
@@ -128,6 +148,7 @@ describe("JarvisRealtimeController", () => {
     expect(deps.peers[0].closed).toBe(true);
     expect(deps.peers[0].channel.closed).toBe(true);
     expect(deps.streams[0].track.stopped).toBe(true);
+    expect(deps.detector.destroy).toHaveBeenCalledOnce();
     expect(deps.closeSession).toHaveBeenCalledWith("session-1", 1);
     expect(controller.current().status).toBe("idle");
   });
@@ -198,6 +219,57 @@ describe("JarvisRealtimeController", () => {
     await vi.waitFor(() => expect(controller.current().session?.generation).toBe(2));
 
     expect(createCall).toHaveBeenCalledTimes(2);
+    await controller.stop();
+  });
+
+  it("mutes and clears provider output immediately when local VAD detects barge-in", async () => {
+    const deps = dependencies();
+    const muted: boolean[] = [];
+    const controller = new JarvisRealtimeController(
+      { controllerId: "browser-1", onPlaybackMuted: (value) => muted.push(value) },
+      deps.value,
+    );
+
+    await controller.start();
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "output_audio_buffer.started", response_id: "resp-1" }),
+    } as MessageEvent);
+    deps.triggerSpeechStart();
+
+    expect(muted).toEqual([true]);
+    expect(deps.peers[0].channel.sent).toHaveLength(1);
+    expect(JSON.parse(deps.peers[0].channel.sent[0])).toMatchObject({
+      type: "output_audio_buffer.clear",
+    });
+    expect(controller.traceSnapshot().map((entry) => entry.kind)).toContain(
+      "output_audio_buffer.clear.sent",
+    );
+
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "output_audio_buffer.cleared", response_id: "resp-1" }),
+    } as MessageEvent);
+    expect(muted).toEqual([true, false]);
+    await controller.stop();
+  });
+
+  it("uses provider speech-start as the mute fallback when local VAD has not fired", async () => {
+    const deps = dependencies();
+    const muted: boolean[] = [];
+    const controller = new JarvisRealtimeController(
+      { controllerId: "browser-1", onPlaybackMuted: (value) => muted.push(value) },
+      deps.value,
+    );
+
+    await controller.start();
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "output_audio_buffer.started", response_id: "resp-2" }),
+    } as MessageEvent);
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),
+    } as MessageEvent);
+
+    expect(muted).toEqual([true]);
+    expect(deps.peers[0].channel.sent).toEqual([]);
     await controller.stop();
   });
 });

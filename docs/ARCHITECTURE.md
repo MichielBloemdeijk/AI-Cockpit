@@ -759,11 +759,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, and real-device acceptance are complete. Accurate playback telemetry and local barge-in remain Phase 7 work; user testing confirmed the pre-Phase 7 generated-transcript approach can be more than a sentence early or late.
+- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, and real-device Phase 6 acceptance are complete. Phase 7 now uses provider `audio_end_ms`, delayed terminal delivery, local VAD muting/clear, and downloadable browser/WebRTC traces; desktop and phone cutoff calibration remain before Phase 7 acceptance.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, and OpenAI Realtime/WebRTC boundaries without moving provider-specific event shapes into conversation or task services. The current Jarvis step is Phase 7: measure actual playout/truncation evidence, select a bounded heard-prefix estimator, and then implement barge-in and audible-history truth.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, and OpenAI Realtime/WebRTC boundaries without moving provider-specific event shapes into conversation or task services. The current Jarvis step is the Phase 7 real-device gate: verify immediate barge-in and calibrate the provider-cutoff heard-prefix estimator on desktop Chrome and the intended phone/PWA path.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 

@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import TaskEvent
+from app.db.tables import SpeechDelivery, TaskEvent
 from app.main import app
 from app.services.conversation_store import conversation_store
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
@@ -78,6 +78,11 @@ async def test_interruption_duplicate_and_reordered_delivery_truth() -> None:
         "item_id": "item-interrupted",
         "transcript": "I'll explain the whole result now.",
         "heard_transcript": "I'll explain",
+        "timing_summary": {
+            "estimator_source": "provider_audio_end_calibrated_text",
+            "audio_end_ms": 725,
+            "cutoff_char": len("I'll explain"),
+        },
     }
     interrupted = VoiceProviderEvent(
         event_id="interrupted-once",
@@ -118,6 +123,18 @@ async def test_interruption_duplicate_and_reordered_delivery_truth() -> None:
     _, events = await jarvis_coordinator.replay_session_events(session.id)
     assert sum(event.idempotency_key == "provider:interrupted-once" for event in events) == 1
     assert events[-2].event_type == "provider.event.ignored"
+    async with session_scope() as db:
+        delivery = (await db.execute(
+            select(SpeechDelivery).where(
+                SpeechDelivery.provider_response_id == "response-interrupted"
+            )
+        )).scalar_one()
+        assert delivery.generated_transcript == "I'll explain the whole result now."
+        assert delivery.heard_transcript == "I'll explain"
+        assert delivery.timing_summary_json["audio_end_ms"] == 725
+        assert delivery.timing_summary_json["estimator_source"] == (
+            "provider_audio_end_calibrated_text"
+        )
     context = await jarvis_coordinator.context(session.id)
     assert context is not None
     dialogue = [item["content"] for item in context["dialogue"]]

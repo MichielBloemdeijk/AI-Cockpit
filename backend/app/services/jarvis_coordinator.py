@@ -590,7 +590,16 @@ class JarvisCoordinator:
             source_task_id=str(payload.get("source_task_id") or "") or None,
             source_task_event_id=str(payload.get("source_task_event_id") or "") or None,
             presentation_id=self._first_presentation_id(payload),
-            provider_causality_json={"provider_event_id": event.event_id},
+            provider_causality_json={
+                "provider_event_id": event.event_id,
+                "provider_response_id": response_id,
+                "provider_item_id": item_id,
+            },
+            timing_summary_json=(
+                dict(payload.get("timing_summary"))
+                if isinstance(payload.get("timing_summary"), dict)
+                else {}
+            ),
         )
         session.add(delivery)
         await session.flush()

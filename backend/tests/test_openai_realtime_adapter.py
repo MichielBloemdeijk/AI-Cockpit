@@ -231,6 +231,32 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     await socket.feed(
         {
             "type": "response.done",
+            "event_id": "evt-7a",
+            "response": {
+                "id": "resp-1",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "item-assistant",
+                        "type": "message",
+                        "content": [
+                            {"type": "audio", "transcript": "I can help with that."}
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    await socket.feed(
+        {
+            "type": "output_audio_buffer.stopped",
+            "event_id": "evt-7b",
+            "response_id": "resp-1",
+        }
+    )
+    await socket.feed(
+        {
+            "type": "response.done",
             "event_id": "evt-8",
             "response": {
                 "id": "resp-tool",
@@ -263,6 +289,139 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     assert events[6].payload["transcript"] == "I can help with that."
     assert events[7].payload["arguments"] == {"goal": "Prepare a report"}
     await adapter.close(session_id="session-events", generation=1, reason="done")
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_waits_for_provider_playout_cutoff_before_finalizing_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-secret-key")
+
+    async def create_call(**kwargs: Any) -> httpx.Response:
+        return httpx.Response(201, text="answer", headers={"Location": "/v1/realtime/calls/rtc_cutoff"})
+
+    socket = FakeSideband()
+
+    async def connect_socket(url: str, **kwargs: Any) -> FakeSideband:
+        return socket
+
+    adapter = OpenAIRealtimeAdapter(
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200))
+        ),
+        websocket_connector=connect_socket,
+        realtime_call_creator=create_call,
+    )
+    events = []
+
+    async def on_event(session_id, generation, event):
+        events.append(event)
+
+    await adapter.connect(
+        session_id="session-cutoff",
+        generation=1,
+        context={},
+        on_event=on_event,
+        sdp_offer="offer",
+    )
+    await socket.feed(
+        {"type": "response.created", "event_id": "cut-1", "response": {"id": "resp-cut"}}
+    )
+    await socket.feed(
+        {
+            "type": "response.output_item.added",
+            "event_id": "cut-2",
+            "response_id": "resp-cut",
+            "item": {"id": "item-cut", "type": "message"},
+        }
+    )
+    await socket.feed(
+        {
+            "type": "output_audio_buffer.started",
+            "event_id": "cut-3",
+            "response_id": "resp-cut",
+        }
+    )
+    await socket.feed(
+        {
+            "type": "response.output_audio_transcript.done",
+            "event_id": "cut-4",
+            "response_id": "resp-cut",
+            "item_id": "item-cut",
+            "transcript": "I can explain the first result. The second result was not heard.",
+        }
+    )
+    assert "assistant_response" not in [event.kind for event in events]
+    await socket.feed(
+        {
+            "type": "output_audio_buffer.cleared",
+            "event_id": "cut-5",
+            "response_id": "resp-cut",
+        }
+    )
+    await socket.feed(
+        {
+            "type": "output_audio_buffer.stopped",
+            "event_id": "cut-5b",
+            "response_id": "resp-cut",
+        }
+    )
+    assert "assistant_response" not in [event.kind for event in events]
+    await socket.feed(
+        {
+            "type": "response.done",
+            "event_id": "cut-6",
+            "response": {
+                "id": "resp-cut",
+                "status": "cancelled",
+                "output": [
+                    {
+                        "id": "item-cut",
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "audio",
+                                "transcript": "I can explain the first result. The second result was not heard.",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    assert "assistant_interrupted" not in [event.kind for event in events]
+    await socket.feed(
+        {
+            "type": "conversation.item.truncated",
+            "event_id": "cut-7",
+            "item_id": "item-cut",
+            "content_index": 0,
+            "audio_end_ms": 1_200,
+        }
+    )
+    await socket.feed(
+        {
+            "type": "output_audio_buffer.stopped",
+            "event_id": "cut-8",
+            "response_id": "resp-cut",
+        }
+    )
+    await asyncio.sleep(0.8)
+
+    deliveries = [event for event in events if event.kind == "assistant_interrupted"]
+    assert len(deliveries) == 1
+    assert deliveries[0].payload["transcript"].endswith("not heard.")
+    assert deliveries[0].payload["heard_transcript"] == "I can explain"
+    assert deliveries[0].payload["timing_summary"] == {
+        "estimator_source": "provider_audio_end_calibrated_text",
+        "audio_end_ms": 1200,
+        "generated_audio_ms": None,
+        "playback_duration_ms": 0,
+        "transcript_margin_ms": 250,
+        "cutoff_char": len("I can explain"),
+        "duration_scale": 1.0,
+    }
+    await adapter.close(session_id="session-cutoff", generation=1, reason="done")
 
 
 @pytest.mark.asyncio

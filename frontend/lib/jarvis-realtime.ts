@@ -3,6 +3,10 @@ import {
   createJarvisRealtimeCall,
   type JarvisSession,
 } from "./api";
+import {
+  createJarvisBargeInDetector,
+  type JarvisBargeInDetector,
+} from "./jarvis-vad";
 
 export type JarvisRealtimeStatus =
   | "idle"
@@ -23,6 +27,15 @@ export interface JarvisRealtimeControllerOptions {
   onSnapshot?: (snapshot: JarvisRealtimeSnapshot) => void;
   onRemoteStream?: (stream: MediaStream | null) => void;
   onProviderEvent?: (event: Record<string, unknown>) => void;
+  onPlaybackMuted?: (muted: boolean) => void;
+}
+
+export interface JarvisRealtimeTraceEntry {
+  kind: string;
+  monotonic_ms: number;
+  response_id?: string;
+  item_id?: string;
+  detail?: string;
 }
 
 interface BrowserConnection {
@@ -31,6 +44,9 @@ interface BrowserConnection {
   localStream: MediaStream;
   session: JarvisSession;
   rotateAfterSeconds: number;
+  bargeInDetector: JarvisBargeInDetector | null;
+  activeResponseId: string | null;
+  mutedResponseId: string | null;
 }
 
 export interface JarvisRealtimeDependencies {
@@ -41,6 +57,11 @@ export interface JarvisRealtimeDependencies {
   wait: (milliseconds: number) => Promise<void>;
   setTimer: (callback: () => void, milliseconds: number) => number;
   clearTimer: (timer: number) => void;
+  now: () => number;
+  createBargeInDetector: (
+    stream: MediaStream,
+    onSpeechStart: () => void,
+  ) => Promise<JarvisBargeInDetector>;
 }
 
 const RETRY_DELAYS_MS = [0, 500, 1_000, 2_000] as const;
@@ -54,6 +75,8 @@ const browserDependencies: JarvisRealtimeDependencies = {
   wait: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),
   setTimer: (callback, milliseconds) => window.setTimeout(callback, milliseconds),
   clearTimer: (timer) => window.clearTimeout(timer),
+  now: () => performance.now(),
+  createBargeInDetector: createJarvisBargeInDetector,
 };
 
 export class JarvisRealtimeController {
@@ -64,6 +87,7 @@ export class JarvisRealtimeController {
   private disconnectTimer: number | null = null;
   private operation = 0;
   private reconnecting = false;
+  private readonly trace: JarvisRealtimeTraceEntry[] = [];
   private snapshot: JarvisRealtimeSnapshot = {
     status: "idle",
     attempt: 0,
@@ -83,6 +107,14 @@ export class JarvisRealtimeController {
     return this.snapshot;
   }
 
+  traceSnapshot(): readonly JarvisRealtimeTraceEntry[] {
+    return [...this.trace];
+  }
+
+  recordPlaybackSignal(kind: string, detail?: string): void {
+    this.recordTrace(kind, { detail });
+  }
+
   async start(): Promise<JarvisRealtimeSnapshot> {
     const operation = ++this.operation;
     this.cancelRotation();
@@ -98,6 +130,7 @@ export class JarvisRealtimeController {
     this.active = null;
     if (current) await this.disposeConnection(current, true);
     this.options.onRemoteStream?.(null);
+    this.options.onPlaybackMuted?.(false);
     this.publish({ status: "idle", attempt: 0, session: null, error: null });
   }
 
@@ -170,17 +203,21 @@ export class JarvisRealtimeController {
     const peer = this.dependencies.createPeer();
     const channel = peer.createDataChannel("oai-events");
     let providerSession: JarvisSession | null = null;
+    let connection: BrowserConnection | null = null;
     try {
       for (const track of localStream.getAudioTracks()) peer.addTrack(track, localStream);
       peer.ontrack = (event) => {
         if (operation !== this.operation) return;
+        this.recordTrace("remote_track_received");
         this.options.onRemoteStream?.(event.streams[0] ?? null);
       };
       channel.onmessage = (event) => {
         try {
           const parsed = JSON.parse(String(event.data));
           if (parsed && typeof parsed === "object") {
-            this.options.onProviderEvent?.(parsed as Record<string, unknown>);
+            const providerEvent = parsed as Record<string, unknown>;
+            this.handleBrowserProviderEvent(connection, providerEvent);
+            this.options.onProviderEvent?.(providerEvent);
           }
         } catch {
           // Provider diagnostics are optional; malformed data cannot own state.
@@ -221,13 +258,26 @@ export class JarvisRealtimeController {
         throw new Error("Backend did not return a complete Realtime answer");
       }
       await peer.setRemoteDescription({ type: "answer", sdp: response.sdp_answer });
-      return {
+      connection = {
         peer,
         channel,
         localStream,
         session: providerSession,
         rotateAfterSeconds: response.rotate_after_seconds ?? 55 * 60,
+        bargeInDetector: null,
+        activeResponseId: null,
+        mutedResponseId: null,
       };
+      try {
+        connection.bargeInDetector = await this.dependencies.createBargeInDetector(
+          localStream,
+          () => this.handleLocalSpeechStart(connection, operation),
+        );
+        this.recordTrace("local_vad_ready");
+      } catch (cause) {
+        this.recordTrace("local_vad_unavailable", { detail: this.errorName(cause) });
+      }
+      return connection;
     } catch (cause) {
       channel.close();
       peer.close();
@@ -281,6 +331,7 @@ export class JarvisRealtimeController {
   }
 
   private async disposeConnection(connection: BrowserConnection, notifyBackend: boolean): Promise<void> {
+    connection.bargeInDetector?.destroy();
     connection.channel.close();
     connection.peer.ontrack = null;
     connection.peer.onconnectionstatechange = null;
@@ -294,5 +345,135 @@ export class JarvisRealtimeController {
   private publish(snapshot: JarvisRealtimeSnapshot): void {
     this.snapshot = snapshot;
     this.options.onSnapshot?.(snapshot);
+  }
+
+  private handleBrowserProviderEvent(
+    connection: BrowserConnection | null,
+    event: Record<string, unknown>,
+  ): void {
+    const type = typeof event.type === "string" ? event.type : "provider.unknown";
+    const responseId = this.responseId(event);
+    const itemId = typeof event.item_id === "string" ? event.item_id : undefined;
+    const traceDetail = type.includes("transcript.delta")
+      ? `chars:${typeof event.delta === "string" ? event.delta.length : 0}`
+      : undefined;
+    this.recordTrace(type, { response_id: responseId, item_id: itemId, detail: traceDetail });
+    if (!connection) return;
+
+    if (
+      type === "output_audio_buffer.started"
+      || type === "response.output_audio.delta"
+    ) {
+      if (responseId && connection.mutedResponseId !== responseId) {
+        this.setPlaybackMuted(connection, false);
+      }
+      connection.activeResponseId = responseId ?? connection.activeResponseId;
+      void this.captureReceiverStats(connection, "output_started");
+      return;
+    }
+    if (type === "input_audio_buffer.speech_started" && connection.activeResponseId) {
+      this.setPlaybackMuted(connection, true);
+      return;
+    }
+    if (
+      type === "output_audio_buffer.cleared"
+      || type === "output_audio_buffer.stopped"
+    ) {
+      connection.activeResponseId = null;
+      void this.captureReceiverStats(connection, type);
+      this.setPlaybackMuted(connection, false);
+    }
+  }
+
+  private handleLocalSpeechStart(
+    connection: BrowserConnection | null,
+    operation: number,
+  ): void {
+    if (
+      !connection
+      || operation !== this.operation
+      || this.active?.peer !== connection.peer
+      || !connection.activeResponseId
+    ) return;
+    this.recordTrace("local_speech_started", { response_id: connection.activeResponseId });
+    this.setPlaybackMuted(connection, true);
+    void this.captureReceiverStats(connection, "local_speech_started");
+    if (connection.channel.readyState !== "open") return;
+    connection.channel.send(JSON.stringify({
+      type: "output_audio_buffer.clear",
+      event_id: `jarvis-barge-in-${crypto.randomUUID()}`,
+    }));
+    this.recordTrace("output_audio_buffer.clear.sent", {
+      response_id: connection.activeResponseId,
+    });
+  }
+
+  private setPlaybackMuted(connection: BrowserConnection, muted: boolean): void {
+    if (muted) {
+      if (connection.mutedResponseId === connection.activeResponseId) return;
+      connection.mutedResponseId = connection.activeResponseId;
+    } else {
+      if (connection.mutedResponseId === null) return;
+      connection.mutedResponseId = null;
+    }
+    this.recordTrace(muted ? "local_output_muted" : "local_output_unmuted", {
+      response_id: connection.activeResponseId ?? undefined,
+    });
+    this.options.onPlaybackMuted?.(muted);
+  }
+
+  private recordTrace(
+    kind: string,
+    details: Omit<JarvisRealtimeTraceEntry, "kind" | "monotonic_ms"> = {},
+  ): void {
+    this.trace.push({ kind, monotonic_ms: this.dependencies.now(), ...details });
+    if (this.trace.length > 2_000) this.trace.splice(0, this.trace.length - 2_000);
+  }
+
+  private async captureReceiverStats(connection: BrowserConnection, reason: string): Promise<void> {
+    if (typeof connection.peer.getReceivers !== "function") return;
+    const receiver = connection.peer.getReceivers().find((item) => item.track?.kind === "audio");
+    if (!receiver || typeof receiver.getStats !== "function") return;
+    try {
+      const reports = await receiver.getStats();
+      reports.forEach((report) => {
+        if (report.type !== "inbound-rtp" || report.kind !== "audio") return;
+        const values = report as RTCInboundRtpStreamStats & {
+          totalSamplesDuration?: number;
+          jitterBufferEmittedCount?: number;
+        };
+        this.recordTrace("webrtc_inbound_audio", {
+          response_id: connection.activeResponseId ?? undefined,
+          detail: JSON.stringify({
+            reason,
+            timestamp: values.timestamp,
+            jitter: values.jitter,
+            jitter_buffer_delay: values.jitterBufferDelay,
+            jitter_buffer_emitted_count: values.jitterBufferEmittedCount,
+            total_samples_duration: values.totalSamplesDuration,
+            concealed_samples: values.concealedSamples,
+          }),
+        });
+      });
+    } catch (cause) {
+      this.recordTrace("webrtc_stats_unavailable", { detail: this.errorName(cause) });
+    }
+  }
+
+  private static responseId(event: Record<string, unknown>): string | undefined {
+    if (typeof event.response_id === "string") return event.response_id;
+    if (event.response && typeof event.response === "object") {
+      const id = (event.response as Record<string, unknown>).id;
+      if (typeof id === "string") return id;
+    }
+    return undefined;
+  }
+
+  private responseId(event: Record<string, unknown>): string | undefined {
+    return JarvisRealtimeController.responseId(event);
+  }
+
+  private errorName(cause: unknown): string {
+    return cause instanceof Error ? cause.name : "unknown";
   }
 }
