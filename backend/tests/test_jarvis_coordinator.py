@@ -7,13 +7,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import SpeechDelivery, TaskEvent
+from app.db.tables import SpeechDelivery, TaskEvent, TaskPresentation
 from app.main import app
 from app.services.conversation_store import conversation_store
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
-from app.services.voice_session_adapter import VoiceProviderEvent
+from app.services.voice_session_adapter import VoiceProviderEvent, fake_voice_session_adapter
 
 
 @pytest.mark.asyncio
@@ -202,6 +202,12 @@ async def test_presentations_coalesce_defer_while_user_speaks_and_present_once()
     pending_progress = next(item for item in projected.presentations if item.state == "pending")
     assert pending_progress.required_facts_json is not None
     assert pending_progress.required_facts_json["summary"] == "Reviewing"
+    assert pending_progress.required_facts_json["schema"] == "jarvis.task_update.v1"
+    assert pending_progress.required_facts_json["kind"] == "progress"
+    assert pending_progress.required_facts_json["task"]["id"] == task.task.id
+    assert pending_progress.required_facts_json["fact"]["data"]["summary"] == "Reviewing"
+    assert pending_progress.required_facts_json["source"]["domain"] == "task"
+    assert pending_progress.required_facts_json["presentation"]["candidate_type"] == "progress"
 
     await jarvis_coordinator.handle_provider_event(
         session.id,
@@ -302,6 +308,11 @@ async def test_fast_task_completion_projects_a_terminal_candidate() -> None:
         origin_turn_id=accepted.message.id,
         idempotency_key="fast-task",
     )
+    await task_service.publish_progress(
+        task.task.id,
+        summary="Almost done",
+        idempotency_key="fast-progress",
+    )
     await task_service.complete(task.task.id, summary="Already done", idempotency_key="fast-done")
 
     pending = await task_presentation_service.list_pending()
@@ -309,6 +320,118 @@ async def test_fast_task_completion_projects_a_terminal_candidate() -> None:
     assert candidate.candidate_type == "terminal_result"
     assert candidate.required_facts_json is not None
     assert candidate.required_facts_json["summary"] == "Already done"
+    detail = await task_service.get_task(task.task.id)
+    assert detail is not None
+    assert sorted((item.candidate_type, item.state) for item in detail.presentations) == [
+        ("progress", "superseded"),
+        ("terminal_result", "pending"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_automatic_presentation_policy_presents_and_folds_exactly_once() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Track updates", idempotency_key="auto-origin")
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    task = await task_service.dispatch(
+        goal="Prepare the automatic report",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        origin_turn_id=accepted.message.id,
+        idempotency_key="auto-task",
+    )
+    await task_service.publish_progress(
+        task.task.id,
+        summary="Automatic draft ready",
+        idempotency_key="auto-progress",
+    )
+
+    presented = await jarvis_coordinator.consider_presentations(
+        session_id=session.id,
+        generation=session.generation,
+    )
+    assert presented.decision == "PRESENT"
+    detail = await task_service.get_task(task.task.id)
+    assert detail is not None
+    assert [item.state for item in detail.presentations if item.candidate_type == "progress"] == [
+        "presented"
+    ]
+    with pytest.raises(ValueError, match="stale"):
+        await task_presentation_service.mark_presented(
+            presentation_ids=presented.presentation_ids,
+            session_id=session.id,
+            generation=session.generation,
+            turn_id=None,
+            delivery_id=None,
+        )
+    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
+    assert messages[-1].content == "Automatic draft ready"
+
+    question = await task_service.ask_question(
+        task.task.id,
+        question="Which audience should receive it?",
+        idempotency_key="auto-question",
+    )
+    fake_voice_session_adapter.queue_timing_decision("FOLD")
+    folded = await jarvis_coordinator.consider_presentations(
+        session_id=session.id,
+        generation=session.generation,
+    )
+    assert folded.decision == "FOLD"
+    waiting = await task_service.get_task(task.task.id)
+    assert waiting is not None
+    folded_candidate = next(
+        item for item in waiting.presentations if item.candidate_type == "question"
+    )
+    assert folded_candidate.state == "reserved"
+
+    await jarvis_coordinator.accept_text_turn(
+        "Let me think about it",
+        idempotency_key="folded-natural-turn",
+    )
+    completed = await task_service.get_task(task.task.id)
+    assert completed is not None
+    folded_candidate = next(
+        item for item in completed.presentations if item.candidate_type == "question"
+    )
+    assert folded_candidate.state == "presented"
+    assert folded_candidate.presented_turn_id is not None
+    assert question.id in str(folded_candidate.required_facts_json)
+
+
+@pytest.mark.asyncio
+async def test_invalid_timing_output_defers_with_backoff() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Invalid timing", idempotency_key="invalid-origin")
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    task = await task_service.dispatch(
+        goal="Test invalid timing",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        origin_turn_id=accepted.message.id,
+        idempotency_key="invalid-task",
+    )
+    await task_service.complete(
+        task.task.id,
+        summary="Invalid timing result",
+        idempotency_key="invalid-complete",
+    )
+    fake_voice_session_adapter.queue_timing_decision("PRESENT because it is important")
+
+    result = await jarvis_coordinator.consider_presentations(
+        session_id=session.id,
+        generation=session.generation,
+    )
+    assert result.decision == "DEFER"
+    assert result.reason == "invalid_timing_judgement"
+    async with session_scope() as db:
+        candidate = (await db.execute(
+            select(TaskPresentation).where(TaskPresentation.task_id == task.task.id)
+        )).scalar_one()
+        assert candidate.state == "deferred"
+        assert candidate.defer_until is not None
+        assert candidate.retry_count == 1
+        assert candidate.last_error == "invalid_timing_judgement"
 
 
 @pytest.mark.asyncio

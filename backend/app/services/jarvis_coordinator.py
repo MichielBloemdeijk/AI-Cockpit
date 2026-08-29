@@ -1,6 +1,7 @@
 """Durable provider-neutral coordinator for the live Jarvis workspace."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
+from app.config import settings
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
@@ -26,6 +28,7 @@ from app.db.tables import (
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.task_presentations import PresentationReservation, task_presentation_service
+from app.services.update_timing import TimingPolicyResult, update_timing_policy
 from app.services.voice_session_adapter import (
     VoiceProviderEvent,
     fake_voice_session_adapter,
@@ -82,6 +85,13 @@ class DeliveryRecord:
 class ControllerBootstrap:
     session: SessionRecord
     sdp_answer: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PresentationConsideration:
+    decision: str
+    reason: str
+    presentation_ids: tuple[str, ...] = ()
 
 
 class JarvisCoordinator:
@@ -203,6 +213,11 @@ class JarvisCoordinator:
             context = await self._context_in_session(session, snapshot)
 
         for old_session_id, old_generation, old_adapter in superseded_adapters:
+            await task_presentation_service.release_session_reservations(
+                session_id=old_session_id,
+                generation=old_generation,
+                error="session_superseded",
+            )
             if old_adapter == "fake":
                 fake_voice_session_adapter.detach(
                     session_id=old_session_id,
@@ -284,6 +299,7 @@ class JarvisCoordinator:
     ) -> None:
         shell_call: tuple[str, dict[str, Any], str] | None = None
         presentation_action: tuple[str, tuple[str, ...], DeliveryRecord] | None = None
+        release_reservations = False
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             repo = JarvisDomainRepository(session)
@@ -307,6 +323,7 @@ class JarvisCoordinator:
             elif event.kind in {"disconnected", "provider_error"}:
                 realtime.lifecycle_state = "disconnected"
                 realtime.disconnected_at = utc_now()
+                release_reservations = True
 
             if event.kind == "user_transcript":
                 await self._persist_user_transcript(session, realtime, event)
@@ -336,6 +353,7 @@ class JarvisCoordinator:
                     generation=generation,
                     turn_id=delivery.turn_id,
                     delivery_id=delivery.id,
+                    allow_superseded=True,
                 )
             else:
                 await task_presentation_service.defer(
@@ -343,7 +361,15 @@ class JarvisCoordinator:
                     session_id=session_id,
                     generation=generation,
                     error="delivery_interrupted_before_required_facts",
+                    allow_superseded=True,
                 )
+
+        if release_reservations:
+            await task_presentation_service.release_session_reservations(
+                session_id=session_id,
+                generation=generation,
+                error=f"provider_{event.kind}",
+            )
 
         if shell_call is not None:
             tool_name, arguments, call_id = shell_call
@@ -400,6 +426,112 @@ class JarvisCoordinator:
                 )
         return reservation
 
+    async def consider_presentations(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+    ) -> PresentationConsideration:
+        """Run one safe-boundary presentation cycle using the replaceable policy."""
+        async with session_scope() as session:
+            realtime = await self._require_current_generation(session, session_id, generation)
+            floor = await self._floor_state(session, session_id)
+            adapter_name = realtime.provider_adapter
+        if floor != "listening":
+            return PresentationConsideration("WAIT", f"floor_{floor}")
+
+        reservation = await self.reserve_presentations(
+            session_id=session_id,
+            generation=generation,
+        )
+        if reservation is None:
+            return PresentationConsideration("NONE", "no_ready_candidates")
+
+        adapter = get_voice_session_adapter(adapter_name)
+        try:
+            policy_result: TimingPolicyResult = await update_timing_policy.decide(
+                judge=adapter,
+                session_id=session_id,
+                generation=generation,
+                facts=reservation.facts,
+            )
+        except asyncio.CancelledError:
+            await task_presentation_service.defer(
+                presentation_ids=reservation.presentation_ids,
+                session_id=session_id,
+                generation=generation,
+                error="timing_request_cancelled",
+            )
+            raise
+        async with session_scope() as session:
+            await self._require_current_generation(session, session_id, generation)
+            current_floor = await self._floor_state(session, session_id)
+            await JarvisDomainRepository(session).append_session_event(
+                session_id=session_id,
+                event_type="presentation.timing_decided",
+                payload_json={
+                    "presentation_ids": list(reservation.presentation_ids),
+                    "decision": policy_result.decision,
+                    "reason": policy_result.reason,
+                },
+                idempotency_key=f"presentation-timing:{session_id}:{generation}:{uuid4()}",
+            )
+
+        if policy_result.decision != "DEFER" and current_floor != "listening":
+            reason = f"floor_changed_to_{current_floor}"
+            await task_presentation_service.defer(
+                presentation_ids=reservation.presentation_ids,
+                session_id=session_id,
+                generation=generation,
+                error=reason,
+            )
+            return PresentationConsideration("WAIT", reason, reservation.presentation_ids)
+
+        if policy_result.decision == "DEFER":
+            await task_presentation_service.defer(
+                presentation_ids=reservation.presentation_ids,
+                session_id=session_id,
+                generation=generation,
+                error=policy_result.reason,
+                retry_after_seconds=settings.jarvis_presentation_retry_seconds,
+            )
+            return PresentationConsideration(
+                "DEFER",
+                policy_result.reason,
+                reservation.presentation_ids,
+            )
+
+        try:
+            if policy_result.decision == "PRESENT":
+                await adapter.present_task_updates(
+                    session_id=session_id,
+                    generation=generation,
+                    presentation_ids=reservation.presentation_ids,
+                    facts=reservation.facts,
+                )
+            else:
+                await adapter.fold_task_updates(
+                    session_id=session_id,
+                    generation=generation,
+                    presentation_ids=reservation.presentation_ids,
+                    facts=reservation.facts,
+                )
+        except Exception as exc:
+            reason = f"presentation_delivery_failed:{type(exc).__name__}"
+            await task_presentation_service.defer(
+                presentation_ids=reservation.presentation_ids,
+                session_id=session_id,
+                generation=generation,
+                error=reason,
+                retry_after_seconds=settings.jarvis_presentation_retry_seconds,
+            )
+            return PresentationConsideration("DEFER", reason, reservation.presentation_ids)
+        return PresentationConsideration(
+            policy_result.decision,
+            policy_result.reason,
+            reservation.presentation_ids,
+        )
+
     async def supersede_session(self, session_id: str, *, generation: int, reason: str) -> None:
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
@@ -411,6 +543,11 @@ class JarvisCoordinator:
                 payload_json={"reason": reason},
                 idempotency_key=f"session-superseded:{session_id}:{generation}:{reason}",
             )
+        await task_presentation_service.release_session_reservations(
+            session_id=session_id,
+            generation=generation,
+            error=f"session_superseded:{reason}",
+        )
         if realtime.provider_adapter == "fake":
             fake_voice_session_adapter.detach(session_id=session_id, generation=generation)
         else:

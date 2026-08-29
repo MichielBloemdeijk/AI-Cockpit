@@ -212,7 +212,7 @@ Defaults for future conversations can also be changed from the Settings page aft
 
 ## Jarvis
 
-The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs, typed fallback, task delegation, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
+The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs, typed fallback, task delegation, policy-timed proactive task updates, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
 
 Set `OPENAI_API_KEY` in the repository root `.env`, start the normal backend and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and separate worker remain necessary for delegated background tasks, but the legacy local STT/TTS voice groups are not required for the Realtime path.
 

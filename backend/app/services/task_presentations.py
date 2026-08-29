@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import or_, select
@@ -178,6 +178,7 @@ class TaskPresentationService:
         generation: int,
         turn_id: str | None,
         delivery_id: str | None,
+        allow_superseded: bool = False,
     ) -> None:
         now = utc_now()
         async with session_scope() as session:
@@ -185,6 +186,8 @@ class TaskPresentationService:
                 candidate = await session.get(TaskPresentation, presentation_id)
                 if candidate is None:
                     raise ValueError(f"Task presentation not found: {presentation_id}")
+                if allow_superseded and candidate.state in {"folded", "superseded"}:
+                    continue
                 if (
                     candidate.state != "reserved"
                     or candidate.reserved_session_id != session_id
@@ -204,12 +207,16 @@ class TaskPresentationService:
         session_id: str,
         generation: int,
         error: str | None = None,
+        retry_after_seconds: float = 0,
+        allow_superseded: bool = False,
     ) -> None:
         now = utc_now()
         async with session_scope() as session:
             for presentation_id in presentation_ids:
                 candidate = await session.get(TaskPresentation, presentation_id)
                 if candidate is None:
+                    continue
+                if allow_superseded and candidate.state in {"folded", "superseded"}:
                     continue
                 if (
                     candidate.state != "reserved"
@@ -222,8 +229,42 @@ class TaskPresentationService:
                 candidate.reserved_generation = None
                 candidate.reserved_at = None
                 candidate.retry_count += 1
+                candidate.defer_until = (
+                    now + timedelta(seconds=max(0, retry_after_seconds))
+                    if retry_after_seconds > 0
+                    else None
+                )
                 candidate.last_error = error
                 candidate.updated_at = now
+
+    async def release_session_reservations(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        error: str,
+    ) -> int:
+        """Return orphaned reservations to the retry queue after session loss."""
+        now = utc_now()
+        released = 0
+        async with session_scope() as session:
+            candidates = list((await session.execute(
+                select(TaskPresentation)
+                .where(TaskPresentation.state == "reserved")
+                .where(TaskPresentation.reserved_session_id == session_id)
+                .where(TaskPresentation.reserved_generation == generation)
+            )).scalars().all())
+            for candidate in candidates:
+                candidate.state = "deferred"
+                candidate.reserved_session_id = None
+                candidate.reserved_generation = None
+                candidate.reserved_at = None
+                candidate.defer_until = now
+                candidate.retry_count += 1
+                candidate.last_error = error
+                candidate.updated_at = now
+                released += 1
+        return released
 
     @staticmethod
     async def _supersede_progress(session, task_id: str) -> None:
@@ -259,11 +300,41 @@ class TaskPresentationService:
     @staticmethod
     def _facts(event: TaskEvent, task: Task) -> dict:
         payload = dict(event.payload_json or {})
+        candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
+        kind = {
+            "progress": "progress",
+            "question": "question",
+            "terminal_result": "result",
+        }[candidate_type]
+        coalescing_key = f"task:{task.id}:{candidate_type}"
         return {
             "task_id": task.id,
             "goal": task.goal,
             "event_type": event.event_type,
             **payload,
+            "schema": "jarvis.task_update.v1",
+            "kind": kind,
+            "task": {
+                "id": task.id,
+                "goal": task.goal,
+                "status": task.status,
+                "importance": task.importance,
+            },
+            "fact": {
+                "event_type": event.event_type,
+                "data": payload,
+            },
+            "source": {
+                "domain": "task",
+                "task_id": task.id,
+                "task_event_id": event.id,
+                "sequence": event.sequence,
+            },
+            "presentation": {
+                "candidate_type": candidate_type,
+                "coalescing_key": coalescing_key,
+                "importance": task.importance,
+            },
         }
 
 

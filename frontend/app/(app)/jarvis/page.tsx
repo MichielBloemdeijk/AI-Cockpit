@@ -23,6 +23,7 @@ import {
   answerTaskQuestion,
   cancelTask,
   closeJarvisRealtimeSession,
+  considerJarvisPresentations,
   createJarvisRealtimeCall,
   getJarvisLogEvents,
   getJarvisSessionEvents,
@@ -92,11 +93,18 @@ export default function JarvisPage() {
   const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
+  const presentationCycleRef = useRef(false);
   const currentConversationId = state?.current_log?.id ?? null;
   const currentMessages = state?.current_log?.messages ?? [];
   const newestMessageId = currentMessages.length
     ? currentMessages[currentMessages.length - 1].id
     : null;
+  const pendingPresentationCount = state?.pending_presentations.length ?? 0;
+  const presentationSessionId = state?.session?.id ?? null;
+  const presentationGeneration = state?.session?.generation ?? null;
+  const presentationAdapter = state?.session?.provider_adapter ?? null;
+  const presentationFloor = state?.session?.floor_state ?? null;
+  const presentationLifecycle = state?.session?.lifecycle_state ?? null;
 
   useConversationAutoScroll(
     conversationScrollRef,
@@ -185,6 +193,37 @@ export default function JarvisPage() {
       realtimeControllerRef.current = null;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (
+      !pendingPresentationCount
+      || !presentationSessionId
+      || presentationGeneration === null
+      || presentationLifecycle !== "ready"
+      || presentationFloor !== "listening"
+      || (presentationAdapter === "openai" && realtime.status !== "connected")
+      || presentationCycleRef.current
+    ) return;
+
+    presentationCycleRef.current = true;
+    void considerJarvisPresentations(presentationSessionId, presentationGeneration)
+      .then(() => refresh())
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : "Unable to consider task updates");
+      })
+      .finally(() => {
+        presentationCycleRef.current = false;
+      });
+  }, [
+    pendingPresentationCount,
+    presentationAdapter,
+    presentationFloor,
+    presentationGeneration,
+    presentationLifecycle,
+    presentationSessionId,
+    realtime.status,
+    refresh,
+  ]);
 
   useEffect(() => {
     navigator.serviceWorker

@@ -140,3 +140,9 @@ class JarvisPresentationReserveRequest(BaseModel):
 class JarvisPresentationReservationResponse(BaseModel):
     presentation_ids: list[str] = Field(default_factory=list)
     facts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class JarvisPresentationConsiderationResponse(BaseModel):
+    decision: Literal["PRESENT", "FOLD", "DEFER", "WAIT", "NONE"]
+    reason: str
+    presentation_ids: list[str] = Field(default_factory=list)

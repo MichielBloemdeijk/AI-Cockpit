@@ -103,13 +103,13 @@ It then registers these active routers:
 - `knowledge` for review queue and approved knowledge APIs
 - `apps` for the generated app registry and runtime app metadata
 - `voice` for the legacy local-speech compatibility API pending Phase 11 removal; there is no longer a separate `/voice` UI
-- `jarvis` for the current daily log, provider-neutral controller sessions, independent conversation/session replay, fake-provider injection, and presentation reservation
+- `jarvis` for the current daily log, provider-neutral controller sessions, independent conversation/session replay, fake-provider injection, and policy-driven presentation timing/delivery
 - `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
 
 The separate worker process registers through `worker_instances`, heartbeats independently of FastAPI, claims the strict FIFO head, acquires the complete sorted mutable target set, and executes through `AgentExecutionContext` plus `AgentExecutionSink`. Attempt checkpoints, task events, questions, results, and terminal state remain in SQLite, so an API restart has no ownership effect.
 
-The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the OpenAI Realtime sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation, rejects stale callbacks, persists heard delivery truth, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation. OpenAI credentials and provider call IDs remain backend-only.
+The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the OpenAI Realtime sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation, rejects stale callbacks, persists heard delivery truth, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation. A replaceable timing policy uses text-only out-of-band Realtime responses to choose `PRESENT`, `FOLD`, or `DEFER`; invalid or failed judgements defer safely. OpenAI credentials and provider call IDs remain backend-only.
 
 ### Configuration
 
@@ -616,7 +616,7 @@ Current behavior:
 - exposes controller take-over and observer semantics, explicit sleep/fresh-log controls, and stale-generation rejection
 - records completed, interrupted, and unheard speech deliveries while adding only heard content to the transcript/context projection
 - exposes a restricted shell gateway containing only task control, fresh-log, and session-end capabilities
-- coalesces task progress, preserves questions, defers presentation while the user owns the floor, and marks facts presented only through a generation-bound delivery
+- coalesces typed task-fact envelopes, preserves questions, automatically judges pending updates at a safe boundary, folds suitable facts into the next natural reply, and marks facts presented only through a generation-bound heard delivery
 - includes a developer conversation lab for deterministic floor, response, interruption, delegation, presentation, supersession, and provider-error injection
 
 ### Generated Apps UI Flow
@@ -759,11 +759,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, and real-device Phase 6 acceptance are complete. Phase 7 now uses provider `audio_end_ms`, delayed terminal delivery, local VAD muting/clear, and downloadable browser/WebRTC traces; desktop and phone cutoff calibration remain before Phase 7 acceptance.
+- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, and policy-driven proactive task updates are complete through Phase 8. Phase 9 browser-local wake-word activation, command-tail handoff, and follow-up lifecycle remain in progress.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, and OpenAI Realtime/WebRTC boundaries without moving provider-specific event shapes into conversation or task services. The current Jarvis step is the Phase 7 real-device gate: verify immediate barge-in and calibrate the provider-cutoff heard-prefix estimator on desktop Chrome and the intended phone/PWA path.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, and proactive-presentation boundaries without moving provider-specific event shapes into conversation or task services. The current Jarvis step is Phase 9: replace manual arming with a browser-local wake and command-tail lifecycle while retaining an explicit Arm fallback.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 

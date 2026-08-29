@@ -14,6 +14,7 @@ from app.models.jarvis import (
     JarvisFakeProviderEventRequest,
     JarvisPendingQuestionView,
     JarvisPresentationReservationResponse,
+    JarvisPresentationConsiderationResponse,
     JarvisPresentationReserveRequest,
     JarvisPresentationView,
     JarvisRealtimeCallRequest,
@@ -304,6 +305,28 @@ async def reserve_presentations(
     return JarvisPresentationReservationResponse(
         presentation_ids=list(reservation.presentation_ids),
         facts=list(reservation.facts),
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/presentations/consider",
+    response_model=JarvisPresentationConsiderationResponse,
+)
+async def consider_presentations(
+    session_id: str,
+    request: JarvisPresentationReserveRequest,
+) -> JarvisPresentationConsiderationResponse:
+    try:
+        result = await jarvis_coordinator.consider_presentations(
+            session_id=session_id,
+            generation=request.generation,
+        )
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    return JarvisPresentationConsiderationResponse(
+        decision=result.decision,
+        reason=result.reason,
+        presentation_ids=list(result.presentation_ids),
     )
 
 

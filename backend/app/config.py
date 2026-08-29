@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     openai_realtime_connect_timeout_seconds: float = 12.0
     openai_realtime_rotation_minutes: int = 55
     openai_realtime_transcript_margin_ms: int = 250
+    jarvis_presentation_timing_timeout_seconds: float = 4.0
+    jarvis_presentation_retry_seconds: float = 15.0
 
     # Local OpenAI-compatible model server (for example llama.cpp)
     local_llm_enabled: bool = True

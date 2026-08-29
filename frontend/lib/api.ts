@@ -815,6 +815,20 @@ export async function reserveJarvisPresentations(
   return res.json();
 }
 
+export async function considerJarvisPresentations(
+  sessionId: string,
+  generation: number,
+): Promise<JarvisPresentationConsiderationResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/sessions/${encodeURIComponent(sessionId)}/presentations/consider`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ generation }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function closeJarvisRealtimeSession(sessionId: string, generation: number): Promise<void> {
   const params = new URLSearchParams({ generation: String(generation) });
   const res = await fetch(`${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}?${params}`, {
@@ -1116,6 +1130,12 @@ export interface JarvisFakeProviderEventRequest {
 export interface JarvisPresentationReservationResponse {
   presentation_ids: string[];
   facts: Record<string, unknown>[];
+}
+
+export interface JarvisPresentationConsiderationResponse {
+  decision: "PRESENT" | "FOLD" | "DEFER" | "WAIT" | "NONE";
+  reason: string;
+  presentation_ids: string[];
 }
 
 export interface JarvisTurnAcceptedResponse {

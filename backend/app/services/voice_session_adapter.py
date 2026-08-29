@@ -58,6 +58,32 @@ class VoiceSessionAdapter(Protocol):
         output: dict[str, Any],
     ) -> None: ...
 
+    async def judge_presentation_timing(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        facts: tuple[dict[str, Any], ...],
+    ) -> str: ...
+
+    async def present_task_updates(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        presentation_ids: tuple[str, ...],
+        facts: tuple[dict[str, Any], ...],
+    ) -> None: ...
+
+    async def fold_task_updates(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        presentation_ids: tuple[str, ...],
+        facts: tuple[dict[str, Any], ...],
+    ) -> None: ...
+
     async def close(
         self,
         *,
@@ -80,6 +106,10 @@ class FakeVoiceSessionAdapter:
 
     def __init__(self) -> None:
         self._handlers: dict[tuple[str, int], ProviderEventHandler] = {}
+        self._timing_decisions: list[str] = []
+        self._folded_updates: dict[
+            tuple[str, int], tuple[tuple[str, ...], tuple[dict[str, Any], ...]]
+        ] = {}
 
     async def connect(
         self,
@@ -139,6 +169,11 @@ class FakeVoiceSessionAdapter:
             transcript = "I've started that in the background."
         else:
             transcript = f"I heard: {text}"
+        folded = self._folded_updates.pop((session_id, generation), None)
+        presentation_ids = folded[0] if folded else ()
+        folded_facts = folded[1] if folded else ()
+        if folded_facts:
+            transcript = f"{transcript} {self._summarize_facts(folded_facts)}".strip()
         await self.inject(
             session_id=session_id,
             generation=generation,
@@ -149,6 +184,7 @@ class FakeVoiceSessionAdapter:
                     "response_id": response_id,
                     "item_id": f"{response_id}:item",
                     "transcript": transcript,
+                    "presentation_ids": list(presentation_ids),
                 },
             ),
         )
@@ -165,6 +201,69 @@ class FakeVoiceSessionAdapter:
         # shell call. Keeping this a no-op still exercises the shared method.
         if (session_id, generation) not in self._handlers:
             raise ValueError("Fake provider session is not connected")
+
+    async def judge_presentation_timing(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        facts: tuple[dict[str, Any], ...],
+    ) -> str:
+        if (session_id, generation) not in self._handlers:
+            raise ValueError("Fake provider session is not connected")
+        return self._timing_decisions.pop(0) if self._timing_decisions else "PRESENT"
+
+    async def present_task_updates(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        presentation_ids: tuple[str, ...],
+        facts: tuple[dict[str, Any], ...],
+    ) -> None:
+        response_id = f"fake-presentation:{presentation_ids[0]}"
+        await self.inject(
+            session_id=session_id,
+            generation=generation,
+            event=VoiceProviderEvent(
+                event_id=f"{response_id}:generating",
+                kind="assistant_generating",
+                payload={"response_id": response_id},
+            ),
+        )
+        await self.inject(
+            session_id=session_id,
+            generation=generation,
+            event=VoiceProviderEvent(
+                event_id=f"{response_id}:completed",
+                kind="assistant_response",
+                payload={
+                    "response_id": response_id,
+                    "item_id": f"{response_id}:item",
+                    "transcript": self._summarize_facts(facts),
+                    "presentation_ids": list(presentation_ids),
+                },
+            ),
+        )
+
+    async def fold_task_updates(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        presentation_ids: tuple[str, ...],
+        facts: tuple[dict[str, Any], ...],
+    ) -> None:
+        if (session_id, generation) not in self._handlers:
+            raise ValueError("Fake provider session is not connected")
+        existing_ids, existing_facts = self._folded_updates.get(
+            (session_id, generation),
+            ((), ()),
+        )
+        self._folded_updates[(session_id, generation)] = (
+            existing_ids + presentation_ids,
+            existing_facts + facts,
+        )
 
     async def close(
         self,
@@ -188,6 +287,7 @@ class FakeVoiceSessionAdapter:
                 ),
             )
         self._handlers.pop(key, None)
+        self._folded_updates.pop(key, None)
 
     async def inject(
         self,
@@ -204,9 +304,24 @@ class FakeVoiceSessionAdapter:
     def reset(self) -> None:
         """Forget process-local test connections; durable rows remain intact."""
         self._handlers.clear()
+        self._timing_decisions.clear()
+        self._folded_updates.clear()
 
     def detach(self, *, session_id: str, generation: int) -> None:
         self._handlers.pop((session_id, generation), None)
+        self._folded_updates.pop((session_id, generation), None)
+
+    def queue_timing_decision(self, decision: str) -> None:
+        """Queue one deterministic policy response for a test or developer probe."""
+        self._timing_decisions.append(decision)
+
+    @staticmethod
+    def _summarize_facts(facts: tuple[dict[str, Any], ...]) -> str:
+        values = [
+            str(fact.get("summary") or fact.get("question") or fact.get("status") or "Task update")
+            for fact in facts
+        ]
+        return " ".join(value.strip() for value in values if value.strip())
 
 
 fake_voice_session_adapter = FakeVoiceSessionAdapter()

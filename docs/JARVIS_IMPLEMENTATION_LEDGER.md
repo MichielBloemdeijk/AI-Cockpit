@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 7 — real-device cutoff calibration and manual acceptance
-- **Last completed phase:** Phase 6
+- **Current phase:** Phase 9 — browser-local wake and follow-up lifecycle
+- **Last completed phase:** Phase 8
 - **Product implementation started:** yes
-- **Next session entry point:** run the implemented barge-in path on desktop Chrome and the intended phone/PWA, download the developer voice traces, and calibrate only if cutoff error still reaches a sentence
+- **Next session entry point:** inventory the existing browser VAD/wake implementation against Phase 9, preserve the proven barge-in path, and implement the deterministic wake/arm/ring-buffer lifecycle before model-quality acceptance
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -25,9 +25,9 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 4. Worker, runtime seam, and resource leases | Complete | Passed 2026-08-27 | e98f15e |
 | 5. Coordinator, fake provider, and live workspace | Complete | Passed 2026-08-27 | 71f78e9 |
 | 6. OpenAI Realtime and WebRTC | Complete | Passed 2026-08-29 | 58b2a78 |
-| 7. Barge-in and audible-history truth | Research in progress | Measured estimator and implementation pending | — |
-| 8. Brain delegation and proactive updates | Not started | — | — |
-| 9. Browser-local wake and follow-up | Not started | — | — |
+| 7. Barge-in and audible-history truth | Complete | Passed 2026-08-29 | 5d0ad65 |
+| 8. Brain delegation and proactive updates | Complete | Passed 2026-08-29 | `feat(jarvis): add policy-driven proactive updates` |
+| 9. Browser-local wake and follow-up | In progress | — | — |
 | 10. Wiki/search, notifications, and archive UX | Not started | — | — |
 | 11. POC retirement and final verification | Not started | — | — |
 
@@ -519,12 +519,71 @@ Focused verification on 2026-08-29:
 - complete frontend gate: PASS — 23 files / 131 tests, ESLint, Next.js production TypeScript/build, and all 30 routes generated
 - standalone `tsc --noEmit`: known repository test-fixture typing errors remain; production TypeScript passed through the Next.js build
 
+### 2026-08-29 — Phase 7 manual acceptance
+
+- The user exercised the implemented interruption path on the real device and confirmed that audible cutoff now works well.
+- The durable heard transcript ends within a few words of the actual audible stop and the rendered transcript looks correct.
+- This passes the locked Phase 7 manual gate: cutoff error is materially below a sentence, output stops at barge-in, and no further estimator tuning is required before Phase 8.
+- Phase 7 completed at `5d0ad65` with no product-contract deviation. The selected provider-cutoff hierarchy remains tunable through recorded timing summaries and the downloadable trace if later devices regress.
+
 Verification on 2026-08-29:
 
 - backend: PASS — 221 tests, Alembic metadata parity, and application bytecode compilation
 - frontend: PASS — 23 test files/129 tests, ESLint, TypeScript, and 30-route production build
 - retired route: PASS — production `/voice` returned HTTP 308 with `Location: /jarvis`
 - cleanup: the temporary production verification server was stopped; no application service was left running
+
+## Phase 8 record
+
+### Scope completed
+
+- Finalized the Realtime shell instructions with explicit direct-conversation and mandatory-delegation categories, exact once-only dispatch guidance, a restricted capability statement, and untrusted-data boundaries.
+- Kept the shell allowlist at the six task/log/session operations and preserved the gateway's lack of filesystem, browser, code-execution, agent-registry, app, or Wiki access.
+- Standardized every projected task update as `jarvis.task_update.v1` with typed task, fact, source, and presentation sections while retaining the compatibility fields used by existing task/UI projections.
+- Added a replaceable `UpdateTimingPolicy`. The OpenAI adapter requests an out-of-band, text-only Realtime response with `conversation: none` and accepts only `PRESENT`, `FOLD`, or `DEFER`; invalid output, timeouts, provider failures, and request cancellation fail closed to a durable retry.
+- Added automatic safe-boundary consideration from the live `/jarvis` workspace. The backend rechecks the floor after timing judgement, never starts a proactive response outside `listening`, and backs deferred candidates off before reconsideration.
+- Added immediate presentation responses with causal presentation metadata and next-natural-reply folding through temporary session instructions. Multiple folded batches merge, the base prompt is restored after delivery, and no worker detail is inserted into durable dialogue unless Jarvis actually speaks it.
+- Kept reservation and presentation completion generation-bound, added session-loss reservation recovery, and made late delivery settlement tolerant of facts deterministically superseded or folded while in flight.
+- Retained the manual developer-lab presentation control as a deterministic diagnostic path alongside the automatic pump.
+
+### Verification evidence
+
+Run on 2026-08-29:
+
+1. focused coordinator and OpenAI adapter gate: `python -m pytest tests/test_jarvis_coordinator.py tests/test_openai_realtime_adapter.py -q`
+   - Result: PASS — 15 tests
+2. complete backend gate: `python -m pytest -q`
+   - Result: PASS — 230 tests in 226.30 seconds
+3. backend bytecode and schema parity: `python -m compileall -q app`, `python -m alembic upgrade head`, and `python -m alembic check`
+   - Result: PASS — no new upgrade operations detected
+4. complete frontend test gate: `npm run test`
+   - Result: PASS — 23 files and 131 tests
+5. frontend lint and production build: `npm run lint` and `npm run build`
+   - Result: PASS — ESLint clean; Next.js 16.2.3 TypeScript/build completed with all 30 routes
+
+### Exit scenarios
+
+- Unrestricted shell tools remain rejected and dispatch retries remain idempotent.
+- Substantial work is delegated and acknowledged through the restricted shell contract.
+- Questions, progress, and terminal results become typed presentation candidates.
+- User-floor and mid-judgement floor changes wait without speaking.
+- Interrupted facts return to pending delivery; terminal facts supersede progress.
+- Invalid out-of-band output defers with backoff.
+- Presented candidates cannot complete twice.
+
+### Deviations and open points
+
+- Automatic consideration is foreground-PWA driven rather than a backend ambient scheduler. This matches the v1 foreground-device boundary; Phase 10 Web Push owns delivery while the PWA is not active.
+- No schema migration was required because Phase 1 already included reservation, retry, defer, causal-source, and presentation-completion fields.
+- Natural timing quality remains a manual, non-blocking observation across normal use, as specified by the cross-phase verification matrix. No product decision or hard blocker was found.
+
+### Checkpoint
+
+- Status: passed 2026-08-29
+- Starting HEAD: `5d0ad65`
+- Commit subject: `feat(jarvis): add policy-driven proactive updates`
+- Next entry point: Phase 9 browser-local wake lifecycle and deterministic runtime tests
+- Blockers: none
 
 ## Phase 1 entry checklist (completed)
 

@@ -117,6 +117,8 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
         "interrupt_response": True,
     }
     assert session_config["audio"]["input"]["transcription"]["model"] == "gpt-live-transcribe"
+    assert "multi-step or substantial analysis with dispatch_task" in session_config["instructions"]
+    assert "has no permission to browse, edit files, run commands" in session_config["instructions"]
     assert {tool["name"] for tool in session_config["tools"]} == {
         "dispatch_task",
         "get_task",
@@ -289,6 +291,124 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     assert events[6].payload["transcript"] == "I can help with that."
     assert events[7].payload["arguments"] == {"goal": "Prepare a report"}
     await adapter.close(session_id="session-events", generation=1, reason="done")
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_uses_out_of_band_timing_and_tracks_presented_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-secret-key")
+
+    async def create_call(**kwargs: Any) -> httpx.Response:
+        return httpx.Response(
+            201,
+            text="answer",
+            headers={"Location": "/v1/realtime/calls/rtc_presentations"},
+        )
+
+    socket = FakeSideband()
+
+    async def connect_socket(url: str, **kwargs: Any) -> FakeSideband:
+        return socket
+
+    adapter = OpenAIRealtimeAdapter(
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200))
+        ),
+        websocket_connector=connect_socket,
+        realtime_call_creator=create_call,
+    )
+    events = []
+
+    async def on_event(session_id, generation, event):
+        events.append(event)
+
+    await adapter.connect(
+        session_id="session-presentations",
+        generation=1,
+        context={"tasks": [], "questions": []},
+        on_event=on_event,
+        sdp_offer="offer",
+    )
+    facts = ({"schema": "jarvis.task_update.v1", "summary": "The report is complete."},)
+    judgement_task = asyncio.create_task(
+        adapter.judge_presentation_timing(
+            session_id="session-presentations",
+            generation=1,
+            facts=facts,
+        )
+    )
+    await asyncio.sleep(0)
+    timing_request = socket.sent[-1]
+    assert timing_request["response"]["conversation"] == "none"
+    assert timing_request["response"]["output_modalities"] == ["text"]
+    metadata = timing_request["response"]["metadata"]
+    await socket.feed(
+        {
+            "type": "response.created",
+            "event_id": "timing-created",
+            "response": {"id": "timing-response", "metadata": metadata},
+        }
+    )
+    await socket.feed(
+        {
+            "type": "response.done",
+            "event_id": "timing-done",
+            "response": {
+                "id": "timing-response",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "timing-item",
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "PRESENT"}],
+                    }
+                ],
+            },
+        }
+    )
+    assert await judgement_task == "PRESENT"
+    assert [event.kind for event in events] == ["ready"]
+
+    await adapter.present_task_updates(
+        session_id="session-presentations",
+        generation=1,
+        presentation_ids=("presentation-1",),
+        facts=facts,
+    )
+    presentation_request = socket.sent[-1]
+    presentation_metadata = presentation_request["response"]["metadata"]
+    assert presentation_request["response"]["output_modalities"] == ["audio"]
+    await socket.feed(
+        {
+            "type": "response.created",
+            "event_id": "presentation-created",
+            "response": {"id": "presentation-response", "metadata": presentation_metadata},
+        }
+    )
+    await socket.feed(
+        {
+            "type": "response.done",
+            "event_id": "presentation-done",
+            "response": {
+                "id": "presentation-response",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "presentation-item",
+                        "type": "message",
+                        "content": [
+                            {"type": "audio", "transcript": "The report is complete."}
+                        ],
+                    }
+                ],
+            },
+        }
+    )
+    delivery = next(event for event in events if event.kind == "assistant_response")
+    assert delivery.payload["presentation_ids"] == ["presentation-1"]
+    assert delivery.payload["transcript"] == "The report is complete."
+    await adapter.close(session_id="session-presentations", generation=1, reason="done")
 
 
 @pytest.mark.asyncio
