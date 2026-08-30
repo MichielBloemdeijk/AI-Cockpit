@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 10 — Wiki/search, notifications, and archive experience
-- **Last completed phase:** Phase 9
+- **Current phase:** Phase 11 — POC retirement and final verification
+- **Last completed phase:** Phase 10
 - **Product implementation started:** yes
-- **Next session entry point:** inventory the existing Wiki/search, Push outbox, and archive surfaces against the Phase 10 contract, then close the missing brain-facing and user-facing paths
+- **Next session entry point:** inventory every legacy voice/STT/TTS, browser-delivery, primary-voice, background API-ownership, dependency, configuration, and compatibility route against the Phase 11 retirement contract
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -28,8 +28,8 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 7. Barge-in and audible-history truth | Complete | Passed 2026-08-29 | 5d0ad65 |
 | 8. Brain delegation and proactive updates | Complete | Passed 2026-08-29 | 5e8a2d1 |
 | 9. Browser-local wake and follow-up | Complete | Accepted 2026-08-30 with low-volume tuning deferred | 4a949eb |
-| 10. Wiki/search, notifications, and archive UX | In progress | — | — |
-| 11. POC retirement and final verification | Not started | — | — |
+| 10. Wiki/search, notifications, and archive UX | Complete | Passed 2026-08-30 | 6fe4250 |
+| 11. POC retirement and final verification | In progress | — | — |
 
 ## Phase 0 record
 
@@ -672,13 +672,73 @@ heybuddy train jarvis --perceptron --training-medium-default-dataset
 - Next entry point: Phase 10 Wiki/search, notifications, and archive experience
 - Blockers: none
 
-## Phase 10 record (in progress)
+## Phase 10 record
 
 ### Entry state
 
 - Phase 9's foreground wake lifecycle is accepted for continued product work.
 - Lower-volume wake consistency is deferred to a later calibration pass and does not change the Phase 10 scope.
 - Existing reviewed knowledge, Web Push, archive, and history code must be inventoried before adding new paths so Phase 10 promotes rather than duplicates those capabilities.
+
+### Scope completed
+
+- Promoted reviewed file-backed knowledge to the canonical `/wiki` route, permanently redirected `/knowledge`, added approved-Wiki search, and kept proposal approval/deletion plus source provenance intact.
+- Added brain-only, read-only `wiki_search` and `conversation_search` Agent tools for recent browsing and exact/substring matching. Conversation retrieval covers standard chats and closed Jarvis daily logs, includes archived history, and excludes the current/open Jarvis log.
+- Kept the Realtime Jarvis shell at its exact six-operation allowlist; it cannot call either archive/Wiki retrieval tool.
+- Connected first-class task terminal events and blocking questions to the existing durable `notification_outbox` in the same task transaction, deduplicated by durable task-event ID.
+- Added exact task/question Push payload links, restart-safe queued/failed retry recovery, stale-subscription cleanup, and delivery acknowledgement that does not mutate audible task-presentation truth.
+- Added browser Push setup/status to Settings and changed service-worker click handling to focus an existing app window while navigating to the exact payload link.
+- Finalized All, Standard, Jarvis, and Archived history filters across desktop/mobile; archived chats render read-only until restored and closed Jarvis logs remain read-only.
+- Added related-task links to task-backed assistant messages, related-conversation links to task detail, exact archived-conversation deep-link resolution, and blocking-question highlighting/scroll on notification entry.
+- Confirmed the installable manifest already starts at `/jarvis`; no duplicate manifest change was needed.
+- Updated current architecture documentation for the new brain retrieval, task Push, Wiki, archive, and deep-link boundaries.
+
+### Verification evidence
+
+Run on 2026-08-30:
+
+1. focused backend retrieval, restricted-gateway, coordinator, task, and notification gates
+   - Result: PASS
+   - retrieval/Agent/coordinator set: 65 passed in 80.52 seconds
+   - notification/task set: 25 passed
+   - final focused integration set: 46 passed in 21.48 seconds
+2. complete backend gate: `uv run pytest -q`
+   - Result: PASS
+   - 240 passed in 175.26 seconds
+3. complete frontend gate: `npm run test -- --run`
+   - Result: PASS
+   - 28 files and 155 tests passed
+4. frontend lint: `npm run lint`
+   - Result: PASS
+   - ESLint exited 0 with no findings
+5. frontend production build: `npm run build`
+   - Result: PASS
+   - Next.js 16.2.3 compiled, type-checked, and generated the 31-page route tree, including `/wiki`
+6. deterministic contract coverage
+   - earlier closed Jarvis logs are retrievable by the brain while the current log is excluded
+   - shell archive retrieval is rejected and both retrieval tools are read-only
+   - proposed Wiki content is absent until approval writes it to the file-backed corpus
+   - ordinary progress creates no Push intent; each terminal state or blocking question creates one deduplicated intent
+   - future delayed retries are rescheduled after API restart
+   - notification acknowledgement leaves `task_presentations` pending and unheard
+   - archive filters, restore behavior, exact service-worker navigation, and task/question URLs are covered by frontend/API tests
+
+### Decisions and deviations
+
+- Phase 10 reuses the Phase 1 `notification_outbox` for authoritative task facts instead of converting the older conversation-event `notification_deliveries` path in place. That older path remains isolated compatibility code for explicit removal in Phase 11, avoiding a mixed migration during the Phase 10 delivery cutover.
+- Retrieval intentionally uses bounded recent SQL/file scans plus deterministic exact/substring ranking. No vector database or embedding service was introduced, matching the locked first-pass scope.
+- Archived standard conversations are read-only at the UI boundary until restored. Their archive state remains independent from lifecycle closure in persistence; closed Jarvis logs retain the stronger repository/API mutation guard.
+- One durable notification intent is marked delivered when at least one registered browser subscription succeeds. This matches the current single-user product while avoiding duplicate task-event intents; per-device delivery accounting can be added later if the product becomes multi-user or requires device-specific acknowledgement.
+- The manifest `start_url` was already `/jarvis` from earlier PWA work, so Phase 10 verified rather than rewrote it.
+
+### Checkpoint
+
+- Status: passed 2026-08-30
+- Starting HEAD: `cc0ca4f`
+- Implementation commit: `6fe4250`
+- Commit subject: `feat(jarvis): complete Wiki and notification lifecycle`
+- Next entry point: Phase 11 retirement inventory, dependency/config cleanup, compatibility redirects, and clean-setup verification
+- Blockers: none
 
 ## Phase 1 entry checklist (completed)
 
