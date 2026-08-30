@@ -48,10 +48,29 @@ import {
   JarvisRealtimeController,
   type JarvisRealtimeSnapshot,
 } from "@/lib/jarvis-realtime";
+import {
+  configuredJarvisWakeModel,
+} from "@/lib/jarvis-wake-protocol";
+import {
+  JarvisWakeRuntime,
+  type JarvisWakeRuntimeSnapshot,
+} from "@/lib/jarvis-wake-runtime";
+import {
+  JarvisWakeLifecycle,
+  type JarvisWakeSnapshot,
+} from "@/lib/jarvis-wake-state";
 import { useConversationAutoScroll } from "@/lib/conversation-auto-scroll";
 
 
 const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input"]);
+const WAKE_MODEL_CONFIGURATION = configuredJarvisWakeModel();
+const FOLLOW_UP_ACTIVITY_EVENTS = new Set([
+  "input_audio_buffer.speech_started",
+  "input_audio_buffer.speech_stopped",
+  "conversation.item.input_audio_transcription.completed",
+  "response.created",
+  "response.done",
+]);
 
 function statusTone(status: string): string {
   if (status === "completed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
@@ -86,11 +105,25 @@ export default function JarvisPage() {
     session: null,
     error: null,
   });
+  const [wake, setWake] = useState<JarvisWakeSnapshot>({
+    status: "idle",
+    error: null,
+    followUpUntil: null,
+  });
+  const [wakeRuntime, setWakeRuntime] = useState<JarvisWakeRuntimeSnapshot>({
+    status: "idle",
+    error: null,
+  });
   const streamsRef = useRef<JarvisLiveStreamState>(EMPTY_JARVIS_LIVE_STREAMS);
   const logIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const controllerIdRef = useRef("");
   const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
+  const wakeLifecycleRef = useRef<JarvisWakeLifecycle | null>(null);
+  const wakeRuntimeRef = useRef<JarvisWakeRuntime | null>(null);
+  const rearmWakeRef = useRef<(reason: "idle_timeout" | "explicit_sleep") => Promise<void>>(
+    async () => undefined,
+  );
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const presentationCycleRef = useRef(false);
@@ -157,8 +190,9 @@ export default function JarvisPage() {
   }, [setLiveStreams]);
 
   useEffect(() => {
+    let disposed = false;
     controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`;
-    realtimeControllerRef.current = new JarvisRealtimeController({
+    const realtimeController = new JarvisRealtimeController({
       controllerId: controllerIdRef.current,
       onSnapshot: setRealtime,
       onRemoteStream: (stream) => {
@@ -184,15 +218,74 @@ export default function JarvisPage() {
           `media_current_time_ms:${Math.round(audio.currentTime * 1_000)}`,
         );
       },
+      onProviderEvent: (event) => {
+        if (typeof event.type === "string" && FOLLOW_UP_ACTIVITY_EVENTS.has(event.type)) {
+          wakeLifecycleRef.current?.noteActivity();
+        }
+      },
     });
+    realtimeControllerRef.current = realtimeController;
+    const lifecycle = new JarvisWakeLifecycle({
+      onSnapshot: setWake,
+      onRearmRequested: (reason) => void rearmWakeRef.current(reason),
+    });
+    wakeLifecycleRef.current = lifecycle;
+    const runtime = new JarvisWakeRuntime({
+      onSnapshot: (snapshot) => {
+        if (disposed) return;
+        setWakeRuntime(snapshot);
+        if (snapshot.status === "ready" && lifecycle.current().status === "arming") {
+          lifecycle.armed();
+        } else if (snapshot.status === "failed") {
+          lifecycle.fail(new Error(snapshot.error || "Wake model unavailable"));
+        }
+      },
+      onWake: (handoff) => {
+        if (disposed || lifecycle.current().status !== "armed") return;
+        lifecycle.detected();
+        lifecycle.connecting();
+        void realtimeController.start({ audioHandoff: handoff })
+          .then(() => {
+            if (!disposed) lifecycle.connected();
+          })
+          .catch((cause) => {
+            if (disposed) return;
+            lifecycle.fail(cause);
+            setError(cause instanceof Error ? cause.message : "Unable to connect after wake");
+          });
+      },
+    });
+    wakeRuntimeRef.current = runtime;
+    rearmWakeRef.current = async () => {
+      try {
+        await realtimeController.stop();
+        await runtime.rearm();
+        if (!disposed && lifecycle.current().status === "arming") lifecycle.armed();
+      } catch (cause) {
+        if (!disposed) lifecycle.fail(cause);
+      }
+    };
     void refresh();
     const timer = window.setInterval(() => void refresh(), 1500);
     return () => {
+      disposed = true;
       window.clearInterval(timer);
-      void realtimeControllerRef.current?.stop();
+      lifecycle.destroy();
+      void realtimeController.stop().finally(() => runtime.stop());
       realtimeControllerRef.current = null;
+      wakeLifecycleRef.current = null;
+      wakeRuntimeRef.current = null;
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!WAKE_MODEL_CONFIGURATION || !currentConversationId) return;
+    const runtime = wakeRuntimeRef.current;
+    const lifecycle = wakeLifecycleRef.current;
+    if (!runtime || !lifecycle || runtime.current().status !== "idle") return;
+    lifecycle.beginArming();
+    void runtime.start(WAKE_MODEL_CONFIGURATION);
+  }, [currentConversationId]);
 
   useEffect(() => {
     if (
@@ -273,6 +366,7 @@ export default function JarvisPage() {
     if (!content) return;
     await run(async () => {
       await acceptJarvisTextTurn(content, crypto.randomUUID());
+      wakeLifecycleRef.current?.noteActivity();
       setDraft("");
     });
   };
@@ -362,6 +456,14 @@ export default function JarvisPage() {
                   voice {realtime.status.replaceAll("_", " ")}{realtimeBusy ? ` · attempt ${realtime.attempt}` : ""}
                 </span>
               )}
+              <span
+                title={wake.error || wakeRuntime.error || undefined}
+                className={wake.status === "armed" ? "text-xs text-emerald-400" : wake.status === "fallback" ? "text-xs text-amber-300" : "text-xs text-zinc-500"}
+              >
+                {WAKE_MODEL_CONFIGURATION
+                  ? `wake ${wake.status.replaceAll("_", " ")}`
+                  : "wake model pending"}
+              </span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">
               {session ? `${ownsController ? "Controller" : "Observer"} · generation ${session.generation} · ${session.provider_adapter}` : "No live controller"}
@@ -374,7 +476,25 @@ export default function JarvisPage() {
               onClick={() => void run(async () => {
                 if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
                 if (!realtimeControllerRef.current) throw new Error("Realtime controller is unavailable");
-                await realtimeControllerRef.current.start();
+                const runtime = wakeRuntimeRef.current;
+                const lifecycle = wakeLifecycleRef.current;
+                if (runtime?.current().status === "ready" && lifecycle?.current().status === "armed") {
+                  lifecycle.detected();
+                  lifecycle.connecting();
+                  try {
+                    await realtimeControllerRef.current.start({
+                      audioHandoff: runtime.manualHandoff(),
+                    });
+                    lifecycle.connected();
+                  } catch (cause) {
+                    lifecycle.fail(cause);
+                    throw cause;
+                  }
+                } else {
+                  await runtime?.stop();
+                  lifecycle?.reset();
+                  await realtimeControllerRef.current.start();
+                }
               })}
               disabled={submitting || realtimeBusy || realtime.status === "connected" || !currentLog}
               className="inline-flex items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200 disabled:opacity-40"
@@ -384,7 +504,14 @@ export default function JarvisPage() {
             <button
               type="button"
               onClick={() => void run(async () => {
-                if (realtime.status !== "idle") {
+                if (
+                  WAKE_MODEL_CONFIGURATION
+                  && wakeRuntimeRef.current
+                  && wakeRuntimeRef.current.current().status === "triggered"
+                  && wakeLifecycleRef.current
+                ) {
+                  wakeLifecycleRef.current.sleep();
+                } else if (realtime.status !== "idle") {
                   await realtimeControllerRef.current?.stop();
                 } else if (session) {
                   await closeJarvisRealtimeSession(session.id, session.generation);

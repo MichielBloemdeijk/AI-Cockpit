@@ -2,7 +2,11 @@ import type { NetworkInterfaceInfo } from "node:os";
 
 import { describe, expect, it } from "vitest";
 
-import { getAllowedDevOrigins, getConfiguredRemoteHosts } from "./dev-origins";
+import {
+  getAllowedDevOrigins,
+  getConfiguredRemoteHosts,
+  getRootEnvValue,
+} from "./dev-origins";
 
 function ipv4(address: string): NetworkInterfaceInfo {
   return {
@@ -52,5 +56,21 @@ describe("getAllowedDevOrigins", () => {
     expect(origins).toEqual(
       expect.arrayContaining(["localhost", "127.0.0.1", "**.*", "100.101.218.34"]),
     );
+  });
+});
+
+describe("getRootEnvValue", () => {
+  it("reads a public frontend setting from repository root env text", () => {
+    expect(getRootEnvValue("NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL", {
+      env: {},
+      rootEnvText: "NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL=/jarvis-wake/models/jarvis.onnx\n",
+    })).toBe("/jarvis-wake/models/jarvis.onnx");
+  });
+
+  it("prefers an explicit process environment value", () => {
+    expect(getRootEnvValue("NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL", {
+      env: { NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL: "/custom/jarvis.onnx" },
+      rootEnvText: "NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL=/root/jarvis.onnx\n",
+    })).toBe("/custom/jarvis.onnx");
   });
 });

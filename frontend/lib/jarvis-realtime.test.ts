@@ -82,6 +82,11 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
   const closeSession = vi.fn().mockResolvedValue(undefined);
   const wait = vi.fn().mockResolvedValue(undefined);
   const detector = { destroy: vi.fn() };
+  const handoffOutputs: Array<{
+    stream: FakeStream;
+    start: ReturnType<typeof vi.fn>;
+    destroy: ReturnType<typeof vi.fn>;
+  }> = [];
   let speechStart: (() => void) | null = null;
   const value: JarvisRealtimeDependencies = {
     createPeer: () => {
@@ -107,6 +112,15 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
       speechStart = onSpeechStart;
       return detector;
     }),
+    createHandoffOutput: vi.fn(async () => {
+      const output = {
+        stream: new FakeStream(),
+        start: vi.fn().mockResolvedValue(undefined),
+        destroy: vi.fn().mockResolvedValue(undefined),
+      };
+      handoffOutputs.push(output);
+      return output as unknown as Awaited<ReturnType<JarvisRealtimeDependencies["createHandoffOutput"]>>;
+    }),
     ...overrides,
   };
   return {
@@ -118,6 +132,7 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
     closeSession,
     wait,
     detector,
+    handoffOutputs,
     triggerSpeechStart: () => speechStart?.(),
   };
 }
@@ -181,9 +196,31 @@ describe("JarvisRealtimeController", () => {
 
     expect(createCall).toHaveBeenCalledTimes(2);
     expect(deps.peers[0].closed).toBe(true);
-    expect(deps.streams[0].track.stopped).toBe(true);
+    expect(deps.streams).toHaveLength(1);
+    expect(deps.streams[0].track.stopped).toBe(false);
     expect(deps.closeSession).not.toHaveBeenCalledWith("session-1", 1);
     await controller.stop();
+    expect(deps.streams[0].track.stopped).toBe(true);
+  });
+
+  it("keeps the active mic alive when the first rotation attempt fails", async () => {
+    const createCall = vi
+      .fn()
+      .mockResolvedValueOnce(response(1, 1))
+      .mockRejectedValueOnce(new Error("transient rotation failure"))
+      .mockResolvedValueOnce(response(2, 1));
+    const deps = dependencies({ createCall });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start();
+    deps.timers[0]();
+    await vi.waitFor(() => expect(controller.current().session?.generation).toBe(2));
+
+    expect(deps.streams).toHaveLength(1);
+    expect(deps.streams[0].track.stopped).toBe(false);
+    expect(createCall).toHaveBeenCalledTimes(3);
+    await controller.stop();
+    expect(deps.streams[0].track.stopped).toBe(true);
   });
 
   it("reconnects after a failed peer connection", async () => {
@@ -271,5 +308,27 @@ describe("JarvisRealtimeController", () => {
     expect(muted).toEqual([true]);
     expect(deps.peers[0].channel.sent).toEqual([]);
     await controller.stop();
+  });
+
+  it("replays a wake utterance before live audio without taking ownership of the wake mic", async () => {
+    const deps = dependencies();
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array([0.1, 0.2])),
+        sampleRate: 16_000,
+      },
+    });
+
+    expect(deps.streams).toHaveLength(0);
+    expect(deps.handoffOutputs).toHaveLength(1);
+    expect(deps.handoffOutputs[0].start).toHaveBeenCalledOnce();
+    expect(deps.peers[0].addedTracks).toBe(1);
+    await controller.stop();
+    expect(wakeStream.track.stopped).toBe(false);
+    expect(deps.handoffOutputs[0].destroy).toHaveBeenCalledOnce();
   });
 });

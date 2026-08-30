@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "install:wake-model": "node scripts/install-jarvis-wake-assets.mjs",
     "postinstall": "node scripts/copy-vad-assets.mjs",
     "prebuild": "node scripts/copy-vad-assets.mjs"
   },

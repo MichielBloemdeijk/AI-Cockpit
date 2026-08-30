@@ -30,6 +30,16 @@ export interface JarvisRealtimeControllerOptions {
   onPlaybackMuted?: (muted: boolean) => void;
 }
 
+export interface JarvisRealtimeAudioHandoff {
+  localStream: MediaStream;
+  utterance: Promise<Float32Array>;
+  sampleRate: number;
+}
+
+export interface JarvisRealtimeStartOptions {
+  audioHandoff?: JarvisRealtimeAudioHandoff;
+}
+
 export interface JarvisRealtimeTraceEntry {
   kind: string;
   monotonic_ms: number;
@@ -42,11 +52,25 @@ interface BrowserConnection {
   peer: RTCPeerConnection;
   channel: RTCDataChannel;
   localStream: MediaStream;
+  ownsLocalStream: boolean;
+  handoffOutput: JarvisRealtimeHandoffOutput | null;
   session: JarvisSession;
   rotateAfterSeconds: number;
   bargeInDetector: JarvisBargeInDetector | null;
   activeResponseId: string | null;
   mutedResponseId: string | null;
+}
+
+interface JarvisRealtimeHandoffOutput {
+  stream: MediaStream;
+  start: () => Promise<void>;
+  destroy: () => Promise<void>;
+}
+
+interface JarvisRealtimeConnectionInput {
+  localStream: MediaStream;
+  ownsLocalStream: boolean;
+  audioHandoff?: JarvisRealtimeAudioHandoff;
 }
 
 export interface JarvisRealtimeDependencies {
@@ -62,6 +86,9 @@ export interface JarvisRealtimeDependencies {
     stream: MediaStream,
     onSpeechStart: () => void,
   ) => Promise<JarvisBargeInDetector>;
+  createHandoffOutput: (
+    handoff: JarvisRealtimeAudioHandoff,
+  ) => Promise<JarvisRealtimeHandoffOutput>;
 }
 
 const RETRY_DELAYS_MS = [0, 500, 1_000, 2_000] as const;
@@ -77,6 +104,7 @@ const browserDependencies: JarvisRealtimeDependencies = {
   clearTimer: (timer) => window.clearTimeout(timer),
   now: () => performance.now(),
   createBargeInDetector: createJarvisBargeInDetector,
+  createHandoffOutput: createBrowserHandoffOutput,
 };
 
 export class JarvisRealtimeController {
@@ -115,11 +143,18 @@ export class JarvisRealtimeController {
     this.recordTrace(kind, { detail });
   }
 
-  async start(): Promise<JarvisRealtimeSnapshot> {
+  async start(options: JarvisRealtimeStartOptions = {}): Promise<JarvisRealtimeSnapshot> {
     const operation = ++this.operation;
     this.cancelRotation();
     this.cancelDisconnect();
-    return this.connectWithRetry(operation, false);
+    const input = options.audioHandoff
+      ? {
+          localStream: options.audioHandoff.localStream,
+          ownsLocalStream: false,
+          audioHandoff: options.audioHandoff,
+        }
+      : undefined;
+    return this.connectWithRetry(operation, false, input);
   }
 
   async stop(): Promise<void> {
@@ -141,7 +176,11 @@ export class JarvisRealtimeController {
     this.cancelRotation();
     this.cancelDisconnect();
     try {
-      await this.connectWithRetry(operation, true);
+      const current = this.active;
+      const input = current
+        ? { localStream: current.localStream, ownsLocalStream: false }
+        : undefined;
+      await this.connectWithRetry(operation, true, input);
     } catch {
       // connectWithRetry publishes the terminal fallback state.
     } finally {
@@ -152,6 +191,7 @@ export class JarvisRealtimeController {
   private async connectWithRetry(
     operation: number,
     reconnecting: boolean,
+    input?: JarvisRealtimeConnectionInput,
   ): Promise<JarvisRealtimeSnapshot> {
     let lastError: unknown = null;
     for (let index = 0; index < RETRY_DELAYS_MS.length; index += 1) {
@@ -165,7 +205,7 @@ export class JarvisRealtimeController {
         error: null,
       });
       try {
-        const connection = await this.connectAttempt(operation);
+        const connection = await this.connectAttempt(operation, input);
         if (operation !== this.operation) {
           await this.disposeConnection(connection, true);
           throw new Error("Realtime connection was cancelled");
@@ -173,7 +213,13 @@ export class JarvisRealtimeController {
         const previous = this.active;
         this.active = connection;
         this.cancelDisconnect();
-        if (previous) await this.disposeConnection(previous, false);
+        if (previous) {
+          if (previous.localStream === connection.localStream) {
+            connection.ownsLocalStream = previous.ownsLocalStream;
+            previous.ownsLocalStream = false;
+          }
+          await this.disposeConnection(previous, false);
+        }
         this.publish({
           status: "connected",
           attempt: index + 1,
@@ -196,16 +242,24 @@ export class JarvisRealtimeController {
     throw new Error(error);
   }
 
-  private async connectAttempt(operation: number): Promise<BrowserConnection> {
-    const localStream = await this.dependencies.getUserMedia({
+  private async connectAttempt(
+    operation: number,
+    input?: JarvisRealtimeConnectionInput,
+  ): Promise<BrowserConnection> {
+    const localStream = input?.localStream ?? await this.dependencies.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
+    const ownsLocalStream = input?.ownsLocalStream ?? true;
     const peer = this.dependencies.createPeer();
     const channel = peer.createDataChannel("oai-events");
     let providerSession: JarvisSession | null = null;
     let connection: BrowserConnection | null = null;
+    let handoffOutput: JarvisRealtimeHandoffOutput | null = null;
     try {
-      for (const track of localStream.getAudioTracks()) peer.addTrack(track, localStream);
+      const outgoingStream = input?.audioHandoff
+        ? (handoffOutput = await this.dependencies.createHandoffOutput(input.audioHandoff)).stream
+        : localStream;
+      for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
       peer.ontrack = (event) => {
         if (operation !== this.operation) return;
         this.recordTrace("remote_track_received");
@@ -262,12 +316,21 @@ export class JarvisRealtimeController {
         peer,
         channel,
         localStream,
+        ownsLocalStream,
+        handoffOutput,
         session: providerSession,
         rotateAfterSeconds: response.rotate_after_seconds ?? 55 * 60,
         bargeInDetector: null,
         activeResponseId: null,
         mutedResponseId: null,
       };
+      if (handoffOutput) {
+        void handoffOutput.start()
+          .then(() => this.recordTrace("wake_utterance_handoff_started"))
+          .catch((cause) => this.recordTrace("wake_utterance_handoff_failed", {
+            detail: cause instanceof Error ? cause.message : "unknown",
+          }));
+      }
       try {
         connection.bargeInDetector = await this.dependencies.createBargeInDetector(
           localStream,
@@ -279,9 +342,12 @@ export class JarvisRealtimeController {
       }
       return connection;
     } catch (cause) {
+      await handoffOutput?.destroy().catch(() => undefined);
       channel.close();
       peer.close();
-      for (const track of localStream.getTracks()) track.stop();
+      if (ownsLocalStream) {
+        for (const track of localStream.getTracks()) track.stop();
+      }
       if (providerSession) {
         await this.dependencies.closeSession(providerSession.id, providerSession.generation).catch(() => undefined);
       }
@@ -336,7 +402,10 @@ export class JarvisRealtimeController {
     connection.peer.ontrack = null;
     connection.peer.onconnectionstatechange = null;
     connection.peer.close();
-    for (const track of connection.localStream.getTracks()) track.stop();
+    await connection.handoffOutput?.destroy().catch(() => undefined);
+    if (connection.ownsLocalStream) {
+      for (const track of connection.localStream.getTracks()) track.stop();
+    }
     if (notifyBackend) {
       await this.dependencies.closeSession(connection.session.id, connection.session.generation).catch(() => undefined);
     }
@@ -476,4 +545,61 @@ export class JarvisRealtimeController {
   private errorName(cause: unknown): string {
     return cause instanceof Error ? cause.name : "unknown";
   }
+}
+
+async function createBrowserHandoffOutput(
+  handoff: JarvisRealtimeAudioHandoff,
+): Promise<JarvisRealtimeHandoffOutput> {
+  const context = new AudioContext();
+  const liveSource = context.createMediaStreamSource(handoff.localStream);
+  const destination = context.createMediaStreamDestination();
+  let replaySource: AudioBufferSourceNode | null = null;
+  let destroyed = false;
+  let started = false;
+  const connectLive = () => {
+    if (!destroyed) liveSource.connect(destination);
+  };
+  return {
+    stream: destination.stream,
+    start: async () => {
+      if (started) return;
+      started = true;
+      if (context.state === "suspended") await context.resume();
+      try {
+        const samples = await handoff.utterance;
+        if (destroyed) {
+          samples.fill(0);
+          return;
+        }
+        if (!samples.length) {
+          connectLive();
+          return;
+        }
+        const buffer = context.createBuffer(1, samples.length, handoff.sampleRate);
+        buffer.getChannelData(0).set(samples);
+        samples.fill(0);
+        replaySource = context.createBufferSource();
+        replaySource.buffer = buffer;
+        replaySource.connect(destination);
+        replaySource.onended = () => {
+          replaySource?.disconnect();
+          replaySource = null;
+          connectLive();
+        };
+        replaySource.start();
+      } catch (cause) {
+        connectLive();
+        throw cause;
+      }
+    },
+    destroy: async () => {
+      if (destroyed) return;
+      destroyed = true;
+      replaySource?.stop();
+      replaySource?.disconnect();
+      liveSource.disconnect();
+      for (const track of destination.stream.getTracks()) track.stop();
+      await context.close();
+    },
+  };
 }

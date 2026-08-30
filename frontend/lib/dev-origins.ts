@@ -42,6 +42,18 @@ function readRootEnvText(cwd: string): string {
   return readFileSync(rootEnvPath, "utf8");
 }
 
+export function getRootEnvValue(
+  name: string,
+  options: Pick<AllowedDevOriginsOptions, "cwd" | "env" | "rootEnvText"> = {},
+): string {
+  const env = options.env ?? process.env;
+  const processValue = env[name]?.trim();
+  if (processValue) return processValue;
+  const cwd = options.cwd ?? process.cwd();
+  const rootEnvText = options.rootEnvText ?? readRootEnvText(cwd);
+  return extractEnvValue(rootEnvText, name);
+}
+
 function normalizeHost(rawValue: string): string | null {
   const trimmed = rawValue.trim();
   if (!trimmed) {

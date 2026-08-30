@@ -199,6 +199,7 @@ The main settings are:
 | `VOICE_TTS_VOICE` | af_heart | Kokoro voice used for speech responses |
 | `VOICE_CLOUD_MODEL` | openai/gpt-5.6-terra | Model used only when a turn explicitly requests cloud |
 | `OPENAI_API_KEY` | blank | Backend-only key used to create OpenAI Realtime Jarvis calls |
+| `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` | blank | Browser path to the installed exact-word Jarvis ONNX model; blank keeps local wake disabled and preserves manual Arm |
 | `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
 | `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
 | `ALLOWED_DIRS` | blank | Optional comma-separated absolute directories |
@@ -215,6 +216,8 @@ Defaults for future conversations can also be changed from the Settings page aft
 The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs, typed fallback, task delegation, policy-timed proactive task updates, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
 
 Set `OPENAI_API_KEY` in the repository root `.env`, start the normal backend and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and separate worker remain necessary for delegated background tasks, but the legacy local STT/TTS voice groups are not required for the Realtime path.
+
+Phase 9 includes an off-main-thread Hey Buddy/ONNX wake runtime, a bounded 2.5-second in-memory audio pre-roll, one-shot wake/command replay before the live WebRTC track, and a 60-second wake-free follow-up window. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
 
 ## Phone Access with Tailscale
 

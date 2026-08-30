@@ -1,0 +1,37 @@
+{
+  "schema": "jarvis.wake_models.v1",
+  "installed_at": "2026-08-30T09:37:39.903Z",
+  "hey_buddy_model_revision": "68a13d58e216e8e4837559ae665ca3e9769b41c2",
+  "wake_model": {
+    "phrase": "jarvis",
+    "version": "jarvis-en-phase9-pass1-20260829",
+    "training_record": "docs/JARVIS_WAKE_MODEL.md"
+  },
+  "assets": [
+    {
+      "name": "silero-vad.onnx",
+      "sha256": "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+      "source": "https://huggingface.co/benjamin-paine/hey-buddy/resolve/68a13d58e216e8e4837559ae665ca3e9769b41c2/pretrained/silero-vad.onnx",
+      "bytes": 1807522
+    },
+    {
+      "name": "mel-spectrogram.onnx",
+      "sha256": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
+      "source": "https://huggingface.co/benjamin-paine/hey-buddy/resolve/68a13d58e216e8e4837559ae665ca3e9769b41c2/pretrained/mel-spectrogram.onnx",
+      "bytes": 1087958
+    },
+    {
+      "name": "speech-embedding.onnx",
+      "sha256": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
+      "source": "https://huggingface.co/benjamin-paine/hey-buddy/resolve/68a13d58e216e8e4837559ae665ca3e9769b41c2/pretrained/speech-embedding.onnx",
+      "bytes": 1326578
+    },
+    {
+      "name": "jarvis.onnx",
+      "sha256": "de9240d6cc080e2900abcd8e34c72d877f453052f43ae1bce6cc5a50e5567c10",
+      "source": "local-training-artifact",
+      "source_name": "jarvis-en-phase9-pass1-20260829.onnx",
+      "bytes": 1031919
+    }
+  ]
+}

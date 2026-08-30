@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
-import { getAllowedDevOrigins } from "./lib/dev-origins";
+import { getAllowedDevOrigins, getRootEnvValue } from "./lib/dev-origins";
+
+const jarvisWakeModelUrl = getRootEnvValue("NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL");
 
 const nextConfig: NextConfig = {
   distDir: process.env.AI_COCKPIT_NEXT_DIST_DIR || ".next",
@@ -8,6 +10,9 @@ const nextConfig: NextConfig = {
   },
   allowedDevOrigins: getAllowedDevOrigins(),
   devIndicators: false,
+  env: jarvisWakeModelUrl
+    ? { NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL: jarvisWakeModelUrl }
+    : undefined,
   // Proxy /api/* to the FastAPI backend in development
   async rewrites() {
     return [

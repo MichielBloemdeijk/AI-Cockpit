@@ -727,6 +727,9 @@ Current behavior:
 - `frontend/lib/chat-history.ts`: durable persisted timeline projection
 - `frontend/lib/agent-stream-state.ts`: transient live overlay state
 - `frontend/lib/jarvis-live-state.ts`: independent Jarvis domain cursors and merged display-only activity
+- `frontend/lib/jarvis-wake-runtime.ts`: one-microphone browser capture, AudioWorklet resampling, and dedicated-worker lifecycle
+- `frontend/lib/jarvis-wake-engine.ts`: bounded pre-roll, wake/command collection, and raw-audio destruction rules
+- `frontend/lib/jarvis-realtime.ts`: WebRTC setup, wake one-shot-to-live handoff, reconnect, and immediate barge-in controls
 
 ### Knowledge and Documentation
 
@@ -759,11 +762,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, and policy-driven proactive task updates are complete through Phase 8. Phase 9 browser-local wake-word activation, command-tail handoff, and follow-up lifecycle remain in progress.
+- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, and policy-driven proactive task updates are complete through Phase 8. Phase 9's deterministic browser-local worker, 2.5-second ring buffer, one-shot command-tail handoff, 60-second follow-up, auto-arm opt-in, manual fallback, and trained exact-word model are implemented; foreground-device wake-quality acceptance remains.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, and proactive-presentation boundaries without moving provider-specific event shapes into conversation or task services. The current Jarvis step is Phase 9: replace manual arming with a browser-local wake and command-tail lifecycle while retaining an explicit Arm fallback.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, proactive-presentation, and deterministic browser wake-runtime boundaries without moving provider-specific event shapes into conversation or task services. The remaining Phase 9 gate is the bounded foreground-device deliberate-wake, false-activation, command-preservation, fallback, and responsiveness acceptance pass for the installed model.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 

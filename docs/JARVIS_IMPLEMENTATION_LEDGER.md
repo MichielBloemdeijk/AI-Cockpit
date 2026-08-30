@@ -9,7 +9,7 @@ This ledger is the restart point for every Jarvis implementation session. The no
 - **Current phase:** Phase 9 — browser-local wake and follow-up lifecycle
 - **Last completed phase:** Phase 8
 - **Product implementation started:** yes
-- **Next session entry point:** inventory the existing browser VAD/wake implementation against Phase 9, preserve the proven barge-in path, and implement the deterministic wake/arm/ring-buffer lifecycle before model-quality acceptance
+- **Next session entry point:** run deliberate-wake, false-activation, command-preservation, fallback, and UI-responsiveness acceptance for the installed foreground Jarvis model
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -584,6 +584,90 @@ Run on 2026-08-29:
 - Commit subject: `feat(jarvis): add policy-driven proactive updates`
 - Next entry point: Phase 9 browser-local wake lifecycle and deterministic runtime tests
 - Blockers: none
+
+## Phase 9 record (in progress)
+
+### Scope completed so far
+
+- Added a fixed-capacity 2.5-second Float32 PCM ring buffer with chronological snapshots, oversized-input bounding, explicit zeroing, and destruction guards.
+- Added deterministic wake lifecycle states for arming, trigger, connection, 60-second wake-free follow-up, activity renewal, explicit Sleep re-arm, stale-timer rejection, fallback, and destruction.
+- Adapted the Apache-2.0 Hey Buddy ONNX pipeline behind a dedicated browser Worker. An AudioWorklet performs microphone resampling and transferable PCM delivery; ONNX inference does not run on the React/UI thread.
+- Kept a single microphone stream across wake inference and Realtime. Detection begins WebRTC setup while the worker retains the command tail; a composite outgoing track replays the one-shot wake/command recording before switching to that same live microphone.
+- Preserved the accepted local Silero barge-in detector on the source microphone, and changed reconnect/rotation to transfer microphone ownership without reacquisition or premature track shutdown.
+- Added auto-arm only when `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` is explicitly configured. With no exact-word model, the UI advertises that the model is pending and the existing Arm path remains functional without an automatic microphone prompt.
+- Added an integrity-checking model installer that pins official Hey Buddy shared assets, verifies SHA-256 hashes, installs a local Jarvis ONNX file, and writes a version/provenance manifest without leaking the source machine path.
+- Forwarded the single public wake-model setting from the repository-root `.env` into the frontend build. This closes the gap between the documented root configuration and Next.js's project-local environment loading.
+- Added the versioned training/data/license record in `docs/JARVIS_WAKE_MODEL.md`.
+- Completed two bounded CUDA training passes, retained pass 1 because it alone met the locked `2.0/hour` validation false-activation target, exported it as a single-file ONNX graph, installed it with verified hashes, and enabled the root `.env` wake-model setting.
+
+### Verification evidence so far
+
+Run on 2026-08-30:
+
+1. focused deterministic frontend gate: `npx vitest run lib/jarvis-realtime.test.ts lib/jarvis-wake-runtime.test.ts lib/jarvis-wake-engine.test.ts lib/jarvis-wake-state.test.ts lib/audio-ring-buffer.test.ts`
+   - Result: PASS — 5 files and 26 tests
+2. complete frontend gate after asset and root-env integration: `npm run test -- --run`
+   - Result: PASS — 27 files and 152 tests
+3. complete ESLint gate: `npm run lint`
+   - Result: PASS
+4. production frontend build with the wake model configured
+   - Result: PASS — Next.js 16.2.3 compiled the dedicated Worker, completed TypeScript, and generated all 30 routes
+5. isolated trainer smoke gate
+   - Result: PASS — RTX 3080 Ti CUDA optimization, checkpoint save, opset-19 ONNX conversion, ONNX checker, and ONNX Runtime inference
+
+### Pass 1 trainer invocation
+
+```text
+heybuddy train jarvis --perceptron --training-medium-default-dataset
+  --augmentation-dataset-no-streaming --positive-samples 25000
+  --adversarial-samples 25000 --adversarial-phrases 250
+  --validation-samples 5000 --testing-positive-samples 5000
+  --testing-adversarial-samples 5000 --num-batch-threads 4
+  --validation-num-batch-threads 1 --testing-num-batch-threads 1
+  --steps 2000 --stages 2 --validation-steps 250
+  --checkpoint-steps 2000 --logging-steps 10
+```
+
+### Pass 2 trainer invocation
+
+```text
+heybuddy train jarvis --perceptron --training-medium-default-dataset
+  --augmentation-dataset-no-streaming --positive-samples 50000
+  --adversarial-samples 50000 --adversarial-phrases 250
+  --positive-batch-size 100 --adversarial-batch-size 100
+  --negative-batch-size 1000 --target-false-positive-rate 2.0
+  --validation-samples 5000 --testing-positive-samples 5000
+  --testing-adversarial-samples 5000 --num-batch-threads 4
+  --validation-num-batch-threads 1 --testing-num-batch-threads 1
+  --steps 3000 --stages 2 --validation-steps 250
+  --checkpoint-steps 3000 --logging-steps 10
+```
+
+### Model evaluation and selection
+
+- Pass 1 final: `2.0` validation false activations/hour, `98.14%` validation recall, `75.20%` synthetic test recall, and `1.46%` adversarial test false positives.
+- Pass 2 stage 1: `3.85` validation false activations/hour and `79.26%` synthetic test recall.
+- Pass 2 final: `2.575` validation false activations/hour, `98.74%` validation recall, `75.92%` synthetic test recall, and `1.30%` adversarial test false positives.
+- Selection: pass 1. Pass 2's `0.72` percentage-point test-recall gain did not justify exceeding the locked general false-activation bound.
+- Installed artifact: `jarvis-en-phase9-pass1-20260829.onnx`, `1,031,919` bytes, SHA-256 `de9240d6cc080e2900abcd8e34c72d877f453052f43ae1bce6cc5a50e5567c10`.
+- Export verification: opset 19, no external tensor sidecar, ONNX checker PASS, ONNX Runtime/PyTorch maximum absolute error `1.3096723705530167e-09`.
+
+### Decisions, deviations, and open points
+
+- The published `hey-buddy-onnx` package owns a second `getUserMedia` stream and runs the ONNX pipeline on the page thread. Phase 9 therefore adapts its Apache-2.0 pipeline behind the app's own Worker protocol instead of instantiating the package directly.
+- No exact-word Jarvis model exists in the official pretrained repository. Two substantive candidates were trained in an isolated WSL environment; pass 1 is installed and both checkpoint sets and logs remain on D: for manual-acceptance follow-up.
+- The upstream environment currently resolves newer PyTorch/CUDA packages and omits dependencies needed by current PyTorch export and Hugging Face audio decoding. The isolated environment adds `onnxscript`, ONNX Runtime GPU, TorchCodec, and FFmpeg after bounded smoke validation; no application dependency changed.
+- The upstream 25,000-example feature batch expects roughly 20 GiB, while WSL had 15 GiB plus 4 GiB swap. The isolated source checkout therefore generated the same requested totals in 12,500-example batches. Pass 2 also redirected all Hugging Face and temporary augmentation caches to D: after the initial cache expanded Ubuntu's VHD on C:; the frontend build cache is an ignored junction to a task-specific D: directory.
+- Hey Buddy replaced 16 non-finite embeddings across pass 2's 800,000 generated embeddings using its built-in fallback. The final checkpoint and exported inference outputs remained finite.
+- The official GitHub documentation labels source and pretrained models Apache-2.0 and training datasets CC-BY 4.0 with component licenses. The Hugging Face repository metadata is more conservative; the installer and training record retain exact revisions and hashes rather than flattening this provenance.
+- The one-shot media-track path is primary. Sideband audio injection has not been added because deterministic handoff tests pass; it remains the plan's conditional fallback only if real browser/provider testing shows replay duplication or rejection.
+
+### Checkpoint
+
+- Status: implementation, model training, selection, install, and automated verification complete; Phase 9 remains in progress only for foreground-device acceptance
+- Starting HEAD: `5e8a2d1`
+- Next entry point: run the manual acceptance worksheet in `docs/JARVIS_WAKE_MODEL.md`; if it misses the locked target, use the planned research/tuning checkpoint before changing the runtime or training a third model
+- Blockers: no code blocker; the remaining gate requires real foreground microphone/media testing on the user's device
 
 ## Phase 1 entry checklist (completed)
 
