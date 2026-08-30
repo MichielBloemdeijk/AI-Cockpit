@@ -20,7 +20,6 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Run the complete local Jarvis model acceptance benchmark.")
     result.add_argument("--model", default=settings.local_llm_alias)
     result.add_argument("--performance-trials", type=int, default=5)
-    result.add_argument("--warm-stt", action="store_true", help="Load Faster Whisper before measuring peak GPU memory.")
     result.add_argument("--output", help="JSON output path. Defaults under .cockpit/benchmarks.")
     return result
 
@@ -40,7 +39,6 @@ async def main() -> int:
     report = await run_jarvis_benchmark(
         model=args.model,
         performance_trials=max(1, args.performance_trials),
-        warm_stt=args.warm_stt,
         progress_callback=lambda message: print(message, flush=True),
     )
     print(render_jarvis_benchmark(report))

@@ -45,7 +45,7 @@ def _native_control_tool_definitions(*, include_delegate: bool = False) -> list[
                 "name": NATIVE_AGENT_DELEGATE_TOOL,
                 "description": (
                     "Delegate a multi-step, mutating, executable, waiting, or explicitly background goal. "
-                    "The current voice turn ends immediately after the child is queued. Put a short acknowledgement "
+                    "The current conversation run ends immediately after the first-class task is queued. Put a short acknowledgement "
                     "for the user in assistant text and do not duplicate the full task details."
                 ),
                 "parameters": {

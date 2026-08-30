@@ -149,7 +149,6 @@ class Conversation(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     jarvis_day_key: Mapped[date | None] = mapped_column(Date(), nullable=True)
     jarvis_day_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    is_primary_voice: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     last_event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -813,29 +812,7 @@ class PushSubscription(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-class NotificationDelivery(Base):
-    __tablename__ = "notification_deliveries"
-    __table_args__ = (UniqueConstraint("subscription_id", "event_id", name="uq_notification_delivery_subscription_event"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    subscription_id: Mapped[str] = mapped_column(String(36), ForeignKey("push_subscriptions.id", ondelete="CASCADE"), nullable=False)
-    event_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversation_events.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
 Index("ix_conversations_updated_at", Conversation.updated_at)
-Index(
-    "uq_conversations_primary_voice",
-    Conversation.is_primary_voice,
-    unique=True,
-    sqlite_where=Conversation.is_primary_voice.is_(True) & Conversation.archived_at.is_(None),
-)
 Index("ix_conversation_runs_conversation_started", ConversationRun.conversation_id, ConversationRun.started_at)
 Index("ix_conversation_runs_status", ConversationRun.status)
 Index("ix_conversation_branches_conversation_created", ConversationBranch.conversation_id, ConversationBranch.created_at)
@@ -849,8 +826,6 @@ Index("ix_memory_items_conversation_created", MemoryItem.source_conversation_id,
 Index("ix_generated_apps_updated_at", GeneratedApp.updated_at)
 Index("ix_generated_apps_status", GeneratedApp.status)
 Index("ix_generated_apps_lease_task", GeneratedApp.lease_task_run_id)
-Index("ix_notification_deliveries_event", NotificationDelivery.event_id)
-Index("ix_notification_deliveries_status", NotificationDelivery.status)
 Index("ix_conversations_kind_updated", Conversation.conversation_kind, Conversation.updated_at)
 Index("ix_conversations_lifecycle", Conversation.lifecycle_status)
 Index("ix_realtime_sessions_conversation_created", RealtimeSession.conversation_id, RealtimeSession.created_at)

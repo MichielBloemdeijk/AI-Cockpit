@@ -7,7 +7,7 @@ from app.services import conversation_store as conversation_store_module
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import conversation_store
 from app.services.conversation_timeline import build_tool_result_timeline_item
-from app.services.background_tasks import delegate_background_task
+from app.services.task_delegation import delegate_background_task
 
 
 def test_app_initialize_activity_lists_scaffolded_files():
@@ -75,29 +75,19 @@ async def test_timeline_projection_replaces_activity_in_place():
 
 
 @pytest.mark.asyncio
-async def test_background_run_projects_as_one_task_card_and_hides_low_level_tools():
+async def test_delegated_task_projects_as_one_task_card_without_a_child_run():
     initialize_engine()
 
-    conversation = await conversation_store.create_conversation(mode_hint="voice")
+    conversation = await conversation_store.create_conversation(mode_hint="single")
     parent = await conversation_store.start_run(
         conversation.id,
         kind="assistant",
-        metadata_json={"branch_key": "main", "execution_mode": "voice_interactive"},
+        metadata_json={"branch_key": "main"},
     )
-    child, _ = await delegate_background_task(parent_run_id=parent.id, goal="Review the repository")
-    await conversation_store.transition_run_status(
-        child.id,
-        expected_statuses={"queued"},
-        status="running",
-    )
-    await conversation_store.record_agent_tool_result(
-        conversation.id,
-        run_id=child.id,
-        step=1,
-        tool_name="list_background_tasks",
-        arguments={"include_finished": False},
-        ok=True,
-        output='[{"run_id":"child"}]',
+    task, _ = await delegate_background_task(
+        parent_run_id=parent.id,
+        goal="Review the repository",
+        idempotency_key="conversation-task-card",
     )
 
     events = await conversation_store.list_events(conversation.id, limit=5000)
@@ -106,12 +96,11 @@ async def test_background_run_projects_as_one_task_card_and_hides_low_level_tool
     task_items = [item for item in timeline_items if item["kind"] == "task"]
 
     assert len(task_items) == 1
-    global_task_id = str(child.metadata_json["global_task_id"])
-    assert task_items[0]["item_id"] == f"task:{global_task_id}"
-    assert task_items[0]["metadata"]["task_id"] == global_task_id
-    assert task_items[0]["metadata"]["task_run_id"] == child.id
-    assert task_items[0]["status"] == "running"
-    assert not any(item["kind"] in {"tool_call", "tool_result"} for item in timeline_items)
+    assert task_items[0]["item_id"] == f"task:{task.task.id}"
+    assert task_items[0]["metadata"]["task_id"] == task.task.id
+    assert task_items[0]["metadata"]["task_run_id"] == task.task.id
+    assert task_items[0]["status"] == "queued"
+    assert [run.id for run in runs] == [parent.id]
 
 
 @pytest.mark.asyncio

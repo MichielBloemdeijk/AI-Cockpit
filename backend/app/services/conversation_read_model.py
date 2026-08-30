@@ -10,7 +10,6 @@ from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import ArtifactRecord, BranchRecord, EventRecord, MessageRecord, RunRecord, conversation_store
 from app.services.conversation_timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
-    build_background_task_timeline_item,
     extract_timeline_item_payload,
     normalize_live_item,
 )
@@ -148,21 +147,11 @@ class ConversationReadModel:
     def _build_timeline_items(self, events: list[EventRecord], runs: list[RunRecord] | None = None) -> list[dict]:
         timeline_items: list[dict] = []
         indexes_by_item_id: dict[str, int] = {}
-        background_runs = {
-            run.id: run
-            for run in (runs or [])
-            if isinstance(run.metadata_json, dict) and run.metadata_json.get("execution_mode") == "background"
-        }
-        hidden_task_tools = {"list_background_tasks", "get_background_task", "task_publish_update"}
         for event in sorted(events, key=lambda item: (item.sequence, item.created_at, item.id)):
             if event.event_type != TIMELINE_ITEM_EVENT_TYPE:
                 continue
             payload = extract_timeline_item_payload(event.payload_json)
             if payload is None:
-                continue
-            if event.run_id in background_runs and payload.get("kind") not in {"task", "question"}:
-                continue
-            if payload.get("kind") in {"tool_call", "tool_result"} and payload.get("tool_name") in hidden_task_tools:
                 continue
             item = {
                 **payload,
@@ -183,57 +172,6 @@ class ConversationReadModel:
                 "created_at": original["created_at"],
             }
 
-        visible_run_ids = {event.run_id for event in events if event.run_id}
-        for run in background_runs.values():
-            if run.id not in visible_run_ids:
-                continue
-            metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
-            task_events = [
-                event
-                for event in events
-                if event.run_id == run.id and event.event_type.startswith("task.")
-            ]
-            updates = [str(item).strip() for item in (metadata.get("task_updates") or []) if str(item).strip()]
-            latest_summary = str(metadata.get("final_summary") or metadata.get("summary") or "").strip()
-            for event in task_events:
-                payload = event.payload_json if isinstance(event.payload_json, dict) else {}
-                summary = str(payload.get("summary") or "").strip()
-                if summary:
-                    latest_summary = summary
-                    if event.event_type in {"task.progress", "task.completed", "task.failed", "task.cancelled", "task.interrupted"}:
-                        updates.append(summary)
-            updates = list(dict.fromkeys(updates))[-20:]
-            task_payload = build_background_task_timeline_item(
-                run_id=run.id,
-                task_id=str(metadata.get("global_task_id") or "").strip() or None,
-                title=str(metadata.get("title") or "Background task"),
-                goal=str(metadata.get("goal") or ""),
-                status=run.status,
-                summary=latest_summary or str(run.error or "").strip() or None,
-                active_step=str(metadata.get("active_step") or ""),
-                updates=updates,
-                notify_policy=str(metadata.get("notify_policy") or "important"),
-                requested_notification=bool(metadata.get("requested_notification")),
-            )
-            first_event = min(task_events, key=lambda item: (item.sequence, item.created_at, item.id)) if task_events else None
-            task_item = {
-                **task_payload,
-                "run_id": run.id,
-                "sequence": first_event.sequence if first_event is not None else 0,
-                "created_at": first_event.created_at if first_event is not None else run.started_at,
-            }
-            item_id = str(task_payload["item_id"])
-            existing_index = indexes_by_item_id.get(item_id)
-            if existing_index is None:
-                indexes_by_item_id[item_id] = len(timeline_items)
-                timeline_items.append(task_item)
-            else:
-                original = timeline_items[existing_index]
-                timeline_items[existing_index] = {
-                    **task_item,
-                    "sequence": original["sequence"],
-                    "created_at": original["created_at"],
-                }
         timeline_items.sort(key=lambda item: (item["sequence"], item["created_at"], item["item_id"]))
         return timeline_items
 
@@ -254,8 +192,6 @@ class ConversationReadModel:
             if self._run_branch_key(run) != normalized_branch_key:
                 continue
             metadata = _normalize_task_metadata(run.metadata_json)
-            if metadata.get("execution_mode") == "background":
-                continue
             live_item = normalize_live_item(metadata.get("live_item"))
             if run.status not in {"running", "paused"} and live_item is None:
                 continue

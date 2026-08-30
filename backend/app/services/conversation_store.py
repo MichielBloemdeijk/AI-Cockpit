@@ -13,7 +13,6 @@ from app.services.conversation_title_service import conversation_title_service
 from app.services.conversation_timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
     build_assistant_message_timeline_item,
-    build_background_task_timeline_item,
     build_tool_result_timeline_item,
     build_user_message_timeline_item,
 )
@@ -38,7 +37,6 @@ class ConversationRecord:
     mode_hint: str | None
     session_metadata_json: dict | None
     workspace_path: str | None
-    is_primary_voice: bool
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
@@ -161,7 +159,6 @@ def _conversation_record(model) -> ConversationRecord:
         mode_hint=model.mode_hint,
         session_metadata_json=model.session_metadata_json,
         workspace_path=model.workspace_path,
-        is_primary_voice=bool(model.is_primary_voice),
         conversation_kind=model.conversation_kind,
         lifecycle_status=model.lifecycle_status,
         closed_at=model.closed_at,
@@ -431,7 +428,6 @@ class ConversationStore:
         title: str | None = None,
         mode_hint: str | None = None,
         session_metadata_json: dict | None = None,
-        is_primary_voice: bool = False,
         conversation_kind: str = "standard",
         lifecycle_status: str = "open",
         jarvis_day_key: date | None = None,
@@ -443,7 +439,6 @@ class ConversationStore:
                 title=title,
                 mode_hint=mode_hint,
                 session_metadata_json=session_metadata_json,
-                is_primary_voice=is_primary_voice,
                 conversation_kind=conversation_kind,
                 lifecycle_status=lifecycle_status,
                 jarvis_day_key=jarvis_day_key,
@@ -458,24 +453,6 @@ class ConversationStore:
             )
             conversation.workspace_path = relative_workspace_path
             ensure_conversation_workspace(relative_workspace_path)
-            return _conversation_record(conversation)
-
-    async def get_primary_voice_conversation(self) -> ConversationRecord | None:
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            conversation = await repo.get_primary_voice_conversation()
-            if conversation is None:
-                return None
-            await self._ensure_conversation_defaults(repo, conversation)
-            return _conversation_record(conversation)
-
-    async def set_primary_voice(self, conversation_id: str, value: bool) -> ConversationRecord:
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            await repo.set_primary_voice(conversation_id, value)
-            conversation = await repo.get_conversation(conversation_id)
-            if conversation is None:
-                raise ValueError(f"Conversation not found: {conversation_id}")
             return _conversation_record(conversation)
 
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
@@ -895,109 +872,6 @@ class ConversationStore:
             await repo.touch_conversation(conversation_id)
             return _event_record(event), _message_record(message)
 
-    async def append_event_with_assistant_message(
-        self,
-        conversation_id: str,
-        *,
-        run_id: str,
-        event_type: str,
-        content: str,
-        payload_json: dict | None = None,
-        branch_key: str | None = None,
-        importance: str = "normal",
-        timeline_item_payload: dict | None = None,
-    ) -> tuple[EventRecord, MessageRecord]:
-        """Persist a durable task event and its spoken assistant projection together."""
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            event_payload = dict(payload_json or {})
-            event_payload.setdefault("speech_text", content)
-            event_payload.setdefault("importance", importance)
-            event_payload.setdefault(
-                "voice_delivery",
-                {
-                    "speak": True,
-                    "kind": "task_update",
-                    "speech_text": event_payload.get("speech_text") or content,
-                    "importance": event_payload.get("importance") or importance,
-                },
-            )
-            event = await repo.append_event(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                actor_kind=ActorKind.assistant.value,
-                event_type=event_type,
-                payload_json=event_payload,
-                branch_key=branch_key,
-            )
-            message = await repo.create_message(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                source_event_id=event.id,
-                role=MessageRole.assistant.value,
-                author_label="Jarvis",
-                content=content,
-                content_format="text",
-            )
-            await repo.append_event(
-                conversation_id=conversation_id,
-                run_id=run_id,
-                actor_kind=ActorKind.assistant.value,
-                event_type=TIMELINE_ITEM_EVENT_TYPE,
-                payload_json=timeline_item_payload or build_assistant_message_timeline_item(
-                    message_id=message.id,
-                    content=content,
-                    item_id=f"assistant:{run_id}:{event.sequence}:text",
-                ),
-                branch_key=branch_key,
-                parent_event_id=event.id,
-            )
-            await repo.touch_conversation(conversation_id)
-            return _event_record(event), _message_record(message)
-
-    async def append_voice_acknowledgement(self, conversation_id: str) -> tuple[EventRecord, MessageRecord]:
-        """Record the fixed wake-word acknowledgement in the voice transcript.
-
-        The browser synthesizes this response directly after the user's wake
-        word.  Deliberately omit ``voice_delivery`` here so replaying the
-        durable event cannot make a second "Yes?" play.
-        """
-        content = "Yes?"
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            event = await repo.append_event(
-                conversation_id=conversation_id,
-                run_id=None,
-                actor_kind=ActorKind.assistant.value,
-                event_type="voice.acknowledgement",
-                payload_json={"content": content, "speech_text": content},
-                branch_key=MAIN_BRANCH_KEY,
-            )
-            message = await repo.create_message(
-                conversation_id=conversation_id,
-                run_id=None,
-                source_event_id=event.id,
-                role=MessageRole.assistant.value,
-                author_label="Jarvis",
-                content=content,
-                content_format="text",
-            )
-            await repo.append_event(
-                conversation_id=conversation_id,
-                run_id=None,
-                actor_kind=ActorKind.assistant.value,
-                event_type=TIMELINE_ITEM_EVENT_TYPE,
-                payload_json=build_assistant_message_timeline_item(
-                    message_id=message.id,
-                    content=content,
-                    item_id=f"assistant:voice-acknowledgement:{event.sequence}:text",
-                ),
-                branch_key=MAIN_BRANCH_KEY,
-                parent_event_id=event.id,
-            )
-            await repo.touch_conversation(conversation_id)
-            return _event_record(event), _message_record(message)
-
     async def attach_artifact(
         self,
         conversation_id: str,
@@ -1200,8 +1074,6 @@ class ConversationStore:
         final_summary: str,
         run_summary: dict,
         final_activity_id: str,
-        background: bool,
-        importance: str = "normal",
     ) -> EventRecord | None:
         """Commit terminal status, result projection, metadata, and summary in one transaction."""
         async with session_scope() as session:
@@ -1219,48 +1091,12 @@ class ConversationStore:
             if not transitioned:
                 return None
             branch_key = str(metadata_json.get("branch_key") or MAIN_BRANCH_KEY)
-            if background:
-                completion_payload = {
-                    "task_run_id": run_id,
-                    "title": metadata_json.get("title") or "Background task",
-                    "summary": final_text or final_summary,
-                    "speech_text": final_text or final_summary,
-                    "importance": importance,
-                    "notify_policy": metadata_json.get("notify_policy", "important"),
-                    "requested_notification": bool(metadata_json.get("requested_notification")),
-                    "status": RunStatus.completed.value,
-                    "voice_delivery": {
-                        "speak": True,
-                        "kind": "task_update",
-                        "speech_text": final_text or final_summary,
-                        "importance": importance,
-                    },
-                }
-                event_type = "task.completed"
-                author_label = "Jarvis"
-                content_format = "text"
-                timeline_item_id = f"assistant:{run_id}:completed"
-            else:
-                completion_payload = {
-                    "content": final_text,
-                    "role": MessageRole.assistant.value,
-                    "voice_delivery": {
-                        "speak": True,
-                        "kind": "reply",
-                        "speech_text": final_text,
-                        "importance": importance,
-                    },
-                }
-                event_type = "conversation.assistant.message.completed"
-                author_label = "agent"
-                content_format = "markdown"
-                timeline_item_id = final_activity_id
             completion_event = await repo.append_event(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 actor_kind=ActorKind.assistant.value,
-                event_type=event_type,
-                payload_json=completion_payload,
+                event_type="conversation.assistant.message.completed",
+                payload_json={"content": final_text, "role": MessageRole.assistant.value},
                 branch_key=branch_key,
             )
             message = await repo.create_message(
@@ -1268,31 +1104,19 @@ class ConversationStore:
                 run_id=run_id,
                 source_event_id=completion_event.id,
                 role=MessageRole.assistant.value,
-                author_label=author_label,
+                author_label="agent",
                 content=final_text,
-                content_format=content_format,
+                content_format="markdown",
             )
-            task_timeline_payload = build_background_task_timeline_item(
-                run_id=run_id,
-                task_id=str(metadata_json.get("global_task_id") or "").strip() or None,
-                title=str(metadata_json.get("title") or "Background task"),
-                goal=str(metadata_json.get("goal") or ""),
-                status=RunStatus.completed.value,
-                summary=final_text or final_summary,
-                active_step="Completed",
-                updates=[*list(metadata_json.get("task_updates") or []), final_text or final_summary],
-                notify_policy=str(metadata_json.get("notify_policy") or "important"),
-                requested_notification=bool(metadata_json.get("requested_notification")),
-            ) if background else None
             await repo.append_event(
                 conversation_id=conversation_id,
                 run_id=run_id,
                 actor_kind=ActorKind.assistant.value,
                 event_type=TIMELINE_ITEM_EVENT_TYPE,
-                payload_json=task_timeline_payload or build_assistant_message_timeline_item(
+                payload_json=build_assistant_message_timeline_item(
                     message_id=message.id,
                     content=final_text,
-                    item_id=timeline_item_id,
+                    item_id=final_activity_id,
                 ),
                 branch_key=branch_key,
                 parent_event_id=completion_event.id,
@@ -1321,7 +1145,7 @@ class ConversationStore:
         self,
         run_id: str,
         *,
-        summary: str = "The task was cancelled.",
+        summary: str = "The run was cancelled.",
     ) -> tuple[RunRecord, EventRecord | None] | None:
         """Atomically cancel an active run and persist its observable projection."""
         async with session_scope() as session:
@@ -1340,119 +1164,17 @@ class ConversationStore:
                 return None
             metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
             branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
-            execution_mode = metadata.get("execution_mode")
-            projected_event = None
-            if execution_mode == "background":
-                content = "The background task was cancelled."
-                payload = {
-                    "task_run_id": run_id,
-                    "title": metadata.get("title") or "Background task",
-                    "summary": content,
-                    "speech_text": content,
-                    "importance": "normal",
-                    "notify_policy": metadata.get("notify_policy", "important"),
-                    "requested_notification": bool(metadata.get("requested_notification")),
-                    "status": RunStatus.cancelled.value,
-                    "voice_delivery": {
-                        "speak": True,
-                        "kind": "task_update",
-                        "speech_text": content,
-                        "importance": "normal",
-                    },
-                }
-                projected_event = await repo.append_event(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type="task.cancelled",
-                    payload_json=payload,
-                    branch_key=branch_key,
-                )
-                message = await repo.create_message(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    source_event_id=projected_event.id,
-                    role=MessageRole.assistant.value,
-                    author_label="Jarvis",
-                    content=content,
-                    content_format="text",
-                )
-                await repo.append_event(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type=TIMELINE_ITEM_EVENT_TYPE,
-                    payload_json=build_background_task_timeline_item(
-                        run_id=run_id,
-                        task_id=str(metadata.get("global_task_id") or "").strip() or None,
-                        title=str(metadata.get("title") or "Background task"),
-                        goal=str(metadata.get("goal") or ""),
-                        status=RunStatus.cancelled.value,
-                        summary=content,
-                        active_step="Cancelled",
-                        updates=[*list(metadata.get("task_updates") or []), content],
-                        notify_policy=str(metadata.get("notify_policy") or "important"),
-                        requested_notification=bool(metadata.get("requested_notification")),
-                    ),
-                    branch_key=branch_key,
-                    parent_event_id=projected_event.id,
-                )
-            elif execution_mode == "voice_interactive" or metadata.get("voice_response"):
-                payload = {
-                    "run_id": run_id,
-                    "status": RunStatus.cancelled.value,
-                    "summary": summary,
-                    "speech_text": summary,
-                    "importance": "normal",
-                    "voice_delivery": {
-                        "speak": True,
-                        "kind": "task_update",
-                        "speech_text": summary,
-                        "importance": "normal",
-                    },
-                }
-                projected_event = await repo.append_event(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type="run.cancelled",
-                    payload_json=payload,
-                    branch_key=branch_key,
-                )
-                message = await repo.create_message(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    source_event_id=projected_event.id,
-                    role=MessageRole.assistant.value,
-                    author_label="Jarvis",
-                    content=summary,
-                    content_format="text",
-                )
-                await repo.append_event(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type=TIMELINE_ITEM_EVENT_TYPE,
-                    payload_json=build_assistant_message_timeline_item(
-                        message_id=message.id,
-                        content=summary,
-                        item_id=f"assistant:{run_id}:cancelled",
-                    ),
-                    branch_key=branch_key,
-                    parent_event_id=projected_event.id,
-                )
-            else:
-                projected_event = await repo.append_event(
-                    conversation_id=run.conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.system.value,
-                    event_type="run.cancelled",
-                    payload_json={"run_id": run_id, "status": RunStatus.cancelled.value, "summary": summary},
-                    branch_key=branch_key,
-                )
+            projected_event = await repo.append_event(
+                conversation_id=run.conversation_id,
+                run_id=run_id,
+                actor_kind=ActorKind.system.value,
+                event_type="run.cancelled",
+                payload_json={"run_id": run_id, "status": RunStatus.cancelled.value, "summary": summary},
+                branch_key=branch_key,
+            )
             await repo.touch_conversation(run.conversation_id)
             await session.refresh(run)
-            return _run_record(run), _event_record(projected_event) if projected_event is not None else None
+            return _run_record(run), _event_record(projected_event)
 
     async def fail_agent_run(
         self,
@@ -1461,7 +1183,6 @@ class ConversationStore:
         run_id: str,
         metadata_json: dict,
         error: str,
-        voice_failure_text: str,
     ) -> EventRecord | None:
         """Commit failure status, observable failure, and metadata atomically."""
         async with session_scope() as session:
@@ -1479,118 +1200,14 @@ class ConversationStore:
             if not transitioned:
                 return None
             branch_key = str(metadata_json.get("branch_key") or MAIN_BRANCH_KEY)
-            execution_mode = metadata_json.get("execution_mode")
-            if execution_mode == "background":
-                content = "The background task failed: " + error
-                primary_event = await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type="task.failed",
-                    payload_json={
-                        "task_run_id": run_id,
-                        "title": metadata_json.get("title") or "Background task",
-                        "summary": content,
-                        "speech_text": content,
-                        "importance": "urgent",
-                        "notify_policy": metadata_json.get("notify_policy", "important"),
-                        "requested_notification": bool(metadata_json.get("requested_notification")),
-                        "status": RunStatus.failed.value,
-                        "voice_delivery": {
-                            "speak": True,
-                            "kind": "task_update",
-                            "speech_text": content,
-                            "importance": "urgent",
-                        },
-                    },
-                    branch_key=branch_key,
-                )
-                message = await repo.create_message(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    source_event_id=primary_event.id,
-                    role=MessageRole.assistant.value,
-                    author_label="Jarvis",
-                    content=content,
-                    content_format="text",
-                )
-                await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type=TIMELINE_ITEM_EVENT_TYPE,
-                    payload_json=build_background_task_timeline_item(
-                        run_id=run_id,
-                        task_id=str(metadata_json.get("global_task_id") or "").strip() or None,
-                        title=str(metadata_json.get("title") or "Background task"),
-                        goal=str(metadata_json.get("goal") or ""),
-                        status=RunStatus.failed.value,
-                        summary=content,
-                        active_step="Failed",
-                        updates=[*list(metadata_json.get("task_updates") or []), content],
-                        notify_policy=str(metadata_json.get("notify_policy") or "important"),
-                        requested_notification=bool(metadata_json.get("requested_notification")),
-                    ),
-                    branch_key=branch_key,
-                    parent_event_id=primary_event.id,
-                )
-            elif metadata_json.get("voice_response"):
-                primary_event = await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type="conversation.assistant.message.completed",
-                    payload_json={
-                        "content": voice_failure_text,
-                        "error": error,
-                        "voice_delivery": {
-                            "speak": True,
-                            "kind": "reply",
-                            "speech_text": voice_failure_text,
-                            "importance": "urgent",
-                        },
-                    },
-                    branch_key=branch_key,
-                )
-                message = await repo.create_message(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    source_event_id=primary_event.id,
-                    role=MessageRole.assistant.value,
-                    author_label="agent",
-                    content=voice_failure_text,
-                    content_format="text",
-                )
-                await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type=TIMELINE_ITEM_EVENT_TYPE,
-                    payload_json=build_assistant_message_timeline_item(
-                        message_id=message.id,
-                        content=voice_failure_text,
-                        item_id=f"assistant:{run_id}:failed",
-                    ),
-                    branch_key=branch_key,
-                    parent_event_id=primary_event.id,
-                )
-                await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.system.value,
-                    event_type="agent.run.failed",
-                    payload_json={"error": error},
-                    branch_key=branch_key,
-                )
-            else:
-                primary_event = await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    actor_kind=ActorKind.system.value,
-                    event_type="agent.run.failed",
-                    payload_json={"error": error},
-                    branch_key=branch_key,
-                )
+            primary_event = await repo.append_event(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                actor_kind=ActorKind.system.value,
+                event_type="agent.run.failed",
+                payload_json={"error": error},
+                branch_key=branch_key,
+            )
             await repo.append_event(
                 conversation_id=conversation_id,
                 run_id=run_id,
@@ -1643,153 +1260,31 @@ class ConversationStore:
             return _event_record(event)
 
     async def mark_running_runs_interrupted(self) -> int:
-        interruption_summary_event_ids: list[str] = []
-        interrupted_global_tasks: list[tuple[str, str]] = []
         async with session_scope() as session:
             repo = ConversationRepository(session)
             runs = list(await repo.list_unfinished_runs())
             interrupted_count = 0
-            interrupted_background_by_conversation: dict[str, dict[str, object]] = {}
             for run in runs:
                 metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
                 branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
-                is_background = metadata.get("execution_mode") == "background"
-                global_task_id = str(metadata.get("global_task_id") or "").strip()
-                # First-class tasks are owned by the separate worker. An API
-                # restart must not alter either their task state or their
-                # compatibility child-run projection.
-                if is_background and global_task_id:
-                    continue
                 interrupted_count += 1
-                if is_background and global_task_id:
-                    interrupted_global_tasks.append((global_task_id, run.id))
                 await repo.update_run_status(
                     run.id,
                     status=RunStatus.interrupted.value,
                     error="AI-Cockpit restarted before this run completed",
                     finished_at=utc_now(),
                 )
-                event = await repo.append_event(
+                await repo.append_event(
                     conversation_id=run.conversation_id,
                     run_id=run.id,
                     actor_kind=ActorKind.system.value,
-                    event_type="task.interrupted" if metadata.get("execution_mode") == "background" else "run.interrupted",
+                    event_type="run.interrupted",
                     payload_json={
                         "run_id": run.id,
-                        "task_run_id": run.id,
-                        "task_id": global_task_id or None,
-                        "title": metadata.get("title") or "Background task",
-                        "goal": metadata.get("goal") or "",
                         "status": RunStatus.interrupted.value,
                         "summary": "AI-Cockpit restarted before this run completed.",
-                        "speech_text": "AI-Cockpit restarted before this task completed.",
-                        "importance": "urgent",
-                        "notify_policy": metadata.get("notify_policy", "important"),
-                        "requested_notification": bool(metadata.get("requested_notification")),
-                        "voice_delivery": {
-                            "speak": False,
-                            "kind": "task_update",
-                            "speech_text": "AI-Cockpit restarted before this task completed.",
-                            "importance": "urgent",
-                        },
                     },
                     branch_key=branch_key,
-                )
-                if is_background:
-                    group = interrupted_background_by_conversation.setdefault(
-                        run.conversation_id,
-                        {"count": 0, "branch_key": branch_key},
-                    )
-                    group["count"] = int(group["count"]) + 1
-                    await repo.append_event(
-                        conversation_id=run.conversation_id,
-                        run_id=run.id,
-                        actor_kind=ActorKind.assistant.value,
-                        event_type=TIMELINE_ITEM_EVENT_TYPE,
-                        payload_json=build_background_task_timeline_item(
-                            run_id=run.id,
-                            task_id=str(metadata.get("global_task_id") or "").strip() or None,
-                            title=str(metadata.get("title") or "Background task"),
-                            goal=str(metadata.get("goal") or ""),
-                            status=RunStatus.interrupted.value,
-                            summary="AI-Cockpit restarted before this task completed.",
-                            active_step="Interrupted",
-                            updates=[
-                                *list(metadata.get("task_updates") or []),
-                                "AI-Cockpit restarted before this task completed.",
-                            ],
-                            notify_policy=str(metadata.get("notify_policy") or "important"),
-                            requested_notification=bool(metadata.get("requested_notification")),
-                        ),
-                        branch_key=branch_key,
-                        parent_event_id=event.id,
-                    )
-            for conversation_id, group in interrupted_background_by_conversation.items():
-                count = int(group["count"])
-                content = (
-                    "AI-Cockpit restarted before one background task completed."
-                    if count == 1
-                    else f"AI-Cockpit restarted before {count} background tasks completed."
-                )
-                branch_key = str(group["branch_key"] or MAIN_BRANCH_KEY)
-                summary_event = await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=None,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type="task.interruptions_summarized",
-                    payload_json={
-                        "count": count,
-                        "title": "Interrupted background work",
-                        "summary": content,
-                        "speech_text": content,
-                        "importance": "urgent",
-                        "notify_policy": "important",
-                        "requested_notification": True,
-                        "voice_delivery": {
-                            "speak": True,
-                            "kind": "task_update",
-                            "speech_text": content,
-                            "importance": "urgent",
-                        },
-                    },
-                    branch_key=branch_key,
-                )
-                message = await repo.create_message(
-                    conversation_id=conversation_id,
-                    run_id=None,
-                    source_event_id=summary_event.id,
-                    role=MessageRole.assistant.value,
-                    author_label="Jarvis",
-                    content=content,
-                    content_format="text",
-                )
-                await repo.append_event(
-                    conversation_id=conversation_id,
-                    run_id=None,
-                    actor_kind=ActorKind.assistant.value,
-                    event_type=TIMELINE_ITEM_EVENT_TYPE,
-                    payload_json=build_assistant_message_timeline_item(
-                        message_id=message.id,
-                        content=content,
-                    ),
-                    branch_key=branch_key,
-                    parent_event_id=summary_event.id,
-                )
-                interruption_summary_event_ids.append(summary_event.id)
-        if interruption_summary_event_ids:
-            from app.services.notifications import notify_event
-
-            for event_id in interruption_summary_event_ids:
-                await notify_event(event_id)
-        if interrupted_global_tasks:
-            from app.services.task_service import task_service
-
-            for task_id, run_id in interrupted_global_tasks:
-                await task_service.complete(
-                    task_id,
-                    status="interrupted",
-                    summary="AI-Cockpit restarted before this task completed.",
-                    idempotency_key=f"legacy-restart-interrupted:{run_id}",
                 )
         return interrupted_count
 

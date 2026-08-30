@@ -5,7 +5,6 @@ import asyncio
 from dataclasses import dataclass
 import os
 import socket
-from datetime import datetime, timezone
 
 from app.config import settings
 from app.services.agent_execution import (
@@ -16,7 +15,6 @@ from app.services.agent_execution import (
     task_agent_runtime,
 )
 from app.services.task_service import task_service
-from app.services.conversation_store import conversation_store
 from app.services.worker_coordinator import ClaimedTask, WorkerCoordinator, worker_coordinator
 
 
@@ -88,7 +86,6 @@ class TaskWorker:
             checkpoint=dict(claim.checkpoint or {}),
         )
         sink = TaskExecutionSink(context)
-        await self._sync_compatibility_run(claim, status="running")
         execution = asyncio.create_task(
             self.runtime.execute(
                 context,
@@ -113,11 +110,9 @@ class TaskWorker:
                     execution.cancel()
                     await asyncio.gather(execution, return_exceptions=True)
                     await sink.cancelled()
-                    await self._sync_compatibility_run(claim, status="cancelled", summary="Task cancelled by user.")
                     return WorkerRunResult(task_id=claim.task_id, status="cancelled")
 
             result = await execution
-            await self._sync_compatibility_run(claim, status=result.status, summary=result.summary)
             return WorkerRunResult(task_id=claim.task_id, status=result.status)
         except TargetExpansionRequested as expansion:
             await self.coordinator.checkpoint_and_requeue(
@@ -128,56 +123,18 @@ class TaskWorker:
                 expanded_targets=expansion.targets,
                 idempotency_key=f"runtime-expansion:{claim.attempt_id}",
             )
-            await self._sync_compatibility_run(claim, status="queued", summary="Requeued with expanded targets")
             return WorkerRunResult(task_id=claim.task_id, status="requeued")
         except asyncio.CancelledError:
             if await task_service.cancellation_requested(claim.task_id):
                 await sink.cancelled()
-                await self._sync_compatibility_run(claim, status="cancelled", summary="Task cancelled by user.")
                 return WorkerRunResult(task_id=claim.task_id, status="cancelled")
             raise
         except Exception as exc:
             detail = await task_service.get_task(claim.task_id)
             if detail is not None and detail.task.status == "running":
                 await sink.fail(str(exc))
-            await self._sync_compatibility_run(claim, status="failed", summary=str(exc))
             return WorkerRunResult(task_id=claim.task_id, status="failed")
         finally:
             await self.coordinator.release_claim(self.worker_id, claim.attempt_id)
-
-    async def _sync_compatibility_run(
-        self,
-        claim: ClaimedTask,
-        *,
-        status: str,
-        summary: str | None = None,
-    ) -> None:
-        reference = str(claim.runtime_reference or "").strip()
-        if not reference or reference.startswith("worker:"):
-            return
-        run = await conversation_store.get_run(reference)
-        if run is None:
-            return
-        metadata = dict(run.metadata_json or {})
-        if str(metadata.get("global_task_id") or "") != claim.task_id:
-            return
-        run_status = "paused" if status == "waiting_for_input" else status
-        metadata["task_status"] = run_status
-        metadata["active_step"] = summary or run_status.replace("_", " ").title()
-        if summary:
-            metadata["final_summary"] = summary if run_status in {"completed", "failed", "cancelled", "interrupted"} else metadata.get("final_summary")
-        await conversation_store.update_run_metadata(reference, metadata)
-        await conversation_store.transition_run_status(
-            reference,
-            expected_statuses={"queued", "running", "paused"},
-            status=run_status,
-            error=summary if run_status == "failed" else None,
-            finished_at=(
-                datetime.now(timezone.utc)
-                if run_status in {"completed", "failed", "cancelled", "interrupted"}
-                else None
-            ),
-        )
-
 
 task_worker = TaskWorker()

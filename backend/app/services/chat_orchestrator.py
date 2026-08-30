@@ -31,13 +31,6 @@ _APP_WORK_REQUEST_RE = re.compile(
     r".{0,80}\b(?:code|file|button|screen|status|error|bug|design)\b)",
     re.IGNORECASE,
 )
-_VOICE_BACKGROUND_DIRECTIVE_RE = re.compile(
-    r"\b(?:in the background|keep (?:working|going)|take your time|monitor|watch for|wait until|"
-    r"tell me when|notify me when|let me know when)\b",
-    re.IGNORECASE,
-)
-
-
 def goal_targets_app_context(goal: str, *, app_title: str = "", app_slug: str = "") -> bool:
     normalized_goal = " ".join(str(goal or "").split()).lower()
     app_identifiers = {
@@ -52,16 +45,6 @@ def goal_targets_app_context(goal: str, *, app_title: str = "", app_slug: str = 
         _APP_WORK_REQUEST_RE.search(normalized_goal)
         or any(identifier in normalized_goal for identifier in app_identifiers)
     )
-_VOICE_MUTATING_REQUEST_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:create|edit|update|change|fix|install|download|run|execute|test|build|"
-    r"commit|deploy|start|stop|restart|delete|remove|move|rename|send|publish|configure)\b",
-    re.IGNORECASE,
-)
-_VOICE_MULTI_STEP_RE = re.compile(
-    r"\b(?:and then|then|after that|once (?:that|it) (?:is|has)|compare\b.+\b(?:and|with)\b|"
-    r"read\b.+\band\b.+\b(?:compare|summari[sz]e|analy[sz]e|review))",
-    re.IGNORECASE,
-)
 STREAMED_AGENT_EVENT_TYPES = {
     "conversation.task.started",
     "conversation.task.start_failed",
@@ -78,25 +61,6 @@ STREAMED_AGENT_EVENT_TYPES = {
     "agent.run.failed",
     TIMELINE_ITEM_EVENT_TYPE,
 }
-
-
-def should_delegate_voice_goal(content: str, *, requested_notification: bool = False) -> bool:
-    """Return whether a voice request must outlive its acknowledgement turn.
-
-    The local model still decides borderline cases, but explicit notification,
-    waiting/background language, mutating commands, and unmistakably multi-step
-    requests are routed deterministically. This preserves the core voice contract
-    even when a small local model would otherwise execute a long request inline.
-    """
-    normalized = " ".join(str(content or "").split()).strip()
-    if not normalized:
-        return False
-    return bool(
-        requested_notification
-        or _VOICE_BACKGROUND_DIRECTIVE_RE.search(normalized)
-        or _VOICE_MUTATING_REQUEST_RE.search(normalized)
-        or _VOICE_MULTI_STEP_RE.search(normalized)
-    )
 
 
 def _latest_user_message(messages: list[Message]) -> Message:
@@ -542,51 +506,6 @@ class ChatOrchestrator:
             conversation_id=conversation.id,
             run=run,
             session_metadata=session_metadata,
-        )
-
-    async def prepare_voice_turn(
-        self,
-        *,
-        conversation_id: str,
-        content: str,
-        model: str,
-        requested_notification: bool = False,
-    ) -> PreparedTurn:
-        conversation = await conversation_store.get_conversation(conversation_id)
-        if conversation is None:
-            raise ValueError("Voice conversation not found")
-        defaults = await chat_settings_service.get_defaults()
-        session_metadata = chat_settings_service.build_requested_metadata(
-            defaults=defaults,
-            session_metadata=None,
-            council_mode=False,
-            model=model,
-        )
-        metadata = await self._build_agent_metadata(
-            conversation_id=conversation_id,
-            goal=content,
-            session_metadata=session_metadata,
-            model_override=model,
-        )
-        metadata.update(
-            {
-                "execution_mode": "voice_interactive",
-                "llm_priority": "interactive",
-                "voice_response": True,
-                "requested_notification": bool(requested_notification),
-                "force_background_delegation": should_delegate_voice_goal(
-                    content,
-                    requested_notification=requested_notification,
-                ),
-            }
-        )
-        return await self.prepare_turn(
-            messages=[Message(role="user", content=content)],
-            conversation_id=conversation_id,
-            run_kind="assistant",
-            session_metadata=session_metadata,
-            metadata_json=metadata,
-            status="queued",
         )
 
     async def _resolve_session_metadata(

@@ -24,7 +24,7 @@ from app.services.llm import chat_completion
 from app.services.task_service import task_service
 
 
-TASK_CONTROL_TOOLS = {"list_background_tasks", "get_background_task", "cancel_background_task"}
+TASK_CONTROL_TOOLS = {"list_tasks", "get_task", "cancel_task"}
 CancellationProbe = Callable[[], Awaitable[bool]]
 
 

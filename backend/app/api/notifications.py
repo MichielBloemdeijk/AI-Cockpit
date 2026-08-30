@@ -6,9 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.auth import require_auth
-from app.services.conversation_store import conversation_store
-from app.services.notifications import acknowledge_delivery, delete_subscription, get_public_key, notify_event, upsert_subscription
-from app.services.voice_conversation import get_or_create_primary
+from app.services.notifications import acknowledge_delivery, delete_subscription, get_public_key, upsert_subscription
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=[Depends(require_auth)])
 
@@ -55,30 +53,3 @@ async def ack_delivery(delivery_id: str, request: DeliveryAckRequest) -> dict[st
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delivery not found")
     return {"ok": True}
-
-
-@router.post("/test")
-async def test_notification() -> dict[str, object]:
-    conversation = await get_or_create_primary()
-    event = await conversation_store.append_event(
-        conversation.id,
-        run_id=None,
-        actor_kind="system",
-        event_type="notification.test",
-        payload_json={
-            "title": "Jarvis notification test",
-            "summary": "This is a Jarvis notification test.",
-            "speech_text": "This is a Jarvis notification test.",
-            "importance": "high",
-            "notify_policy": "completion",
-            "requested_notification": True,
-            "test_notification": True,
-        },
-    )
-    deliveries = await notify_event(event.id)
-    return {
-        "enabled": bool(settings.web_push_enabled),
-        "configured": bool(settings.vapid_private_key and settings.vapid_public_key),
-        "event_id": event.id,
-        "deliveries": deliveries,
-    }

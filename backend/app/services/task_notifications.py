@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -14,9 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import NotificationOutbox, PushSubscription, Task, TaskEvent, TaskQuestion
-from app.services.notifications import sanitize_summary
-
-
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )
@@ -27,6 +25,15 @@ _outbox_tasks: set[asyncio.Task[None]] = set()
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def sanitize_summary(value: str, limit: int = 120) -> str:
+    text = re.sub(r"[`*_>#\[\](){}]", "", str(value or ""))
+    text = re.sub(r"https?://\S+", "", text)
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _summary(task: Task, event: TaskEvent, question: TaskQuestion | None) -> str:

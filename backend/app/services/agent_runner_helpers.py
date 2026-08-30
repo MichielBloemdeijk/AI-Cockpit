@@ -34,14 +34,13 @@ async def persist_visible_text_event(
         payload_json={"step": step_number, "text": visible_text},
         branch_key=str(metadata.get("branch_key") or "main"),
     )
-    if metadata.get("execution_mode") != "background":
-        await conversation_store.append_timeline_item(
-            conversation_id,
-            run_id=run_id,
-            item_payload=build_visible_text_timeline_item(run_id=run_id, step=step_number, content=visible_text),
-            branch_key=str(metadata.get("branch_key") or "main"),
-            parent_event_id=event.id,
-        )
+    await conversation_store.append_timeline_item(
+        conversation_id,
+        run_id=run_id,
+        item_payload=build_visible_text_timeline_item(run_id=run_id, step=step_number, content=visible_text),
+        branch_key=str(metadata.get("branch_key") or "main"),
+        parent_event_id=event.id,
+    )
     await _clear_live_timeline_item(
         run_id,
         metadata,

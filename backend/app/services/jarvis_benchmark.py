@@ -52,8 +52,6 @@ class PerformanceResult:
     p90_first_token_seconds: float | None
     median_tokens_per_second: float | None
     peak_gpu_memory_mib: int | None
-    stt_warmed: bool
-    stt_error: str | None = None
     error: str | None = None
 
 
@@ -118,11 +116,11 @@ SINGLE_TOOL_CASES: tuple[ToolGateCase, ...] = (
     ToolGateCase("attach_app", "Attach the existing generated app with slug demo-panel.", "app_initialize", {"app_slug": "demo-panel"}),
     ToolGateCase("run_tests", "Run the non-interactive command npm test.", "shell_command", {"command": "npm test"}),
     ToolGateCase("git_status", "Run git status as one non-interactive command.", "shell_command", {"command": "git status"}),
-    ToolGateCase("publish_update", "Publish the milestone Indexing complete with high importance.", "task_publish_update", {"summary": "Indexing complete", "importance": "high"}),
-    ToolGateCase("list_active_tasks", "List my active background tasks only.", "list_background_tasks"),
-    ToolGateCase("list_all_tasks", "List background tasks including finished tasks.", "list_background_tasks", {"include_finished": True}),
-    ToolGateCase("get_task", "Inspect background task run-123.", "get_background_task", {"run_id": "run-123"}),
-    ToolGateCase("cancel_task", "Cancel background task run-456.", "cancel_background_task", {"run_id": "run-456"}),
+    ToolGateCase("search_wiki", "Search the approved Wiki for Jarvis architecture.", "wiki_search", {"query": "Jarvis architecture"}),
+    ToolGateCase("list_active_tasks", "List my active tasks only.", "list_tasks"),
+    ToolGateCase("list_all_tasks", "List tasks including finished tasks.", "list_tasks", {"include_finished": True}),
+    ToolGateCase("get_task", "Inspect task task-123.", "get_task", {"task_id": "task-123"}),
+    ToolGateCase("cancel_task", "Cancel task task-456.", "cancel_task", {"task_id": "task-456"}),
     ToolGateCase(
         "delegate_task",
         "Delegate a background task to analyze the repository and tell me when it completes.",
@@ -272,18 +270,7 @@ async def _sample_gpu_memory(stop: asyncio.Event, samples: list[int]) -> None:
             pass
 
 
-async def run_performance_gate(*, model: str, trials: int = 5, warm_stt: bool = False) -> PerformanceResult:
-    stt_warmed = False
-    stt_error: str | None = None
-    if warm_stt:
-        try:
-            from app.services.voice import voice_service
-
-            await voice_service._get_stt_model()
-            stt_warmed = True
-        except Exception as exc:  # reported as an explicit unmet runtime prerequisite
-            stt_error = str(exc)
-
+async def run_performance_gate(*, model: str, trials: int = 5) -> PerformanceResult:
     samples: list[int] = []
     stop_sampling = asyncio.Event()
     sampler = asyncio.create_task(_sample_gpu_memory(stop_sampling, samples), name="jarvis-benchmark-gpu")
@@ -345,8 +332,6 @@ async def run_performance_gate(*, model: str, trials: int = 5, warm_stt: bool = 
         p90_first_token_seconds=_percentile_nearest_rank([result.first_token_seconds for result in results], 0.9),
         median_tokens_per_second=median_rate,
         peak_gpu_memory_mib=max(samples) if samples else nvidia_memory_used_mib(),
-        stt_warmed=stt_warmed,
-        stt_error=stt_error,
         error=error,
     )
 
@@ -357,7 +342,6 @@ async def run_jarvis_benchmark(
     tool_cases: Sequence[ToolGateCase] = SINGLE_TOOL_CASES,
     multistep_scenarios: Sequence[str] | None = None,
     performance_trials: int = 5,
-    warm_stt: bool = False,
     progress_callback: Any | None = None,
 ) -> JarvisBenchmarkReport:
     selected_model = model or settings.local_llm_alias
@@ -375,7 +359,7 @@ async def run_jarvis_benchmark(
         scenarios=scenarios,
         progress_callback=progress_callback,
     )
-    performance = await run_performance_gate(model=selected_model, trials=performance_trials, warm_stt=warm_stt)
+    performance = await run_performance_gate(model=selected_model, trials=performance_trials)
     return JarvisBenchmarkReport(
         model=selected_model,
         tool_results=tool_results,
@@ -396,10 +380,7 @@ def render_jarvis_benchmark(report: JarvisBenchmarkReport) -> str:
             f"p90 first token: {report.performance.p90_first_token_seconds!s} seconds",
             f"median generation: {report.performance.median_tokens_per_second!s} tokens/second",
             f"peak GPU memory: {report.performance.peak_gpu_memory_mib!s} MiB",
-            f"STT warm: {'yes' if report.performance.stt_warmed else 'no'}",
         ])
-        if report.performance.stt_error:
-            lines.append(f"STT error: {report.performance.stt_error}")
         if report.performance.error:
             lines.append(f"Performance error: {report.performance.error}")
     lines.append("Gates:")

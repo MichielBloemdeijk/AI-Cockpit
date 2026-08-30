@@ -50,7 +50,7 @@ def test_report_enforces_documented_gate_counts_and_performance() -> None:
         model="local/test",
         tool_results=[ToolGateResult(str(index), "tool", ["tool"], index < 19, 0.1) for index in range(20)],
         multistep_results=[],
-        performance=PerformanceResult([], 1.0, 25.0, 11_000, True),
+        performance=PerformanceResult([], 1.0, 25.0, 11_000),
     )
 
     assert report.gates["single_tool_19_of_20"] is True
@@ -63,7 +63,7 @@ def test_performance_error_fails_all_performance_gates() -> None:
         model="local/test",
         tool_results=[],
         multistep_results=[],
-        performance=PerformanceResult([], None, None, 9_000, False, error="empty response"),
+        performance=PerformanceResult([], None, None, 9_000, error="empty response"),
     )
 
     assert report.gates["tokens_per_second_20"] is False

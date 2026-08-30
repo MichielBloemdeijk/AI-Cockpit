@@ -2,8 +2,6 @@
 param(
   [string]$LlamaServerPath = "",
   [string]$GemmaModelPath = "",
-  [string]$KokoroModelPath = "",
-  [string]$KokoroVoicesPath = "",
   [string]$EnvPath = "",
   [switch]$GenerateVapidKeys,
   [switch]$CheckOnly,
@@ -116,7 +114,7 @@ print(json.dumps({"private": b64(private), "public": b64(public)}))
   }
 }
 
-Write-Host "Jarvis local voice preflight: $repo"
+Write-Host "Jarvis preflight: $repo"
 
 $llama = Find-FilePath $LlamaServerPath @("LLAMA_SERVER_PATH") @() "llama-server*"
 if (-not $llama) { $llama = Find-CommandPath @("llama-server.exe", "llama-server") }
@@ -132,13 +130,9 @@ if (-not $llama -and (Test-Path -LiteralPath (Join-Path $repo "tools\llama.cpp")
     Select-Object -First 1 -ExpandProperty FullName
 }
 $gemma = Find-FilePath $GemmaModelPath "GEMMA_MODEL_PATH" @((Join-Path $backend "models\gemma-4-12b-it-qat-q4_0.gguf")) "*.gguf"
-$kokoro = Find-FilePath $KokoroModelPath @("KOKORO_MODEL_PATH", "VOICE_TTS_MODEL_PATH") @((Join-Path $backend "models\kokoro-v1.0.onnx"), (Join-Path $repo "models\kokoro-v1.0.onnx")) "*.onnx"
-$voices = Find-FilePath $KokoroVoicesPath @("KOKORO_VOICES_PATH", "VOICE_TTS_VOICES_PATH") @((Join-Path $backend "models\voices-v1.0.bin"), (Join-Path $repo "models\voices-v1.0.bin")) "*.bin"
 
 if ($llama) { Write-Host "[ok] llama-server: $llama" } else { $missing.Add("llama-server (set -LlamaServerPath or LLAMA_SERVER_PATH)") }
 if ($gemma) { Write-Host "[ok] Gemma model: $gemma" } else { $missing.Add("Gemma GGUF (set -GemmaModelPath or GEMMA_MODEL_PATH)") }
-if ($kokoro) { Write-Host "[ok] Kokoro model: $kokoro" } else { $missing.Add("Kokoro ONNX model (set -KokoroModelPath or KOKORO_MODEL_PATH)") }
-if ($voices) { Write-Host "[ok] Kokoro voices: $voices" } else { $missing.Add("Kokoro voices BIN (set -KokoroVoicesPath or KOKORO_VOICES_PATH)") }
 
 if (-not (Find-CommandPath @("uv.exe", "uv"))) { $missing.Add("uv package manager") }
 if (-not (Find-CommandPath @("npm.cmd", "npm"))) { $missing.Add("npm") }
@@ -146,6 +140,7 @@ if (-not (Find-CommandPath @("npm.cmd", "npm"))) { $missing.Add("npm") }
 $envText = if (Test-Path -LiteralPath $envFile -PathType Leaf) { [IO.File]::ReadAllText($envFile) } else { "" }
 $sessionSecret = Get-EnvValue "SESSION_SECRET_KEY" $envText
 if (-not $sessionSecret -or $sessionSecret.Length -lt 32) { $missing.Add("SESSION_SECRET_KEY (32+ characters in .env)") }
+if (-not (Get-EnvValue "OPENAI_API_KEY" $envText)) { $missing.Add("OPENAI_API_KEY (required for Realtime Jarvis in .env)") }
 if (-not (Get-EnvValue "AUTH_PASSWORD_HASH" $envText)) { Write-Warning "AUTH_PASSWORD_HASH is empty; local development login remains intentionally open." }
 if ((Get-EnvValue "SESSION_COOKIE_SECURE" $envText).ToLowerInvariant() -ne "true") { Write-Warning "SESSION_COOKIE_SECURE is not true; enable it before HTTPS phone testing." }
 
@@ -160,7 +155,7 @@ if ($tailscale) {
 
 $uv = Find-CommandPath @("uv.exe", "uv")
 if (-not $readOnly -and $uv) {
-  $uvGroups = @("--group", "voice", "--group", "notifications")
+  $uvGroups = @("--group", "notifications")
   if (Select-String -LiteralPath (Join-Path $backend "pyproject.toml") -Pattern "^benchmark\s*=" -Quiet) {
     $uvGroups += @("--group", "benchmark")
   }

@@ -50,7 +50,6 @@ class ConversationRepository:
         mode_hint: str | None = None,
         session_metadata_json: dict | None = None,
         workspace_path: str | None = None,
-        is_primary_voice: bool = False,
         conversation_kind: str = "standard",
         lifecycle_status: str = "open",
         jarvis_day_key: date | None = None,
@@ -61,7 +60,6 @@ class ConversationRepository:
             mode_hint=mode_hint,
             session_metadata_json=session_metadata_json,
             workspace_path=workspace_path,
-            is_primary_voice=is_primary_voice,
             conversation_kind=conversation_kind,
             lifecycle_status=lifecycle_status,
             jarvis_day_key=jarvis_day_key,
@@ -70,27 +68,6 @@ class ConversationRepository:
         self.session.add(conversation)
         await self.session.flush()
         return conversation
-
-    async def get_primary_voice_conversation(self) -> Conversation | None:
-        stmt = (
-            select(Conversation)
-            .where(Conversation.is_primary_voice.is_(True))
-            .where(Conversation.archived_at.is_(None))
-            .order_by(Conversation.updated_at.desc())
-            .limit(1)
-        )
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
-
-    async def set_primary_voice(self, conversation_id: str, value: bool) -> None:
-        stmt = (
-            update(Conversation)
-            .where(Conversation.id == conversation_id)
-            .values(is_primary_voice=value, updated_at=utc_now())
-        )
-        result = await self.session.execute(stmt)
-        if result.rowcount != 1:
-            raise ValueError(f"Conversation not found: {conversation_id}")
 
     async def touch_conversation(
         self,
@@ -347,24 +324,6 @@ class ConversationRepository:
         return bool(result.rowcount)
 
     async def update_run_metadata(self, run_id: str, metadata_json: dict | None) -> None:
-        if isinstance(metadata_json, dict):
-            run = await self.get_run(run_id)
-            current = run.metadata_json if run is not None and isinstance(run.metadata_json, dict) else {}
-            metadata_json = dict(metadata_json)
-            if current.get("requested_notification"):
-                metadata_json["requested_notification"] = True
-                current_policy = str(current.get("notify_policy") or "important")
-                incoming_policy = str(metadata_json.get("notify_policy") or "important")
-                if current_policy in {"completion", "all"} and incoming_policy not in {"completion", "all"}:
-                    metadata_json["notify_policy"] = current_policy
-            current_updates = current.get("task_updates") if isinstance(current.get("task_updates"), list) else []
-            incoming_updates = metadata_json.get("task_updates") if isinstance(metadata_json.get("task_updates"), list) else []
-            if current_updates or incoming_updates:
-                merged_updates: list = []
-                for task_update in [*current_updates, *incoming_updates]:
-                    if task_update not in merged_updates:
-                        merged_updates.append(task_update)
-                metadata_json["task_updates"] = merged_updates[-20:]
         stmt = (
             update(ConversationRun)
             .where(ConversationRun.id == run_id)

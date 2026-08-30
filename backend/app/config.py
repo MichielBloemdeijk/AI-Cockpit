@@ -51,26 +51,6 @@ class Settings(BaseSettings):
     local_llm_context_size: int = 16384
     local_llm_max_concurrency: int = 1
 
-    # Voice pipeline (optional local dependencies are loaded lazily)
-    voice_enabled: bool = True
-    voice_wake_word: str = "jarvis"
-    # faster-whisper expects a CTranslate2 checkpoint.  This built-in model
-    # name resolves to mobiuslabsgmbh/faster-whisper-large-v3-turbo; the
-    # original OpenAI repository contains Transformers weights instead.
-    voice_stt_model: str = "large-v3-turbo"
-    voice_stt_device: str = "cuda"
-    voice_stt_compute_type: str = "int8_float16"
-    voice_stt_language: str = "en"
-    voice_stt_beam_size: int = 1
-    voice_tts_enabled: bool = True
-    voice_tts_model_path: str = "models/kokoro-v1.0.onnx"
-    voice_tts_voices_path: str = "models/voices-v1.0.bin"
-    voice_tts_voice: str = "af_heart"
-    voice_tts_speed: float = 1.05
-    voice_cloud_model: str = "openai/gpt-5.6-terra"
-    voice_max_segment_seconds: float = 30.0
-    voice_max_upload_bytes: int = 4_000_000
-
     # Auth
     auth_password_hash: str = ""
     session_secret_key: str = "dev-secret-change-me"

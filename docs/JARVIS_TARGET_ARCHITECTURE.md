@@ -2,7 +2,7 @@
 
 ## Status and purpose
 
-This document records the agreed high-level end state for Jarvis. It is the normative architectural direction, not an implementation plan. The implemented prototype remains documented in [JARVIS_VOICE_POC.md](JARVIS_VOICE_POC.md), [JARVIS_EVOLUTION_ARCHITECTURE.md](JARVIS_EVOLUTION_ARCHITECTURE.md) explains how the prototype should evolve, and [JARVIS_IMPLEMENTATION_PLAN.md](JARVIS_IMPLEMENTATION_PLAN.md) is the approved phased execution contract.
+This document records the agreed high-level end state for Jarvis. It is the normative architectural direction, not an implementation plan. The retired prototype remains documented in [JARVIS_VOICE_POC.md](JARVIS_VOICE_POC.md), [JARVIS_EVOLUTION_ARCHITECTURE.md](JARVIS_EVOLUTION_ARCHITECTURE.md) preserves the migration reasoning, and [JARVIS_IMPLEMENTATION_PLAN.md](JARVIS_IMPLEMENTATION_PLAN.md) is the approved phased execution contract. [ARCHITECTURE.md](ARCHITECTURE.md) describes the current implementation.
 
 Jarvis is a conversational interface to AI Cockpit. AI Cockpit remains the brain and durable backend: it owns conversations, tasks, tools, knowledge, workspaces, and long-running execution. The voice layer owns natural realtime interaction and presentation, but it does not become a second autonomous agent runtime.
 

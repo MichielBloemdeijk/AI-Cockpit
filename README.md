@@ -1,6 +1,6 @@
 # AI Cockpit
 
-AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and an early Jarvis voice surface. The frontend is a Next.js application, the API is FastAPI, and local state is stored in SQLite. OpenRouter remains available as an explicit cloud provider; the voice/task default is a loopback OpenAI-compatible server such as llama.cpp.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a Jarvis voice surface. The frontend is a Next.js application, the API is FastAPI, and local state is stored in SQLite. OpenAI Realtime powers Jarvis audio; delegated tasks default to a loopback OpenAI-compatible server such as llama.cpp, while OpenRouter remains an explicit cloud option.
 
 This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
@@ -28,7 +28,7 @@ For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Node.js | 20.19+ or 22.13+ | Node.js 22 LTS is recommended |
 | uv | Current | Install with `python -m pip install uv` |
 
-OpenRouter is optional for this branch. The default voice/task model is local and expects llama.cpp (or another OpenAI-compatible server) on `127.0.0.1:8080`.
+OpenRouter is optional. Jarvis voice requires an OpenAI API key, while the default task model expects llama.cpp (or another OpenAI-compatible server) on `127.0.0.1:8080`.
 
 ### 2. Clone the repository
 
@@ -51,10 +51,11 @@ macOS/Linux:
 cp .env.example .env
 ```
 
-Open `.env` and configure either the local server or the optional OpenRouter key:
+Open `.env` and configure the OpenAI Realtime key plus either the local server or optional OpenRouter key:
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+OPENAI_API_KEY=sk-proj-your-key-here
 LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1
 LOCAL_LLM_ALIAS=local/gemma-4-12b
 LOCAL_LLM_MODEL=google/gemma-4-12B-it-qat-q4_0-gguf:Q4_0
@@ -76,7 +77,7 @@ uv sync
 cd ..
 ```
 
-`uv sync` creates `backend/.venv` and installs the locked runtime and development dependencies. The speech endpoints load `faster-whisper` and `kokoro-onnx` lazily; install those packages separately when you are ready to run local speech inference.
+`uv sync` creates `backend/.venv` and installs the locked runtime and development dependencies. Add `--group notifications` when Web Push is enabled and `--group benchmark` to run the optional live Jarvis benchmark. The retired local speech stack has no separate dependency group.
 
 Frontend:
 
@@ -180,13 +181,14 @@ AUTH_PASSWORD_HASH=<generated-bcrypt-hash>
 
 ## Model Configuration and Cost
 
-Voice and multi-step task turns default to the local provider. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
+Jarvis voice uses OpenAI Realtime. Multi-step task turns default to the local provider. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
 
 The main settings are:
 
 | Variable | Development default | Purpose |
 |---|---|---|
-| `OPENROUTER_API_KEY` | example value | Required for model requests |
+| `OPENROUTER_API_KEY` | example value | Required only for configured OpenRouter model requests |
+| `OPENAI_API_KEY` | example value | Backend-only key used to create OpenAI Realtime Jarvis calls |
 | `AVAILABLE_MODELS` | GPT-5.6 Luna/Terra/Sol, Gemini 3.5 Flash, Claude Sonnet/Opus 5, Grok 4.5 | Options shown in the model pickers |
 | `COUNCIL_MODELS` | GPT-5.6 Terra, Gemini 3.5 Flash, Claude Sonnet 5 | Models queried in Council mode |
 | `SYNTHESIZER_MODEL` | Claude Sonnet 5 | Combines Council responses |
@@ -195,10 +197,6 @@ The main settings are:
 | `LOCAL_LLM_ALIAS` | local/gemma-4-12b | Public model alias used by AI Cockpit |
 | `LOCAL_LLM_MODEL` | Gemma 4 Q4 checkpoint ID | Upstream model ID sent to the local server |
 | `TASK_AGENT_MODEL` | local/gemma-4-12b | Default chat and multi-step Agent model; must support native tool calls |
-| `VOICE_STT_MODEL` | large-v3-turbo | faster-whisper's CTranslate2 Whisper Large V3 Turbo checkpoint |
-| `VOICE_TTS_VOICE` | af_heart | Kokoro voice used for speech responses |
-| `VOICE_CLOUD_MODEL` | openai/gpt-5.6-terra | Model used only when a turn explicitly requests cloud |
-| `OPENAI_API_KEY` | blank | Backend-only key used to create OpenAI Realtime Jarvis calls |
 | `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` | blank | Browser path to the installed exact-word Jarvis ONNX model; blank keeps local wake disabled and preserves manual Arm |
 | `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
 | `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
@@ -215,7 +213,7 @@ Defaults for future conversations can also be changed from the Settings page aft
 
 The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs, typed fallback, task delegation, policy-timed proactive task updates, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
 
-Set `OPENAI_API_KEY` in the repository root `.env`, start the normal backend and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and separate worker remain necessary for delegated background tasks, but the legacy local STT/TTS voice groups are not required for the Realtime path.
+Set `OPENAI_API_KEY` in the repository root `.env`, start the backend, separate worker, and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and worker remain necessary for delegated tasks. There is no local STT/TTS fallback; a Realtime failure leaves typed interaction available.
 
 Phase 9 includes an off-main-thread Hey Buddy/ONNX wake runtime, a bounded 2.5-second in-memory audio pre-roll, one-shot wake/command replay before the live WebRTC track, and a 60-second wake-free follow-up window. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
 
@@ -336,4 +334,4 @@ Interactive API details are available from `/docs` while the backend is running.
 - Agent mode can execute tools and write within configured conversation/app workspaces. Review model-produced changes before relying on them.
 - Generated apps do not yet have browser-driven verification and automatic repair loops.
 - Interrupted runs are persisted but are not automatically resumed after a backend restart.
-Jarvis voice POC implementation and verification contract: [docs/JARVIS_VOICE_POC.md](docs/JARVIS_VOICE_POC.md).
+Historical Jarvis voice POC implementation and verification record: [docs/JARVIS_VOICE_POC.md](docs/JARVIS_VOICE_POC.md). It documents the retired batch speech architecture and is not a current setup guide.

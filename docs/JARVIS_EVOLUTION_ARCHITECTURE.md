@@ -1,5 +1,7 @@
 # Jarvis POC-to-Target Architecture Assessment
 
+> **Migration status:** The phased refactor described here was completed through the Phase 11 retirement pass on 2026-08-30. This assessment intentionally preserves the original POC-to-target reasoning; [ARCHITECTURE.md](ARCHITECTURE.md) describes the shipped system and [JARVIS_IMPLEMENTATION_LEDGER.md](JARVIS_IMPLEMENTATION_LEDGER.md) records verification evidence.
+
 ## Purpose
 
 This document describes, at a high architectural level, how the current AI Cockpit and Jarvis POC should evolve toward [JARVIS_TARGET_ARCHITECTURE.md](JARVIS_TARGET_ARCHITECTURE.md). It records what should be preserved, refactored, replaced, retired, and added. It intentionally avoids endpoint payloads, database schemas, file-by-file changes, and individual implementation steps; those belong in later subsystem designs.

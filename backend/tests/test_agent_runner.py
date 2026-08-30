@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
-from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,7 +13,6 @@ import app.services.agent_runner as agent_runner_module
 import app.services.agent_run_support as agent_run_support_module
 import app.services.agent_tools.execution as agent_execution_module
 import app.services.llm as llm_module
-import app.services.agent_tools.tasks as task_tools_module
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 from tests.agent_runner_fixtures import (
     create_agent_run as _create_agent_run,
@@ -34,10 +31,9 @@ from app.services.agent_tools import run_shell_command
 from app.services.agent_tools import run_workspace_search
 from app.services.app_verifier import AppVerificationInfrastructureError
 from app.services.conversation_store import conversation_store
-from app.services.chat_orchestrator import goal_targets_app_context, should_delegate_voice_goal
+from app.services.chat_orchestrator import goal_targets_app_context
 from app.services.run_lifecycle import run_lifecycle
 from app.db.repositories.conversations import ConversationRepository
-from app.services.background_tasks import BackgroundTaskSnapshot
 
 
 def test_finalize_tool_requires_a_user_facing_result_and_internal_summary():
@@ -58,21 +54,6 @@ def test_native_tool_turns_have_enough_output_budget_for_source_files():
 
 
 @pytest.mark.parametrize(
-    ("goal", "requested_notification", "expected"),
-    [
-        ("What is three plus three?", False, False),
-        ("Summarize README.md briefly.", False, False),
-        ("Tell me when the repository review is complete.", True, True),
-        ("Please fix the failing tests.", False, True),
-        ("Read README.md and docs/ARCHITECTURE.md, then compare them.", False, True),
-        ("Monitor the build and notify me when it finishes.", False, True),
-    ],
-)
-def test_voice_background_routing_policy(goal: str, requested_notification: bool, expected: bool) -> None:
-    assert should_delegate_voice_goal(goal, requested_notification=requested_notification) is expected
-
-
-@pytest.mark.parametrize(
     ("goal", "expected"),
     [
         ("Write a short story about philosophy.", False),
@@ -83,328 +64,6 @@ def test_voice_background_routing_policy(goal: str, requested_notification: bool
 )
 def test_recent_app_context_is_attached_only_to_app_work(goal: str, expected: bool) -> None:
     assert goal_targets_app_context(goal, app_title="Legion App", app_slug="legion-app") is expected
-
-
-def test_story_background_task_cannot_inspect_other_tasks_or_unrelated_apps() -> None:
-    metadata = {
-        "execution_mode": "background",
-        "goal": "Write a short story about philosophy and return it.",
-        "payload": {},
-    }
-    names = {
-        str(item.get("function", {}).get("name") or "")
-        for item in agent_runner_module._provider_tools_for_metadata(metadata)
-    }
-
-    assert "task_publish_update" in names
-    assert names.isdisjoint({"list_background_tasks", "get_background_task", "cancel_background_task"})
-    assert names.isdisjoint({"app_list", "app_initialize", "app_verify"})
-
-
-def test_attached_app_background_task_keeps_app_tools_but_not_task_control_tools() -> None:
-    metadata = {
-        "execution_mode": "background",
-        "goal": "Fix the app button.",
-        "payload": {"app": {"slug": "legion-app"}},
-    }
-    names = {
-        str(item.get("function", {}).get("name") or "")
-        for item in agent_runner_module._provider_tools_for_metadata(metadata)
-    }
-
-    assert {"app_list", "app_initialize"}.issubset(names)
-    assert names.isdisjoint({"list_background_tasks", "get_background_task", "cancel_background_task"})
-
-
-@pytest.mark.asyncio
-async def test_background_task_list_tool_returns_objects_not_json_strings(monkeypatch) -> None:
-    async def _tasks(*args, **kwargs):
-        return [
-            BackgroundTaskSnapshot(
-                run_id="run-1",
-                conversation_id="conversation-1",
-                parent_run_id=None,
-                title="Repository review",
-                goal="Review the repository",
-                status="running",
-                priority="normal",
-                notify_policy="important",
-                requested_notification=False,
-                summary=None,
-                error=None,
-                started_at=datetime.now(timezone.utc),
-                finished_at=None,
-            )
-        ]
-
-    monkeypatch.setattr(task_tools_module, "list_tasks", _tasks)
-    result = await task_tools_module._list(SimpleNamespace(conversation_id="conversation-1"), {})
-    payload = json.loads(result.output)
-
-    assert payload == [
-        {
-            "run_id": "run-1",
-            "title": "Repository review",
-            "status": "running",
-            "summary": None,
-            "error": None,
-        }
-    ]
-    assert isinstance(payload[0], dict)
-
-
-@pytest.mark.asyncio
-async def test_forced_voice_background_route_skips_model_and_queues_child(monkeypatch) -> None:
-    from app.services.run_supervisor import run_supervisor
-
-    conversation, run = await _create_agent_run()
-    metadata = dict(run.metadata_json or {})
-    metadata.update(
-        {
-            "execution_mode": "voice_interactive",
-            "voice_response": True,
-            "force_background_delegation": True,
-            "requested_notification": True,
-            "goal": "Compare two files and tell me when it is done.",
-        }
-    )
-    await conversation_store.update_run_metadata(run.id, metadata)
-
-    async def _model_must_not_run(*args, **kwargs):
-        raise AssertionError("forced background routing must not spend an interactive model turn")
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _model_must_not_run)
-    monkeypatch.setattr(run_supervisor, "start", lambda *args, **kwargs: None)
-    await agent_runner_module.agent_runner.continue_run(run.id)
-
-    runs = await conversation_store.list_runs(conversation.id)
-    child = next(item for item in runs if item.parent_run_id == run.id)
-    assert child.metadata_json["execution_mode"] == "background"
-    assert child.metadata_json["notify_policy"] == "completion"
-    assert child.metadata_json["requested_notification"] is True
-
-    parent = await conversation_store.get_run(run.id)
-    assert parent is not None and parent.status == "completed"
-    messages = await conversation_store.list_messages(conversation.id, final_only=True)
-    assert messages[-1].content == "I'm on it. I'll let you know when it's done."
-
-
-@pytest.mark.asyncio
-async def test_voice_task_status_question_bypasses_model() -> None:
-    conversation, run = await _create_agent_run()
-    await conversation_store.start_run(
-        conversation.id,
-        kind="task",
-        status="running",
-        parent_run_id=run.id,
-        metadata_json={
-            "execution_mode": "background",
-            "title": "Repository review",
-            "goal": "Review the repository",
-        },
-    )
-    metadata = dict(run.metadata_json or {})
-    metadata.update(
-        {
-            "execution_mode": "voice_interactive",
-            "goal": "Any updates on the background task? Is it still running?",
-            "force_background_delegation": False,
-        }
-    )
-
-    action = await agent_runner_module.agent_runner._request_native_turn(
-        metadata=metadata,
-        checkpoint_state=None,
-        context=None,
-        conversation_id=conversation.id,
-        run_id=run.id,
-        step_number=1,
-    )
-
-    assert action["kind"] == "final"
-    assert action["final_text"] == "Repository review is running."
-
-
-@pytest.mark.asyncio
-async def test_notification_only_followup_updates_existing_task_without_delegating() -> None:
-    conversation, run = await _create_agent_run()
-    child = await conversation_store.start_run(
-        conversation.id,
-        kind="task",
-        status="running",
-        parent_run_id=run.id,
-        metadata_json={
-            "execution_mode": "background",
-            "title": "Long review",
-            "goal": "Review everything",
-            "notify_policy": "important",
-            "requested_notification": False,
-        },
-    )
-    metadata = dict(run.metadata_json or {})
-    metadata.update(
-        {
-            "execution_mode": "voice_interactive",
-            "goal": "Okay, just let me know when the task is complete.",
-            "force_background_delegation": True,
-            "requested_notification": True,
-        }
-    )
-
-    action = await agent_runner_module.agent_runner._request_native_turn(
-        metadata=metadata,
-        checkpoint_state=None,
-        context=None,
-        conversation_id=conversation.id,
-        run_id=run.id,
-        step_number=1,
-    )
-
-    assert action["kind"] == "final"
-    assert "Long review" in action["final_text"]
-    refreshed = await conversation_store.get_run(child.id)
-    assert refreshed is not None
-    assert refreshed.metadata_json["notify_policy"] == "completion"
-    assert refreshed.metadata_json["requested_notification"] is True
-    assert len(await conversation_store.list_runs(conversation.id)) == 2
-
-
-@pytest.mark.asyncio
-async def test_repeated_identical_background_tool_call_is_stopped_after_two_executions(monkeypatch) -> None:
-    conversation, run = await _create_agent_run()
-    metadata = dict(run.metadata_json or {})
-    metadata.update({"execution_mode": "background", "voice_response": False, "title": "Looping task"})
-    await conversation_store.update_run_metadata(run.id, metadata)
-    model_calls = 0
-
-    async def _repeat_tool(*args, **kwargs):
-        nonlocal model_calls
-        model_calls += 1
-        return _tool_response("workspace_search", {"query": "needle"})
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _repeat_tool)
-
-    with pytest.raises(ValueError, match="repeated workspace_search"):
-        await agent_runner_module.agent_runner.continue_run(run.id)
-
-    events = await conversation_store.list_events_for_run(conversation.id, run.id)
-    assert model_calls == 3
-    assert sum(event.event_type == "agent.tool.called" for event in events) == 2
-    assert not any(
-        event.event_type == "chat.timeline.item.committed"
-        and (event.payload_json or {}).get("kind") in {"tool_call", "tool_result"}
-        for event in events
-    )
-    refreshed = await conversation_store.get_run(run.id)
-    assert refreshed is not None and refreshed.status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_story_background_task_publishes_once_then_finalizes_without_self_inspection(monkeypatch) -> None:
-    conversation, run = await _create_agent_run()
-    metadata = dict(run.metadata_json or {})
-    metadata.update(
-        {
-            "execution_mode": "background",
-            "voice_response": False,
-            "title": "Philosophy story",
-            "goal": "Write a short story about philosophy and return it.",
-            "payload": {},
-        }
-    )
-    await conversation_store.update_run_metadata(run.id, metadata)
-    responses = [
-        _tool_response("get_background_task", {"run_id": run.id}),
-        _tool_response(
-            "task_publish_update",
-            {"summary": "The story is taking shape.", "importance": "normal"},
-        ),
-        _finalize_response("A philosopher found that the question was the doorway, not the obstacle."),
-    ]
-    offered_tool_names: list[set[str]] = []
-
-    async def _next_turn(*args, **kwargs):
-        offered_tool_names.append(
-            {
-                str(item.get("function", {}).get("name") or "")
-                for item in kwargs.get("tools", [])
-            }
-        )
-        return responses.pop(0)
-
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _next_turn)
-
-    await agent_runner_module.agent_runner.continue_run(run.id)
-
-    refreshed = await conversation_store.get_run(run.id)
-    assert refreshed is not None and refreshed.status == "completed"
-    assert len(offered_tool_names) == 3
-    assert all(
-        names.isdisjoint({"list_background_tasks", "get_background_task", "cancel_background_task"})
-        for names in offered_tool_names
-    )
-    messages = await conversation_store.list_messages(conversation.id, final_only=True)
-    assert messages[-1].content == "A philosopher found that the question was the doorway, not the obstacle."
-    events = await conversation_store.list_events_for_run(conversation.id, run.id)
-    assert [event.event_type for event in events].count("task.progress") == 1
-    assert not any(
-        event.event_type == "agent.tool.called"
-        and (event.payload_json or {}).get("tool") == "get_background_task"
-        for event in events
-    )
-
-
-@pytest.mark.asyncio
-async def test_background_question_uses_requires_input_as_its_only_voice_projection() -> None:
-    conversation, run = await _create_agent_run()
-    metadata = dict((run.metadata_json or {}))
-    metadata.update({"execution_mode": "background", "voice_response": False, "title": "Background task"})
-    await conversation_store.update_run_metadata(run.id, metadata)
-
-    await agent_run_support_module._pause_for_question(
-        conversation_id=conversation.id,
-        run_id=run.id,
-        metadata=metadata,
-        question="Which environment should I use?",
-    )
-
-    events = await conversation_store.list_events_for_run(conversation.id, run.id)
-    question_event = next(event for event in events if event.event_type == "agent.question.asked")
-    requires_input = next(event for event in events if event.event_type == "task.requires_input")
-    assert "voice_delivery" not in (question_event.payload_json or {})
-    assert (requires_input.payload_json or {})["voice_delivery"]["speak"] is True
-    messages = await conversation_store.list_messages(conversation.id, final_only=True)
-    assert [message.source_event_id for message in messages] == [requires_input.id]
-    assert [message.content for message in messages] == ["Which environment should I use?"]
-    assert any(
-        event.event_type == "chat.timeline.item.committed"
-        and (event.payload_json or {}).get("kind") == "question"
-        and (event.payload_json or {}).get("content") == "Which environment should I use?"
-        for event in events
-    )
-
-
-@pytest.mark.asyncio
-async def test_voice_interactive_question_remains_directly_speakable() -> None:
-    conversation, run = await _create_agent_run()
-    metadata = dict((run.metadata_json or {}))
-    metadata.update({"execution_mode": "voice_interactive", "voice_response": True})
-    await conversation_store.update_run_metadata(run.id, metadata)
-
-    await agent_run_support_module._pause_for_question(
-        conversation_id=conversation.id,
-        run_id=run.id,
-        metadata=metadata,
-        question="What should I call it?",
-    )
-
-    events = await conversation_store.list_events_for_run(conversation.id, run.id)
-    question_event = next(event for event in events if event.event_type == "agent.question.asked")
-    assert (question_event.payload_json or {})["voice_delivery"]["speak"] is True
-    assert not any(event.event_type == "task.requires_input" for event in events)
-    messages = await conversation_store.list_messages(conversation.id, final_only=True)
-    assert [message.source_event_id for message in messages] == [question_event.id]
-    assert [message.content for message in messages] == ["What should I call it?"]
 
 
 @pytest.mark.asyncio

@@ -1,101 +1,108 @@
-"""Native task-management tools exposed to the agent loop."""
+"""Read/control tools over first-class global tasks."""
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from app.services.agent_tools.base import AgentTool, ToolExecutionContext, ToolExecutionResult, _tool_property, _tool_schema
-from app.services.background_tasks import cancel_task, get_task, list_tasks, publish_update
+from app.services.agent_tools.base import (
+    AgentTool,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    _tool_property,
+    _tool_schema,
+)
+from app.services.task_service import TERMINAL_TASK_STATUSES, TaskSnapshot, task_service
 
 
-def _render(snapshot: Any) -> dict[str, Any] | Any:
-    if is_dataclass(snapshot):
-        return asdict(snapshot)
-    return snapshot
-
-
-def _compact_task(snapshot: Any) -> dict[str, Any]:
-    rendered = _render(snapshot)
-    if not isinstance(rendered, dict):
-        return {"value": rendered}
+def _render(snapshot: TaskSnapshot) -> dict[str, Any]:
+    task = snapshot.task
     return {
-        "run_id": rendered.get("run_id"),
-        "title": rendered.get("title"),
-        "status": rendered.get("status"),
-        "summary": rendered.get("summary"),
-        "error": rendered.get("error"),
+        "task_id": task.id,
+        "title": " ".join(task.goal.split())[:96],
+        "goal": task.goal,
+        "status": task.status,
+        "importance": task.importance,
+        "presentation_policy": task.presentation_policy,
+        "queue_position": snapshot.queue_position,
+        "terminal_summary": task.terminal_summary,
+        "created_at": task.created_at.isoformat(),
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
     }
 
 
-async def _publish(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
-    event = await publish_update(
-        context.run_id or "",
-        str(arguments.get("summary") or ""),
-        str(arguments.get("importance") or "normal"),
-    )
-    return ToolExecutionResult(
-        tool="task_publish_update",
-        output="Task update published.",
-        metadata={"event_id": event.id, "sequence": event.sequence},
-    )
-
-
 async def _list(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
-    tasks = await list_tasks(context.conversation_id, include_finished=bool(arguments.get("include_finished")))
+    include_finished = bool(arguments.get("include_finished"))
+    snapshots = [
+        snapshot
+        for snapshot in await task_service.list_tasks()
+        if snapshot.task.origin_conversation_id == context.conversation_id
+        and (include_finished or snapshot.task.status not in TERMINAL_TASK_STATUSES)
+    ]
     return ToolExecutionResult(
-        tool="list_background_tasks",
-        output=json.dumps([_compact_task(task) for task in tasks], default=str),
-        metadata={"count": len(tasks)},
+        tool="list_tasks",
+        output=json.dumps([_render(snapshot) for snapshot in snapshots], ensure_ascii=False),
+        metadata={"count": len(snapshots), "read_only": True},
     )
+
+
+async def _owned_task(context: ToolExecutionContext, task_id: str) -> TaskSnapshot:
+    detail = await task_service.get_task(task_id)
+    if detail is None or detail.task.origin_conversation_id != context.conversation_id:
+        raise ValueError("Task not found")
+    return TaskSnapshot(task=detail.task, queue_position=detail.queue_position)
 
 
 async def _get(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
-    task = await get_task(context.conversation_id, str(arguments.get("run_id") or ""))
-    if task is None:
-        raise ValueError("Background task not found")
-    return ToolExecutionResult(tool="get_background_task", output=json.dumps(_render(task), default=str), metadata={})
+    snapshot = await _owned_task(context, str(arguments.get("task_id") or ""))
+    return ToolExecutionResult(
+        tool="get_task",
+        output=json.dumps(_render(snapshot), ensure_ascii=False),
+        metadata={"read_only": True},
+    )
 
 
 async def _cancel(context: ToolExecutionContext, arguments: dict[str, Any]) -> ToolExecutionResult:
-    task = await cancel_task(context.conversation_id, str(arguments.get("run_id") or ""))
-    if task is None:
-        raise ValueError("Background task not found")
+    task_id = str(arguments.get("task_id") or "")
+    await _owned_task(context, task_id)
+    snapshot = await task_service.cancel(
+        task_id,
+        idempotency_key=f"agent-tool:{context.run_id or context.conversation_id}:{task_id}",
+    )
     return ToolExecutionResult(
-        tool="cancel_background_task",
-        output=json.dumps(_render(task), default=str),
-        metadata={"status": task.status},
+        tool="cancel_task",
+        output=json.dumps(_render(snapshot), ensure_ascii=False),
+        metadata={"status": snapshot.task.status},
     )
 
 
 TASK_TOOLS = [
     AgentTool(
-        name="task_publish_update",
-        description="Publish a material milestone from the current background task.",
-        input_schema=_tool_schema(
-            {"summary": _tool_property("string", "Short user-facing milestone."), "importance": {"type": "string", "enum": ["low", "normal", "high", "urgent"]}},
-            required=["summary", "importance"],
-        ),
-        executor=_publish,
-    ),
-    AgentTool(
-        name="list_background_tasks",
-        description="List background tasks belonging to this voice conversation.",
+        name="list_tasks",
+        description="List first-class tasks originating from this conversation.",
         input_schema=_tool_schema({"include_finished": {"type": "boolean"}}),
         executor=_list,
         read_only=True,
     ),
     AgentTool(
-        name="get_background_task",
-        description="Inspect one background task belonging to this voice conversation.",
-        input_schema=_tool_schema({"run_id": _tool_property("string", "Task run ID.")}, required=["run_id"]),
+        name="get_task",
+        description="Inspect one first-class task originating from this conversation.",
+        input_schema=_tool_schema(
+            {"task_id": _tool_property("string", "Stable global task ID.")},
+            required=["task_id"],
+        ),
         executor=_get,
         read_only=True,
     ),
     AgentTool(
-        name="cancel_background_task",
-        description="Cancel one background task belonging to this voice conversation.",
-        input_schema=_tool_schema({"run_id": _tool_property("string", "Task run ID.")}, required=["run_id"]),
+        name="cancel_task",
+        description="Cancel one first-class task originating from this conversation.",
+        input_schema=_tool_schema(
+            {"task_id": _tool_property("string", "Stable global task ID.")},
+            required=["task_id"],
+        ),
         executor=_cancel,
     ),
 ]
+
+
+__all__ = ["TASK_TOOLS"]

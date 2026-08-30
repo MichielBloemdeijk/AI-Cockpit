@@ -65,6 +65,8 @@ async def test_blank_database_has_jarvis_schema_and_locked_constraints() -> None
         )
 
     assert REQUIRED_JARVIS_TABLES <= contract["tables"]
+    assert "notification_deliveries" not in contract["tables"]
+    assert "is_primary_voice" not in contract["conversation_columns"]
     assert {
         "conversation_kind",
         "lifecycle_status",

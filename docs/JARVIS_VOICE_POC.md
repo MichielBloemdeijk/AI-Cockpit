@@ -1,5 +1,7 @@
 # Jarvis Voice POC
 
+> **Historical record:** This document describes the retired batch local-speech prototype and its acceptance evidence. Its `/voice` UI, `/api/voice/*` APIs, faster-whisper/Kokoro runtime, primary-voice state, browser delivery path, and API-owned background-run bridge were removed in Phase 11. Use [README.md](../README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for the current OpenAI Realtime `/jarvis` system.
+
 This document is the saved implementation contract for the local Jarvis voice prototype.
 
 ## Runtime contract

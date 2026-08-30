@@ -18,7 +18,6 @@ from app.services.agent_tools import ToolExecutionContext, build_tool_context, e
 from app.services.app_registry import app_registry_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_timeline import (
-    build_background_task_timeline_item,
     build_question_timeline_item,
     build_timeline_item,
     build_tool_activity_id,
@@ -29,7 +28,6 @@ from app.services.conversation_timeline import (
     set_live_item,
 )
 from app.services.llm import ensure_prompt_metrics
-from app.services.voice import sanitize_voice_response
 
 AGENT_METADATA_CHECKPOINT_INTERVAL_SECONDS = 5
 AGENT_METADATA_CHECKPOINT_STEP_INTERVAL = 10
@@ -483,78 +481,25 @@ async def _pause_for_question(
         "asked_at": _iso_now(),
         "answer": None,
     }
-    global_task_id = str(metadata.get("global_task_id") or "").strip()
-    if global_task_id:
-        from app.services.task_service import task_service
-
-        saved_question = await task_service.ask_question(
-            global_task_id,
-            question=question,
-            idempotency_key=f"agent-question:{run_id}:{pending_question['id']}",
-        )
-        pending_question["global_task_question_id"] = saved_question.id
     metadata["pending_question"] = pending_question
     metadata["task_status"] = "paused"
     metadata["current_action"] = current_action
     await _maybe_checkpoint_run_metadata(run_id, metadata, checkpoint_state, force=True)
-    question_payload = dict(pending_question)
-    if metadata.get("voice_response") or metadata.get("execution_mode") == "voice_interactive":
-        question_payload["voice_delivery"] = {
-            "speak": True,
-            "kind": "question",
-            "speech_text": question,
-            "importance": "high" if kind != "question" else "normal",
-        }
-    interactive_voice_question = bool(metadata.get("voice_response") or metadata.get("execution_mode") == "voice_interactive")
-    if interactive_voice_question:
-        question_event, _message = await conversation_store.append_event_with_assistant_message(
-            conversation_id,
-            run_id=run_id,
-            event_type="agent.question.asked",
-            content=question,
-            importance="high" if kind != "question" else "normal",
-            payload_json=question_payload,
-            branch_key=_metadata_branch_key(metadata),
-            timeline_item_payload=build_question_timeline_item(run_id=run_id, pending_question=pending_question),
-        )
-    else:
-        question_event = await conversation_store.append_event(
-            conversation_id,
-            run_id=run_id,
-            actor_kind="assistant",
-            event_type="agent.question.asked",
-            payload_json=question_payload,
-            branch_key=_metadata_branch_key(metadata),
-        )
-        await conversation_store.append_timeline_item(
-            conversation_id,
-            run_id=run_id,
-            item_payload=build_question_timeline_item(run_id=run_id, pending_question=pending_question),
-            branch_key=_metadata_branch_key(metadata),
-            parent_event_id=question_event.id,
-        )
-    current_run = await conversation_store.get_run(run_id)
-    if current_run is not None and metadata.get("execution_mode") == "background":
-        requires_input = await conversation_store.append_event_with_assistant_message(
-            conversation_id,
-            run_id=run_id,
-            event_type="task.requires_input",
-            content=question,
-            importance="high",
-            branch_key=_metadata_branch_key(metadata),
-            payload_json={
-                **pending_question,
-                "task_run_id": run_id,
-                "title": metadata.get("title") or "Background task",
-                "summary": question,
-                "speech_text": question,
-                "notify_policy": metadata.get("notify_policy", "important"),
-                "requested_notification": bool(metadata.get("requested_notification")),
-                "status": "paused",
-            },
-        )
-        from app.services.notifications import notify_event
-        await notify_event(requires_input[0].id)
+    question_event = await conversation_store.append_event(
+        conversation_id,
+        run_id=run_id,
+        actor_kind="assistant",
+        event_type="agent.question.asked",
+        payload_json=dict(pending_question),
+        branch_key=_metadata_branch_key(metadata),
+    )
+    await conversation_store.append_timeline_item(
+        conversation_id,
+        run_id=run_id,
+        item_payload=build_question_timeline_item(run_id=run_id, pending_question=pending_question),
+        branch_key=_metadata_branch_key(metadata),
+        parent_event_id=question_event.id,
+    )
     await _clear_live_timeline_item(run_id, metadata, checkpoint_state)
     return True
 
@@ -576,7 +521,6 @@ async def _handle_tool_action(
     if not isinstance(arguments, dict):
         raise ValueError("Tool arguments must be a JSON object")
     arguments = _normalize_tool_arguments(metadata, tool_name, arguments)
-    show_tool_timeline = metadata.get("execution_mode") != "background"
 
     next_step = int(metadata.get("current_step", 0) or 0) + 1
     activity_id = build_tool_activity_id(
@@ -600,26 +544,25 @@ async def _handle_tool_action(
                 "content": tool_start_summary,
             },
         )
-        if show_tool_timeline:
-            await _set_live_timeline_item(
-                run_id,
-                metadata,
-                checkpoint_state,
-                build_timeline_item(
-                    item_id=activity_id,
-                    role="assistant",
-                    kind="tool_call",
-                    label="Tool call",
-                    title=humanize_tool_name(tool_name),
-                    content=tool_start_summary,
-                    tone="info",
-                    step=next_step,
-                    tool_name=tool_name,
-                    badges=[f"step {next_step}"],
-                    status="streaming",
-                ),
-                force=True,
-            )
+        await _set_live_timeline_item(
+            run_id,
+            metadata,
+            checkpoint_state,
+            build_timeline_item(
+                item_id=activity_id,
+                role="assistant",
+                kind="tool_call",
+                label="Tool call",
+                title=humanize_tool_name(tool_name),
+                content=tool_start_summary,
+                tone="info",
+                step=next_step,
+                tool_name=tool_name,
+                badges=[f"step {next_step}"],
+                status="streaming",
+            ),
+            force=True,
+        )
     metadata["current_action"] = f"Running {tool_name}"
     metadata["updated_at"] = _iso_now()
     previous_progress_callback = context.progress_callback
@@ -637,26 +580,25 @@ async def _handle_tool_action(
                 "content": message,
             },
         )
-        if show_tool_timeline:
-            await _set_live_timeline_item(
-                run_id,
-                metadata,
-                checkpoint_state,
-                build_timeline_item(
-                    item_id=activity_id,
-                    role="assistant",
-                    kind="tool_call",
-                    label="Tool call",
-                    title=humanize_tool_name(tool_name),
-                    content=message,
-                    tone="info",
-                    step=next_step,
-                    tool_name=tool_name,
-                    badges=[f"step {next_step}"],
-                    status="streaming",
-                ),
-                force=False,
-            )
+        await _set_live_timeline_item(
+            run_id,
+            metadata,
+            checkpoint_state,
+            build_timeline_item(
+                item_id=activity_id,
+                role="assistant",
+                kind="tool_call",
+                label="Tool call",
+                title=humanize_tool_name(tool_name),
+                content=message,
+                tone="info",
+                step=next_step,
+                tool_name=tool_name,
+                badges=[f"step {next_step}"],
+                status="streaming",
+            ),
+            force=False,
+        )
 
     context.progress_callback = _handle_tool_progress
 
@@ -728,29 +670,11 @@ async def _handle_tool_action(
                 artifact_content_json={"metadata": result.metadata},
                 run_metadata_json=_serialize_agent_metadata(metadata) if should_persist_metadata else None,
                 branch_key=_metadata_branch_key(metadata),
-                emit_timeline_item=show_tool_timeline,
+                emit_timeline_item=True,
             )
         if should_persist_metadata and checkpoint_state is not None:
             _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
         history_entry["artifact_id"] = persisted_tool_result.artifact.id if persisted_tool_result.artifact is not None else None
-        if not show_tool_timeline:
-            await conversation_store.append_timeline_item(
-                conversation_id,
-                run_id=run_id,
-                item_payload=build_background_task_timeline_item(
-                    run_id=run_id,
-                    task_id=str(metadata.get("global_task_id") or "").strip() or None,
-                    title=str(metadata.get("title") or "Background task"),
-                    goal=str(metadata.get("goal") or ""),
-                    status="running",
-                    active_step=summarize_tool_progress_content(tool_name, arguments, True),
-                    updates=list(metadata.get("task_updates") or []),
-                    notify_policy=str(metadata.get("notify_policy") or "important"),
-                    requested_notification=bool(metadata.get("requested_notification")),
-                ),
-                branch_key=_metadata_branch_key(metadata),
-                parent_event_id=persisted_tool_result.completed_event.id,
-            )
         await _emit_agent_stream_update(
             stream_callback,
             {
@@ -764,8 +688,7 @@ async def _handle_tool_action(
                 "content": summarize_tool_progress_content(tool_name, arguments, True),
             },
         )
-        if show_tool_timeline:
-            await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
+        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     except Exception as exc:
         error_text = str(exc)
         fatal = bool(getattr(exc, "fatal", False))
@@ -793,7 +716,7 @@ async def _handle_tool_action(
             ok=False,
             persist_metadata=True,
         ):
-            persisted_tool_result = await conversation_store.record_agent_tool_result(
+            await conversation_store.record_agent_tool_result(
                 conversation_id,
                 run_id=run_id,
                 step=next_step,
@@ -804,28 +727,10 @@ async def _handle_tool_action(
                 error=error_text,
                 run_metadata_json=_serialize_agent_metadata(metadata),
                 branch_key=_metadata_branch_key(metadata),
-                emit_timeline_item=show_tool_timeline,
+                emit_timeline_item=True,
             )
         if checkpoint_state is not None:
             _mark_metadata_checkpoint_persisted(metadata, checkpoint_state)
-        if not show_tool_timeline:
-            await conversation_store.append_timeline_item(
-                conversation_id,
-                run_id=run_id,
-                item_payload=build_background_task_timeline_item(
-                    run_id=run_id,
-                    task_id=str(metadata.get("global_task_id") or "").strip() or None,
-                    title=str(metadata.get("title") or "Background task"),
-                    goal=str(metadata.get("goal") or ""),
-                    status="running",
-                    active_step=summarize_tool_progress_content(tool_name, arguments, False),
-                    updates=list(metadata.get("task_updates") or []),
-                    notify_policy=str(metadata.get("notify_policy") or "important"),
-                    requested_notification=bool(metadata.get("requested_notification")),
-                ),
-                branch_key=_metadata_branch_key(metadata),
-                parent_event_id=persisted_tool_result.completed_event.id,
-            )
         await _emit_agent_stream_update(
             stream_callback,
             {
@@ -839,8 +744,7 @@ async def _handle_tool_action(
                 "content": summarize_tool_progress_content(tool_name, arguments, False),
             },
         )
-        if show_tool_timeline:
-            await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
+        await _clear_live_timeline_item(run_id, metadata, checkpoint_state, item_id=activity_id)
     finally:
         context.progress_callback = previous_progress_callback
     return metadata
@@ -856,9 +760,6 @@ async def _complete_run(
     final_activity_id: str,
     checkpoint_state: AgentMetadataCheckpointState | None = None,
 ) -> bool:
-    if metadata.get("voice_response"):
-        final_text = sanitize_voice_response(final_text)
-        summary = sanitize_voice_response(summary or final_text)
     final_summary = summary or final_text
     final_text = final_text or final_summary
     run_summary = _build_run_summary(metadata, final_summary)
@@ -870,7 +771,6 @@ async def _complete_run(
     metadata["pending_question"] = None
     metadata["current_action"] = "Completed"
     metadata["updated_at"] = _iso_now()
-    importance = "high" if str(metadata.get("task_priority")) == "high" else "normal"
     completion_event = await conversation_store.complete_agent_run(
         conversation_id,
         run_id=run_id,
@@ -879,24 +779,9 @@ async def _complete_run(
         final_summary=final_summary,
         run_summary=run_summary,
         final_activity_id=final_activity_id,
-        background=metadata.get("execution_mode") == "background",
-        importance=importance,
     )
     if completion_event is None:
         return False
-    global_task_id = str(metadata.get("global_task_id") or "").strip()
-    if global_task_id:
-        from app.services.task_service import task_service
-
-        await task_service.complete(
-            global_task_id,
-            summary=final_summary,
-            idempotency_key=f"agent-complete:{run_id}",
-        )
-    if metadata.get("execution_mode") == "background":
-        from app.services.notifications import notify_event
-
-        await notify_event(completion_event.id)
     app_verification = metadata.get("app_verification") if isinstance(metadata.get("app_verification"), dict) else {}
     verification_passed = app_verification.get("verification_status") == "passed"
     await _sync_bound_app_state(
@@ -921,28 +806,12 @@ async def _fail_run(
     metadata["task_status"] = "failed"
     metadata["error"] = error
     metadata["current_action"] = "Failed"
-    failure_text = "The local task brain failed on that turn. I did not switch to cloud automatically."
-    failure_event = await conversation_store.fail_agent_run(
+    await conversation_store.fail_agent_run(
         conversation_id,
         run_id=run_id,
         metadata_json=_serialize_agent_metadata(metadata),
         error=error,
-        voice_failure_text=failure_text,
     )
-    if failure_event is not None and metadata.get("execution_mode") == "background":
-        global_task_id = str(metadata.get("global_task_id") or "").strip()
-        if global_task_id:
-            from app.services.task_service import task_service
-
-            await task_service.complete(
-                global_task_id,
-                status="failed",
-                summary=error,
-                idempotency_key=f"agent-failed:{run_id}",
-            )
-        from app.services.notifications import notify_event
-
-        await notify_event(failure_event.id)
 
 
 async def _cancel_run(

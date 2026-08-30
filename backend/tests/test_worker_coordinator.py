@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, Task, TaskAttempt, WorkerInstance
 from app.services.conversation_store import conversation_store
-from app.services.background_tasks import delegate_background_task
+from app.services.task_delegation import delegate_background_task
 from app.services.task_service import task_service
 from app.services.worker_coordinator import worker_coordinator
 
@@ -204,7 +204,7 @@ async def test_stale_takeover_interrupts_without_retry_and_releases_leases() -> 
 async def test_api_restart_does_not_change_worker_owned_task() -> None:
     conversation = await conversation_store.create_conversation(title="Origin")
     parent = await conversation_store.start_run(conversation.id, kind="assistant")
-    child, _ = await delegate_background_task(
+    delegated, _ = await delegate_background_task(
         parent_run_id=parent.id,
         goal="survive API",
         idempotency_key="api-restart",
@@ -214,7 +214,7 @@ async def test_api_restart_does_not_change_worker_owned_task() -> None:
         expected_statuses={"running"},
         status="completed",
     )
-    created = await task_service.get_task(str(child.metadata_json["global_task_id"]))
+    created = await task_service.get_task(delegated.task.id)
     assert created is not None
     worker = await worker_coordinator.activate(process_identity="api", worker_id="api-worker", now=NOW)
     assert worker is not None
@@ -224,5 +224,4 @@ async def test_api_restart_does_not_change_worker_owned_task() -> None:
     assert await conversation_store.mark_running_runs_interrupted() == 0
     detail = await task_service.get_task(created.task.id)
     assert detail is not None and detail.task.status == "running"
-    compatibility = await conversation_store.get_run(child.id)
-    assert compatibility is not None and compatibility.status == "queued"
+    assert [run.id for run in await conversation_store.list_runs(conversation.id)] == [parent.id]

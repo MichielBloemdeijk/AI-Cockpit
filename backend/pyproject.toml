@@ -44,10 +44,6 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
 ]
-voice = [
-    "faster-whisper>=1.1.0",
-    "kokoro-onnx>=0.4.0",
-]
 notifications = [
     "pywebpush>=2.0.0",
 ]

@@ -58,7 +58,6 @@ from app.services.chat_settings import chat_settings_service
 from app.services.conversation_store import conversation_store
 from app.services.conversation_compaction import TASK_HISTORY_SUMMARY_PREFIX, build_agent_history_context
 from app.services.conversation_timeline import (
-    build_background_task_timeline_item,
     build_thought_timeline_item,
     build_timeline_item,
 )
@@ -84,41 +83,6 @@ _NATIVE_CONTROL_TOOL_NAMES = {
     NATIVE_AGENT_DELEGATE_TOOL,
 }
 
-_VOICE_TASK_STATUS_RE = re.compile(
-    r"\b(?:background tasks?|active tasks?|task status|task update|any updates?|still (?:going|running)|"
-    r"(?:is|has) (?:it|the task|that task).*(?:done|complete|completed|running))\b",
-    re.IGNORECASE,
-)
-_VOICE_TASK_NOTIFICATION_FOLLOWUP_RE = re.compile(
-    r"\b(?:tell me|notify me|let me know) when (?:it|the task|that task|this task|the background task)"
-    r"(?: is| has)? (?:done|complete|completed|finished)\b",
-    re.IGNORECASE,
-)
-_VOICE_NEW_TASK_RE = re.compile(
-    r"\b(?:start|create|run|perform|do|write|build|fix|test|make|compare|read|analy[sz]e|review|inspect)\b",
-    re.IGNORECASE,
-)
-_BACKGROUND_TASK_CONTROL_TOOLS = {
-    "list_background_tasks",
-    "get_background_task",
-    "cancel_background_task",
-}
-_APP_TOOL_NAMES = {"app_list", "app_initialize", "app_verify"}
-_BACKGROUND_APP_WORK_REQUEST_RE = re.compile(
-    r"(?:/apps/|\b(?:build|create|edit|fix|update|change|test|verify|deploy)\b"
-    r".{0,80}\b(?:app|application|website|webpage|page|frontend|ui|component|route|layout)\b)",
-    re.IGNORECASE,
-)
-
-
-def _is_voice_task_status_query(goal: str) -> bool:
-    normalized = " ".join(str(goal or "").split())
-    return bool(_VOICE_TASK_STATUS_RE.search(normalized) and not _VOICE_NEW_TASK_RE.search(normalized))
-
-
-def _is_voice_task_notification_followup(goal: str) -> bool:
-    normalized = " ".join(str(goal or "").split())
-    return bool(_VOICE_TASK_NOTIFICATION_FOLLOWUP_RE.search(normalized) and not _VOICE_NEW_TASK_RE.search(normalized))
 
 
 def _repeated_tool_without_progress(metadata: dict[str, Any], action: dict[str, Any]) -> bool:
@@ -134,22 +98,6 @@ def _repeated_tool_without_progress(metadata: dict[str, Any], action: dict[str, 
         and json.dumps(item.get("arguments") or {}, sort_keys=True, separators=(",", ":"), default=str) == signature
         for item in prior
     )
-
-
-def _task_status_response(tasks: list[Any]) -> str:
-    active = [task for task in tasks if str(getattr(task, "status", "")) not in {"completed", "failed", "cancelled", "interrupted"}]
-    if len(active) == 1:
-        task = active[0]
-        return f"{task.title} is {task.status}."
-    if len(active) > 1:
-        titles = ", ".join(task.title for task in active[:2])
-        suffix = "" if len(active) <= 2 else f", plus {len(active) - 2} more"
-        return f"You have {len(active)} background tasks running: {titles}{suffix}."
-    if tasks:
-        latest = tasks[0]
-        detail = latest.summary or latest.error
-        return f"Your latest background task, {latest.title}, is {latest.status}." + (f" {detail}" if detail else "")
-    return "You don't have any background tasks yet."
 
 
 def _text_completion_summary(final_text: str) -> str:
@@ -197,25 +145,6 @@ def _app_verification_failed_since_last_mutation(metadata: dict[str, Any]) -> bo
     return last_failed_verification_index > last_mutation_index
 
 
-def _provider_tools_for_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    provider_tools = get_agent_tool_provider_definitions("openai")
-    if metadata.get("execution_mode") != "background":
-        return provider_tools
-
-    has_app_context = bool(
-        _attached_app_slug(metadata)
-        or _BACKGROUND_APP_WORK_REQUEST_RE.search(str(metadata.get("goal") or ""))
-    )
-    blocked_tools = set(_BACKGROUND_TASK_CONTROL_TOOLS)
-    if not has_app_context:
-        blocked_tools.update(_APP_TOOL_NAMES)
-    return [
-        item
-        for item in provider_tools
-        if str(item.get("function", {}).get("name") or "") not in blocked_tools
-    ]
-
-
 class AgentRunner:
     async def _request_native_turn(
         self,
@@ -228,50 +157,6 @@ class AgentRunner:
         step_number: int,
         stream_callback: AgentStreamCallback | None = None,
     ) -> dict[str, Any]:
-        if step_number == 1 and metadata.get("execution_mode") == "voice_interactive":
-            goal = str(metadata.get("goal") or "")
-            if _is_voice_task_notification_followup(goal):
-                from app.services.background_tasks import request_completion_notification
-
-                task = await request_completion_notification(conversation_id)
-                response = (
-                    f"Okay. I'll let you know when {task.title} is complete."
-                    if task is not None
-                    else "There isn't an active background task to notify you about."
-                )
-                return _build_final_action_payload(
-                    thought="Handled the task notification preference directly.",
-                    summary=response,
-                    final_text=response,
-                )
-            if _is_voice_task_status_query(goal):
-                from app.services.background_tasks import list_tasks
-
-                response = _task_status_response(await list_tasks(conversation_id, include_finished=True))
-                return _build_final_action_payload(
-                    thought="Read the durable background task state directly.",
-                    summary=response,
-                    final_text=response,
-                )
-        if (
-            step_number == 1
-            and metadata.get("execution_mode") == "voice_interactive"
-            and metadata.get("force_background_delegation")
-        ):
-            requested_notification = bool(metadata.get("requested_notification"))
-            acknowledgement = (
-                "I'm on it. I'll let you know when it's done."
-                if requested_notification
-                else "I'm on it. You can keep talking while I work on that."
-            )
-            return _build_delegate_action_payload(
-                thought="This request needs an independently observable background run.",
-                goal=str(metadata.get("goal") or ""),
-                notify_policy="completion" if requested_notification else "important",
-                priority="normal",
-                acknowledgement=acknowledgement,
-            )
-
         model = str(metadata.get("model") or await chat_settings_service.get_task_agent_model())
         recent_messages = await conversation_store.list_messages(conversation_id, final_only=True)
 
@@ -324,27 +209,15 @@ class AgentRunner:
             "When creating a new app, pass a clear title because that becomes the app's visible name. Pass app_slug only when you need an exact URL segment or when attaching an existing app. Never call app_initialize without title or app_slug. "
             "Any assistant text in this turn is shown directly to the user. Assistant text is optional. On turns that call external tools, normally emit no assistant text and call the tools directly. "
             "When finalizing, call task_finalize with a short metadata summary and put the complete final user-facing response in final_text. final_text must contain the actual answer or result, not a description such as 'answered the question'. Assistant text may be omitted on that turn. "
-            "For interactive voice runs, delegate multi-step, mutating, executable, waiting, or explicitly background work immediately with delegate_background_task and put a concise acknowledgement in assistant text. Background runs must not delegate again. "
+            "When a user explicitly asks to delegate or run work in the background, use delegate_background_task and put a concise acknowledgement in assistant text. Background runs must not delegate again. "
             "Do not announce what you are about to do or narrate the tool call with phrases such as 'I will', 'I'll', or 'Let me'. The UI already shows tool activity. Emit assistant text before completion only for a material finding, correction, or blocker that the user needs to know. It must add net-new information and must not restate the goal, approved plan, recent conversation context, or recent runtime transcript. "
             "Describe only work actually completed. Do not claim that a file was edited unless a successful file_write appears in the runtime transcript. app_initialize creates a scaffold; it does not prove a later edit occurred. "
             "Continue from the latest completed step or tool result instead of re-summarizing the task. "
             "If the latest successful tool result already satisfies the listed success criteria and no further external work is needed, call task_finalize immediately. For a clearly named new generated app request, do not call app_list unless the user explicitly asked to inspect existing apps first."
         )
-        if metadata.get("voice_response"):
-            system_prompt += (
-                " You are responding through Jarvis voice. Use plain English with no Markdown. Keep the response to one "
-                "to three short sentences and normally no more than 45 spoken words. Do not read tool logs, code, or paths "
-                "unless the user explicitly asks for them."
-            )
         user_prompt = common_user_prompt + "\n\nContinue the task now from the latest completed step. Include assistant text only when it adds net-new information beyond the transcript already shown to the user."
         native_controls = _native_control_tool_definitions(include_delegate=True)
-        if metadata.get("execution_mode") == "background":
-            native_controls = [
-                item
-                for item in native_controls
-                if item.get("function", {}).get("name") != NATIVE_AGENT_DELEGATE_TOOL
-            ]
-        provider_tools = _provider_tools_for_metadata(metadata)
+        provider_tools = get_agent_tool_provider_definitions("openai")
         tools = [*provider_tools, *native_controls]
         allowed_tool_names = {
             str(item.get("function", {}).get("name") or "").strip()
@@ -743,49 +616,6 @@ class AgentRunner:
             )
             if active_run is None:
                 return
-            if metadata.get("execution_mode") == "background" and not metadata.get("task_started_event_recorded"):
-                started_event = await conversation_store.append_event(
-                    run.conversation_id,
-                    run_id=run.id,
-                    actor_kind="task",
-                    event_type="task.started",
-                    payload_json={
-                        "task_run_id": run.id,
-                        "title": metadata.get("title"),
-                        "goal": metadata.get("goal"),
-                        "status": "running",
-                        "priority": metadata.get("task_priority", "normal"),
-                    },
-                    branch_key=str(metadata.get("branch_key") or "main"),
-                )
-                await conversation_store.append_timeline_item(
-                    run.conversation_id,
-                    run_id=run.id,
-                    item_payload=build_background_task_timeline_item(
-                        run_id=run.id,
-                        task_id=str(metadata.get("global_task_id") or "").strip() or None,
-                        title=str(metadata.get("title") or "Background task"),
-                        goal=str(metadata.get("goal") or ""),
-                        status="running",
-                        active_step=str(metadata.get("active_step") or "Planning next step"),
-                        updates=list(metadata.get("task_updates") or []),
-                        notify_policy=str(metadata.get("notify_policy") or "important"),
-                        requested_notification=bool(metadata.get("requested_notification")),
-                    ),
-                    branch_key=str(metadata.get("branch_key") or "main"),
-                    parent_event_id=started_event.id,
-                )
-                global_task_id = str(metadata.get("global_task_id") or "").strip()
-                if global_task_id:
-                    from app.services.task_service import task_service
-
-                    await task_service.publish_progress(
-                        global_task_id,
-                        summary=str(metadata.get("active_step") or "Planning next step"),
-                        idempotency_key=f"agent-started:{run.id}",
-                    )
-                metadata["task_started_event_recorded"] = True
-
         try:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
@@ -842,27 +672,24 @@ class AgentRunner:
                         payload_json={"step": current_step + 1, "thought": thought},
                         branch_key=str(metadata.get("branch_key") or "main"),
                     )
-                    if metadata.get("execution_mode") != "background":
-                        await conversation_store.append_timeline_item(
-                            run.conversation_id,
+                    await conversation_store.append_timeline_item(
+                        run.conversation_id,
+                        run_id=run.id,
+                        item_payload=build_thought_timeline_item(
                             run_id=run.id,
-                            item_payload=build_thought_timeline_item(
-                                run_id=run.id,
-                                step=current_step + 1,
-                                content=thought,
-                            ),
-                            branch_key=str(metadata.get("branch_key") or "main"),
-                            parent_event_id=thought_event.id,
-                        )
+                            step=current_step + 1,
+                            content=thought,
+                        ),
+                        branch_key=str(metadata.get("branch_key") or "main"),
+                        parent_event_id=thought_event.id,
+                    )
 
                 action_kind = str(action.get("kind", "")).strip()
                 if action_kind == "delegate":
-                    if metadata.get("execution_mode") == "background":
-                        raise ValueError("Background tasks cannot delegate another task")
-                    from app.services.background_tasks import delegate_background_task
+                    from app.services.task_delegation import delegate_background_task
 
                     requested_notification = bool(metadata.get("requested_notification"))
-                    child_run, _queued_event = await delegate_background_task(
+                    delegated_task, _queued_event = await delegate_background_task(
                         parent_run_id=run.id,
                         goal=str(action.get("goal") or ""),
                         notify_policy=str(action.get("notify_policy") or "important"),
@@ -881,12 +708,13 @@ class AgentRunner:
                         checkpoint_state=checkpoint_state,
                     )
                     if not completed:
-                        from app.services.run_lifecycle import run_lifecycle
+                        from app.services.task_service import task_service
 
-                        await run_lifecycle.cancel(child_run.id)
+                        await task_service.cancel(
+                            delegated_task.task.id,
+                            idempotency_key=f"delegate-parent-not-completed:{run.id}",
+                        )
                         return
-                    # The child run is retained only as a compatibility
-                    # projection. The separate task worker owns execution.
                     return
                 if action_kind == "tool":
                     batched_tools = action.get("batched_tools") if isinstance(action.get("batched_tools"), list) else []
