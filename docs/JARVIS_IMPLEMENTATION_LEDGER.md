@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 11 — POC retirement and final verification
-- **Last completed phase:** Phase 10
+- **Current phase:** Phase 11 complete — target implementation checkpoint reached
+- **Last completed phase:** Phase 11
 - **Product implementation started:** yes
-- **Next session entry point:** inventory every legacy voice/STT/TTS, browser-delivery, primary-voice, background API-ownership, dependency, configuration, and compatibility route against the Phase 11 retirement contract
+- **Next session entry point:** no required phased work remains; optional follow-ups are lower-volume wake-model tuning and a separately planned background-listening design
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -29,7 +29,7 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 8. Brain delegation and proactive updates | Complete | Passed 2026-08-29 | 5e8a2d1 |
 | 9. Browser-local wake and follow-up | Complete | Accepted 2026-08-30 with low-volume tuning deferred | 4a949eb |
 | 10. Wiki/search, notifications, and archive UX | Complete | Passed 2026-08-30 | 6fe4250 |
-| 11. POC retirement and final verification | In progress | — | — |
+| 11. POC retirement and final verification | Complete | Passed 2026-08-30 | 364c06e |
 
 ## Phase 0 record
 
@@ -739,6 +739,61 @@ Run on 2026-08-30:
 - Commit subject: `feat(jarvis): complete Wiki and notification lifecycle`
 - Next entry point: Phase 11 retirement inventory, dependency/config cleanup, compatibility redirects, and clean-setup verification
 - Blockers: none
+
+## Phase 11 record
+
+### Scope completed
+
+- Removed the batch `/api/voice/*` router and its turn, transcription, speech, task-control, local STT/TTS, and voice-conversation services and models.
+- Removed faster-whisper, Kokoro, CTranslate2, ONNX Runtime, and their transitive backend dependency group from the locked runtime. The browser ONNX runtime and `/vad` assets remain because the shipped foreground wake and barge-in paths actively use them.
+- Removed `JarvisSpeechScheduler`, the old voice state/turn gate, browser delivery cache, voice transcript reducer, legacy event speech policy, and their obsolete frontend API contracts and tests.
+- Added migration `20260830_0011` to remove `conversations.is_primary_voice`, its partial index, and the conversation-event `notification_deliveries` table while keeping the first-class task `notification_outbox` authoritative.
+- Collapsed Web Push handling to subscription management plus task-outbox acknowledgement/recovery; the old notification test endpoint and conversation-event delivery worker are gone.
+- Replaced compatibility child conversation runs with direct first-class task dispatch. A conversation now records only the causal `task.delegated` event and task card; the separate worker owns every task transition, question, result, cancellation, attempt, and lease.
+- Removed task-worker synchronization back into child runs and all conversation-run completion/failure/restart paths that mutated worker-owned task state.
+- Replaced the agent task-control tools with conversation-scoped `list_tasks`, `get_task`, and `cancel_task` operations over the first-class task service.
+- Simplified conversation run completion, cancellation, failure, restart interruption, timeline projection, and metadata persistence to interactive conversation concerns only.
+- Retained the active OpenAI Realtime provider boundary, `voice_session_events`, and `speech_deliveries`; these are target audible-history/session truth, not retired browser-only POC delivery state.
+- Kept `/voice`, `/background`, `/background/{id}`, and `/knowledge` as permanent compatibility redirects to `/jarvis`, `/tasks`, `/tasks/{id}`, and `/wiki` respectively.
+- Updated the README, current architecture, setup preflight, target/evolution status, historical POC banner, environment example, and live benchmark cases to describe the single shipped architecture.
+
+### Deviations and rationale
+
+- Historical Alembic revisions that originally create the retired columns/tables remain in the revision chain. Deleting or rewriting applied migrations would make old databases and the Phase 0 recovery path unreproducible; the new head performs the semantic retirement.
+- Historical POC and POC-to-target documents remain intact beneath explicit status banners. They are evidence and migration rationale, not current setup instructions.
+- The accepted foreground wake model is unchanged. The documented VAD plus faster-whisper fallback was not selected in Phase 9, so faster-whisper was removed as required.
+- No new paid Realtime call was made for cleanup-only verification. Incremental Phase 11 Realtime cost was therefore zero; latency was not re-baselined because this pass did not alter the active media path. Existing in-app usage/trace reporting and the accepted Phase 6-9 real-device evidence remain the relevant observations.
+- A full PC reboot and a new counted acoustic worksheet were not repeated during this cleanup pass. API/worker ownership, restart interruption, fake-provider scenarios, reconnect, rollover, fresh-log, task, and secret boundaries are covered by the complete automated suite; prior real-device barge-in and wake acceptance remains recorded in Phases 7 and 9.
+
+### Verification evidence
+
+Run on 2026-08-30:
+
+1. backend complete gate
+   - Result: PASS — 207 tests in 131.25 seconds
+2. frontend complete gate
+   - Result: PASS — 22 files / 104 tests, ESLint, production TypeScript, and all 31 routes generated
+3. schema and dependency gate
+   - Result: PASS — fresh databases upgraded through `20260830_0011`, `alembic check` reported no operations, application/tests compiled, `uv lock --check` resolved 67 packages, and no retired backend speech package remained
+4. setup and ownership gate
+   - Result: PASS — `scripts/setup-jarvis.ps1 -CheckOnly` found llama-server, Gemma, the configured root OpenAI key, uv, npm, and Tailscale without requiring Kokoro or a voice dependency group
+5. retired surface gate
+   - Result: PASS — production `/voice` returned 308 to `/jarvis`, `/background` returned 308 to `/tasks`, `/background/task-123` returned 308 to `/tasks/task-123`, and `/knowledge` returned 308 to `/wiki`; the temporary verification server was stopped
+6. secret/provider boundary
+   - Result: PASS — the configured OpenAI key matched zero emitted frontend static/server files, and the OpenAI adapter contract continues to omit the provider RTC call ID from its browser-facing connection projection
+7. retired-code inventory
+   - Result: PASS — remaining faster-whisper/Kokoro/old voice API references are limited to historical documents, migration history, and negative-removal tests; no shipped module imports a retired service
+
+### Checkpoint
+
+- Status: passed 2026-08-30
+- Starting HEAD: `81cad36`
+- Implementation commit: `364c06e`
+- Commit subject: `refactor(jarvis): retire batch voice POC`
+- Remaining required phased work: none
+- Optional follow-ups: lower-volume wake-model tuning; background-listening product/OS design
+- Hard blockers: none
+- New product decisions required: none
 
 ## Phase 1 entry checklist (completed)
 
