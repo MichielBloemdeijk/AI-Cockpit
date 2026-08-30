@@ -26,6 +26,7 @@ export interface ChatMessage {
   usage?: UsageStats;
   streaming?: boolean;
   status?: string | null;
+  taskId?: string | null;
 }
 
 export interface AgentStatus {

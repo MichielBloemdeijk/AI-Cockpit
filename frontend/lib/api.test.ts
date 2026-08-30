@@ -103,6 +103,7 @@ describe("Jarvis daily-log api", () => {
 
     await getJarvisState();
     await listConversations(true, "jarvis");
+    await listConversations(true, "all", true);
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/jarvis/state", {
       credentials: "include",
@@ -111,6 +112,11 @@ describe("Jarvis daily-log api", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/conversations?include_archived=true&kind=jarvis",
+      { credentials: "include", cache: "no-store" },
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/conversations?include_archived=true&kind=all&archived_only=true",
       { credentials: "include", cache: "no-store" },
     );
   });

@@ -136,12 +136,15 @@ class ConversationRepository:
         limit: int = 20,
         offset: int = 0,
         include_archived: bool = False,
+        archived_only: bool = False,
         conversation_kind: str | None = None,
         lifecycle_status: str | None = None,
         include_empty_jarvis: bool = False,
     ) -> Sequence[Conversation]:
         stmt = select(Conversation)
-        if not include_archived:
+        if archived_only:
+            stmt = stmt.where(Conversation.archived_at.is_not(None))
+        elif not include_archived:
             stmt = stmt.where(Conversation.archived_at.is_(None))
         if conversation_kind is not None:
             stmt = stmt.where(Conversation.conversation_kind == conversation_kind)

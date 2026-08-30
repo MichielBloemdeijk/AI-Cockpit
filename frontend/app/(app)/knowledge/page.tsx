@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import { BookOpen, Check, FileText, RefreshCw, Trash2, X } from "lucide-react";
+import Link from "next/link";
+import { BookOpen, Check, FileText, RefreshCw, Search, Trash2, X } from "lucide-react";
 import {
   approveKnowledgeItem,
   deleteKnowledgeItem,
@@ -24,6 +25,7 @@ export default function KnowledgePage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [mobileSection, setMobileSection] = useState<"review" | "library">("review");
+  const [libraryQuery, setLibraryQuery] = useState("");
 
   const refresh = async () => {
     setLoading(true);
@@ -51,6 +53,21 @@ export default function KnowledgePage() {
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId),
     [conversations, selectedConversationId],
+  );
+  const normalizedLibraryQuery = libraryQuery.trim().toLocaleLowerCase();
+  const visibleApprovedItems = useMemo(
+    () => approvedItems.filter((item) => (
+      !normalizedLibraryQuery
+      || `${item.title}\n${item.content}\n${item.kind}\n${item.scope}`.toLocaleLowerCase().includes(normalizedLibraryQuery)
+    )),
+    [approvedItems, normalizedLibraryQuery],
+  );
+  const visibleDocuments = useMemo(
+    () => documents.filter((document) => (
+      !normalizedLibraryQuery
+      || `${document.title}\n${document.path}\n${document.content}`.toLocaleLowerCase().includes(normalizedLibraryQuery)
+    )),
+    [documents, normalizedLibraryQuery],
   );
 
   const generateFromConversation = async () => {
@@ -100,7 +117,7 @@ export default function KnowledgePage() {
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <BookOpen size={18} className="text-zinc-400" />
-            <span className="text-sm font-medium text-zinc-100">Knowledge Review</span>
+            <span className="text-sm font-medium text-zinc-100">Wiki</span>
           </div>
           <button
             onClick={() => refresh()}
@@ -184,7 +201,12 @@ export default function KnowledgePage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-medium text-zinc-100">{item.title}</div>
-                      <div className="mt-1 break-words text-xs text-zinc-500">{item.kind} · {item.scope} · {item.conversation_title || item.source_conversation_id}</div>
+                      <div className="mt-1 break-words text-xs text-zinc-500">
+                        {item.kind} · {item.scope} ·{" "}
+                        <Link href={`/chat?conversation=${item.source_conversation_id}`} className="text-blue-400 hover:text-blue-300">
+                          {item.conversation_title || item.source_conversation_id}
+                        </Link>
+                      </div>
                     </div>
                     <div className="shrink-0 text-xs text-zinc-500">{item.confidence ? `${Math.round(item.confidence * 100)}%` : "manual"}</div>
                   </div>
@@ -220,20 +242,36 @@ export default function KnowledgePage() {
           )}
         >
           <div className="min-w-0 border-b border-zinc-800 p-4">
-            <div className="text-sm font-semibold text-zinc-100">Approved Knowledge</div>
+            <div className="text-sm font-semibold text-zinc-100">Approved Wiki</div>
             <p className="mt-1 text-sm text-zinc-500">Approved items can be deleted here, which removes the file-backed entry and keeps a tombstoned record in persistence.</p>
+            <label className="mt-3 flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-400">
+              <Search size={14} />
+              <input
+                value={libraryQuery}
+                onChange={(event) => setLibraryQuery(event.target.value)}
+                placeholder="Search approved Wiki"
+                className="min-w-0 flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+              />
+            </label>
           </div>
 
           <div className="min-w-0 flex-1 space-y-3 overflow-y-auto p-4">
-            {approvedItems.length === 0 && documents.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-zinc-800 p-6 text-sm text-zinc-500">No approved knowledge yet.</div>
+            {visibleApprovedItems.length === 0 && visibleDocuments.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-zinc-800 p-6 text-sm text-zinc-500">
+                {normalizedLibraryQuery ? "No approved Wiki entries match this search." : "No approved knowledge yet."}
+              </div>
             ) : null}
-            {approvedItems.map((item) => (
+            {visibleApprovedItems.map((item) => (
               <div key={item.id} className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-zinc-100">{item.title}</div>
-                    <div className="mt-1 break-words text-xs text-zinc-500">{item.kind} · {item.scope} · {item.conversation_title || item.source_conversation_id}</div>
+                    <div className="mt-1 break-words text-xs text-zinc-500">
+                      {item.kind} · {item.scope} ·{" "}
+                      <Link href={`/chat?conversation=${item.source_conversation_id}`} className="text-blue-400 hover:text-blue-300">
+                        {item.conversation_title || item.source_conversation_id}
+                      </Link>
+                    </div>
                   </div>
                   <button
                     onClick={() => handleDelete(item.id)}
@@ -249,10 +287,10 @@ export default function KnowledgePage() {
             ))}
 
             <div className="border-t border-zinc-800 pt-4">
-              <div className="text-sm font-semibold text-zinc-100">Knowledge Files</div>
+              <div className="text-sm font-semibold text-zinc-100">Wiki Files</div>
               <p className="mt-1 text-sm text-zinc-500">Approved items are written into the file-backed corpus that chat tools can inspect directly.</p>
             </div>
-            {documents.map((document) => (
+            {visibleDocuments.map((document) => (
               <div key={document.path} className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4">
                 <div className="flex items-center gap-2 text-zinc-100">
                   <FileText size={15} className="text-zinc-500" />

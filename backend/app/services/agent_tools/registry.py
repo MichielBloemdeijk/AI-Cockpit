@@ -9,6 +9,7 @@ from app.services.agent_tools.base import ToolExecutionResult
 from app.services.agent_tools.execution import PYTHON_EXECUTION_TOOL
 from app.services.agent_tools.execution import SHELL_COMMAND_TOOL
 from app.services.agent_tools.filesystem import FILESYSTEM_TOOLS
+from app.services.agent_tools.retrieval import RETRIEVAL_TOOLS
 from app.services.agent_tools.tasks import TASK_TOOLS
 
 
@@ -19,6 +20,7 @@ TOOL_REGISTRY: dict[str, AgentTool] = {
         PYTHON_EXECUTION_TOOL,
         *APP_TOOLS,
         SHELL_COMMAND_TOOL,
+        *RETRIEVAL_TOOLS,
         *TASK_TOOLS,
     ]
 }

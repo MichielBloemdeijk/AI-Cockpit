@@ -53,11 +53,9 @@ describe("ConversationListPanel Jarvis history", () => {
           mobile
           conversations={[currentJarvis, closedJarvis]}
           activeConversationId={null}
-          showArchived={false}
           conversationKindFilter="all"
           onNewConversation={() => {}}
           onSelectConversation={onSelectConversation}
-          onToggleShowArchived={() => {}}
           onChangeKindFilter={onChangeKindFilter}
         />,
       );
@@ -69,16 +67,20 @@ describe("ConversationListPanel Jarvis history", () => {
 
     const jarvisFilter = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent === "Jarvis");
+    const archivedFilter = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Archived");
     const currentButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Jarvis — 2026-08-27"));
 
     await act(async () => {
       jarvisFilter?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      archivedFilter?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       currentButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
 
     expect(onChangeKindFilter).toHaveBeenCalledWith("jarvis");
+    expect(onChangeKindFilter).toHaveBeenCalledWith("archived");
     expect(onSelectConversation).toHaveBeenCalledWith("jarvis-current");
   });
 });

@@ -4,18 +4,23 @@ import { useCallback, useEffect, useState } from "react";
 
 import { listConversations, type ConversationSummary } from "./api";
 
-export type ConversationKindFilter = "all" | "standard" | "jarvis";
+export type ConversationKindFilter = "all" | "standard" | "jarvis" | "archived";
 
 function firstChatConversation(conversations: ConversationSummary[]): ConversationSummary | undefined {
   return conversations.find((conversation) => !conversation.is_current_jarvis);
 }
 
-export function useConversationList(showArchived: boolean, kindFilter: ConversationKindFilter) {
+function loadConversations(kindFilter: ConversationKindFilter) {
+  const archivedOnly = kindFilter === "archived";
+  return listConversations(archivedOnly, archivedOnly ? "all" : kindFilter, archivedOnly);
+}
+
+export function useConversationList(kindFilter: ConversationKindFilter) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
 
   const refreshConversations = useCallback(async (preferredConversationId?: string | null) => {
-    const nextConversations = await listConversations(showArchived, kindFilter);
+    const nextConversations = await loadConversations(kindFilter);
     setConversations(nextConversations);
     if (preferredConversationId) {
       setActiveConversationId(preferredConversationId);
@@ -27,11 +32,11 @@ export function useConversationList(showArchived: boolean, kindFilter: Conversat
       }
       return firstChatConversation(nextConversations)?.id ?? null;
     });
-  }, [kindFilter, showArchived]);
+  }, [kindFilter]);
 
   useEffect(() => {
     let cancelled = false;
-    void listConversations(showArchived, kindFilter).then((nextConversations) => {
+    void loadConversations(kindFilter).then((nextConversations) => {
       if (cancelled) return;
       setConversations(nextConversations);
       setActiveConversationId((current) => {
@@ -44,7 +49,7 @@ export function useConversationList(showArchived: boolean, kindFilter: Conversat
     return () => {
       cancelled = true;
     };
-  }, [kindFilter, showArchived]);
+  }, [kindFilter]);
 
   return {
     conversations,

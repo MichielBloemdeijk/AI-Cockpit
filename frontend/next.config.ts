@@ -13,6 +13,15 @@ const nextConfig: NextConfig = {
   env: jarvisWakeModelUrl
     ? { NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL: jarvisWakeModelUrl }
     : undefined,
+  async redirects() {
+    return [
+      {
+        source: "/knowledge",
+        destination: "/wiki",
+        permanent: true,
+      },
+    ];
+  },
   // Proxy /api/* to the FastAPI backend in development
   async rewrites() {
     return [

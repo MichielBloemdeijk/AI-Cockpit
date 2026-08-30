@@ -25,6 +25,7 @@ export interface ChatHistoryMessage {
   branchBlockReason?: string;
   councilData?: CouncilResponse;
   usage?: UsageStats;
+  taskId?: string | null;
 }
 
 interface TimelineEntry extends ChatHistoryMessage {
@@ -516,6 +517,7 @@ export function mapConversationMessages(
         role: message.role,
         kind: "message",
         content: message.content,
+        taskId: message.source_task_id,
         createdAt: message.created_at,
         branchable: message.role === "user" ? !hasUnsafeBranchMutations : undefined,
         branchBlockReason: message.role === "user" && hasUnsafeBranchMutations

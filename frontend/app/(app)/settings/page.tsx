@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Settings, Cpu, Save } from "lucide-react";
+import { Settings, Bell, Cpu, Save } from "lucide-react";
 import { ConversationSessionMetadata, getChatSettings, updateChatSettings } from "@/lib/api";
+import { enablePushNotifications, inspectPushNotifications, type PushNotificationState } from "@/lib/push-notifications";
 
 export default function SettingsPage() {
   const [models, setModels] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<ConversationSessionMetadata | null>(null);
   const [taskAgentModel, setTaskAgentModel] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pushState, setPushState] = useState<PushNotificationState>("checking");
 
   useEffect(() => {
     getChatSettings().then((response) => {
@@ -16,6 +18,12 @@ export default function SettingsPage() {
       setDefaults({ ...response.defaults, mode: "single" });
       setTaskAgentModel(response.task_agent_model);
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    inspectPushNotifications()
+      .then(setPushState)
+      .catch(() => setPushState("error"));
   }, []);
 
   const toggleCouncilModel = (model: string) => {
@@ -43,6 +51,25 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEnablePush = async () => {
+    setPushState("checking");
+    try {
+      setPushState(await enablePushNotifications());
+    } catch {
+      setPushState("error");
+    }
+  };
+
+  const pushDescription: Record<PushNotificationState, string> = {
+    checking: "Checking browser and server configuration…",
+    unavailable: "This browser does not support Web Push.",
+    not_configured: "Web Push is disabled or its VAPID keys are not configured on the server.",
+    blocked: "Notification permission is blocked in this browser.",
+    available: "Enable alerts for completed tasks and questions that need your input.",
+    enabled: "Task completions and blocking questions can alert this device.",
+    error: "Push notification setup could not be completed.",
   };
 
   return (
@@ -125,6 +152,35 @@ export default function SettingsPage() {
             <Save size={15} />
             {saving ? "Saving..." : "Save defaults"}
           </button>
+        </section>
+
+        <section>
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-300">
+            <Bell size={15} />
+            Task notifications
+          </h2>
+          <div className="rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-medium text-zinc-100">
+                  {pushState === "enabled" ? "Notifications enabled" : "Web Push"}
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">{pushDescription[pushState]}</p>
+              </div>
+              {pushState === "available" || pushState === "error" ? (
+                <button
+                  type="button"
+                  onClick={() => void handleEnablePush()}
+                  className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white"
+                >
+                  Enable notifications
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Ordinary progress stays in the app. Only terminal task states and questions that block work create Push alerts.
+          </p>
         </section>
       </div>
     </div>

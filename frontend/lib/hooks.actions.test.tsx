@@ -21,6 +21,7 @@ const apiMocks = vi.hoisted(() => ({
   listConversations: vi.fn(),
   resendConversationBranch: vi.fn(),
   streamChat: vi.fn(),
+  unarchiveConversation: vi.fn(),
 }));
 
 vi.mock("./api", () => apiMocks);
@@ -125,6 +126,34 @@ describe("useChat actions", () => {
 
     expect(apiMocks.archiveConversation).toHaveBeenCalledWith("conv-1");
     expect(latestHook!.activeConversationId).toBeNull();
+  });
+
+  it("restores an archived conversation and keeps it selected", async () => {
+    const archived = buildConversationSummary("conv-archived", {
+      archived_at: "2026-05-02T00:00:00Z",
+    });
+    apiMocks.listConversations.mockResolvedValue([archived]);
+    apiMocks.getConversation.mockResolvedValue(buildConversationDetail("conv-archived", {
+      archived_at: "2026-05-02T00:00:00Z",
+    }));
+
+    await act(async () => {
+      root.unmount();
+      await Promise.resolve();
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Harness />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await latestHook!.unarchiveActiveConversation();
+    });
+
+    expect(apiMocks.unarchiveConversation).toHaveBeenCalledWith("conv-archived");
+    expect(latestHook!.activeConversationId).toBe("conv-archived");
+    expect(apiMocks.getConversation).toHaveBeenCalledWith("conv-archived", "main");
   });
 
   it("switches to the returned branch after resend", async () => {

@@ -28,7 +28,6 @@ export function useAuth() {
 
 export function useChat() {
   const [activeBranchKey, setActiveBranchKey] = useState("main");
-  const [showArchived, setShowArchived] = useState(false);
   const [conversationKindFilter, setConversationKindFilter] = useState<ConversationKindFilter>("all");
   const [loading, setLoading] = useState(false);
   const [canStop, setCanStop] = useState(false);
@@ -38,7 +37,7 @@ export function useChat() {
     activeConversationId,
     setActiveConversationId,
     refreshConversations,
-  } = useConversationList(showArchived, conversationKindFilter);
+  } = useConversationList(conversationKindFilter);
   const {
     activeConversation,
     artifacts,
@@ -81,6 +80,7 @@ export function useChat() {
     selectConversation,
     sendMessage,
     stopStreaming,
+    unarchiveActiveConversation,
   } = useConversationActions({
     loading,
     activeConversation,
@@ -109,7 +109,6 @@ export function useChat() {
     activeConversation,
     events,
     artifacts,
-    showArchived,
     conversationKindFilter,
     loading,
     canStop,
@@ -120,10 +119,10 @@ export function useChat() {
     clearActionError,
     resendFromMessage,
     stopStreaming,
+    unarchiveActiveConversation,
     clearMessages,
     selectConversation,
     selectBranch,
-    setShowArchived,
     setConversationKindFilter,
   };
 }

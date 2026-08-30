@@ -58,4 +58,39 @@ describe("Jarvis service worker", () => {
     await work;
     expect(openWindow).toHaveBeenCalledWith("https://jarvis.test/jarvis?update=event-2&delivery=delivery-2");
   });
+
+  it("navigates an existing app window to the exact task-question deep link", async () => {
+    const navigate = vi.fn(async () => undefined);
+    const focus = vi.fn(async () => undefined);
+    const postMessage = vi.fn();
+    const { listeners } = loadWorker([{
+      visibilityState: "hidden",
+      url: "https://jarvis.test/chat",
+      navigate,
+      focus,
+      postMessage,
+    }]);
+    let work: Promise<unknown> = Promise.resolve();
+    listeners.notificationclick({
+      notification: {
+        close: vi.fn(),
+        data: {
+          delivery_id: "outbox-1",
+          url: "/tasks/task-1?question=question-1",
+        },
+      },
+      waitUntil: (promise: Promise<unknown>) => { work = promise; },
+    });
+    await work;
+    expect(navigate).toHaveBeenCalledWith(
+      "https://jarvis.test/tasks/task-1?question=question-1&delivery=outbox-1",
+    );
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "ai-cockpit-open-notification",
+      payload: {
+        delivery_id: "outbox-1",
+        url: "/tasks/task-1?question=question-1",
+      },
+    });
+  });
 });

@@ -93,7 +93,11 @@ async def upsert_subscription(endpoint: str, p256dh: str, auth: str, user_agent:
             existing.user_agent = user_agent
             existing.updated_at = utc_now()
         await session.flush()
-        return {"id": existing.id, "endpoint": existing.endpoint}
+        saved = {"id": existing.id, "endpoint": existing.endpoint}
+    from app.services.task_notifications import recover_pending_task_notifications
+
+    await recover_pending_task_notifications()
+    return saved
 
 
 async def delete_subscription(subscription_id: str) -> bool:
@@ -256,7 +260,9 @@ async def recover_pending_deliveries() -> int:
                 work.append(delivery.id)
     for delivery_id in work:
         _schedule_delivery(delivery_id, name_prefix="push-recover")
-    return len(work)
+    from app.services.task_notifications import recover_pending_task_notifications
+
+    return len(work) + await recover_pending_task_notifications()
 
 
 def _retry_delay_seconds(attempts: int) -> float:
@@ -318,6 +324,10 @@ async def acknowledge_delivery(delivery_id: str, state: str) -> bool:
     normalized = str(state or "").lower()
     if normalized not in {"opened", "spoken"}:
         raise ValueError("Delivery state must be opened or spoken")
+    from app.services.task_notifications import acknowledge_task_notification
+
+    if await acknowledge_task_notification(delivery_id, normalized):
+        return True
     async with session_scope() as session:
         acknowledged_at = utc_now()
         if normalized == "opened":

@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, AudioLines, History, Plus } from "lucide-react";
+import { AudioLines, History, Plus } from "lucide-react";
 import clsx from "clsx";
 
 import type { ConversationSummary } from "../../lib/api";
@@ -11,30 +11,27 @@ import type { ConversationKindFilter } from "../../lib/use-conversation-list";
 interface Props {
   conversations: ConversationSummary[];
   activeConversationId: string | null;
-  showArchived: boolean;
   conversationKindFilter: ConversationKindFilter;
   mobile?: boolean;
   onNewConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
-  onToggleShowArchived: () => void;
   onChangeKindFilter: (filter: ConversationKindFilter) => void;
 }
 
 export function ConversationListPanel({
   conversations,
   activeConversationId,
-  showArchived,
   conversationKindFilter,
   mobile = false,
   onNewConversation,
   onSelectConversation,
-  onToggleShowArchived,
   onChangeKindFilter,
 }: Props) {
   const filters: Array<{ value: ConversationKindFilter; label: string }> = [
     { value: "all", label: "All" },
     { value: "standard", label: "Standard" },
     { value: "jarvis", label: "Jarvis" },
+    { value: "archived", label: "Archived" },
   ];
   const filterControls = (
     <div className="flex gap-1 rounded-xl border border-zinc-800 bg-zinc-950 p-1">
@@ -65,16 +62,7 @@ export function ConversationListPanel({
           <Plus size={14} />
           New conversation
         </button>
-        <div className="mb-3 space-y-2">
-          {filterControls}
-          <button
-            onClick={onToggleShowArchived}
-            className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300"
-          >
-            <Archive size={12} />
-            {showArchived ? "Hide Archived" : "Show Archived"}
-          </button>
-        </div>
+        <div className="mb-3">{filterControls}</div>
         <div className="space-y-2">
           {conversations.map((conversation) => (
             <button
@@ -104,6 +92,9 @@ export function ConversationListPanel({
                   {conversation.is_live ? "Live" : conversation.is_current_jarvis ? "Current Jarvis" : "Jarvis · Read only"}
                 </div>
               )}
+              {conversation.archived_at && (
+                <div className="mt-2 text-[11px] text-amber-400">Archived</div>
+              )}
             </button>
           ))}
         </div>
@@ -118,13 +109,6 @@ export function ConversationListPanel({
           <History size={16} className="text-zinc-500" />
           <span className="text-sm font-medium">Recent Conversations</span>
         </div>
-        <button
-          onClick={onToggleShowArchived}
-          className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
-        >
-          <Archive size={12} />
-          {showArchived ? "Hide Archived" : "Show Archived"}
-        </button>
       </div>
 
       <div className="px-4 pt-3">

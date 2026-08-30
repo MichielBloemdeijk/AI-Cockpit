@@ -20,6 +20,7 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - authenticated chat against provider profiles for the loopback local OpenAI-compatible server or explicit OpenRouter cloud turns
 - council mode that fans a prompt out to multiple models and synthesizes the result
 - durable conversation history with runs, events, transcript messages, artifacts, branches, archive state, and reviewed memory items
+- brain-only read access to approved Wiki documents plus standard-chat and closed-Jarvis history through recent and exact/substring retrieval
 - configurable defaults for new chat sessions, including tool flags and council settings
 - limited chat tools for workspace search and Python execution, with per-conversation workspace boundaries
 - a chat-first agent loop with provider-native tool use, plan-first product behavior, resumable question states, and durable run trace artifacts inside per-conversation workspaces
@@ -80,7 +81,7 @@ Next.js frontend  ->  FastAPI backend  ->  loopback llama.cpp / explicit OpenRou
 - Authoritative generated app source lives under `frontend/generated-apps/<slug>`, public assets live under `frontend/public/apps/<slug>`, and the registry synchronizes healthy source trees into `frontend/app/apps/<slug>` for Next.js routing.
 - Verifier scenarios exercise the same generated-app builder path but clean any transient `verifier-*` scaffold and asset roots after each run so the route tree stays reserved for durable surfaces.
 - Approved memory is written into markdown files under `knowledge/notes/` or structured entries in `knowledge/preferences.yaml`.
-- Approved knowledge is browsable in-app and readable by chat tools, without a separate retrieval index yet.
+- Approved knowledge is browsable at `/wiki` and readable through a brain-only retrieval tool, without a separate retrieval index.
 
 ## Backend Architecture
 
@@ -153,8 +154,7 @@ Provides the durable conversation APIs.
 
 Implemented responsibilities:
 
-- list conversations
-- include archived conversations on demand
+- list conversations with All, Standard, Jarvis, and archived-only projections
 - create an empty conversation or create one by starting a run immediately from an initial message
 - fetch transcript-focused conversation detail, including branch metadata and workspace state
 - fetch raw events and artifacts for a conversation
@@ -191,7 +191,7 @@ Implemented responsibilities:
 
 The voice API keeps one server-recognizable `mode_hint="voice"` conversation marked as the active primary. Voice turns are accepted as queued runs and owned by `RunSupervisor`; the HTTP request and event-stream observer can disconnect without cancelling work. The event stream replays after a monotonic conversation cursor. Background task completion, failure, cancellation, and restart interruption are persisted as task events plus assistant messages, which lets the frontend speak them in the same conversation.
 
-The notification API stores browser subscriptions and deduplicated deliveries. Push payloads reference the durable event ID and the `/jarvis` deep link. Delivery is attempted only for requested, important, failed, interrupted, or explicitly tested updates; disabled or missing VAPID configuration never causes a cloud fallback.
+The notification API stores browser subscriptions and delivery acknowledgements. First-class task notifications are written to `notification_outbox` in the same transaction as terminal task states or blocking questions, deduplicated by task-event ID, and delivered with exact `/tasks/{task_id}` or `/tasks/{task_id}?question={question_id}` links. Ordinary progress never enters this outbox. Delivery retries survive process restart, acknowledgement remains independent from audible presentation truth, and disabled or missing VAPID configuration never causes a cloud fallback. The earlier conversation-event delivery path remains compatibility code until Phase 11 retirement.
 
 ### Service Layer
 
@@ -375,6 +375,30 @@ Current behavior:
 
 This is the current bridge between conversation persistence and the future knowledge layer.
 
+#### `backend/app/services/brain_retrieval.py` and `backend/app/services/agent_tools/retrieval.py`
+
+Provide the brain-facing durable-memory read boundary.
+
+Current behavior:
+
+- browses recent approved file-backed Wiki documents or matches exact/substring queries, returning excerpts and stored provenance
+- browses or searches standard chats and closed Jarvis daily logs, including archived history while excluding the current/open Jarvis log
+- exposes `wiki_search` and `conversation_search` as read-only Agent tools
+- keeps both tools outside the six-operation Jarvis shell allowlist, so the Realtime shell cannot query archives directly
+- leaves all Wiki writes in the existing proposal/review workflow
+
+#### `backend/app/services/task_notifications.py`
+
+Owns durable first-class task Web Push delivery.
+
+Current behavior:
+
+- enqueues only terminal task events and blocking questions in the task transaction
+- deduplicates each notification intent by its durable task-event ID
+- claims, sends, retries, and recovers queued/failed outbox rows across API restarts
+- removes stale browser subscriptions and preserves queued intent when no active subscription remains
+- records opened/spoken acknowledgement without changing `task_presentations` or heard-speech state
+
 ## Persistence Model
 
 SQLAlchemy models live in `backend/app/db/tables.py`.
@@ -533,8 +557,8 @@ Current route groups:
 - `frontend/app/(app)/chat` for the main chat surface
 - `frontend/app/(app)/workspace/apps` for cockpit app management and app detail pages
 - `frontend/app/(app)/tasks` for the global task list and full task trace; the old background routes redirect here
-- `frontend/app/(app)/settings` for editable model and task-agent defaults for future sessions
-- `frontend/app/(app)/knowledge` for the review queue, approved knowledge list, and file-backed document browser
+- `frontend/app/(app)/settings` for editable model and task-agent defaults plus browser Push setup
+- `frontend/app/(app)/wiki` for the review queue, approved Wiki search, and file-backed document browser; `/knowledge` permanently redirects here
 
 Shared layout and chrome live under `frontend/app/layout.tsx`, `frontend/app/(app)/layout.tsx`, and shared components.
 
@@ -583,7 +607,9 @@ Current behavior:
 - renders a dedicated live agent-status surface for progress updates while keeping thought rows, tool rows, and final answers in the transcript
 - composes shared `ConversationListPanel` and `ConversationDetailsPanel` components for mobile and desktop detail surfaces
 - routes transcript rendering through a thin `ChatMessage` dispatcher with dedicated renderer modules for user, assistant, council, and timeline rows
-- shows archive controls, archived conversation filtering, and branch switching
+- shows explicit All, Standard, Jarvis, and Archived filters across desktop/mobile
+- renders archived conversations read-only until restored and keeps closed Jarvis logs permanently read-only
+- follows exact conversation deep links, including archived history, and exposes related-task links on task-backed assistant messages
 - exposes the limited tool surface and the active conversation workspace file list
 - offers recent conversation navigation in desktop sidebar and mobile chips
 
@@ -599,6 +625,7 @@ Current behavior:
 - exposes queue position, worker health, attempts, targets, questions, artifacts, results, cancellation, and explicit retry
 - renders the ordered task event stream through the reusable Agent trace components
 - keeps legacy child-run identifiers only as execution references while new conversation task cards project the global task identity
+- accepts exact notification links to the task or blocking question, acknowledges the opened notification, and links back to the originating conversation
 
 ### Jarvis Live UI Flow
 
@@ -636,9 +663,9 @@ Current behavior:
 - verifier runs clean up any transient `verifier-*` app scaffold after the scenario completes instead of leaving scratch routes behind
 - interactive edits to generated apps are tracked through conversation runs and app lease metadata rather than a separate task-first control plane
 
-### Knowledge UI State
+### Wiki UI State
 
-The knowledge page now exposes the full review-first knowledge workflow.
+The canonical `/wiki` page exposes the full review-first knowledge workflow; `/knowledge` is a permanent compatibility redirect.
 
 Current behavior:
 
@@ -647,6 +674,7 @@ Current behavior:
 - shows approved knowledge entries that were written into `knowledge/`
 - allows approved knowledge items to be deleted while tombstoning the backing DB row
 - provides a direct browser for the file-backed knowledge documents
+- searches approved items and documents locally and links provenance back to the source conversation
 
 ## Current Request and Execution Flows
 
@@ -762,11 +790,12 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, policy-driven proactive task updates, and the foreground browser-local wake lifecycle are complete through Phase 9. The installed exact-word model is accepted for the foreground POC; improved consistency at lower speaking volume is deferred to a later tuning pass.
+- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, policy-driven proactive task updates, the foreground browser-local wake lifecycle, and Phase 10 Wiki/history/Push/archive surfaces are complete. The installed exact-word model is accepted for the foreground POC; improved consistency at lower speaking volume is deferred to a later tuning pass.
+- Legacy local voice/STT/TTS, conversation-event Push, primary-voice, and compatibility background paths remain only for the explicit Phase 11 retirement pass.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, proactive-presentation, and deterministic browser wake-runtime boundaries without moving provider-specific event shapes into conversation or task services. Phase 10 now promotes the existing reviewed-knowledge, conversation-history, Web Push, and archive foundations into the final brain-facing and user-facing lifecycle surfaces.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, proactive-presentation, deterministic browser wake-runtime, brain retrieval, durable task Push, and archive-lifecycle boundaries without moving provider-specific event shapes into conversation or task services. Phase 11 now owns removal of the compatibility POC surfaces and final clean-setup verification.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 

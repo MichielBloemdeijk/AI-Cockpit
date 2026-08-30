@@ -574,11 +574,13 @@ export async function councilChat(
 export async function listConversations(
   includeArchived = false,
   kind: "all" | "standard" | "jarvis" = "all",
+  archivedOnly = false,
 ): Promise<ConversationSummary[]> {
   const params = new URLSearchParams({
     include_archived: includeArchived ? "true" : "false",
     kind,
   });
+  if (archivedOnly) params.set("archived_only", "true");
   const res = await fetch(`${BASE}/api/conversations?${params}`, { credentials: "include", cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();

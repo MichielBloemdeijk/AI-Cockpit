@@ -29,14 +29,14 @@ self.addEventListener("notificationclick", (event) => {
   if (payload.delivery_id) url.searchParams.set("delivery", payload.delivery_id);
   event.waitUntil((async () => {
     const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    const existing = clients.find((client) => new URL(client.url).pathname === "/jarvis" && "focus" in client);
+    const existing = clients.find((client) => "focus" in client);
     if (existing) {
       await existing.focus();
-      const target = new URL("/jarvis", self.location.origin);
-      if (payload.event_id) target.searchParams.set("update", payload.event_id);
-      if (payload.delivery_id) target.searchParams.set("delivery", payload.delivery_id);
-      if ("navigate" in existing) await existing.navigate(target.toString());
-      existing.postMessage({ type: "jarvis-open-update", payload });
+      if ("navigate" in existing) await existing.navigate(url.toString());
+      existing.postMessage({
+        type: url.pathname === "/jarvis" ? "jarvis-open-update" : "ai-cockpit-open-notification",
+        payload,
+      });
       return;
     }
     await self.clients.openWindow(url.toString());

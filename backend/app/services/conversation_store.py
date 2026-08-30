@@ -504,6 +504,7 @@ class ConversationStore:
         limit: int = 20,
         offset: int = 0,
         include_archived: bool = False,
+        archived_only: bool = False,
         conversation_kind: str | None = None,
         lifecycle_status: str | None = None,
     ) -> list[ConversationRecord]:
@@ -513,6 +514,7 @@ class ConversationStore:
                 limit=limit,
                 offset=offset,
                 include_archived=include_archived,
+                archived_only=archived_only,
                 conversation_kind=conversation_kind,
                 lifecycle_status=lifecycle_status,
             )

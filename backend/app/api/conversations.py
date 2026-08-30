@@ -60,13 +60,15 @@ async def list_conversations(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     include_archived: bool = Query(default=False),
+    archived_only: bool = Query(default=False),
     kind: Literal["all", "standard", "jarvis"] = Query(default="all"),
     lifecycle: Literal["all", "open", "closed"] = Query(default="all"),
 ):
     conversations = await conversation_store.list_conversations(
         limit=limit,
         offset=offset,
-        include_archived=include_archived,
+        include_archived=include_archived or archived_only,
+        archived_only=archived_only,
         conversation_kind=(
             None if kind == "all" else "jarvis_daily" if kind == "jarvis" else "standard"
         ),

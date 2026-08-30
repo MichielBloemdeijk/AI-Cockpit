@@ -12,7 +12,7 @@ const NAV = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/tasks", label: "Tasks", icon: ListTodo },
   { href: "/workspace/apps", label: "Apps", icon: Blocks },
-  { href: "/knowledge", label: "Knowledge", icon: BookOpen },
+  { href: "/wiki", label: "Wiki", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -16,10 +16,9 @@ interface Props {
   events: ConversationEventView[];
   artifacts: ConversationArtifactView[];
   mobile?: boolean;
-  showArchived: boolean;
   onArchiveConversation: () => void;
+  onUnarchiveConversation: () => void;
   onSelectBranch: (branchKey: string) => void;
-  onToggleShowArchived: () => void;
 }
 
 export function ConversationDetailsPanel({
@@ -29,10 +28,9 @@ export function ConversationDetailsPanel({
   events,
   artifacts,
   mobile = false,
-  showArchived,
   onArchiveConversation,
+  onUnarchiveConversation,
   onSelectBranch,
-  onToggleShowArchived,
 }: Props) {
   const usageSummary = summarizeConversationUsage(events, artifacts);
   const sessionCostLabel = formatUsageCost(usageSummary.totalUsage?.cost);
@@ -43,28 +41,22 @@ export function ConversationDetailsPanel({
   if (mobile) {
     return (
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        {activeConversation && activeConversation.branches.length > 1 && (
+        {activeConversation && (
           <section className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
               <GitBranch size={15} className="text-zinc-500" />
-              Branches
+              Conversation
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                onClick={onToggleShowArchived}
-                className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300"
-              >
-                {showArchived ? "Hide archived" : "Show archived"}
-              </button>
               {activeConversationId && (
                 <button
-                  onClick={onArchiveConversation}
+                  onClick={activeConversation.archived_at ? onUnarchiveConversation : onArchiveConversation}
                   className="rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300"
                 >
-                  Archive chat
+                  {activeConversation.archived_at ? "Restore chat" : "Archive chat"}
                 </button>
               )}
-              {activeConversation.branches.map((branch) => (
+              {activeConversation.branches.length > 1 && activeConversation.branches.map((branch) => (
                 <button
                   key={branch.branch_key}
                   onClick={() => onSelectBranch(branch.branch_key)}

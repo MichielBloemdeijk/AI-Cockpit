@@ -470,3 +470,8 @@ async def test_conversation_archive_and_branch_resend(monkeypatch):
         archived = await client.post(f"/api/conversations/{conversation_id}/archive")
         assert archived.status_code == 200
         assert archived.json()["archived_at"] is not None
+
+        active_listing = await client.get("/api/conversations?include_archived=false")
+        archived_listing = await client.get("/api/conversations?archived_only=true")
+        assert conversation_id not in {item["id"] for item in active_listing.json()}
+        assert {item["id"] for item in archived_listing.json()} == {conversation_id}

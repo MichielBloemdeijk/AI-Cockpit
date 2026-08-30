@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Archive, GitBranch, Layers3, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
+import { Archive, ArchiveRestore, GitBranch, Layers3, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import clsx from "clsx";
 import { useRouter } from "next/navigation";
 import { ChatActionErrorBanner } from "@/components/chat/ChatActionErrorBanner";
@@ -11,7 +11,7 @@ import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput, type ChatComposerMode } from "@/components/ChatInput";
 import { formatConversationModeLabel } from "@/components/chat/formatters";
 import { useChat } from "@/lib/hooks";
-import { ConversationSessionMetadata, getChatSettings } from "@/lib/api";
+import { ConversationSessionMetadata, getChatSettings, getConversation } from "@/lib/api";
 import { formatUsageCost, summarizeConversationUsage } from "@/lib/usage";
 
 function buildNewConversationMetadata(defaults: ConversationSessionMetadata): ConversationSessionMetadata {
@@ -37,7 +37,6 @@ export default function ChatPage() {
     activeConversation,
     events,
     artifacts,
-    showArchived,
     conversationKindFilter,
     loading,
     canStop,
@@ -48,13 +47,14 @@ export default function ChatPage() {
     clearActionError,
     resendFromMessage,
     stopStreaming,
+    unarchiveActiveConversation,
     clearMessages,
     selectConversation,
     selectBranch,
-    setShowArchived,
     setConversationKindFilter,
   } = useChat();
   const messagesViewportRef = useRef<HTMLDivElement>(null);
+  const deepLinkHandledRef = useRef(false);
 
   useEffect(() => {
     getChatSettings().then((response) => {
@@ -89,7 +89,7 @@ export default function ChatPage() {
   const activeSessionMetadata = activeConversation?.session_metadata ?? draftSessionMetadata;
   const councilMode = activeSessionMetadata?.mode === "council";
   const activeConversationSummary = conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
-  const activeConversationTitle = activeConversationSummary?.title || "Chat";
+  const activeConversationTitle = activeConversationSummary?.title || activeConversation?.title || "Chat";
   const mobileHeaderBadge = councilMode && activeSessionMetadata
     ? `${activeSessionMetadata.council_models.length} models`
     : null;
@@ -97,10 +97,12 @@ export default function ChatPage() {
   const sessionCostLabel = formatUsageCost(usageSummary.totalUsage?.cost);
   const hasUsageSummary = usageSummary.requestCount > 0;
   const hasConversationDetails = Boolean(activeConversationId && (events.length > 0 || artifacts.length > 0 || activeConversation?.workspace?.files.length));
+  const archivedConversation = Boolean(activeConversation?.archived_at);
   const readOnlyJarvisLog = Boolean(activeConversation?.is_read_only);
+  const readOnlyConversation = readOnlyJarvisLog || archivedConversation;
 
   const handleSend = async (payload: { mode: ChatComposerMode; value: string }) => {
-    if (!activeSessionMetadata || readOnlyJarvisLog) return;
+    if (!activeSessionMetadata || readOnlyConversation) return;
     if (payload.mode === "chat" || activeSessionMetadata.mode === "council") {
       await sendMessage(payload.value, activeSessionMetadata);
       return;
@@ -148,16 +150,39 @@ export default function ChatPage() {
     selectConversation(conversationId);
   };
 
+  const handleUnarchiveConversation = async () => {
+    await unarchiveActiveConversation();
+    setConversationKindFilter("all");
+  };
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    const conversationId = new URLSearchParams(window.location.search).get("conversation");
+    if (!conversationId) {
+      deepLinkHandledRef.current = true;
+      return;
+    }
+    deepLinkHandledRef.current = true;
+    void getConversation(conversationId).then((selected) => {
+      if (selected.is_current_jarvis) {
+        router.push("/jarvis");
+        return;
+      }
+      if (selected.archived_at) setConversationKindFilter("archived");
+      selectConversation(conversationId);
+    }).catch(() => {
+      // Keep the normal Chat selection if a stale or invalid deep link cannot be resolved.
+    });
+  }, [router, selectConversation, setConversationKindFilter]);
+
   return (
     <div className="flex h-full min-h-0 bg-zinc-900">
       <ConversationListPanel
         conversations={conversations}
         activeConversationId={activeConversationId}
-        showArchived={showArchived}
         conversationKindFilter={conversationKindFilter}
         onNewConversation={handleNewConversation}
         onSelectConversation={handleSelectConversation}
-        onToggleShowArchived={() => setShowArchived(!showArchived)}
         onChangeKindFilter={setConversationKindFilter}
       />
 
@@ -223,11 +248,11 @@ export default function ChatPage() {
               )}
               {activeConversationId && (
                 <button
-                  onClick={() => archiveActiveConversation()}
+                  onClick={() => archivedConversation ? void handleUnarchiveConversation() : archiveActiveConversation()}
                   className="hidden items-center gap-1 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 md:inline-flex"
                 >
-                  <Archive size={12} />
-                  Archive
+                  {archivedConversation ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                  {archivedConversation ? "Restore" : "Archive"}
                 </button>
               )}
             </div>
@@ -255,7 +280,6 @@ export default function ChatPage() {
                   mobile
                   conversations={conversations}
                   activeConversationId={activeConversationId}
-                  showArchived={showArchived}
                   conversationKindFilter={conversationKindFilter}
                   onNewConversation={() => {
                     handleNewConversation();
@@ -265,7 +289,6 @@ export default function ChatPage() {
                     handleSelectConversation(conversationId);
                     closeMobileDrawer();
                   }}
-                  onToggleShowArchived={() => setShowArchived(!showArchived)}
                   onChangeKindFilter={setConversationKindFilter}
                 />
               ) : (
@@ -276,16 +299,18 @@ export default function ChatPage() {
                   activeBranchKey={activeBranchKey}
                   events={events}
                   artifacts={artifacts}
-                  showArchived={showArchived}
                   onArchiveConversation={() => {
                     archiveActiveConversation();
+                    closeMobileDrawer();
+                  }}
+                  onUnarchiveConversation={() => {
+                    void handleUnarchiveConversation();
                     closeMobileDrawer();
                   }}
                   onSelectBranch={(branchKey) => {
                     selectBranch(branchKey);
                     closeMobileDrawer();
                   }}
-                  onToggleShowArchived={() => setShowArchived(!showArchived)}
                 />
               )}
             </div>
@@ -345,7 +370,7 @@ export default function ChatPage() {
             </div>
           ) : (
             <>
-              {activeConversation && !readOnlyJarvisLog && activeConversation.branches.length > 1 && (
+              {activeConversation && !readOnlyConversation && activeConversation.branches.length > 1 && (
                 <div className="mb-4 px-3 md:px-4">
                   <div className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
                     <div className="flex items-center gap-2 text-sm font-medium text-zinc-100">
@@ -372,7 +397,7 @@ export default function ChatPage() {
                 </div>
               )}
 
-              {editingMessageId && !readOnlyJarvisLog && (
+              {editingMessageId && !readOnlyConversation && (
                 <div className="mb-4 px-3 md:px-4">
                   <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
                     <div className="text-sm font-medium text-amber-100">Edit this user turn and resend into a new branch</div>
@@ -409,10 +434,9 @@ export default function ChatPage() {
                   activeBranchKey={activeBranchKey}
                   events={events}
                   artifacts={artifacts}
-                  showArchived={showArchived}
                   onArchiveConversation={archiveActiveConversation}
+                  onUnarchiveConversation={() => void handleUnarchiveConversation()}
                   onSelectBranch={selectBranch}
-                  onToggleShowArchived={() => setShowArchived(!showArchived)}
                 />
               )}
               {actionError && <ChatActionErrorBanner error={actionError} onDismiss={clearActionError} />}
@@ -423,20 +447,29 @@ export default function ChatPage() {
                   </div>
                 </div>
               )}
+              {archivedConversation && (
+                <div className="mb-4 px-3 md:px-4">
+                  <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                    This archived conversation is read-only here. Restore it to continue, branch, or resend.
+                  </div>
+                </div>
+              )}
               {messages.map((msg) => (
                 <ChatMessage
                   key={msg.activityId ?? msg.id}
                   message={msg}
-                  onEdit={!readOnlyJarvisLog && msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
+                  onEdit={!readOnlyConversation && msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
                 />
               ))}
             </>
           )}
         </div>
 
-        {readOnlyJarvisLog ? (
+        {readOnlyConversation ? (
           <div className="border-t border-zinc-700 bg-zinc-900 px-4 py-3 text-center text-xs text-zinc-500">
-            Closed Jarvis logs cannot be continued, branched, or resent.
+            {archivedConversation
+              ? "Archived conversations are read-only until restored."
+              : "Closed Jarvis logs cannot be continued, branched, or resent."}
           </div>
         ) : (
           <ChatInput

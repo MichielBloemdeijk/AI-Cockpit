@@ -22,6 +22,7 @@ from app.db.tables import (
     TaskTarget,
     WorkerInstance,
 )
+from app.services.task_notifications import enqueue_task_notification, schedule_task_notification
 
 
 ACTIVE_TASK_STATUSES = {"queued", "running", "waiting_for_input"}
@@ -204,6 +205,7 @@ class TaskService:
             return await self._worker_health(session)
 
     async def cancel(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
+        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -226,16 +228,20 @@ class TaskService:
                 task.finished_at = now
                 task.updated_at = now
                 task.terminal_summary = "Task cancelled by user."
-                await repo.append_event(
+                event = await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
                     event_type="task.cancelled",
                     payload_json={"status": "cancelled", "summary": task.terminal_summary},
                     idempotency_key=f"task.cancel:{task_id}:{idempotency_key}",
                 )
+                outbox_id = await enqueue_task_notification(session, task=task, event=event)
                 await self._end_current_attempt(session, task, reason="cancelled")
             await session.flush()
-            return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
+            snapshot = TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
+        if outbox_id is not None:
+            await schedule_task_notification(outbox_id)
+        return snapshot
 
     async def retry(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
         async with session_scope() as session:
@@ -273,6 +279,7 @@ class TaskService:
         normalized = " ".join(question.split()).strip()
         if not normalized:
             raise ValueError("Task question cannot be empty")
+        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -305,8 +312,17 @@ class TaskService:
             task.status = "waiting_for_input"
             task.updated_at = utc_now()
             await self._end_current_attempt(session, task, reason="waiting_for_input")
+            outbox_id = await enqueue_task_notification(
+                session,
+                task=task,
+                event=event,
+                question=question_row,
+            )
             await session.flush()
-            return question_row
+            saved_question = question_row
+        if outbox_id is not None:
+            await schedule_task_notification(outbox_id)
+        return saved_question
 
     async def answer_question(
         self,
@@ -388,6 +404,7 @@ class TaskService:
 
     async def finish_cancellation(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
         """Record that a running attempt observed a requested cancellation."""
+        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -400,16 +417,20 @@ class TaskService:
                 task.finished_at = now
                 task.updated_at = now
                 task.terminal_summary = "Task cancelled by user."
-                await repo.append_event(
+                event = await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
                     event_type="task.cancelled",
                     payload_json={"status": "cancelled", "summary": task.terminal_summary},
                     idempotency_key=event_key,
                 )
+                outbox_id = await enqueue_task_notification(session, task=task, event=event)
                 await self._end_current_attempt(session, task, reason="cancelled")
             await session.flush()
-            return TaskSnapshot(task=task, queue_position=None)
+            snapshot = TaskSnapshot(task=task, queue_position=None)
+        if outbox_id is not None:
+            await schedule_task_notification(outbox_id)
+        return snapshot
 
     async def complete(
         self,
@@ -422,6 +443,7 @@ class TaskService:
         if status not in {"completed", "failed", "interrupted"}:
             raise ValueError(f"Invalid terminal task status: {status}")
         normalized = " ".join(summary.split()).strip()
+        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -434,16 +456,20 @@ class TaskService:
                 task.terminal_summary = normalized or None
                 task.finished_at = now
                 task.updated_at = now
-                await repo.append_event(
+                event = await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
                     event_type=f"task.{status}",
                     payload_json={"status": status, "summary": normalized},
                     idempotency_key=event_key,
                 )
+                outbox_id = await enqueue_task_notification(session, task=task, event=event)
                 await self._end_current_attempt(session, task, reason=status)
             await session.flush()
-            return TaskSnapshot(task=task, queue_position=None)
+            snapshot = TaskSnapshot(task=task, queue_position=None)
+        if outbox_id is not None:
+            await schedule_task_notification(outbox_id)
+        return snapshot
 
     async def add_artifact(
         self,

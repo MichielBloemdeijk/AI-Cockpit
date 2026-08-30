@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Ban, Bot, Loader2, RefreshCw, Send } from "lucide-react";
+import { ArrowLeft, Ban, Bot, ExternalLink, Loader2, RefreshCw, Send } from "lucide-react";
 
 import { ChatMessage } from "@/components/ChatMessage";
-import { answerTaskQuestion, cancelTask, getTask, retryTask, type TaskDetail } from "@/lib/api";
+import { acknowledgePushDelivery, answerTaskQuestion, cancelTask, getTask, retryTask, type TaskDetail } from "@/lib/api";
 import { taskEventToChatMessage } from "@/lib/task-trace";
 
 const RETRYABLE = new Set(["failed", "interrupted", "cancelled"]);
@@ -18,6 +18,22 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [linkedQuestionId, setLinkedQuestionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    setLinkedQuestionId(query.get("question"));
+    const deliveryId = query.get("delivery");
+    if (deliveryId) void acknowledgePushDelivery(deliveryId, "opened");
+  }, []);
+
+  useEffect(() => {
+    if (!task || !linkedQuestionId) return;
+    document.getElementById(`question-${linkedQuestionId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  }, [linkedQuestionId, task]);
 
   const refresh = useCallback(async () => {
     try {
@@ -115,13 +131,27 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                   <div className="flex justify-between gap-3"><dt className="text-zinc-500">Worker</dt><dd className={task.worker_health.status === "online" ? "text-emerald-300" : "text-zinc-400"}>{task.worker_health.status}</dd></div>
                   <div className="flex justify-between gap-3"><dt className="text-zinc-500">Origin</dt><dd className="text-zinc-200">{task.origin_surface.replaceAll("_", " ")}</dd></div>
                 </dl>
+                {task.origin_conversation_id && (
+                  <Link
+                    href={`/chat?conversation=${task.origin_conversation_id}`}
+                    className="mt-3 inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Open related conversation <ExternalLink size={12} />
+                  </Link>
+                )}
                 {task.cancellation_requested_at && task.status === "running" && <p className="mt-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">Cancellation requested; waiting for the worker to exit safely.</p>}
                 {task.terminal_summary && <p className="mt-3 border-t border-zinc-800 pt-3 text-zinc-300">{task.terminal_summary}</p>}
               </section>
             )}
 
             {task?.questions.filter((question) => question.state === "asked").map((question) => (
-              <section key={question.id} className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+              <section
+                key={question.id}
+                id={`question-${question.id}`}
+                className={linkedQuestionId === question.id
+                  ? "rounded-2xl border border-amber-300 bg-amber-500/10 p-4 ring-2 ring-amber-300/30"
+                  : "rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4"}
+              >
                 <h2 className="text-xs font-medium uppercase tracking-wider text-amber-300">Input required</h2>
                 <p className="mt-2 text-sm text-zinc-200">{question.question}</p>
                 <div className="mt-3 flex gap-2">

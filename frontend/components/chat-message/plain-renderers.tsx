@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Bot, ChevronDown, ChevronRight, Loader2, Pencil, User } from "lucide-react";
+import Link from "next/link";
 
 import type { ChatMessage } from "../../lib/chat-state-types";
 import { formatTokenCount, formatUsageCost } from "../../lib/usage";
@@ -96,6 +97,15 @@ export function AssistantMessageRenderer({ message }: { message: ChatMessage }) 
                 {messageCost && <span>Cost {messageCost} credits</span>}
                 {messageTokens && <span>{messageTokens} tokens</span>}
               </div>
+            )}
+
+            {!message.streaming && message.taskId && (
+              <Link
+                href={`/tasks/${message.taskId}`}
+                className="inline-flex text-xs text-blue-400 transition-colors hover:text-blue-300"
+              >
+                View related task
+              </Link>
             )}
 
             {message.councilData && (

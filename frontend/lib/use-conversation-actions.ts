@@ -9,6 +9,7 @@ import {
   executeConversationTool,
   resendConversationBranch,
   streamChat,
+  unarchiveConversation,
   type ConversationDetail,
   type ConversationEventView,
   type ConversationSessionMetadata,
@@ -520,6 +521,19 @@ export function useConversationActions({
     }
   }, [activeConversationId, clearActionError, refreshConversations, setActiveBranchKey, setActiveConversationId]);
 
+  const unarchiveActiveConversation = useCallback(async () => {
+    if (!activeConversationId) return;
+    clearActionError();
+    try {
+      await unarchiveConversation(activeConversationId);
+      await refreshConversations(activeConversationId);
+      await loadConversation(activeConversationId, activeBranchKey);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setActionError({ scope: "archive", message: errorMessage });
+    }
+  }, [activeBranchKey, activeConversationId, clearActionError, loadConversation, refreshConversations]);
+
   const resendFromMessage = useCallback(async (sourceMessageId: string, content: string) => {
     if (!activeConversationId) return;
     clearActionError();
@@ -580,5 +594,6 @@ export function useConversationActions({
     selectConversation,
     sendMessage,
     stopStreaming,
+    unarchiveActiveConversation,
   };
 }
