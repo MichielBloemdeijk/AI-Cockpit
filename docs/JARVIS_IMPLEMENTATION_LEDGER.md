@@ -6,10 +6,10 @@ This ledger is the restart point for every Jarvis implementation session. The no
 
 ## Current position
 
-- **Current phase:** Phase 9 — browser-local wake and follow-up lifecycle
-- **Last completed phase:** Phase 8
+- **Current phase:** Phase 10 — Wiki/search, notifications, and archive experience
+- **Last completed phase:** Phase 9
 - **Product implementation started:** yes
-- **Next session entry point:** run deliberate-wake, false-activation, command-preservation, fallback, and UI-responsiveness acceptance for the installed foreground Jarvis model
+- **Next session entry point:** inventory the existing Wiki/search, Push outbox, and archive surfaces against the Phase 10 contract, then close the missing brain-facing and user-facing paths
 - **Baseline branch:** codex/jarvis-voice-poc
 - **Baseline commit:** 281fc9f9cbe7fed44cc11b4b3ee7f2c7c56f2b97
 - **Phase 0 completion commit:** 5b9aa8c707324d9be079266fc7ee8afc5b2134db
@@ -26,9 +26,9 @@ This ledger is the restart point for every Jarvis implementation session. The no
 | 5. Coordinator, fake provider, and live workspace | Complete | Passed 2026-08-27 | 71f78e9 |
 | 6. OpenAI Realtime and WebRTC | Complete | Passed 2026-08-29 | 58b2a78 |
 | 7. Barge-in and audible-history truth | Complete | Passed 2026-08-29 | 5d0ad65 |
-| 8. Brain delegation and proactive updates | Complete | Passed 2026-08-29 | `feat(jarvis): add policy-driven proactive updates` |
-| 9. Browser-local wake and follow-up | In progress | — | — |
-| 10. Wiki/search, notifications, and archive UX | Not started | — | — |
+| 8. Brain delegation and proactive updates | Complete | Passed 2026-08-29 | 5e8a2d1 |
+| 9. Browser-local wake and follow-up | Complete | Accepted 2026-08-30 with low-volume tuning deferred | 4a949eb |
+| 10. Wiki/search, notifications, and archive UX | In progress | — | — |
 | 11. POC retirement and final verification | Not started | — | — |
 
 ## Phase 0 record
@@ -585,7 +585,7 @@ Run on 2026-08-29:
 - Next entry point: Phase 9 browser-local wake lifecycle and deterministic runtime tests
 - Blockers: none
 
-## Phase 9 record (in progress)
+## Phase 9 record (complete)
 
 ### Scope completed so far
 
@@ -661,13 +661,24 @@ heybuddy train jarvis --perceptron --training-medium-default-dataset
 - Hey Buddy replaced 16 non-finite embeddings across pass 2's 800,000 generated embeddings using its built-in fallback. The final checkpoint and exported inference outputs remained finite.
 - The official GitHub documentation labels source and pretrained models Apache-2.0 and training datasets CC-BY 4.0 with component licenses. The Hugging Face repository metadata is more conservative; the installer and training record retain exact revisions and hashes rather than flattening this provenance.
 - The one-shot media-track path is primary. Sideband audio injection has not been added because deterministic handoff tests pass; it remains the plan's conditional fallback only if real browser/provider testing shows replay duplication or rejection.
+- The product owner accepted the foreground wake flow on 2026-08-30 after real use. The selected model can be inconsistent at lower speaking volume, so quiet-speech robustness remains a documented future tuning item rather than a Phase 10 blocker.
+- The scripted 20-invocation and 30-minute worksheet was not reported as a counted run. This is an explicit product-acceptance deviation from the numeric manual gate, not a claim that those counts passed. The local VAD plus faster-whisper fallback was therefore not selected.
 
 ### Checkpoint
 
-- Status: implementation, model training, selection, install, and automated verification complete; Phase 9 remains in progress only for foreground-device acceptance
+- Status: accepted 2026-08-30 for the foreground POC, with low-volume wake-model tuning deferred
 - Starting HEAD: `5e8a2d1`
-- Next entry point: run the manual acceptance worksheet in `docs/JARVIS_WAKE_MODEL.md`; if it misses the locked target, use the planned research/tuning checkpoint before changing the runtime or training a third model
-- Blockers: no code blocker; the remaining gate requires real foreground microphone/media testing on the user's device
+- Implementation commit: `4a949eb`
+- Next entry point: Phase 10 Wiki/search, notifications, and archive experience
+- Blockers: none
+
+## Phase 10 record (in progress)
+
+### Entry state
+
+- Phase 9's foreground wake lifecycle is accepted for continued product work.
+- Lower-volume wake consistency is deferred to a later calibration pass and does not change the Phase 10 scope.
+- Existing reviewed knowledge, Web Push, archive, and history code must be inventoried before adding new paths so Phase 10 promotes rather than duplicates those capabilities.
 
 ## Phase 1 entry checklist (completed)
 

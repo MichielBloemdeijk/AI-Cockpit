@@ -110,8 +110,11 @@ pass 1 remains the selected candidate.
 
 A separately drawn direct checkpoint sweep produced `71.20%` recall and
 `0.66%` adversarial false positives at threshold `0.5`; this expected sampling
-spread in generated utterances is why the real-device acceptance gate below is
-required before Phase 9 is marked complete.
+spread in generated utterances is why the real-device worksheet below was the
+original numeric acceptance gate for Phase 9. On 2026-08-30 the product
+owner accepted the foreground POC from normal real-device use without reporting
+the scripted counts. This explicit acceptance moves implementation forward while
+keeping lower-volume consistency as a future tuning item.
 
 The selected checkpoint was exported as a single-file opset-19 ONNX graph on
 Windows to avoid the external tensor sidecar emitted by the current WSL
@@ -120,10 +123,18 @@ with maximum absolute error `1.3096723705530167e-09`, and the integrity-checking
 installer reproduced the hash and byte size recorded above. The earlier smoke
 model is no longer installed.
 
-## Manual acceptance worksheet (pending)
+## Manual acceptance outcome and future tuning worksheet
+
+The foreground candidate was accepted for the POC on 2026-08-30. Wake,
+command-tail preservation, and the surrounding voice flow were good enough to
+continue, but recognition remains inconsistent when the wake phrase is spoken
+at lower volume. The VAD plus faster-whisper fallback was not selected. A later
+tuning pass should use the worksheet below, with deliberate quiet-speech cases
+added, before replacing the installed model.
 
 This is intentionally a foreground-PWA test; background phone listening is not
-part of Phase 9. Record the device, browser, and date alongside these results:
+part of Phase 9. For the future calibration run, record the device, browser, and
+date alongside these results:
 
 - Run 20 deliberate invocations, split between `Jarvis` alone and `Jarvis`
   immediately followed by a natural command. At least 18 must activate.

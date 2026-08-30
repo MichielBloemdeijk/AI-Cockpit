@@ -762,11 +762,11 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, and policy-driven proactive task updates are complete through Phase 8. Phase 9's deterministic browser-local worker, 2.5-second ring buffer, one-shot command-tail handoff, 60-second follow-up, auto-arm opt-in, manual fallback, and trained exact-word model are implemented; foreground-device wake-quality acceptance remains.
+- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, policy-driven proactive task updates, and the foreground browser-local wake lifecycle are complete through Phase 9. The installed exact-word model is accepted for the foreground POC; improved consistency at lower speaking volume is deferred to a later tuning pass.
 
 ## Architectural Direction
 
-The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, proactive-presentation, and deterministic browser wake-runtime boundaries without moving provider-specific event shapes into conversation or task services. The remaining Phase 9 gate is the bounded foreground-device deliberate-wake, false-activation, command-preservation, fallback, and responsiveness acceptance pass for the installed model.
+The codebase has crossed the durable conversation, global task, separate worker, provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard-history, proactive-presentation, and deterministic browser wake-runtime boundaries without moving provider-specific event shapes into conversation or task services. Phase 10 now promotes the existing reviewed-knowledge, conversation-history, Web Push, and archive foundations into the final brain-facing and user-facing lifecycle surfaces.
 
 For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
 
