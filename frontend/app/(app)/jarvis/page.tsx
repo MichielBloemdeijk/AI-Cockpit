@@ -610,7 +610,7 @@ export default function JarvisPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-zinc-950 text-zinc-100">
+    <div className="flex h-0 min-h-0 flex-1 flex-col overflow-hidden bg-zinc-950 text-zinc-100">
       <audio
         ref={remoteAudioRef}
         autoPlay
