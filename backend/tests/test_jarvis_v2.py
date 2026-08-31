@@ -157,11 +157,13 @@ async def test_pairing_credentials_are_scoped_to_the_paired_device() -> None:
         code_response = await admin.post("/api/jarvis/devices/pairing-code")
         assert code_response.status_code == 200
         code = code_response.json()["code"]
+    expected_cursor, _ = await jarvis_live_service.replay(after=0, limit=1)
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as device:
         pairing = await device.post("/api/jarvis/devices/pair", json={"code": code, "label": "Pixel"})
         assert pairing.status_code == 200
         identity = pairing.json()
+        assert identity["event_cursor"] == expected_cursor
         device.headers["Authorization"] = f"Bearer {identity['credential']}"
         own = await device.patch(
             f"/api/jarvis/devices/{identity['device_id']}", json={"lock_state": "locked", "event_cursor": 7}

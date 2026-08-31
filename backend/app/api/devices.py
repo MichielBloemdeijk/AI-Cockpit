@@ -25,7 +25,11 @@ async def pair_device(request: DevicePairRequest) -> DevicePairResponse:
         device, credential = await jarvis_device_service.pair(code=request.code, label=request.label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return DevicePairResponse(device_id=device.id, credential=credential)
+    return DevicePairResponse(
+        device_id=device.id,
+        credential=credential,
+        event_cursor=device.event_cursor,
+    )
 
 
 @router.patch("/{device_id}", dependencies=[Depends(require_jarvis_auth)])

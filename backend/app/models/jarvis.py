@@ -223,6 +223,7 @@ class DevicePairRequest(BaseModel):
 class DevicePairResponse(BaseModel):
     device_id: str
     credential: str
+    event_cursor: int = Field(ge=0)
 
 
 class DeviceStatePatch(BaseModel):

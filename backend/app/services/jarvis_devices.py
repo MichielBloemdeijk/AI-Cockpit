@@ -8,11 +8,11 @@ import secrets
 from uuid import uuid4
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import JarvisDevice, JarvisPairingCode
+from app.db.tables import JarvisDevice, JarvisLiveEvent, JarvisPairingCode
 from app.services.auth import SESSION_COOKIE_NAME, verify_session_token
 
 
@@ -53,11 +53,15 @@ class JarvisDeviceService:
             if expiry <= now:
                 raise ValueError("Pairing code has expired")
             row.consumed_at = now
+            latest_event_cursor = int((await session.execute(
+                select(func.max(JarvisLiveEvent.sequence))
+            )).scalar_one_or_none() or 0)
             device = JarvisDevice(
                 id=str(uuid4()),
                 label=" ".join(label.split()).strip(),
                 credential_hash=_hash(credential),
                 platform="android",
+                event_cursor=latest_event_cursor,
                 last_seen_at=now,
             )
             session.add(device)
