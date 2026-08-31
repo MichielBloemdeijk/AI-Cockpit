@@ -4,8 +4,8 @@
 
 - Wake phrase: `jarvis`
 - Candidate ID: `jarvis-en-phase9-pass1-20260829`
-- Status: installed; automated evaluation complete; foreground-device acceptance pending
-- Intended runtime: foreground browser Worker through ONNX Runtime Web/WASM
+- Status: installed; automated evaluation complete; foreground POC accepted; stricter v2 calibrated-device acceptance pending
+- Intended runtime: foreground browser Worker through ONNX Runtime Web/WASM and Android ONNX Runtime
 - Model input: one window of 16 speech-embedding frames by 96 features
 - Activation threshold: `0.5`
 - ONNX size: `1,031,919` bytes
@@ -75,7 +75,18 @@ the generated model.
 - 2,000 initial steps and two stages; the second stage expands to 4,000 steps
 - Validation every 250 steps, dynamic negative weighting, threshold `0.5`
 
-The exact trainer invocation is retained in the Phase 9 implementation ledger.
+Trainer invocation:
+
+```text
+heybuddy train jarvis --perceptron --training-medium-default-dataset
+  --augmentation-dataset-no-streaming --positive-samples 25000
+  --adversarial-samples 25000 --adversarial-phrases 250
+  --validation-samples 5000 --testing-positive-samples 5000
+  --testing-adversarial-samples 5000 --num-batch-threads 4
+  --validation-num-batch-threads 1 --testing-num-batch-threads 1
+  --steps 2000 --stages 2 --validation-steps 250
+  --checkpoint-steps 2000 --logging-steps 10
+```
 
 ## Pass 2 configuration
 
@@ -84,7 +95,20 @@ positive and 50,000 adversarial utterances, retained 250 adversarial phrases,
 and used 3,000 initial steps plus a 6,000-step false-positive-tuned stage. The
 validation and testing sets remained 5,000 synthetic positive examples each,
 with 5,000 adversarial test examples and a target of 2.0 false activations per
-hour. Its exact invocation is also retained in the implementation ledger.
+hour. Its exact invocation is:
+
+```text
+heybuddy train jarvis --perceptron --training-medium-default-dataset
+  --augmentation-dataset-no-streaming --positive-samples 50000
+  --adversarial-samples 50000 --adversarial-phrases 250
+  --positive-batch-size 100 --adversarial-batch-size 100
+  --negative-batch-size 1000 --target-false-positive-rate 2.0
+  --validation-samples 5000 --testing-positive-samples 5000
+  --testing-adversarial-samples 5000 --num-batch-threads 4
+  --validation-num-batch-threads 1 --testing-num-batch-threads 1
+  --steps 3000 --stages 2 --validation-steps 250
+  --checkpoint-steps 3000 --logging-steps 10
+```
 
 Hey Buddy replaced four non-finite speech embeddings in each of pass 2's four
 bounded feature batches using its built-in random fallback (16 embeddings out
@@ -132,9 +156,15 @@ at lower volume. The VAD plus faster-whisper fallback was not selected. A later
 tuning pass should use the worksheet below, with deliberate quiet-speech cases
 added, before replacing the installed model.
 
-This is intentionally a foreground-PWA test; background phone listening is not
-part of Phase 9. For the future calibration run, record the device, browser, and
-date alongside these results:
+The v2 calibration wizard records normal, quiet, distant, noisy, and
+hard-negative samples into browser-local IndexedDB. Samples can be reviewed,
+exported as a versioned JSON/audio bundle for the isolated GPU training
+environment, or deleted; ordinary background audio is never added. The same
+installed ONNX artifact is consumed by the browser and Android companion.
+
+The earlier worksheet was intentionally a foreground-PWA test; background phone
+listening was not part of Phase 9. For the v2 calibrated run, record the device,
+browser or Android build, and date alongside these results:
 
 - Run 20 deliberate invocations, split between `Jarvis` alone and `Jarvis`
   immediately followed by a natural command. At least 18 must activate.
@@ -144,3 +174,7 @@ date alongside these results:
 - Confirm activation does not visibly stall scrolling, typing, or navigation.
 - Confirm explicit Sleep returns to wake-only listening after the live follow-up
   window, and that a browser-blocked auto-arm exposes a functional Arm button.
+- Measure at least 95% normal-volume recall, 90% quiet/distant recall, no more
+  than one false wake per evaluation hour, 95% address precision, and 90%
+  address recall before replacing the selected candidate or marking v2 release
+  acceptance complete.

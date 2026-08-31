@@ -7,11 +7,8 @@ This document describes the current architecture of AI Cockpit as it exists in t
 ## Related Docs
 
 - [README.md](../README.md) for setup, runtime entrypoints, and the high-level product overview
-- [JARVIS_VOICE_POC.md](JARVIS_VOICE_POC.md) for the historical, retired batch-voice prototype contract and acceptance evidence
-- [JARVIS_TARGET_ARCHITECTURE.md](JARVIS_TARGET_ARCHITECTURE.md) for the agreed Jarvis end-state architecture
-- [JARVIS_EVOLUTION_ARCHITECTURE.md](JARVIS_EVOLUTION_ARCHITECTURE.md) for the high-level POC-to-target assessment
-- [JARVIS_IMPLEMENTATION_PLAN.md](JARVIS_IMPLEMENTATION_PLAN.md) for the approved phased Jarvis implementation contract
-- [JARVIS_IMPLEMENTATION_LEDGER.md](JARVIS_IMPLEMENTATION_LEDGER.md) for checkpoint evidence and the next-session entry point
+- [JARVIS_FOLLOW_UP_PLAN.md](JARVIS_FOLLOW_UP_PLAN.md) for the living v2 implementation and release-acceptance record
+- [JARVIS_WAKE_MODEL.md](JARVIS_WAKE_MODEL.md) for wake-model provenance, evaluation, and calibration gates
 
 ## System Overview
 
@@ -20,14 +17,15 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - authenticated chat against provider profiles for the loopback local OpenAI-compatible server or explicit OpenRouter cloud turns
 - council mode that fans a prompt out to multiple models and synthesizes the result
 - durable conversation history with runs, events, transcript messages, artifacts, branches, archive state, and reviewed memory items
-- brain-only read access to approved Wiki documents plus standard-chat and closed-Jarvis history through recent and exact/substring retrieval
+- reviewed memory proposals and approved Wiki documents, plus a unified FTS5 recall index over user-visible conversations, tasks, and approved memory
 - configurable defaults for new chat sessions, including tool flags and council settings
 - limited chat tools for workspace search and Python execution, with per-conversation workspace boundaries
 - a chat-first agent loop with provider-native tool use, plan-first product behavior, resumable question states, and durable run trace artifacts inside per-conversation workspaces
 - durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
 - chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
-- a `/jarvis` PWA with OpenAI Realtime WebRTC plus backend sideband control, durable daily logs, first-class global tasks with replayable traces, and optional Web Push delivery
+- a phone-first `/jarvis` PWA with OpenAI Realtime WebRTC, provisional transcript streaming, durable daily logs and focus, first-class tasks and reminders, natural task references, local wake/address detection, and optional Web Push delivery
+- an Android 17/API 37 companion that can hold the assistant role, invoke a native Compose session, run the same local wake model, stream Realtime audio and durable events, and host the phone UI in a constrained WebView
 
 ## Required App-Builder Direction
 
@@ -42,20 +40,17 @@ The required product direction for generated apps is a chat-resident agent loop:
 
 This remains the primary control plane for interactive generated-app work. Delegation from chat creates a first-class global task directly; the retired `/voice` page permanently redirects to `/jarvis`. A separate `python -m app.worker` process claims and executes global tasks. FastAPI records only the causal delegation event and task card, not a child conversation run.
 
-The product is currently split into a FastAPI backend, a Next.js frontend, a local SQLite database for durable conversation state, and a file-backed knowledge directory.
+The product is split into a FastAPI backend, a Next.js frontend/PWA, an optional native Android client, a local SQLite database for durable state and text indexes, and a file-backed approved-knowledge directory.
 
 ```text
-Browser / Phone PWA
-        |
-        v
-Next.js frontend  ->  FastAPI backend  ->  loopback llama.cpp / explicit OpenRouter
-                          |
-                          +-> SQLite conversation store
-                          |
-                          +-> per-conversation workspace folders
-                          |
-                          +-> knowledge/notes markdown files
-                          +-> optional VAPID Web Push service
+Browser / Phone PWA ----> Next.js frontend ----> FastAPI backend
+                                                   |       |
+Android assistant ---------------------------------+       +-> OpenAI Realtime
+                                                   |       +-> llama.cpp / OpenRouter
+                                                   +-> SQLite + FTS5
+                                                   +-> workspace folders
+                                                   +-> approved knowledge files
+                                                   +-> optional Web Push
 ```
 
 ## Runtime Topology
@@ -64,15 +59,23 @@ Next.js frontend  ->  FastAPI backend  ->  loopback llama.cpp / explicit OpenRou
 
 - Runs as a Next.js app during development on port 3000.
 - Uses cookie-authenticated fetch requests to the backend.
-- Maintains client-side UI state for the active conversation, recent conversation list, transient live agent status, and generated-app management surfaces.
-- Supports phone-first use through responsive layouts and the existing PWA shell.
+- Maintains client-side UI state for the active conversation, transient streams, independent Jarvis cursors, wake inference, and generated-app management surfaces.
+- Uses a `100dvh` phone layout with safe-area-aware bottom navigation and task/activity sheets while preserving the multi-column desktop workspace.
 
 ### Backend
 
 - Runs as a FastAPI application on port 8000.
 - Initializes the database during app startup and marks any previously running conversation runs as interrupted.
-- Serves API routes for auth, chat, conversations, knowledge, and apps.
+- Serves API routes for auth, chat, conversations, knowledge, apps, Jarvis continuity, reminders, recall, memory proposals, and paired devices.
 - Can serve a static frontend export when `frontend/out` exists.
+
+### Android
+
+- Targets Android 17/API 37 with Kotlin and Compose.
+- Implements the assistant role through `VoiceInteractionService`, a separate session service, a separate recognition service, and a Compose session overlay.
+- Uses Android Keystore for the paired credential, reports lock state, maintains a resumable SSE cursor, and presents descriptive task/reminder notifications with Open, Stop, Sleep, and reminder-only Snooze actions.
+- Runs the shared four-model ONNX wake pipeline locally through a user-started microphone foreground service and falls back to manual/system assistant invocation when wake listening is unavailable.
+- Never persists ambient audio. Assist structure is transient and opt-in; screenshot capture is disabled.
 
 ### Persistence and Files
 
@@ -81,7 +84,7 @@ Next.js frontend  ->  FastAPI backend  ->  loopback llama.cpp / explicit OpenRou
 - Authoritative generated app source lives under `frontend/generated-apps/<slug>`, public assets live under `frontend/public/apps/<slug>`, and the registry synchronizes healthy source trees into `frontend/app/apps/<slug>` for Next.js routing.
 - Verifier scenarios exercise the same generated-app builder path but clean any transient `verifier-*` scaffold and asset roots after each run so the route tree stays reserved for durable surfaces.
 - Approved memory is written into markdown files under `knowledge/notes/` or structured entries in `knowledge/preferences.yaml`.
-- Approved knowledge is browsable at `/wiki` and readable through a brain-only retrieval tool, without a separate retrieval index.
+- User-visible conversations, task facts, and approved memory are projected transactionally into SQLite recall documents with `unicode61` and trigram FTS5 indexes.
 
 ## Backend Architecture
 
@@ -95,6 +98,7 @@ On startup it:
 2. initializes the async SQLAlchemy engine
 3. marks unfinished conversation runs as `interrupted` while leaving worker-owned global tasks untouched
 4. retries queued first-class task Web Push deliveries
+5. starts the independent reminder scheduler, which leases due waits and performs idempotent overdue delivery
 
 It then registers these active routers:
 
@@ -106,10 +110,13 @@ It then registers these active routers:
 - `jarvis` for the current daily log, provider-neutral controller sessions, independent conversation/session replay, fake-provider injection, and policy-driven presentation timing/delivery
 - `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
+- `retrieval` for bounded, parsed `rg`-shaped history queries without shell execution
+- `memory` for evidence-backed reviewed memory proposals
+- `devices` for short-lived Android pairing codes, scoped device credentials, lock state, privacy state, event cursors, and revocation
 
 The separate worker process registers through `worker_instances`, heartbeats independently of FastAPI, claims the strict FIFO head, acquires the complete sorted mutable target set, and executes through `AgentExecutionContext` plus `AgentExecutionSink`. Attempt checkpoints, task events, questions, results, and terminal state remain in SQLite, so an API restart has no ownership effect.
 
-The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the OpenAI Realtime sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation, rejects stale callbacks, persists heard delivery truth, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation. A replaceable timing policy uses text-only out-of-band Realtime responses to choose `PRESENT`, `FOLD`, or `DEFER`; invalid or failed judgements defer safely. OpenAI credentials and provider call IDs remain backend-only.
+The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the OpenAI Realtime sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation across browser and Android, rejects stale callbacks, persists heard delivery truth and provisional transcript events, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation. A replaceable timing policy uses text-only out-of-band Realtime responses to choose `PRESENT`, `FOLD`, or `DEFER`; invalid or failed judgements defer safely. OpenAI credentials and provider call IDs remain backend-only.
 
 ### Configuration
 
@@ -189,6 +196,16 @@ Implemented responsibilities:
 #### `backend/app/api/notifications.py`
 
 The notification API stores browser subscriptions and task-delivery acknowledgements. First-class task notifications are written to `notification_outbox` in the same transaction as terminal task states or blocking questions, deduplicated by task-event ID, and delivered with exact `/tasks/{task_id}` or `/tasks/{task_id}?question={question_id}` links. Ordinary progress never enters this outbox. Delivery retries survive process restart, acknowledgement remains independent from audible presentation truth, and disabled or missing VAPID configuration never causes a cloud fallback.
+
+#### `backend/app/api/jarvis.py`
+
+Provides current Jarvis state, preferences, reminders, typed turns, daily-log lifecycle, Realtime session/call control, resumable live events, natural task resolution, and provider-neutral test controls. Mutable paired-device calls pass through the server's locked-device capability policy.
+
+#### `backend/app/api/retrieval.py`, `memory.py`, and `devices.py`
+
+- `retrieval` accepts a bounded `rg [OPTIONS] PATTERN [PATH...]` argument string, parses it internally, and returns structured matches from virtual conversation, task, and memory paths.
+- `memory` exposes generated proposals with source evidence and review transitions; only approved entries enter authoritative memory.
+- `devices` issues one-use five-minute pairing codes, returns a credential plus the current live cursor, scopes state updates to the paired device, and supports administrative revocation.
 
 ### Service Layer
 
@@ -381,7 +398,7 @@ Current behavior:
 - browses recent approved file-backed Wiki documents or matches exact/substring queries, returning excerpts and stored provenance
 - browses or searches standard chats and closed Jarvis daily logs, including archived history while excluding the current/open Jarvis log
 - exposes `wiki_search` and `conversation_search` as read-only Agent tools
-- keeps both tools outside the six-operation Jarvis shell allowlist, so the Realtime shell cannot query archives directly
+- retains those broad synthesis tools for delegated work while the Realtime shell uses bounded `history_grep` for narrow direct lookups over the unified recall projection
 - leaves all Wiki writes in the existing proposal/review workflow
 
 #### `backend/app/services/task_notifications.py`
@@ -395,6 +412,16 @@ Current behavior:
 - claims, sends, retries, and recovers queued/failed outbox rows across API restarts
 - removes stale browser subscriptions and preserves queued intent when no active subscription remains
 - records opened/spoken acknowledgement without changing `task_presentations` or heard-speech state
+
+#### Jarvis v2 continuity services
+
+- `jarvis_live.py` merges conversation, task, and voice-session events into a monotonic resumable SSE stream used by the browser and Android.
+- `jarvis_preferences.py` persists voice, concision, wake behavior, developer visibility, and Android privacy options; voice changes request safe session rotation.
+- `reminder_scheduler.py` models reminders as waiting tasks, leases due work independently of the task worker, handles overdue startup, and deduplicates delivery and snooze transitions.
+- `natural_task_resolver.py` maintains focused/recent task continuity and resolves recency, status, title, and subject references before any mutation. Ambiguous mutations stop for descriptive clarification.
+- `history_retrieval.py` parses the constrained `rg` grammar, searches the FTS recall projection, applies virtual paths/context/sort/limits, never invokes a shell, and provides the idempotent recall rebuild path.
+- `knowledge_extractor.py` and `memory_review_store.py` generate and retain evidence-linked reviewed-memory candidates from closed Jarvis logs and completed tasks.
+- `jarvis_devices.py` owns code pairing, hashed/revocable device credentials, browser-or-device authentication, and locked-device capability enforcement.
 
 ## Persistence Model
 
@@ -531,6 +558,16 @@ Additional metadata tracked on approved or deleted items includes:
 - `knowledge_path`
 - `deleted_at`
 
+#### Jarvis, task, recall, and device tables
+
+- `jarvis_state` stores the current log, state revision, focused internal task, recent task-reference stack, and live cursor.
+- `jarvis_preferences` stores voice, concision, wake behavior, developer visibility, and Android privacy JSON.
+- `jarvis_live_events` is the global monotonic replay stream projected from conversation, task, and voice-session domains.
+- `tasks` stores waiting/resume timestamps, wait reason, scheduled-delivery metadata, exactly-once delivery state, and normal durable task fields; attempts, events, questions, artifacts, targets, and presentation reservations remain normalized child tables.
+- `recall_documents` stores bounded user-visible text and virtual paths. SQLite-managed `unicode61` and trigram FTS5 tables index this projection without exposing hidden reasoning, secrets, or raw provider payloads.
+- `jarvis_devices` stores hashed/revocable Android credentials, lock/privacy state, and resumable event cursor; `jarvis_pairing_codes` stores hashed one-use codes and expiry/consumption timestamps.
+- `notification_outbox` stores durable browser notification intent separately from spoken presentation truth.
+
 ### Persistence Design Notes
 
 - The event log is the richest trace surface.
@@ -539,6 +576,7 @@ Additional metadata tracked on approved or deleted items includes:
 - Run metadata is now a checkpointed projection of live runtime state rather than an every-step source of truth for agent execution.
 - Agent resume can reconstruct deferred tool-step state from persisted events, which lets the runtime checkpoint less aggressively without losing durable continuity.
 - Memory promotion is manual and review-driven.
+- Internal task IDs remain relational keys and diagnostic/URL values; user-facing Jarvis text, task references, clarifications, and native notifications use descriptive labels.
 - SQLite is the canonical local durable store today.
 
 ## Frontend Architecture
@@ -554,7 +592,7 @@ Current route groups:
 - `frontend/app/(app)/chat` for the main chat surface
 - `frontend/app/(app)/workspace/apps` for cockpit app management and app detail pages
 - `frontend/app/(app)/tasks` for the global task list and full task trace; the old background routes redirect here
-- `frontend/app/(app)/settings` for editable model and task-agent defaults plus browser Push setup
+- `frontend/app/(app)/settings` for model/task defaults, server-persisted Jarvis preferences, Android pairing, browser Push, and local wake calibration
 - `frontend/app/(app)/wiki` for the review queue, approved Wiki search, and file-backed document browser; `/knowledge` permanently redirects here
 
 Shared layout and chrome live under `frontend/app/layout.tsx`, `frontend/app/(app)/layout.tsx`, and shared components.
@@ -572,6 +610,7 @@ It currently provides typed functions for:
 - generated app registry reads and writes
 - knowledge review and approved document browsing
 - model discovery
+- Jarvis state, preferences, reminders, natural task resolution, live-event URLs, memory proposals, history recall, Realtime calls, and Android pairing codes
 
 `frontend/lib/hooks.ts` contains the public composed hooks:
 
@@ -633,15 +672,17 @@ Current behavior:
 - lazily creates a daily log on the first accepted typed turn and supports either the deterministic fake provider or an armed OpenAI Realtime controller
 - lets the browser own microphone permission, WebRTC offer/answer, remote audio playback, data-channel establishment, bounded reconnect, typed fallback, and 55-minute rotation through normal controller supersession
 - proxies unified-call SDP through the authenticated backend and binds a backend-only sideband socket to the provider call
+- renders provisional assistant transcript deltas immediately, reconciles them with durable completed/interrupted speech, and includes provisional content in newest-message scrolling
 - opens existing logs at their newest message and follows new user or assistant messages automatically
 - owns the installable PWA start route and notification deep links; `/voice` is now a permanent compatibility redirect
-- renders header/controller state, durable transcript, active tasks and questions, pending presentations, worker health, and normalized activity
-- replays conversation, global task, and per-session domains with independent cursors; session replacement resets only the session cursor and daily rollover preserves global task activity
+- uses a phone-first conversation surface with safe-area bottom navigation, compact expandable status, and badge-bearing task/activity sheets while retaining the desktop workspace
+- replays one authenticated global live stream with a resumable cursor while preserving domain-specific conversation/session replay where diagnostics require it
 - exposes controller take-over and observer semantics, explicit sleep/fresh-log controls, and stale-generation rejection
 - records completed, interrupted, and unheard speech deliveries while adding only heard content to the transcript/context projection
-- exposes a restricted shell gateway containing only task control, fresh-log, and session-end capabilities
+- exposes a restricted shell gateway for natural task lookup/actions, reminders, bounded `history_grep`, voice selection, fresh-log, and session-end capabilities
 - coalesces typed task-fact envelopes, preserves questions, automatically judges pending updates at a safe boundary, folds suitable facts into the next natural reply, and marks facts presented only through a generation-bound heard delivery
-- includes a developer conversation lab for deterministic floor, response, interruption, delegation, presentation, supersession, and provider-error injection
+- hides the deterministic developer conversation lab unless developer mode is enabled
+- runs the exact-word wake model off the main thread, applies the transcript-stage direct-address classifier, retains manual Arm, and stores calibration recordings only in local IndexedDB with review/export/delete controls
 
 ### Generated Apps UI Flow
 
@@ -755,12 +796,25 @@ Current behavior:
 - `frontend/lib/jarvis-wake-runtime.ts`: one-microphone browser capture, AudioWorklet resampling, and dedicated-worker lifecycle
 - `frontend/lib/jarvis-wake-engine.ts`: bounded pre-roll, wake/command collection, and raw-audio destruction rules
 - `frontend/lib/jarvis-realtime.ts`: WebRTC setup, wake one-shot-to-live handoff, reconnect, and immediate barge-in controls
+- `frontend/lib/jarvis-address-detection.ts`: deterministic direct-address and incidental-mention classification
+- `frontend/lib/jarvis-calibration-store.ts`: browser-local calibration sample lifecycle
+
+### Android
+
+- `android/app/src/main/java/.../assistant/`: assistant, session, recognition, and Compose overlay services
+- `android/app/src/main/java/.../realtime/`: native WebRTC offer/answer and microphone controller
+- `android/app/src/main/java/.../wake/`: shared ONNX inference pipeline, address gate, foreground listener, and reboot opt-in
+- `android/app/src/main/java/.../notifications/`: resumable SSE consumer and native actions
+- `android/app/src/main/java/.../data/`: paired API client and Keystore-backed credential store
+- `android/app/src/main/java/.../web/`: constrained same-origin WebView host
 
 ### Knowledge and Documentation
 
 - `knowledge/preferences.yaml`: structured preferences store
 - `knowledge/notes/`: approved memory notes and future knowledge corpus
 - `docs/ARCHITECTURE.md`: current-state architecture reference
+- `docs/JARVIS_FOLLOW_UP_PLAN.md`: living Jarvis v2 implementation and release-acceptance record
+- `docs/JARVIS_WAKE_MODEL.md`: wake-model provenance, training commands, evaluation, and calibration gates
 
 ## Validation Surface
 
@@ -775,8 +829,9 @@ Current backend test coverage lives under `backend/tests/` and includes:
 - workspace and limited-tool boundaries
 - slashless collection route coverage for the frontend rewrite path
 - provider-independent Jarvis controller, delivery, session-generation, brain-gateway, presentation, rollover, and fake-provider scenarios
+- preferences, reminders, natural task references, recall grammar/index rebuild, reviewed memory proposals, resumable live events, device pairing, and locked-device policy
 
-The frontend also includes API, chat-history, hook, stream-state, Jarvis independent-cursor, and chat-component tests, while production `next build` validates the route tree and TypeScript surfaces.
+The frontend also includes API, chat-history, hook, stream-state, provisional Jarvis transcript, direct-address, wake lifecycle, mobile viewport, and component tests, while production `next build` validates the route tree and TypeScript surfaces. The Android project includes a pure Kotlin address-gate test and a resolvable Gradle dependency graph; full compile, emulator, battery, keyguard, and gesture checks require an API 37 SDK/device.
 
 ## Current Gaps and Intentional Incompleteness
 
@@ -787,12 +842,13 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- OpenAI Realtime/WebRTC media, sideband transport, browser rotation/reconnect, real-device barge-in, policy-driven proactive task updates, the foreground browser-local wake lifecycle, and Wiki/history/Push/archive surfaces are complete. Wake detection remains foreground-only, and the accepted exact-word model is less consistent at low speaking volume; both background listening and further acoustic tuning remain future work.
+- Browser and Android source paths now cover Realtime media, sideband transport, controller handoff, streamed transcripts, reminders, natural task references, indexed recall, reviewed memory, paired notifications, and local wake/address gating. Android release acceptance still requires an API 37 build and physical-device checks for assistant selection, keyguard, screen-off listening, process death, network loss, and battery drain.
+- The selected exact-word model remains less consistent at low volume and its prior automated false-activation result does not meet the stricter v2 target. Calibrated quiet/distant/noisy/hard-negative recordings, GPU retraining, and held-out real-device address evaluation remain release gates rather than claimed passes.
 
 ## Architectural Direction
 
-The codebase now has one production path across durable conversations, global tasks, the separate worker, the provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard history, proactive presentation, deterministic browser wake runtime, brain retrieval, durable task Push, and archive lifecycle. The batch local-speech and browser-only delivery architecture is retained only as historical documentation.
+The codebase now has one production path across durable conversations, global tasks and reminders, the separate worker, the provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard and provisional transcript truth, proactive presentation, deterministic local wake/address logic, indexed local recall, reviewed memory, durable notifications, paired Android control, and archive lifecycle. The retired batch local-speech and browser-only delivery paths are no longer part of the maintained documentation set; Git history retains them.
 
-For the current POC, this direction intentionally avoids a vector database requirement. The near-term goal is inspectable, file-backed knowledge plus browser-backed verification and cleaner generated-app hygiene, not advanced retrieval infrastructure.
+This direction intentionally avoids a vector database requirement. Recall is local, bounded, inspectable SQLite text search; authoritative memory remains review-driven and file-backed.
 
 This document should be updated whenever the underlying architecture changes materially.

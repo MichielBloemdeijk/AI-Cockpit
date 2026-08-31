@@ -1,6 +1,6 @@
 # AI Cockpit
 
-AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a Jarvis voice surface. The frontend is a Next.js application, the API is FastAPI, and local state is stored in SQLite. OpenAI Realtime powers Jarvis audio; delegated tasks default to a loopback OpenAI-compatible server such as llama.cpp, while OpenRouter remains an explicit cloud option.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. OpenAI Realtime powers Jarvis audio; delegated tasks default to a loopback OpenAI-compatible server such as llama.cpp, while OpenRouter remains an explicit cloud option.
 
 This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
@@ -13,9 +13,9 @@ This repository currently targets local development. Windows has convenience scr
 - Review proposed knowledge before promoting it into local files.
 - Reach the development UI from another device through Tailscale.
 - Dispatch durable background tasks with ordered traces, isolated attempts, and explicit cancel/retry controls.
-- Exercise the complete Jarvis coordinator state machine at `/jarvis` with the deterministic fake provider and developer conversation lab.
+- Use Jarvis for streamed conversation, durable reminders, natural task follow-up, reviewed memory, local history recall, and phone or Android system-assistant access.
 
-For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The living implementation and release-acceptance record is [docs/JARVIS_FOLLOW_UP_PLAN.md](docs/JARVIS_FOLLOW_UP_PLAN.md); wake-model provenance remains in [docs/JARVIS_WAKE_MODEL.md](docs/JARVIS_WAKE_MODEL.md).
 
 ## Quick Start
 
@@ -27,6 +27,7 @@ For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Python | 3.11 or 3.12 | Python 3.12 is recommended |
 | Node.js | 20.19+ or 22.13+ | Node.js 22 LTS is recommended |
 | uv | Current | Install with `python -m pip install uv` |
+| Android SDK | API 37, optional | Required only to build the Android 17 companion |
 
 OpenRouter is optional. Jarvis voice requires an OpenAI API key, while the default task model expects llama.cpp (or another OpenAI-compatible server) on `127.0.0.1:8080`.
 
@@ -211,11 +212,19 @@ Defaults for future conversations can also be changed from the Settings page aft
 
 ## Jarvis
 
-The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs, typed fallback, task delegation, policy-timed proactive task updates, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
+The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs and focus, typed fallback, task delegation, durable reminders, natural task references, provisional transcript streaming, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
 
 Set `OPENAI_API_KEY` in the repository root `.env`, start the backend, separate worker, and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and worker remain necessary for delegated tasks. There is no local STT/TTS fallback; a Realtime failure leaves typed interaction available.
 
-Phase 9 includes an off-main-thread Hey Buddy/ONNX wake runtime, a bounded 2.5-second in-memory audio pre-roll, one-shot wake/command replay before the live WebRTC track, and a 60-second wake-free follow-up window. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
+The browser uses an off-main-thread Hey Buddy/ONNX wake runtime, a bounded 2.5-second in-memory audio pre-roll, a direct-address gate, one-shot wake/command replay before the live WebRTC track, and a 60-second wake-free follow-up window. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Wake calibration samples stay in browser-local IndexedDB and can be reviewed, exported for GPU retraining, or deleted from Settings. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
+
+Voice, concision, wake behavior, developer visibility, and Android privacy preferences are persisted by the server. Marin is the default voice and Cedar is the alternate; a voice change rotates the Realtime session at a safe boundary.
+
+## Android 17 Companion
+
+The Kotlin application under `android/` targets API 37 and provides a `VoiceInteractionService`, Compose assistant overlay, WebView phone UI, local ONNX wake inference, native WebRTC audio, resumable task/reminder notifications, short-lived code pairing, and Keystore-backed device credentials.
+
+Generate a five-minute pairing code from AI Cockpit Settings, then follow [android/README.md](android/README.md) to build, pair, and select Jarvis as the assistant. Foreground-app assist structure is opt-in, screenshots remain disabled, restart listening is opt-in, and the backend blocks general mutations while the paired device reports that it is locked.
 
 ## Phone Access with Tailscale
 
@@ -319,7 +328,9 @@ Stop the other process using the port. The frontend proxy and documented URLs as
 AI-Cockpit/
 ├── backend/                 FastAPI API, agent runtime, persistence, tests
 ├── frontend/                Next.js UI and generated-app route host
+├── android/                 Android 17 system-assistant companion
 ├── docs/ARCHITECTURE.md     Current implementation architecture
+├── docs/JARVIS_FOLLOW_UP_PLAN.md  Living Jarvis v2 plan and acceptance record
 ├── knowledge/               Approved local knowledge and preference template
 ├── .env.example             Safe local configuration template
 ├── start-backend.ps1        Portable Windows backend launcher
@@ -334,4 +345,5 @@ Interactive API details are available from `/docs` while the backend is running.
 - Agent mode can execute tools and write within configured conversation/app workspaces. Review model-produced changes before relying on them.
 - Generated apps do not yet have browser-driven verification and automatic repair loops.
 - Interrupted runs are persisted but are not automatically resumed after a backend restart.
-Historical Jarvis voice POC implementation and verification record: [docs/JARVIS_VOICE_POC.md](docs/JARVIS_VOICE_POC.md). It documents the retired batch speech architecture and is not a current setup guide.
+- Android compilation and device acceptance require a local API 37 SDK and Android 17 hardware; the repository can resolve the Android dependency graph without them.
+- The installed wake model has foreground POC acceptance, but the stricter v2 quiet/distant, false-wake, address-precision, battery, and screen-off acceptance gates still require calibrated real-device runs.

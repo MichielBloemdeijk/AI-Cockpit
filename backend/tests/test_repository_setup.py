@@ -46,7 +46,7 @@ def test_readme_quick_start_is_copyable_and_current() -> None:
     assert "npm ci" in readme
     assert "frontend/generated-apps/<slug>" in readme
     assert "<repo-url>" not in readme
-    assert "PLAN.md" not in readme
+    assert "](PLAN.md)" not in readme
 
 
 def test_default_models_use_current_openrouter_slugs() -> None:
