@@ -43,6 +43,7 @@ FLOOR_EVENT_TYPES = {
     "ready": "listening",
     "user_speaking": "user_speaking",
     "user_stopped": "thinking",
+    "user_transcript_delta": "user_speaking",
     "user_transcript": "thinking",
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",

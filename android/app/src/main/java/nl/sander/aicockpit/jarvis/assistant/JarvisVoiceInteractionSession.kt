@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -147,6 +146,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     private fun handleEvent(event: JSONObject) {
         val payload = event.optJSONObject("payload") ?: JSONObject()
         when (event.optString("event_type")) {
+            "provider.user_transcript_delta" -> userTranscript = payload.optString("transcript")
             "provider.user_transcript" -> {
                 val transcript = payload.optString("transcript")
                 val wakeScore = pendingWakeScore

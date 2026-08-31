@@ -69,6 +69,10 @@ import {
 } from "@/lib/jarvis-wake-state";
 import { useConversationAutoScroll } from "@/lib/conversation-auto-scroll";
 import { classifyJarvisAddress } from "@/lib/jarvis-address-detection";
+import {
+  mergeProvisionalTranscript,
+  type ProvisionalTranscript,
+} from "@/lib/jarvis-transcript-state";
 
 
 const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input", "waiting_until"]);
@@ -110,7 +114,8 @@ export default function JarvisPage() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"tasks" | "activity" | null>(null);
   const [preferences, setPreferences] = useState<JarvisPreferences | null>(null);
-  const [provisionalAssistant, setProvisionalAssistant] = useState<{ responseId: string; text: string } | null>(null);
+  const [provisionalUser, setProvisionalUser] = useState<ProvisionalTranscript | null>(null);
+  const [provisionalAssistant, setProvisionalAssistant] = useState<ProvisionalTranscript | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [realtime, setRealtime] = useState<JarvisRealtimeSnapshot>({
     status: "idle",
@@ -162,10 +167,10 @@ export default function JarvisPage() {
   );
 
   useEffect(() => {
-    if (!provisionalAssistant?.text) return;
+    if (!provisionalUser?.text && !provisionalAssistant?.text) return;
     const viewport = conversationScrollRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
-  }, [provisionalAssistant?.text]);
+  }, [provisionalAssistant?.text, provisionalUser?.text]);
 
   const setLiveStreams = useCallback((next: JarvisLiveStreamState) => {
     streamsRef.current = next;
@@ -240,8 +245,32 @@ export default function JarvisPage() {
         );
       },
       onProviderEvent: (event) => {
-        if (typeof event.type === "string" && FOLLOW_UP_ACTIVITY_EVENTS.has(event.type)) {
+        const eventType = typeof event.type === "string" ? event.type : "";
+        if (FOLLOW_UP_ACTIVITY_EVENTS.has(eventType)) {
           wakeLifecycleRef.current?.noteActivity();
+        }
+        if (eventType === "conversation.item.input_audio_transcription.delta") {
+          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+            id: String(event.item_id ?? "live-user"),
+            delta: String(event.delta ?? ""),
+          }));
+        } else if (eventType === "conversation.item.input_audio_transcription.completed") {
+          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+            id: String(event.item_id ?? current?.id ?? "live-user"),
+            transcript: String(event.transcript ?? ""),
+            replace: true,
+          }));
+        } else if (["response.output_audio_transcript.delta", "response.output_text.delta"].includes(eventType)) {
+          setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
+            id: String(event.response_id ?? event.item_id ?? "assistant-live"),
+            delta: String(event.delta ?? ""),
+          }));
+        } else if (["response.output_audio_transcript.done", "response.output_text.done"].includes(eventType)) {
+          setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
+            id: String(event.response_id ?? event.item_id ?? current?.id ?? "assistant-live"),
+            transcript: String(event.transcript ?? event.text ?? ""),
+            replace: true,
+          }));
         }
       },
     });
@@ -319,6 +348,13 @@ export default function JarvisPage() {
       source.addEventListener("jarvis", (raw) => {
         const event = JSON.parse((raw as MessageEvent<string>).data) as JarvisLiveEvent;
         liveCursorRef.current = Math.max(liveCursorRef.current, event.sequence);
+        if (event.event_type === "provider.user_transcript_delta") {
+          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+            id: String(event.payload?.item_id ?? "live-user"),
+            transcript: String(event.payload?.transcript ?? ""),
+          }));
+          return;
+        }
         if (event.event_type === "provider.user_transcript" && pendingWakeAddressRef.current) {
           const pending = pendingWakeAddressRef.current;
           pendingWakeAddressRef.current = null;
@@ -332,17 +368,35 @@ export default function JarvisPage() {
           if (!decision.accepted) {
             const lifecycle = wakeLifecycleRef.current;
             if (lifecycle && lifecycle.current().status !== "destroyed") lifecycle.sleep();
+            setProvisionalUser(null);
             return;
           }
         }
+        if (event.event_type === "provider.user_transcript") {
+          const itemId = String(event.payload?.item_id ?? "live-user");
+          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+            id: itemId,
+            transcript: String(event.payload?.transcript ?? ""),
+            replace: true,
+          }));
+          void refresh().finally(() => setProvisionalUser((current) => (
+            current?.id === itemId ? null : current
+          )));
+          return;
+        }
         if (event.event_type === "provider.assistant_transcript_delta") {
           const responseId = String(event.payload?.response_id ?? "assistant-live");
-          const text = String(event.payload?.transcript ?? "");
-          setProvisionalAssistant(text ? { responseId, text } : null);
+          setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
+            id: responseId,
+            transcript: String(event.payload?.transcript ?? ""),
+          }));
           return;
         }
         if (["provider.assistant_response", "provider.assistant_interrupted"].includes(event.event_type)) {
-          void refresh().finally(() => setProvisionalAssistant(null));
+          const responseId = String(event.payload?.response_id ?? "");
+          void refresh().finally(() => setProvisionalAssistant((current) => (
+            !responseId || current?.id === responseId ? null : current
+          )));
           return;
         }
         if (event.event_type === "session.rotation_requested") {
@@ -699,11 +753,26 @@ export default function JarvisPage() {
                   }}
                 />
               ))}
+              {provisionalUser?.text && (
+                <ChatMessage
+                  key={`provisional-user-${provisionalUser.id}`}
+                  message={{
+                    id: `provisional-user-${provisionalUser.id}`,
+                    role: "user",
+                    kind: "message",
+                    label: "You",
+                    content: provisionalUser.text,
+                    createdAt: new Date().toISOString(),
+                    branchable: false,
+                    badges: ["speaking"],
+                  }}
+                />
+              )}
               {provisionalAssistant?.text && (
                 <ChatMessage
-                  key={`provisional-${provisionalAssistant.responseId}`}
+                  key={`provisional-${provisionalAssistant.id}`}
                   message={{
-                    id: `provisional-${provisionalAssistant.responseId}`,
+                    id: `provisional-${provisionalAssistant.id}`,
                     role: "assistant",
                     kind: "message",
                     label: "Jarvis",

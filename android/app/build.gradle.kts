@@ -1,17 +1,20 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "nl.sander.aicockpit.jarvis"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) { minorApiLevel = 0 }
+    }
 
     defaultConfig {
         applicationId = "nl.sander.aicockpit.jarvis"
         minSdk = 31
-        targetSdk = 37
+        targetSdk {
+            version = release(37)
+        }
         versionCode = 1
         versionName = "2.0.0"
     }
@@ -21,8 +24,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
-    sourceSets["main"].assets.srcDir("../../frontend/public/jarvis-wake")
+    sourceSets["main"].assets.directories.add("../../frontend/public/jarvis-wake")
     packaging.resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
 }
 

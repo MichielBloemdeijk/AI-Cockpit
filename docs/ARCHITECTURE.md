@@ -831,7 +831,7 @@ Current backend test coverage lives under `backend/tests/` and includes:
 - provider-independent Jarvis controller, delivery, session-generation, brain-gateway, presentation, rollover, and fake-provider scenarios
 - preferences, reminders, natural task references, recall grammar/index rebuild, reviewed memory proposals, resumable live events, device pairing, and locked-device policy
 
-The frontend also includes API, chat-history, hook, stream-state, provisional Jarvis transcript, direct-address, wake lifecycle, mobile viewport, and component tests, while production `next build` validates the route tree and TypeScript surfaces. The Android project includes a pure Kotlin address-gate test and a resolvable Gradle dependency graph; full compile, emulator, battery, keyguard, and gesture checks require an API 37 SDK/device.
+The frontend also includes API, chat-history, hook, stream-state, provisional Jarvis transcript, direct-address, wake lifecycle, mobile viewport, and component tests, while production `next build` validates the route tree and TypeScript surfaces. The Android project includes a pure Kotlin address-gate test and a verified API 37 debug compile; emulator, battery, keyguard, and gesture checks still require an Android 17 device.
 
 ## Current Gaps and Intentional Incompleteness
 
@@ -842,7 +842,7 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- Browser and Android source paths now cover Realtime media, sideband transport, controller handoff, streamed transcripts, reminders, natural task references, indexed recall, reviewed memory, paired notifications, and local wake/address gating. Android release acceptance still requires an API 37 build and physical-device checks for assistant selection, keyguard, screen-off listening, process death, network loss, and battery drain.
+- Browser and Android source paths now cover Realtime media, sideband transport, controller handoff, streamed transcripts, reminders, natural task references, indexed recall, reviewed memory, paired notifications, and local wake/address gating. The API 37 debug build passes; Android release acceptance still requires physical-device checks for assistant selection, keyguard, screen-off listening, process death, network loss, and battery drain.
 - The selected exact-word model remains less consistent at low volume and its prior automated false-activation result does not meet the stricter v2 target. Calibrated quiet/distant/noisy/hard-negative recordings, GPU retraining, and held-out real-device address evaluation remain release gates rather than claimed passes.
 
 ## Architectural Direction

@@ -4,9 +4,10 @@ Jarvis targets Android 17/API 37. The native companion owns system-assistant inv
 
 ## Build
 
-1. Install Android Studio or the Android command-line SDK with API 37 and Build Tools 37.
-2. Set `ANDROID_HOME` or add `sdk.dir=...` to an untracked `local.properties` file.
-3. Run `./gradlew testDebugUnitTest assembleDebug` (or `gradlew.bat` on Windows).
+1. Install Android Studio or the Android command-line SDK with API 37.0 and Build Tools 36.
+2. Use Android Studio's bundled JDK, or JDK 17 or newer. The committed toolchain is verified with JDK 21 and Android Studio's bundled JDK 25.
+3. Set `ANDROID_HOME` or add `sdk.dir=...` to an untracked `local.properties` file.
+4. Install Android SDK Platform 36, then run `./gradlew testDebugUnitTest assembleDebug` (or `gradlew.bat` on Windows).
 
 The wake models are read directly from `frontend/public/jarvis-wake`, so build the app from this monorepo rather than copying the Android directory in isolation.
 

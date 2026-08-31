@@ -21,8 +21,8 @@ Completed implementation includes:
   WebView, local ONNX wake inference, WebRTC, Keystore pairing, event replay,
   lock reporting, and notification actions.
 
-Release acceptance is intentionally not claimed yet. Remaining evidence requires
-an installed API 37 SDK and Android 17 device for compilation/device scenarios,
+Release acceptance is intentionally not claimed yet. The API 37 debug build is
+verified; remaining evidence requires an Android 17 device for device scenarios,
 plus user calibration recordings and held-out runs for the stricter wake/address,
 battery, screen-off, process-death, and network-loss gates. The currently
 installed model has foreground POC acceptance but does not by itself prove the
@@ -31,10 +31,8 @@ v2 quiet/distant or one-false-wake-per-hour thresholds.
 Repository verification on 2026-08-31:
 
 - backend: `213 passed`;
-- frontend: ESLint passed, `115 passed`, and the production Next.js build passed;
-- Android: the Gradle wrapper and complete debug compile dependency graph resolve
-  without failed artifacts; `testDebugUnitTest assembleDebug` stops before
-  compilation because this workstation has no Android SDK/`ANDROID_HOME`;
+- frontend: ESLint passed, `119 passed`, and the production Next.js build passed;
+- Android: API 37 `testDebugUnitTest assembleDebug` passed and produced a debug APK;
 - documentation: local links resolve and no maintained document references the
   retired Jarvis plan/ledger/POC files.
 

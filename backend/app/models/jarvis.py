@@ -123,6 +123,7 @@ class JarvisFakeProviderEventRequest(BaseModel):
         "ready",
         "user_speaking",
         "user_stopped",
+        "user_transcript_delta",
         "user_transcript",
         "assistant_generating",
         "assistant_speaking",

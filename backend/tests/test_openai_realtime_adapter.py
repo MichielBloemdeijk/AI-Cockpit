@@ -119,6 +119,8 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert session_config["audio"]["input"]["transcription"]["model"] == "gpt-live-transcribe"
     assert "multi-step or substantial analysis with dispatch_task" in session_config["instructions"]
     assert "has no permission to browse, edit files, run commands" in session_config["instructions"]
+    assert "two to eight words for simple acknowledgements" in session_config["instructions"]
+    assert "Do not restate the request" in session_config["instructions"]
     assert {tool["name"] for tool in session_config["tools"]} == {
         "dispatch_task",
         "list_tasks",
@@ -199,6 +201,14 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     )
     await socket.feed({"type": "input_audio_buffer.speech_started", "event_id": "evt-1"})
     await socket.feed({"type": "input_audio_buffer.speech_stopped", "event_id": "evt-2"})
+    await socket.feed(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "event_id": "evt-2a",
+            "item_id": "item-user",
+            "delta": "Please prepare ",
+        }
+    )
     await socket.feed(
         {
             "type": "conversation.item.input_audio_transcription.completed",
@@ -287,6 +297,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "ready",
         "user_speaking",
         "user_stopped",
+        "user_transcript_delta",
         "user_transcript",
         "assistant_generating",
         "assistant_speaking",
@@ -294,10 +305,16 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "assistant_response",
         "shell_call",
     ]
-    assert events[3].payload["transcript"] == "Please prepare a report."
-    assert events[6].payload["delta"] == "I can "
-    assert events[7].payload["transcript"] == "I can help with that."
-    assert events[8].payload["arguments"] == {"goal": "Prepare a report"}
+    assert events[3].payload == {
+        "item_id": "item-user",
+        "delta": "Please prepare ",
+        "transcript": "Please prepare ",
+        "provisional": True,
+    }
+    assert events[4].payload["transcript"] == "Please prepare a report."
+    assert events[7].payload["delta"] == "I can "
+    assert events[8].payload["transcript"] == "I can help with that."
+    assert events[9].payload["arguments"] == {"goal": "Prepare a report"}
     await adapter.close(session_id="session-events", generation=1, reason="done")
 
 
