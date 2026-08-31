@@ -559,6 +559,51 @@ export default function JarvisPage() {
   const sessionReady = session?.lifecycle_state === "ready";
   const ownsController = session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
   const realtimeBusy = realtime.status === "connecting" || realtime.status === "reconnecting";
+  const voiceActive = realtime.status !== "idle";
+
+  const armVoice = async () => {
+    if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
+    if (!realtimeControllerRef.current) throw new Error("Realtime controller is unavailable");
+    const runtime = wakeRuntimeRef.current;
+    const lifecycle = wakeLifecycleRef.current;
+    if (runtime?.current().status === "ready" && lifecycle?.current().status === "armed") {
+      lifecycle.detected();
+      lifecycle.connecting();
+      try {
+        await realtimeControllerRef.current.start({
+          audioHandoff: runtime.manualHandoff(),
+        });
+        lifecycle.connected();
+      } catch (cause) {
+        lifecycle.fail(cause);
+        throw cause;
+      }
+    } else {
+      await runtime?.stop();
+      lifecycle?.reset();
+      await realtimeControllerRef.current.start();
+    }
+  };
+
+  const sleepVoice = async () => {
+    if (
+      WAKE_MODEL_CONFIGURATION
+      && wakeRuntimeRef.current
+      && wakeRuntimeRef.current.current().status === "triggered"
+      && wakeLifecycleRef.current
+    ) {
+      wakeLifecycleRef.current.sleep();
+    } else if (realtime.status !== "idle") {
+      await realtimeControllerRef.current?.stop();
+    } else if (session) {
+      await closeJarvisRealtimeSession(session.id, session.generation);
+    }
+  };
+
+  const toggleVoice = async () => {
+    if (voiceActive) await sleepVoice();
+    else await armVoice();
+  };
 
   if (loading) {
     return <div className="flex h-full items-center justify-center bg-zinc-950 text-zinc-400"><Loader2 className="animate-spin" /></div>;
@@ -649,54 +694,17 @@ export default function JarvisPage() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => void run(async () => {
-                if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
-                if (!realtimeControllerRef.current) throw new Error("Realtime controller is unavailable");
-                const runtime = wakeRuntimeRef.current;
-                const lifecycle = wakeLifecycleRef.current;
-                if (runtime?.current().status === "ready" && lifecycle?.current().status === "armed") {
-                  lifecycle.detected();
-                  lifecycle.connecting();
-                  try {
-                    await realtimeControllerRef.current.start({
-                      audioHandoff: runtime.manualHandoff(),
-                    });
-                    lifecycle.connected();
-                  } catch (cause) {
-                    lifecycle.fail(cause);
-                    throw cause;
-                  }
-                } else {
-                  await runtime?.stop();
-                  lifecycle?.reset();
-                  await realtimeControllerRef.current.start();
-                }
-              })}
-              disabled={submitting || realtimeBusy || realtime.status === "connected" || !currentLog}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200 disabled:opacity-40"
+              onClick={() => void run(toggleVoice)}
+              disabled={submitting || realtimeBusy || (!voiceActive && !currentLog)}
+              aria-pressed={voiceActive}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs disabled:opacity-40 ${
+                voiceActive
+                  ? "border-zinc-700 text-zinc-300"
+                  : "border-violet-500/30 bg-violet-500/10 text-violet-200"
+              }`}
             >
-              <Mic size={13} /> Arm
-            </button>
-            <button
-              type="button"
-              onClick={() => void run(async () => {
-                if (
-                  WAKE_MODEL_CONFIGURATION
-                  && wakeRuntimeRef.current
-                  && wakeRuntimeRef.current.current().status === "triggered"
-                  && wakeLifecycleRef.current
-                ) {
-                  wakeLifecycleRef.current.sleep();
-                } else if (realtime.status !== "idle") {
-                  await realtimeControllerRef.current?.stop();
-                } else if (session) {
-                  await closeJarvisRealtimeSession(session.id, session.generation);
-                }
-              })}
-              disabled={submitting || (!sessionReady && realtime.status === "idle")}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 disabled:opacity-40"
-            >
-              <MicOff size={13} /> Sleep
+              {voiceActive ? <MicOff size={13} /> : <Mic size={13} />}
+              {voiceActive ? "Sleep" : "Arm"}
             </button>
             <Link href="/chat" className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300">
               <History size={13} /> History
@@ -787,24 +795,22 @@ export default function JarvisPage() {
             </div>
           </div>
           <div className="shrink-0 border-t border-zinc-800 bg-zinc-900 p-3 pb-[max(.75rem,env(safe-area-inset-bottom))]">
-            <div className="mx-auto mb-2 flex max-w-3xl gap-2 md:hidden">
-              <button
-                type="button"
-                onClick={() => void run(async () => {
-                  if (!currentLog || !realtimeControllerRef.current) throw new Error("Send the first turn before arming Jarvis");
-                  await realtimeControllerRef.current.start();
-                })}
-                disabled={submitting || realtimeBusy || realtime.status === "connected" || !currentLog}
-                className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl border border-violet-500/30 bg-violet-500/10 text-sm text-violet-200 disabled:opacity-40"
-              ><Mic size={17} /> Arm</button>
-              <button
-                type="button"
-                onClick={() => void run(async () => { await realtimeControllerRef.current?.stop(); })}
-                disabled={submitting || realtime.status === "idle"}
-                className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl border border-zinc-700 text-sm text-zinc-300 disabled:opacity-40"
-              ><MicOff size={17} /> Sleep</button>
-            </div>
             <div className="mx-auto flex max-w-3xl items-end gap-2">
+              <button
+                type="button"
+                onClick={() => void run(toggleVoice)}
+                disabled={submitting || realtimeBusy || (!voiceActive && !currentLog)}
+                aria-label={voiceActive ? "Put Jarvis to sleep" : "Arm Jarvis"}
+                aria-pressed={voiceActive}
+                title={voiceActive ? "Sleep" : "Arm"}
+                className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border disabled:opacity-40 md:hidden ${
+                  voiceActive
+                    ? "border-zinc-700 text-zinc-300"
+                    : "border-violet-500/30 bg-violet-500/10 text-violet-200"
+                }`}
+              >
+                {voiceActive ? <MicOff size={17} /> : <Mic size={17} />}
+              </button>
               <textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
@@ -814,10 +820,10 @@ export default function JarvisPage() {
                     void handleSend();
                   }
                 }}
-                placeholder="Talk to Jarvis — try “delegate: prepare a brief”"
+                placeholder="Ask Jarvis anything"
                 disabled={submitting}
                 rows={1}
-                className="max-h-40 min-h-12 flex-1 resize-none rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none focus:border-violet-500 disabled:opacity-50"
+                className="max-h-40 min-h-12 flex-1 resize-none overflow-y-hidden rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none focus:border-violet-500 disabled:opacity-50"
               />
               <button
                 type="button"

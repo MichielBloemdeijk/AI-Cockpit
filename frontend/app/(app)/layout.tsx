@@ -18,7 +18,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   return (
-    <div className="flex h-[100dvh] bg-zinc-950 md:flex-row">
+    <div className="flex h-[100dvh] overflow-hidden bg-zinc-950 md:flex-row">
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-0">
         {children}
