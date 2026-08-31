@@ -39,6 +39,8 @@ class JarvisStateRecord:
     operational_day: date
     current_log: ConversationRecord | None
     state_revision: int
+    focused_task_id: str | None = None
+    recent_task_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,8 @@ class JarvisDailyService:
                     operational_day=operational_day_key(timestamp),
                     current_log=None,
                     state_revision=0 if state is None else state.state_revision,
+                    focused_task_id=None if state is None else state.focused_task_id,
+                    recent_task_refs=tuple([] if state is None else (state.recent_task_refs_json or [])),
                 )
             current_log = await session.get(Conversation, state.current_log_id)
             self._assert_current_pointer(current_log)
@@ -65,6 +69,8 @@ class JarvisDailyService:
                 operational_day=operational_day_key(timestamp),
                 current_log=_conversation_record(current_log),
                 state_revision=state.state_revision,
+                focused_task_id=state.focused_task_id,
+                recent_task_refs=tuple(state.recent_task_refs_json or []),
             )
 
     async def accept_text_turn(

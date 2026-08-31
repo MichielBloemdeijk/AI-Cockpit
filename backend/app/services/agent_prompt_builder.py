@@ -9,6 +9,7 @@ MAX_TOOL_SNIPPET_CHARS = 4_000
 NATIVE_AGENT_ASK_USER_TOOL = "task_ask_user"
 NATIVE_AGENT_FINALIZE_TOOL = "task_finalize"
 NATIVE_AGENT_DELEGATE_TOOL = "delegate_background_task"
+NATIVE_AGENT_WAIT_UNTIL_TOOL = "task_wait_until"
 
 
 def _tool_spec_block() -> str:
@@ -19,8 +20,32 @@ def _tool_spec_block() -> str:
     return "\n".join(lines)
 
 
-def _native_control_tool_definitions(*, include_delegate: bool = False) -> list[dict[str, Any]]:
+def _native_control_tool_definitions(
+    *, include_delegate: bool = False, include_wait: bool = False
+) -> list[dict[str, Any]]:
     definitions = [
+        {
+            "type": "function",
+            "function": {
+                "name": NATIVE_AGENT_WAIT_UNTIL_TOOL,
+                "description": (
+                    "Pause this background task until an exact future instant. Use only when the task itself "
+                    "must wait before continuing; ordinary conversation reminders use Jarvis reminder tools."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "resume_at": {
+                            "type": "string",
+                            "description": "ISO-8601 future date-time. Times without an offset use Europe/Amsterdam.",
+                        },
+                        "reason": {"type": "string", "description": "Concise reason for waiting."},
+                    },
+                    "required": ["resume_at", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -100,6 +125,11 @@ def _native_control_tool_definitions(*, include_delegate: bool = False) -> list[
         definitions = [
             item for item in definitions
             if item.get("function", {}).get("name") != NATIVE_AGENT_DELEGATE_TOOL
+        ]
+    if not include_wait:
+        definitions = [
+            item for item in definitions
+            if item.get("function", {}).get("name") != NATIVE_AGENT_WAIT_UNTIL_TOOL
         ]
     return definitions
 

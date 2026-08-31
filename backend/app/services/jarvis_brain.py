@@ -2,17 +2,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from app.services.history_retrieval import history_retrieval_service
+from app.services.jarvis_preferences import jarvis_preferences_service
+from app.services.natural_task_resolver import natural_task_resolver, task_title
+from app.services.reminder_scheduler import reminder_scheduler
 from app.services.task_service import task_service
 
 
 ALLOWED_SHELL_TOOLS = frozenset(
     {
         "dispatch_task",
+        "list_tasks",
         "get_task",
         "answer_task_question",
         "cancel_task",
+        "create_reminder",
+        "list_reminders",
+        "snooze_reminder",
+        "history_grep",
+        "set_jarvis_voice",
         "start_new_jarvis_log",
         "end_voice_session",
     }
@@ -26,11 +38,7 @@ class BrainResult:
 
 
 class RestrictedBrainGateway:
-    """Maps the shell's tiny allowlist to durable application services.
-
-    This class deliberately has no reference to the agent tool registry, file
-    system, browser, code execution, or knowledge mutation surfaces.
-    """
+    """Maps a small allowlist to durable application services."""
 
     async def execute(
         self,
@@ -46,7 +54,6 @@ class RestrictedBrainGateway:
 
         if tool_name == "dispatch_task":
             goal = " ".join(str(arguments.get("goal") or "").split()).strip()
-            targets = self._targets(arguments.get("targets"))
             snapshot = await task_service.dispatch(
                 goal=goal,
                 origin_surface="jarvis",
@@ -54,55 +61,143 @@ class RestrictedBrainGateway:
                 origin_turn_id=origin_turn_id,
                 importance=str(arguments.get("importance") or "normal"),
                 presentation_policy=str(arguments.get("presentation_policy") or "natural"),
-                targets=targets,
+                targets=self._targets(arguments.get("targets")),
                 idempotency_key=f"jarvis-shell:{call_id}:dispatch",
             )
-            return BrainResult(
-                output={
-                    "accepted": True,
-                    "task_id": snapshot.task.id,
-                    "status": snapshot.task.status,
-                    "queue_position": snapshot.queue_position,
+            await natural_task_resolver.touch(snapshot.task.id)
+            return BrainResult(output={
+                "accepted": True,
+                "title": task_title(snapshot.task),
+                "status": snapshot.task.status,
+                "queue_position": snapshot.queue_position,
+                "internal_task_id": snapshot.task.id,
+                "internal_fields_are_not_user_facing": True,
+            })
+
+        if tool_name in {"list_tasks", "list_reminders"}:
+            tasks = await task_service.list_tasks()
+            reminders_only = tool_name == "list_reminders"
+            values = [
+                {
+                    "title": task_title(item.task),
+                    "status": item.task.status,
+                    "summary": item.task.terminal_summary,
+                    "due_at": item.task.resume_at.isoformat() if item.task.resume_at else None,
+                    "internal_task_id": item.task.id,
                 }
-            )
+                for item in reversed(tasks)
+                if not reminders_only or (item.task.scheduled_delivery_json or {}).get("kind") == "reminder"
+            ]
+            return BrainResult(output={
+                "tasks": values[:50],
+                "internal_fields_are_not_user_facing": True,
+            })
 
         if tool_name == "get_task":
-            task_id = str(arguments.get("task_id") or "").strip()
-            detail = await task_service.get_task(task_id)
+            task = await self._resolve_task(arguments, mutation=False)
+            detail = await task_service.get_task(task.id)
             if detail is None:
-                raise ValueError(f"Task not found: {task_id}")
-            return BrainResult(
-                output={
-                    "task_id": detail.task.id,
-                    "goal": detail.task.goal,
-                    "status": detail.task.status,
-                    "summary": detail.task.terminal_summary,
-                    "questions": [
-                        {"question_id": item.id, "question": item.question, "state": item.state}
-                        for item in detail.questions
-                    ],
-                }
-            )
+                raise ValueError("Task not found")
+            await natural_task_resolver.touch(task.id)
+            return BrainResult(output={
+                "internal_task_id": detail.task.id,
+                "title": task_title(detail.task),
+                "goal": detail.task.goal,
+                "status": detail.task.status,
+                "summary": detail.task.terminal_summary,
+                "questions": [
+                    {
+                        "internal_question_id": item.id,
+                        "question": item.question,
+                        "state": item.state,
+                    }
+                    for item in detail.questions
+                ],
+                "internal_fields_are_not_user_facing": True,
+            })
 
         if tool_name == "answer_task_question":
-            task_id = str(arguments.get("task_id") or "").strip()
-            question_id = str(arguments.get("question_id") or "").strip()
-            answer = str(arguments.get("answer") or "")
+            task = await self._resolve_task(arguments, mutation=True)
+            detail = await task_service.get_task(task.id)
+            if detail is None:
+                raise ValueError("Task not found")
+            pending = [item for item in detail.questions if item.state == "asked"]
+            question_ref = str(arguments.get("question") or "").strip().lower()
+            matching = [item for item in pending if question_ref in item.question.lower()] if question_ref else pending
+            if len(matching) != 1:
+                raise ValueError("Which pending task question do you want to answer?")
             snapshot = await task_service.answer_question(
-                task_id,
-                question_id,
-                answer=answer,
+                task.id,
+                matching[0].id,
+                answer=str(arguments.get("answer") or ""),
                 idempotency_key=f"jarvis-shell:{call_id}:answer",
             )
-            return BrainResult(output={"task_id": task_id, "status": snapshot.task.status})
+            await natural_task_resolver.touch(task.id)
+            return BrainResult(output={"title": task_title(task), "status": snapshot.task.status})
 
         if tool_name == "cancel_task":
-            task_id = str(arguments.get("task_id") or "").strip()
+            task = await self._resolve_task(arguments, mutation=True)
             snapshot = await task_service.cancel(
-                task_id,
+                task.id,
                 idempotency_key=f"jarvis-shell:{call_id}:cancel",
             )
-            return BrainResult(output={"task_id": task_id, "status": snapshot.task.status})
+            await natural_task_resolver.touch(task.id)
+            return BrainResult(output={"title": task_title(task), "status": snapshot.task.status})
+
+        if tool_name == "create_reminder":
+            snapshot = await reminder_scheduler.create(
+                text=str(arguments.get("text") or ""),
+                due_at=self._date_time(arguments.get("due_at")),
+                idempotency_key=f"jarvis-shell:{call_id}:reminder",
+                origin_conversation_id=conversation_id,
+            )
+            await natural_task_resolver.touch(snapshot.task.id)
+            return BrainResult(output={
+                "accepted": True,
+                "title": task_title(snapshot.task),
+                "due_at": snapshot.task.resume_at.isoformat() if snapshot.task.resume_at else None,
+            })
+
+        if tool_name == "snooze_reminder":
+            task = await self._resolve_task(arguments, mutation=False)
+            snapshot = await reminder_scheduler.snooze(
+                task.id,
+                due_at=self._date_time(arguments.get("due_at")),
+                idempotency_key=f"jarvis-shell:{call_id}:snooze",
+            )
+            await natural_task_resolver.touch(snapshot.task.id)
+            return BrainResult(output={
+                "accepted": True,
+                "title": task_title(snapshot.task),
+                "due_at": snapshot.task.resume_at.isoformat() if snapshot.task.resume_at else None,
+            })
+
+        if tool_name == "history_grep":
+            matches, truncated, elapsed_ms = await history_retrieval_service.search(
+                str(arguments.get("argv") or "")
+            )
+            return BrainResult(output={
+                "matches": [
+                    {
+                        "title": item.title,
+                        "timestamp": item.timestamp.isoformat(),
+                        "virtual_path": item.virtual_path,
+                        "matching_text": item.matching_text,
+                        "internal_source_id": item.internal_source_id,
+                    }
+                    for item in matches[:20]
+                ],
+                "truncated": truncated,
+                "elapsed_ms": round(elapsed_ms, 2),
+                "internal_fields_are_not_user_facing": True,
+            })
+
+        if tool_name == "set_jarvis_voice":
+            voice = str(arguments.get("voice") or "").lower()
+            if voice not in {"marin", "cedar"}:
+                raise ValueError("Jarvis voice must be Marin or Cedar")
+            preferences, _changed = await jarvis_preferences_service.patch({"voice": voice})
+            return BrainResult(output={"voice": preferences.voice, "rotation_requested": True})
 
         if tool_name == "start_new_jarvis_log":
             return BrainResult(
@@ -115,6 +210,40 @@ class RestrictedBrainGateway:
             control="end_voice_session",
         )
 
+    async def _resolve_task(self, arguments: dict[str, Any], *, mutation: bool):
+        # Trusted callers and replayed historical shell events may already carry
+        # an internal ID. Keep accepting it without teaching the model or user
+        # to work with identifiers.
+        internal_id = str(arguments.get("task_id") or "").strip()
+        if internal_id:
+            detail = await task_service.get_task(internal_id)
+            if detail is not None:
+                if mutation and detail.task.status not in {
+                    "queued", "running", "waiting_for_input", "waiting_until"
+                }:
+                    raise ValueError("That task is no longer active.")
+                return detail.task
+        reference = str(
+            arguments.get("task_reference") or arguments.get("reference") or ""
+        ).strip()
+        result = await natural_task_resolver.resolve(reference, active_only=mutation)
+        if result.ambiguous:
+            raise ValueError(result.clarification or "Which task do you mean?")
+        if result.task is None:
+            raise ValueError("I couldn't find a task matching that description.")
+        return result.task
+
+    @staticmethod
+    def _date_time(value: Any) -> datetime:
+        raw = str(value or "").strip()
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Use an unambiguous ISO-8601 reminder time") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
+        return parsed.astimezone(timezone.utc)
+
     @staticmethod
     def _targets(value: Any) -> tuple[tuple[str, str, bool], ...]:
         if value is None:
@@ -125,13 +254,11 @@ class RestrictedBrainGateway:
         for item in value:
             if not isinstance(item, dict):
                 raise ValueError("Each task target must be an object")
-            targets.append(
-                (
-                    str(item.get("resource_type") or ""),
-                    str(item.get("resource_key") or ""),
-                    bool(item.get("mutable", True)),
-                )
-            )
+            targets.append((
+                str(item.get("resource_type") or ""),
+                str(item.get("resource_key") or ""),
+                bool(item.get("mutable", True)),
+            ))
         return tuple(targets)
 
 

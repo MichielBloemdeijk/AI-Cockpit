@@ -121,9 +121,15 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert "has no permission to browse, edit files, run commands" in session_config["instructions"]
     assert {tool["name"] for tool in session_config["tools"]} == {
         "dispatch_task",
+        "list_tasks",
         "get_task",
         "answer_task_question",
         "cancel_task",
+        "create_reminder",
+        "list_reminders",
+        "snooze_reminder",
+        "history_grep",
+        "set_jarvis_voice",
         "start_new_jarvis_log",
         "end_voice_session",
     }
@@ -284,12 +290,14 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "user_transcript",
         "assistant_generating",
         "assistant_speaking",
+        "assistant_transcript_delta",
         "assistant_response",
         "shell_call",
     ]
     assert events[3].payload["transcript"] == "Please prepare a report."
-    assert events[6].payload["transcript"] == "I can help with that."
-    assert events[7].payload["arguments"] == {"goal": "Prepare a report"}
+    assert events[6].payload["delta"] == "I can "
+    assert events[7].payload["transcript"] == "I can help with that."
+    assert events[8].payload["arguments"] == {"goal": "Prepare a report"}
     await adapter.close(session_id="session-events", generation=1, reason="done")
 
 

@@ -25,7 +25,7 @@ from app.db.tables import (
 from app.services.task_notifications import enqueue_task_notification, schedule_task_notification
 
 
-ACTIVE_TASK_STATUSES = {"queued", "running", "waiting_for_input"}
+ACTIVE_TASK_STATUSES = {"queued", "running", "waiting_for_input", "waiting_until"}
 TERMINAL_TASK_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
 RETRYABLE_TASK_STATUSES = {"failed", "interrupted", "cancelled"}
 
@@ -61,6 +61,98 @@ class TaskDetailSnapshot:
 
 
 class TaskService:
+    async def schedule_reminder(
+        self,
+        *,
+        text: str,
+        due_at: datetime,
+        idempotency_key: str,
+        origin_conversation_id: str | None = None,
+    ) -> TaskSnapshot:
+        normalized = " ".join(text.split()).strip()
+        due = due_at if due_at.tzinfo is not None else due_at.replace(tzinfo=timezone.utc)
+        due = due.astimezone(timezone.utc)
+        if not normalized:
+            raise ValueError("Reminder text cannot be empty")
+        if due <= utc_now():
+            raise ValueError("Reminder time must be in the future")
+        async with session_scope() as session:
+            repo = TaskRepository(session)
+            task = await repo.dispatch_task(
+                origin_surface="jarvis_reminder",
+                goal=f"Remind me: {normalized}",
+                idempotency_key=idempotency_key,
+                origin_conversation_id=origin_conversation_id,
+                importance="high",
+                presentation_policy="natural",
+            )
+            task = await self._lock_task(session, task.id)
+            attempt = await self._ensure_attempt(session, task)
+            await repo.append_event(
+                task_id=task.id,
+                attempt_id=attempt.id,
+                event_type="task.queued",
+                payload_json={"goal": task.goal, "status": "queued"},
+                idempotency_key=f"task.dispatch:{idempotency_key}",
+            )
+            if task.status == "queued":
+                task.status = "waiting_until"
+                task.waiting_until = due
+                task.resume_at = due
+                task.wait_reason = "reminder"
+                task.scheduled_delivery_json = {"kind": "reminder", "text": normalized}
+                task.scheduled_delivery_key = f"reminder:{idempotency_key}"
+                await repo.append_event(
+                    task_id=task.id,
+                    attempt_id=attempt.id,
+                    event_type="task.waiting_until",
+                    payload_json={"status": "waiting_until", "resume_at": due.isoformat(), "reason": "reminder"},
+                    idempotency_key=f"task.waiting:{idempotency_key}",
+                )
+                await self._end_current_attempt(session, task, reason="waiting_until")
+            await session.flush()
+            return TaskSnapshot(task=task, queue_position=None)
+
+    async def wait_until(
+        self,
+        task_id: str,
+        *,
+        resume_at: datetime,
+        reason: str,
+        idempotency_key: str,
+    ) -> TaskSnapshot:
+        due = resume_at if resume_at.tzinfo is not None else resume_at.replace(tzinfo=timezone.utc)
+        due = due.astimezone(timezone.utc)
+        if due <= utc_now():
+            raise ValueError("Task wait time must be in the future")
+        normalized_reason = " ".join(reason.split()).strip() or "scheduled wait"
+        async with session_scope() as session:
+            repo = TaskRepository(session)
+            task = await self._lock_task(session, task_id)
+            event_key = f"task.wait-until:{task_id}:{idempotency_key}"
+            if await self._event_by_key(session, event_key) is None:
+                if task.status not in {"queued", "running"}:
+                    raise ValueError(f"Task in {task.status} cannot wait until a scheduled time")
+                task.status = "waiting_until"
+                task.waiting_until = due
+                task.resume_at = due
+                task.wait_reason = normalized_reason
+                task.updated_at = utc_now()
+                await repo.append_event(
+                    task_id=task.id,
+                    attempt_id=task.current_attempt_id,
+                    event_type="task.waiting_until",
+                    payload_json={
+                        "status": "waiting_until",
+                        "resume_at": due.isoformat(),
+                        "reason": normalized_reason,
+                    },
+                    idempotency_key=event_key,
+                )
+                await self._end_current_attempt(session, task, reason="waiting_until")
+            await session.flush()
+            return TaskSnapshot(task=task, queue_position=None)
+
     async def dispatch(
         self,
         *,
@@ -221,13 +313,15 @@ class TaskService:
                     payload_json={"status": "running"},
                     idempotency_key=f"task.cancel:{task_id}:{idempotency_key}",
                 )
-            elif existing is None and task.status in {"queued", "waiting_for_input"}:
+            elif existing is None and task.status in {"queued", "waiting_for_input", "waiting_until"}:
                 now = utc_now()
                 task.status = "cancelled"
                 task.cancellation_requested_at = now
                 task.finished_at = now
                 task.updated_at = now
                 task.terminal_summary = "Task cancelled by user."
+                task.waiting_until = None
+                task.resume_at = None
                 event = await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,

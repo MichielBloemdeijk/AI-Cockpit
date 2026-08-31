@@ -17,6 +17,8 @@ from app.db.tables import (
     Conversation,
     ConversationEvent,
     ConversationMessage,
+    JarvisPreference,
+    JarvisDevice,
     JarvisState,
     RealtimeSession,
     SpeechDelivery,
@@ -44,6 +46,7 @@ FLOOR_EVENT_TYPES = {
     "user_transcript": "thinking",
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",
+    "assistant_transcript_delta": "assistant_speaking",
     "assistant_response": "listening",
     "assistant_interrupted": "listening",
     "disconnected": "text_fallback",
@@ -95,6 +98,23 @@ class PresentationConsideration:
 
 
 class JarvisCoordinator:
+    async def request_voice_rotation(self, voice: str) -> None:
+        """Signal the active controller to reconnect at its next safe boundary."""
+        active = await self.get_active_session()
+        if active is None:
+            return
+        async with session_scope() as session:
+            realtime = await session.get(RealtimeSession, active.id)
+            if realtime is None or realtime.lifecycle_state not in ACTIVE_SESSION_STATES:
+                return
+            floor = await self._floor_state(session, realtime.id)
+            await JarvisDomainRepository(session).append_session_event(
+                session_id=realtime.id,
+                event_type="session.rotation_requested",
+                payload_json={"reason": "voice_changed", "voice": voice, "safe_boundary": floor == "listening"},
+                idempotency_key=f"voice-rotation:{realtime.id}:{realtime.generation}:{voice}",
+            )
+
     async def accept_text_turn(
         self,
         content: str,
@@ -636,6 +656,10 @@ class JarvisCoordinator:
     ) -> None:
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
+            controller_device = (
+                None if not realtime.controller_id else await session.get(JarvisDevice, realtime.controller_id)
+            )
+            controller_locked = controller_device is not None and controller_device.lock_state == "locked"
             last_turn_id = (await session.execute(
                 select(ConversationMessage.id)
                 .join(
@@ -649,6 +673,10 @@ class JarvisCoordinator:
             )).scalar_one_or_none()
             conversation_id = realtime.conversation_id
         try:
+            if controller_locked and tool_name in {
+                "dispatch_task", "answer_task_question", "cancel_task", "set_jarvis_voice",
+            }:
+                raise ValueError("That action is unavailable while the device is locked")
             result = await restricted_brain_gateway.execute(
                 tool_name=tool_name,
                 arguments=arguments,
@@ -678,6 +706,8 @@ class JarvisCoordinator:
                 idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
             )
         if control is None:
+            if ok and tool_name == "set_jarvis_voice":
+                await self.request_voice_rotation(str(output.get("voice") or "marin"))
             adapter = get_voice_session_adapter(realtime.provider_adapter)
             await adapter.send_tool_result(
                 session_id=session_id,
@@ -891,6 +921,7 @@ class JarvisCoordinator:
 
     @staticmethod
     async def _context_in_session(session, snapshot) -> dict[str, Any]:
+        preferences = await session.get(JarvisPreference, "current")
         messages = list((await session.execute(
             select(ConversationMessage)
             .where(ConversationMessage.conversation_id == snapshot.conversation.id)
@@ -958,6 +989,11 @@ class JarvisCoordinator:
                 "conversation": snapshot.conversation_cursor,
                 "task": snapshot.task_cursor,
                 "session": snapshot.session_cursor,
+            },
+            "preferences": {
+                "voice": "marin" if preferences is None else preferences.voice,
+                "concision": "concise" if preferences is None else preferences.concision,
+                "wake_behavior": "follow_up" if preferences is None else preferences.wake_behavior,
             },
         }
 

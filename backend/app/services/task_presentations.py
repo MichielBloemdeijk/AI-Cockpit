@@ -18,6 +18,7 @@ PRESENTABLE_EVENT_TYPES = {
     "task.failed": "terminal_result",
     "task.interrupted": "terminal_result",
     "task.cancelled": "terminal_result",
+    "task.reminder.due": "reminder",
 }
 UNFINISHED_PRESENTATION_STATES = {"pending", "reserved", "deferred"}
 

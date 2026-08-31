@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     worker_stale_after_seconds: float = 20.0
     worker_lease_ttl_seconds: float = 30.0
     worker_poll_interval_seconds: float = 0.5
+    reminder_poll_interval_seconds: float = 1.0
     conversation_context_message_limit: int = 24
     conversation_compaction_enabled: bool = True
     conversation_compaction_trigger_messages: int = 18

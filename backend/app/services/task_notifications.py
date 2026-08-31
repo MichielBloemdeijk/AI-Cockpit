@@ -18,7 +18,7 @@ from app.db.tables import NotificationOutbox, PushSubscription, Task, TaskEvent,
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )
-NOTIFIABLE_TASK_EVENTS = TERMINAL_TASK_EVENTS | {"task.requires_input"}
+NOTIFIABLE_TASK_EVENTS = TERMINAL_TASK_EVENTS | {"task.requires_input", "task.reminder.due"}
 _MAX_RETRY_DELAY_SECONDS = 30.0
 _outbox_tasks: set[asyncio.Task[None]] = set()
 

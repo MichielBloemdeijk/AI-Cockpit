@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.models.chat import Message
 from app.services.agent_prompt_builder import (
     NATIVE_AGENT_ASK_USER_TOOL,
     NATIVE_AGENT_FINALIZE_TOOL,
+    NATIVE_AGENT_WAIT_UNTIL_TOOL,
     _native_control_tool_definitions,
     _parse_native_tool_arguments,
 )
@@ -51,6 +54,7 @@ class AgentExecutionSink(Protocol):
     async def progress(self, summary: str) -> None: ...
     async def checkpoint(self, value: dict[str, Any]) -> None: ...
     async def question(self, question: str) -> None: ...
+    async def wait_until(self, resume_at: datetime, reason: str) -> None: ...
     async def complete(self, summary: str, final_text: str) -> None: ...
     async def fail(self, error: str) -> None: ...
     async def cancelled(self) -> None: ...
@@ -97,6 +101,14 @@ class TaskExecutionSink:
             self.context.task_id,
             question=question,
             idempotency_key=self._key("task.requires_input"),
+        )
+
+    async def wait_until(self, resume_at: datetime, reason: str) -> None:
+        await task_service.wait_until(
+            self.context.task_id,
+            resume_at=resume_at,
+            reason=reason,
+            idempotency_key=self._key("task.waiting_until"),
         )
 
     async def complete(self, summary: str, final_text: str) -> None:
@@ -164,6 +176,9 @@ class ConversationExecutionSink:
     async def question(self, question: str) -> None:
         await self.event("agent.question.asked", {"question": question})
 
+    async def wait_until(self, resume_at: datetime, reason: str) -> None:
+        raise RuntimeError("Interactive conversation runs cannot schedule task waits")
+
     async def complete(self, summary: str, final_text: str) -> None:
         await self.event("agent.completed", {"summary": summary, "final_text": final_text})
 
@@ -196,12 +211,16 @@ class TaskAgentRuntime:
             tool for tool in get_agent_tool_provider_definitions("openai")
             if str(tool.get("function", {}).get("name") or "") not in TASK_CONTROL_TOOLS
         ]
-        tools = [*provider_tools, *_native_control_tool_definitions(include_delegate=False)]
+        tools = [
+            *provider_tools,
+            *_native_control_tool_definitions(include_delegate=False, include_wait=True),
+        ]
         allowed = {str(tool.get("function", {}).get("name") or "") for tool in tools}
         system_prompt = (
             "You are the AI-Cockpit background task agent running in an isolated worker. "
             "Use tools to materially advance the goal. Never write outside the allowed write roots. "
-            "Call task_ask_user when required information is missing. Call task_finalize with the actual result when done. "
+            "Call task_ask_user when required information is missing. Use task_wait_until only to pause this task until "
+            "a known future instant. Call task_finalize with the actual result when done. "
             "Do not delegate another task."
         )
 
@@ -246,7 +265,11 @@ class TaskAgentRuntime:
                     raise RuntimeError("Task agent returned no tool call or final text")
                 await sink.complete(final_text.splitlines()[0][:240], final_text)
                 return AgentExecutionResult(status="completed", summary=final_text)
-            control_names = {NATIVE_AGENT_ASK_USER_TOOL, NATIVE_AGENT_FINALIZE_TOOL}
+            control_names = {
+                NATIVE_AGENT_ASK_USER_TOOL,
+                NATIVE_AGENT_FINALIZE_TOOL,
+                NATIVE_AGENT_WAIT_UNTIL_TOOL,
+            }
             if len(calls) > 1 and any(call.function.name in control_names for call in calls):
                 raise RuntimeError("Task agent combined a control tool with another tool call")
 
@@ -270,6 +293,20 @@ class TaskAgentRuntime:
                         raise RuntimeError("Task final result cannot be empty")
                     await sink.complete(summary or final_text.splitlines()[0][:240], final_text)
                     return AgentExecutionResult(status="completed", summary=summary or final_text)
+                if tool_name == NATIVE_AGENT_WAIT_UNTIL_TOOL:
+                    raw_resume_at = str(arguments.get("resume_at") or "").strip()
+                    reason = str(arguments.get("reason") or "").strip()
+                    try:
+                        resume_at = datetime.fromisoformat(raw_resume_at.replace("Z", "+00:00"))
+                    except ValueError as exc:
+                        raise RuntimeError("task_wait_until requires an ISO-8601 resume_at") from exc
+                    if resume_at.tzinfo is None:
+                        resume_at = resume_at.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
+                    resume_at = resume_at.astimezone(timezone.utc)
+                    checkpoint.update({"step": step, "history": history, "model": model})
+                    await sink.checkpoint(checkpoint)
+                    await sink.wait_until(resume_at, reason)
+                    return AgentExecutionResult(status="waiting_until", summary=reason)
 
                 await sink.event("agent.tool.started", {"step": step, "tool": tool_name, "arguments": arguments})
                 result = await execute_agent_tool(context=tool_context, tool=tool_name, arguments=arguments)

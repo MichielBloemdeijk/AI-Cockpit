@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sse_starlette.sse import EventSourceResponse
 
 from app.config import settings
 from app.models.jarvis import (
@@ -17,28 +18,39 @@ from app.models.jarvis import (
     JarvisPresentationConsiderationResponse,
     JarvisPresentationReserveRequest,
     JarvisPresentationView,
+    JarvisPreferencesPatch,
+    JarvisPreferencesView,
     JarvisRealtimeCallRequest,
     JarvisRealtimeCallResponse,
+    ReminderCreateRequest,
+    ReminderSnoozeRequest,
     JarvisSessionEventReplayResponse,
     JarvisSessionEventView,
     JarvisSessionView,
     JarvisStateResponse,
     JarvisTextTurnRequest,
     JarvisTurnAcceptedResponse,
+    TaskReferenceCandidate,
+    TaskReferenceRequest,
+    TaskResolutionView,
 )
 from app.presenters.conversations import present_conversation_message
 from app.presenters.conversations import present_conversation_event
-from app.services.auth import require_auth
+from app.services.jarvis_devices import require_jarvis_auth
 from app.services.conversation_read_model import conversation_read_model
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.jarvis_daily import jarvis_daily_service
+from app.services.jarvis_live import jarvis_live_service
+from app.services.jarvis_preferences import jarvis_preferences_service
+from app.services.natural_task_resolver import natural_task_resolver, task_title
+from app.services.reminder_scheduler import reminder_scheduler
 from app.services.openai_realtime_adapter import OpenAIRealtimeConfigurationError
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import ACTIVE_TASK_STATUSES, task_service
 from app.models.tasks import TaskSummaryView, WorkerHealthView
 
 
-router = APIRouter(prefix="/api/jarvis", tags=["jarvis"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/jarvis", tags=["jarvis"], dependencies=[Depends(require_jarvis_auth)])
 
 
 def _session_view(session) -> JarvisSessionView | None:
@@ -60,6 +72,11 @@ def _task_summary(snapshot) -> TaskSummaryView:
         importance=task.importance,
         presentation_policy=task.presentation_policy,
         terminal_summary=task.terminal_summary,
+        waiting_until=task.waiting_until,
+        resume_at=task.resume_at,
+        wait_reason=task.wait_reason,
+        scheduled_delivery=task.scheduled_delivery_json,
+        scheduled_delivered_at=task.scheduled_delivered_at,
         queue_position=snapshot.queue_position,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -143,7 +160,125 @@ async def get_jarvis_state() -> JarvisStateResponse:
             task=latest_task_cursor,
             session=0 if active_session is None else active_session.last_event_sequence,
         ),
+        focused_task_id=state.focused_task_id,
+        recent_task_refs=list(state.recent_task_refs),
     )
+
+
+@router.get("/preferences", response_model=JarvisPreferencesView)
+async def get_jarvis_preferences() -> JarvisPreferencesView:
+    preferences = await jarvis_preferences_service.get()
+    return JarvisPreferencesView(
+        voice=preferences.voice,
+        concision=preferences.concision,
+        wake_behavior=preferences.wake_behavior,
+        developer_mode=preferences.developer_mode,
+        android_privacy=preferences.android_privacy,
+        updated_at=preferences.updated_at,
+    )
+
+
+@router.patch("/preferences", response_model=JarvisPreferencesView)
+async def patch_jarvis_preferences(request: JarvisPreferencesPatch) -> JarvisPreferencesView:
+    preferences, voice_changed = await jarvis_preferences_service.patch(
+        request.model_dump(exclude_unset=True)
+    )
+    if voice_changed:
+        await jarvis_coordinator.request_voice_rotation(preferences.voice)
+    return JarvisPreferencesView(
+        voice=preferences.voice,
+        concision=preferences.concision,
+        wake_behavior=preferences.wake_behavior,
+        developer_mode=preferences.developer_mode,
+        android_privacy=preferences.android_privacy,
+        updated_at=preferences.updated_at,
+    )
+
+
+@router.get("/live")
+async def stream_jarvis_live_events(
+    request: Request,
+    cursor: int = Query(default=0, ge=0),
+) -> EventSourceResponse:
+    return EventSourceResponse(
+        jarvis_live_service.stream(request, cursor=cursor),
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        ping=None,
+    )
+
+
+@router.post("/tasks/resolve", response_model=TaskResolutionView)
+async def resolve_task_reference(request: TaskReferenceRequest) -> TaskResolutionView:
+    result = await natural_task_resolver.resolve(request.reference, active_only=request.active_only)
+    if result.task is not None:
+        await natural_task_resolver.touch(result.task.id)
+    return TaskResolutionView(
+        resolved=result.task is not None,
+        ambiguous=result.ambiguous,
+        internal_task_id=None if result.task is None else result.task.id,
+        task=None if result.task is None else TaskReferenceCandidate(
+            title=task_title(result.task),
+            status=result.task.status,
+            created_at=result.task.created_at,
+        ),
+        candidates=[
+            TaskReferenceCandidate(title=task_title(item), status=item.status, created_at=item.created_at)
+            for item in result.candidates
+        ],
+        clarification=result.clarification,
+    )
+
+
+@router.get("/reminders", response_model=list[TaskSummaryView])
+async def list_reminders() -> list[TaskSummaryView]:
+    snapshots = await task_service.list_tasks()
+    return [
+        _task_summary(item)
+        for item in snapshots
+        if (item.task.scheduled_delivery_json or {}).get("kind") == "reminder"
+    ]
+
+
+@router.post("/reminders", response_model=TaskSummaryView, status_code=status.HTTP_201_CREATED)
+async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
+    state = await jarvis_daily_service.get_state()
+    try:
+        snapshot = await reminder_scheduler.create(
+            text=request.text,
+            due_at=request.due_at,
+            idempotency_key=request.idempotency_key,
+            origin_conversation_id=None if state.current_log is None else state.current_log.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await natural_task_resolver.touch(snapshot.task.id)
+    return _task_summary(snapshot)
+
+
+@router.post("/reminders/{task_id}/snooze", response_model=TaskSummaryView)
+async def snooze_reminder(task_id: str, request: ReminderSnoozeRequest) -> TaskSummaryView:
+    try:
+        snapshot = await reminder_scheduler.snooze(
+            task_id,
+            due_at=request.due_at,
+            idempotency_key=request.idempotency_key,
+        )
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    await natural_task_resolver.touch(snapshot.task.id)
+    return _task_summary(snapshot)
+
+
+@router.delete("/reminders/{task_id}", response_model=TaskSummaryView)
+async def cancel_reminder(task_id: str) -> TaskSummaryView:
+    detail = await task_service.get_task(task_id)
+    if detail is None or (detail.task.scheduled_delivery_json or {}).get("kind") != "reminder":
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    try:
+        snapshot = await task_service.cancel(task_id, idempotency_key=f"reminder-api:{uuid4()}")
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    return _task_summary(snapshot)
 
 
 @router.post(
@@ -206,7 +341,12 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         return JarvisRealtimeCallResponse(role="observer", session=_session_view(await jarvis_coordinator.observe()))
     state = await jarvis_daily_service.get_state()
     if state.current_log is None:
-        raise HTTPException(status_code=409, detail="Accept a Jarvis turn before starting a controller")
+        await jarvis_daily_service.start_fresh_log(
+            idempotency_key=f"voice-bootstrap:{request.controller_id}"
+        )
+        state = await jarvis_daily_service.get_state()
+    if state.current_log is None:
+        raise HTTPException(status_code=409, detail="Unable to prepare the Jarvis log")
     try:
         bootstrap = await jarvis_coordinator.bootstrap_controller(
             conversation_id=state.current_log.id,

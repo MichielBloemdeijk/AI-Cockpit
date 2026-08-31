@@ -20,6 +20,11 @@ class TaskSummaryView(BaseModel):
     importance: str
     presentation_policy: str
     terminal_summary: str | None = None
+    waiting_until: datetime | None = None
+    resume_at: datetime | None = None
+    wait_reason: str | None = None
+    scheduled_delivery: dict[str, Any] | None = None
+    scheduled_delivered_at: datetime | None = None
     queue_position: int | None = None
     created_at: datetime
     updated_at: datetime

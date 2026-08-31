@@ -108,6 +108,7 @@ class TaskStatus(str, Enum):
     queued = "queued"
     running = "running"
     waiting_for_input = "waiting_for_input"
+    waiting_until = "waiting_until"
     completed = "completed"
     failed = "failed"
     interrupted = "interrupted"
@@ -340,6 +341,11 @@ class JarvisState(Base):
     jarvis_day_key: Mapped[date | None] = mapped_column(Date(), nullable=True)
     jarvis_day_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    focused_task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    recent_task_refs_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    live_event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -530,7 +536,7 @@ class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'running', 'waiting_for_input', 'completed', "
+            "status IN ('queued', 'running', 'waiting_for_input', 'waiting_until', 'completed', "
             "'failed', 'interrupted', 'cancelled')",
             name="ck_tasks_status",
         ),
@@ -557,6 +563,12 @@ class Task(Base):
         String(32), nullable=False, default="natural", server_default="natural"
     )
     terminal_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    waiting_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resume_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    wait_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_delivery_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    scheduled_delivery_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    scheduled_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -564,6 +576,92 @@ class Task(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JarvisPreference(Base):
+    """Single-user Jarvis preferences kept server-side for device handoff."""
+
+    __tablename__ = "jarvis_preferences"
+    __table_args__ = (CheckConstraint("id = 'current'", name="ck_jarvis_preferences_singleton_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="current")
+    voice: Mapped[str] = mapped_column(String(32), nullable=False, default="marin", server_default="marin")
+    concision: Mapped[str] = mapped_column(String(32), nullable=False, default="concise", server_default="concise")
+    wake_behavior: Mapped[str] = mapped_column(String(32), nullable=False, default="follow_up", server_default="follow_up")
+    developer_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    android_privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class JarvisLiveEvent(Base):
+    """Unified, resumable event stream consumed by browser and Android clients."""
+
+    __tablename__ = "jarvis_live_events"
+    __table_args__ = (
+        UniqueConstraint("id", name="uq_jarvis_live_events_id"),
+        UniqueConstraint("idempotency_key", name="uq_jarvis_live_events_idempotency"),
+    )
+
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid_str)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_domain: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RecallDocument(Base):
+    """User-visible text projected into the local FTS recall indexes."""
+
+    __tablename__ = "recall_documents"
+    __table_args__ = (
+        UniqueConstraint("id", name="uq_recall_documents_id"),
+        UniqueConstraint("virtual_path", name="uq_recall_documents_virtual_path"),
+    )
+
+    document_order: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid_str)
+    virtual_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class JarvisDevice(Base):
+    __tablename__ = "jarvis_devices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    credential_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="android")
+    lock_state: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", server_default="unknown")
+    privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JarvisPairingCode(Base):
+    __tablename__ = "jarvis_pairing_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WorkerInstance(Base):
@@ -833,6 +931,7 @@ Index("ix_voice_session_events_session_created", VoiceSessionEvent.session_id, V
 Index("ix_speech_deliveries_session_created", SpeechDelivery.realtime_session_id, SpeechDelivery.created_at)
 Index("ix_speech_deliveries_state", SpeechDelivery.state)
 Index("ix_tasks_status_order", Task.status, Task.creation_order)
+Index("ix_tasks_resume_at", Task.status, Task.resume_at)
 Index("ix_tasks_origin_conversation", Task.origin_conversation_id, Task.creation_order)
 Index("ix_task_attempts_task_number", TaskAttempt.task_id, TaskAttempt.attempt_number)
 Index("ix_task_attempts_worker_heartbeat", TaskAttempt.worker_id, TaskAttempt.heartbeat_at)
@@ -847,3 +946,7 @@ Index("ix_worker_instances_heartbeat", WorkerInstance.heartbeat_at)
 Index("ix_task_presentations_state_created", TaskPresentation.state, TaskPresentation.created_at)
 Index("ix_task_presentations_task", TaskPresentation.task_id, TaskPresentation.created_at)
 Index("ix_notification_outbox_status_created", NotificationOutbox.status, NotificationOutbox.created_at)
+Index("ix_jarvis_live_events_created", JarvisLiveEvent.created_at)
+Index("ix_recall_documents_source", RecallDocument.source_type, RecallDocument.source_id)
+Index("ix_recall_documents_timestamp", RecallDocument.source_timestamp)
+Index("ix_jarvis_pairing_codes_expiry", JarvisPairingCode.expires_at)

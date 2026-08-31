@@ -79,6 +79,8 @@ class JarvisStateResponse(BaseModel):
     session: JarvisSessionView | None = None
     worker_health: WorkerHealthView = Field(default_factory=lambda: WorkerHealthView(status="offline"))
     cursors: JarvisDomainCursors = Field(default_factory=JarvisDomainCursors)
+    focused_task_id: str | None = None
+    recent_task_refs: list[str] = Field(default_factory=list)
 
 
 class JarvisTextTurnRequest(BaseModel):
@@ -124,6 +126,7 @@ class JarvisFakeProviderEventRequest(BaseModel):
         "user_transcript",
         "assistant_generating",
         "assistant_speaking",
+        "assistant_transcript_delta",
         "assistant_response",
         "assistant_interrupted",
         "shell_call",
@@ -146,3 +149,83 @@ class JarvisPresentationConsiderationResponse(BaseModel):
     decision: Literal["PRESENT", "FOLD", "DEFER", "WAIT", "NONE"]
     reason: str
     presentation_ids: list[str] = Field(default_factory=list)
+
+
+class JarvisPreferencesView(BaseModel):
+    voice: Literal["marin", "cedar"] = "marin"
+    concision: Literal["concise", "balanced"] = "concise"
+    wake_behavior: Literal["manual", "wake_word", "follow_up"] = "follow_up"
+    developer_mode: bool = False
+    android_privacy: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime | None = None
+
+
+class JarvisPreferencesPatch(BaseModel):
+    voice: Literal["marin", "cedar"] | None = None
+    concision: Literal["concise", "balanced"] | None = None
+    wake_behavior: Literal["manual", "wake_word", "follow_up"] | None = None
+    developer_mode: bool | None = None
+    android_privacy: dict[str, Any] | None = None
+
+
+class JarvisLiveEventView(BaseModel):
+    id: str
+    sequence: int
+    event_type: str
+    source_domain: str
+    source_id: str | None = None
+    source_sequence: int | None = None
+    payload: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class ReminderCreateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    due_at: datetime
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class ReminderSnoozeRequest(BaseModel):
+    due_at: datetime
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class TaskReferenceRequest(BaseModel):
+    reference: str = Field(min_length=1, max_length=500)
+    active_only: bool = False
+
+
+class TaskReferenceCandidate(BaseModel):
+    title: str
+    status: str
+    created_at: datetime
+
+
+class TaskResolutionView(BaseModel):
+    resolved: bool
+    ambiguous: bool = False
+    internal_task_id: str | None = None
+    task: TaskReferenceCandidate | None = None
+    candidates: list[TaskReferenceCandidate] = Field(default_factory=list)
+    clarification: str | None = None
+
+
+class PairingCodeView(BaseModel):
+    code: str
+    expires_at: datetime
+
+
+class DevicePairRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=12)
+    label: str = Field(min_length=1, max_length=255)
+
+
+class DevicePairResponse(BaseModel):
+    device_id: str
+    credential: str
+
+
+class DeviceStatePatch(BaseModel):
+    lock_state: Literal["locked", "unlocked", "unknown"] | None = None
+    event_cursor: int | None = Field(default=None, ge=0)
+    privacy: dict[str, Any] | None = None
