@@ -110,6 +110,7 @@ describe("JarvisWakeRuntime", () => {
 
     expect(value.handoffs).toHaveLength(1);
     expect(value.handoffs[0].localStream).toBe(value.stream);
+    expect(value.handoffs[0].wakeProbability).toBe(0.91);
     const samples = new Float32Array([3, 4, 5]);
     value.worker.emit({ type: "utterance", samples, sampleRate: 16_000 });
     await expect(value.handoffs[0].utterance).resolves.toBe(samples);
@@ -139,6 +140,7 @@ describe("JarvisWakeRuntime", () => {
     const handoff = value.runtime.manualHandoff();
 
     expect(handoff.localStream).toBe(value.stream);
+    expect(handoff.wakeProbability).toBeNull();
     await expect(handoff.utterance).resolves.toHaveLength(0);
     expect(value.worker.messages.at(-1)).toEqual({ type: "pause" });
     expect(value.capture.pause).toHaveBeenCalledOnce();

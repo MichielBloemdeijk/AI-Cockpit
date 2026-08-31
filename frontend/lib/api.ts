@@ -530,13 +530,18 @@ export interface TaskSummary {
   origin_conversation_id: string | null;
   origin_turn_id: string | null;
   goal: string;
-  status: "queued" | "running" | "waiting_for_input" | "completed" | "failed" | "interrupted" | "cancelled";
+  status: "queued" | "running" | "waiting_for_input" | "waiting_until" | "completed" | "failed" | "interrupted" | "cancelled";
   creation_order: number;
   current_attempt_id: string | null;
   cancellation_requested_at: string | null;
   importance: string;
   presentation_policy: string;
   terminal_summary: string | null;
+  waiting_until: string | null;
+  resume_at: string | null;
+  wait_reason: string | null;
+  scheduled_delivery: Record<string, unknown> | null;
+  scheduled_delivered_at: string | null;
   queue_position: number | null;
   created_at: string;
   updated_at: string;
@@ -637,6 +642,44 @@ export interface TaskDispatch {
 
 export async function getJarvisState(): Promise<JarvisStateResponse> {
   const res = await fetch(`${BASE}/api/jarvis/state`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export function jarvisLiveUrl(cursor = 0): string {
+  const params = new URLSearchParams({ cursor: String(cursor) });
+  return `${BASE}/api/jarvis/live?${params}`;
+}
+
+export async function getJarvisPreferences(): Promise<JarvisPreferences> {
+  const res = await fetch(`${BASE}/api/jarvis/preferences`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function updateJarvisPreferences(
+  patch: Partial<Pick<JarvisPreferences, "voice" | "concision" | "wake_behavior" | "developer_mode" | "android_privacy">>,
+): Promise<JarvisPreferences> {
+  const res = await fetch(`${BASE}/api/jarvis/preferences`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export interface JarvisPairingCode {
+  code: string;
+  expires_at: string;
+}
+
+export async function createJarvisPairingCode(): Promise<JarvisPairingCode> {
+  const res = await fetch(`${BASE}/api/jarvis/devices/pairing-code`, {
+    method: "POST",
+    credentials: "include",
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -977,6 +1020,28 @@ export interface JarvisStateResponse {
   session: JarvisSession | null;
   worker_health: { status: string; worker_id: string | null; heartbeat_at: string | null };
   cursors: JarvisDomainCursors;
+  focused_task_id: string | null;
+  recent_task_refs: string[];
+}
+
+export interface JarvisPreferences {
+  voice: "marin" | "cedar";
+  concision: "concise" | "balanced";
+  wake_behavior: "manual" | "wake_word" | "follow_up";
+  developer_mode: boolean;
+  android_privacy: Record<string, unknown>;
+  updated_at: string | null;
+}
+
+export interface JarvisLiveEvent {
+  id: string;
+  sequence: number;
+  event_type: string;
+  source_domain: "conversation" | "task" | "session";
+  source_id: string | null;
+  source_sequence: number | null;
+  payload: Record<string, unknown> | null;
+  created_at: string;
 }
 
 export interface JarvisDomainCursors {
@@ -1059,6 +1124,7 @@ export interface JarvisFakeProviderEventRequest {
     | "user_transcript"
     | "assistant_generating"
     | "assistant_speaking"
+    | "assistant_transcript_delta"
     | "assistant_response"
     | "assistant_interrupted"
     | "shell_call"

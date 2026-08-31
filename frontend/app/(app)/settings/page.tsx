@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Settings, Bell, Cpu, Save } from "lucide-react";
-import { ConversationSessionMetadata, getChatSettings, updateChatSettings } from "@/lib/api";
+import Link from "next/link";
+import { Settings, Bell, Cpu, Save, AudioLines } from "lucide-react";
+import { ConversationSessionMetadata, createJarvisPairingCode, getChatSettings, getJarvisPreferences, updateChatSettings, updateJarvisPreferences, type JarvisPairingCode, type JarvisPreferences } from "@/lib/api";
 import { enablePushNotifications, inspectPushNotifications, type PushNotificationState } from "@/lib/push-notifications";
 
 export default function SettingsPage() {
@@ -11,6 +12,8 @@ export default function SettingsPage() {
   const [taskAgentModel, setTaskAgentModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [pushState, setPushState] = useState<PushNotificationState>("checking");
+  const [jarvisPreferences, setJarvisPreferences] = useState<JarvisPreferences | null>(null);
+  const [pairingCode, setPairingCode] = useState<JarvisPairingCode | null>(null);
 
   useEffect(() => {
     getChatSettings().then((response) => {
@@ -18,6 +21,7 @@ export default function SettingsPage() {
       setDefaults({ ...response.defaults, mode: "single" });
       setTaskAgentModel(response.task_agent_model);
     }).catch(() => {});
+    getJarvisPreferences().then(setJarvisPreferences).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -80,6 +84,69 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 md:p-6 max-w-2xl space-y-6">
+        <section>
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-300">
+            <AudioLines size={15} /> Jarvis
+          </h2>
+          <div className="divide-y divide-zinc-700 rounded-xl border border-zinc-700 bg-zinc-800">
+            <label className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 text-sm text-zinc-200">
+              Voice
+              <select
+                value={jarvisPreferences?.voice ?? "marin"}
+                disabled={!jarvisPreferences}
+                onChange={(event) => void updateJarvisPreferences({ voice: event.target.value as JarvisPreferences["voice"] }).then(setJarvisPreferences)}
+                className="min-h-12 rounded-xl border border-zinc-700 bg-zinc-900 px-3"
+              >
+                <option value="marin">Marin · feminine</option>
+                <option value="cedar">Cedar · masculine</option>
+              </select>
+            </label>
+            <label className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 text-sm text-zinc-200">
+              Response style
+              <select
+                value={jarvisPreferences?.concision ?? "concise"}
+                disabled={!jarvisPreferences}
+                onChange={(event) => void updateJarvisPreferences({ concision: event.target.value as JarvisPreferences["concision"] }).then(setJarvisPreferences)}
+                className="min-h-12 rounded-xl border border-zinc-700 bg-zinc-900 px-3"
+              >
+                <option value="concise">Concise</option>
+                <option value="balanced">Balanced</option>
+              </select>
+            </label>
+            <label className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 text-sm text-zinc-200">
+              Developer lab
+              <input
+                type="checkbox"
+                checked={jarvisPreferences?.developer_mode ?? false}
+                disabled={!jarvisPreferences}
+                onChange={(event) => void updateJarvisPreferences({ developer_mode: event.target.checked }).then(setJarvisPreferences)}
+                className="h-6 w-6 accent-violet-500"
+              />
+            </label>
+            <Link href="/settings/wake" className="flex min-h-14 items-center justify-between px-4 py-3 text-sm text-zinc-200">
+              Wake-word calibration <span className="text-xs text-zinc-500">Open wizard →</span>
+            </Link>
+            <div className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 text-sm text-zinc-200">
+              <div>
+                <p>Android pairing</p>
+                {pairingCode && (
+                  <p className="mt-1 font-mono text-xl tracking-[0.24em] text-violet-200">{pairingCode.code}</p>
+                )}
+                <p className="mt-1 text-xs text-zinc-500">
+                  {pairingCode ? `Expires ${new Date(pairingCode.expires_at).toLocaleTimeString()}` : "Generate a five-minute code for the native client."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void createJarvisPairingCode().then(setPairingCode)}
+                className="min-h-12 shrink-0 rounded-xl border border-zinc-600 px-3 text-xs"
+              >
+                Generate code
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* LLM Models */}
         <section>
           <h2 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">

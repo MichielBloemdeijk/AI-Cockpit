@@ -6,6 +6,8 @@ import {
   Activity,
   AudioLines,
   Bot,
+  ChevronDown,
+  ChevronUp,
   FlaskConical,
   History,
   Loader2,
@@ -14,6 +16,7 @@ import {
   Plus,
   Radio,
   Send,
+  X,
 } from "lucide-react";
 
 import { ChatMessage } from "@/components/ChatMessage";
@@ -26,14 +29,19 @@ import {
   considerJarvisPresentations,
   createJarvisRealtimeCall,
   getJarvisLogEvents,
+  getJarvisPreferences,
   getJarvisSessionEvents,
   getJarvisState,
   getTaskEvents,
+  jarvisLiveUrl,
   injectFakeJarvisEvent,
   reserveJarvisPresentations,
   retryTask,
   startFreshJarvisLog,
+  updateJarvisPreferences,
   type JarvisFakeProviderEventRequest,
+  type JarvisLiveEvent,
+  type JarvisPreferences,
   type JarvisStateResponse,
   type TaskSummary,
 } from "@/lib/api";
@@ -60,9 +68,10 @@ import {
   type JarvisWakeSnapshot,
 } from "@/lib/jarvis-wake-state";
 import { useConversationAutoScroll } from "@/lib/conversation-auto-scroll";
+import { classifyJarvisAddress } from "@/lib/jarvis-address-detection";
 
 
-const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input"]);
+const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input", "waiting_until"]);
 const WAKE_MODEL_CONFIGURATION = configuredJarvisWakeModel();
 const FOLLOW_UP_ACTIVITY_EVENTS = new Set([
   "input_audio_buffer.speech_started",
@@ -74,7 +83,7 @@ const FOLLOW_UP_ACTIVITY_EVENTS = new Set([
 
 function statusTone(status: string): string {
   if (status === "completed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
-  if (status === "waiting_for_input") return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+  if (["waiting_for_input", "waiting_until"].includes(status)) return "border-amber-500/30 bg-amber-500/10 text-amber-200";
   if (["failed", "interrupted", "cancelled"].includes(status)) {
     return "border-rose-500/30 bg-rose-500/10 text-rose-300";
   }
@@ -98,6 +107,10 @@ export default function JarvisPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [labOpen, setLabOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<"tasks" | "activity" | null>(null);
+  const [preferences, setPreferences] = useState<JarvisPreferences | null>(null);
+  const [provisionalAssistant, setProvisionalAssistant] = useState<{ responseId: string; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [realtime, setRealtime] = useState<JarvisRealtimeSnapshot>({
     status: "idle",
@@ -127,6 +140,8 @@ export default function JarvisPage() {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const presentationCycleRef = useRef(false);
+  const liveCursorRef = useRef(0);
+  const pendingWakeAddressRef = useRef<{ wakeScore: number; detectedAt: number } | null>(null);
   const currentConversationId = state?.current_log?.id ?? null;
   const currentMessages = state?.current_log?.messages ?? [];
   const newestMessageId = currentMessages.length
@@ -145,6 +160,12 @@ export default function JarvisPage() {
     currentConversationId,
     newestMessageId,
   );
+
+  useEffect(() => {
+    if (!provisionalAssistant?.text) return;
+    const viewport = conversationScrollRef.current;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [provisionalAssistant?.text]);
 
   const setLiveStreams = useCallback((next: JarvisLiveStreamState) => {
     streamsRef.current = next;
@@ -242,6 +263,12 @@ export default function JarvisPage() {
       },
       onWake: (handoff) => {
         if (disposed || lifecycle.current().status !== "armed") return;
+        if (handoff.wakeProbability !== null) {
+          pendingWakeAddressRef.current = {
+            wakeScore: handoff.wakeProbability,
+            detectedAt: Date.now(),
+          };
+        }
         lifecycle.detected();
         lifecycle.connecting();
         void realtimeController.start({ audioHandoff: handoff })
@@ -250,6 +277,7 @@ export default function JarvisPage() {
           })
           .catch((cause) => {
             if (disposed) return;
+            pendingWakeAddressRef.current = null;
             lifecycle.fail(cause);
             setError(cause instanceof Error ? cause.message : "Unable to connect after wake");
           });
@@ -265,7 +293,10 @@ export default function JarvisPage() {
         if (!disposed) lifecycle.fail(cause);
       }
     };
-    void refresh();
+    void Promise.all([
+      refresh(),
+      getJarvisPreferences().then(setPreferences),
+    ]).catch(() => undefined);
     const timer = window.setInterval(() => void refresh(), 1500);
     return () => {
       disposed = true;
@@ -275,6 +306,62 @@ export default function JarvisPage() {
       realtimeControllerRef.current = null;
       wakeLifecycleRef.current = null;
       wakeRuntimeRef.current = null;
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    let disposed = false;
+    let source: EventSource | null = null;
+    let retry: number | null = null;
+    const connect = () => {
+      if (disposed) return;
+      source = new EventSource(jarvisLiveUrl(liveCursorRef.current), { withCredentials: true });
+      source.addEventListener("jarvis", (raw) => {
+        const event = JSON.parse((raw as MessageEvent<string>).data) as JarvisLiveEvent;
+        liveCursorRef.current = Math.max(liveCursorRef.current, event.sequence);
+        if (event.event_type === "provider.user_transcript" && pendingWakeAddressRef.current) {
+          const pending = pendingWakeAddressRef.current;
+          pendingWakeAddressRef.current = null;
+          const decision = classifyJarvisAddress({
+            transcript: String(event.payload?.transcript ?? ""),
+            wakeScore: pending.wakeScore,
+            speechStartedMsBeforeWake: 600,
+            speechContinuedMsAfterWake: Math.max(0, Date.now() - pending.detectedAt),
+            followUpWindowOpen: false,
+          });
+          if (!decision.accepted) {
+            const lifecycle = wakeLifecycleRef.current;
+            if (lifecycle && lifecycle.current().status !== "destroyed") lifecycle.sleep();
+            return;
+          }
+        }
+        if (event.event_type === "provider.assistant_transcript_delta") {
+          const responseId = String(event.payload?.response_id ?? "assistant-live");
+          const text = String(event.payload?.transcript ?? "");
+          setProvisionalAssistant(text ? { responseId, text } : null);
+          return;
+        }
+        if (["provider.assistant_response", "provider.assistant_interrupted"].includes(event.event_type)) {
+          void refresh().finally(() => setProvisionalAssistant(null));
+          return;
+        }
+        if (event.event_type === "session.rotation_requested") {
+          void realtimeControllerRef.current?.stop().then(() => realtimeControllerRef.current?.start());
+        }
+        if (event.source_domain !== "session" || event.event_type.startsWith("task.")) {
+          void refresh();
+        }
+      });
+      source.onerror = () => {
+        source?.close();
+        if (!disposed) retry = window.setTimeout(connect, 1000);
+      };
+    };
+    connect();
+    return () => {
+      disposed = true;
+      source?.close();
+      if (retry !== null) window.clearTimeout(retry);
     };
   }, [refresh]);
 
@@ -439,8 +526,43 @@ export default function JarvisPage() {
           `media_current_time_ms:${Math.round(event.currentTarget.currentTime * 1_000)}`,
         )}
       />
-      <header className="border-b border-zinc-800 bg-zinc-900/95 px-3 py-3 md:px-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <header className="shrink-0 border-b border-zinc-800 bg-zinc-900/95 px-3 py-2 md:px-5 md:py-3">
+        <div className="md:hidden">
+          <button
+            type="button"
+            onClick={() => setStatusOpen((value) => !value)}
+            className="flex min-h-12 w-full items-center justify-between rounded-2xl px-2 text-left"
+            aria-expanded={statusOpen}
+          >
+            <span className="flex min-w-0 items-center gap-3">
+              <span className={`h-2.5 w-2.5 rounded-full ${sessionReady || realtime.status === "connected" ? "bg-emerald-400" : "bg-zinc-600"}`} />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold">Jarvis</span>
+                <span className="block text-xs capitalize text-zinc-400">{floorLabel(state)}</span>
+              </span>
+            </span>
+            {statusOpen ? <ChevronUp size={18} className="text-zinc-400" /> : <ChevronDown size={18} className="text-zinc-400" />}
+          </button>
+          {statusOpen && (
+            <div className="mb-2 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-xs">
+              <div><span className="text-zinc-500">Voice</span><p className="mt-1 capitalize text-zinc-200">{preferences?.voice ?? "marin"}</p></div>
+              <div><span className="text-zinc-500">Wake</span><p className="mt-1 capitalize text-zinc-200">{wake.status.replaceAll("_", " ")}</p></div>
+              <button
+                type="button"
+                disabled={!preferences || submitting}
+                onClick={() => void run(async () => {
+                  if (!preferences) return;
+                  const next = await updateJarvisPreferences({ voice: preferences.voice === "marin" ? "cedar" : "marin" });
+                  setPreferences(next);
+                })}
+                className="col-span-2 min-h-12 rounded-xl border border-zinc-700 text-zinc-200 disabled:opacity-40"
+              >
+                Use {preferences?.voice === "cedar" ? "Marin" : "Cedar"} voice
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="hidden flex-wrap items-center justify-between gap-3 md:flex">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <AudioLines size={18} className="text-violet-400" />
@@ -540,11 +662,19 @@ export default function JarvisPage() {
         </div>
       </header>
 
-      <main className="grid min-h-0 flex-1 gap-px overflow-y-auto bg-zinc-800 xl:grid-cols-[minmax(0,1.35fr)_minmax(17rem,.75fr)_minmax(17rem,.8fr)] xl:overflow-hidden">
-        <section className="flex min-h-[28rem] min-w-0 flex-col bg-zinc-950">
+      <main className="relative flex min-h-0 flex-1 overflow-hidden bg-zinc-800 xl:grid xl:grid-cols-[minmax(0,1.35fr)_minmax(17rem,.75fr)_minmax(17rem,.8fr)] xl:gap-px">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-zinc-950">
           <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
             <div className="flex items-center gap-2 text-sm font-medium"><Radio size={15} className="text-violet-400" /> Conversation</div>
-            <span className="text-[11px] text-zinc-500">cursor {streams.cursors.conversation}</span>
+            <span className="hidden text-[11px] text-zinc-500 md:inline">cursor {streams.cursors.conversation}</span>
+            <div className="flex items-center gap-2 xl:hidden">
+              <button type="button" onClick={() => setMobilePanel("tasks")} className="min-h-12 rounded-xl border border-zinc-700 px-3 text-xs text-zinc-200">
+                Tasks {state?.tasks.length ? `· ${state.tasks.length}` : ""}
+              </button>
+              <button type="button" onClick={() => setMobilePanel("activity")} className="min-h-12 rounded-xl border border-zinc-700 px-3 text-xs text-zinc-200">
+                Activity {streams.activity.length ? `· ${streams.activity.length}` : ""}
+              </button>
+            </div>
           </div>
           <div ref={conversationScrollRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-5 md:px-6">
             <div className="mx-auto max-w-3xl space-y-3">
@@ -569,10 +699,42 @@ export default function JarvisPage() {
                   }}
                 />
               ))}
+              {provisionalAssistant?.text && (
+                <ChatMessage
+                  key={`provisional-${provisionalAssistant.responseId}`}
+                  message={{
+                    id: `provisional-${provisionalAssistant.responseId}`,
+                    role: "assistant",
+                    kind: "message",
+                    label: "Jarvis",
+                    content: provisionalAssistant.text,
+                    createdAt: new Date().toISOString(),
+                    branchable: false,
+                    badges: ["speaking"],
+                  }}
+                />
+              )}
               {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
             </div>
           </div>
-          <div className="border-t border-zinc-800 bg-zinc-900 p-3">
+          <div className="shrink-0 border-t border-zinc-800 bg-zinc-900 p-3 pb-[max(.75rem,env(safe-area-inset-bottom))]">
+            <div className="mx-auto mb-2 flex max-w-3xl gap-2 md:hidden">
+              <button
+                type="button"
+                onClick={() => void run(async () => {
+                  if (!currentLog || !realtimeControllerRef.current) throw new Error("Send the first turn before arming Jarvis");
+                  await realtimeControllerRef.current.start();
+                })}
+                disabled={submitting || realtimeBusy || realtime.status === "connected" || !currentLog}
+                className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl border border-violet-500/30 bg-violet-500/10 text-sm text-violet-200 disabled:opacity-40"
+              ><Mic size={17} /> Arm</button>
+              <button
+                type="button"
+                onClick={() => void run(async () => { await realtimeControllerRef.current?.stop(); })}
+                disabled={submitting || realtime.status === "idle"}
+                className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl border border-zinc-700 text-sm text-zinc-300 disabled:opacity-40"
+              ><MicOff size={17} /> Sleep</button>
+            </div>
             <div className="mx-auto flex max-w-3xl items-end gap-2">
               <textarea
                 value={draft}
@@ -586,14 +748,14 @@ export default function JarvisPage() {
                 placeholder="Talk to Jarvis — try “delegate: prepare a brief”"
                 disabled={submitting}
                 rows={1}
-                className="max-h-40 min-h-11 flex-1 resize-none rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none focus:border-violet-500 disabled:opacity-50"
+                className="max-h-40 min-h-12 flex-1 resize-none rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm outline-none focus:border-violet-500 disabled:opacity-50"
               />
               <button
                 type="button"
                 onClick={() => void handleSend()}
                 disabled={!draft.trim() || submitting}
                 aria-label="Send to Jarvis"
-                className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-600 text-white disabled:opacity-40"
+                className="flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-600 text-white disabled:opacity-40"
               >
                 {submitting ? <Loader2 size={17} className="animate-spin" /> : <Send size={17} />}
               </button>
@@ -601,7 +763,7 @@ export default function JarvisPage() {
           </div>
         </section>
 
-        <section className="min-h-0 overflow-y-auto bg-zinc-950">
+        <section className="hidden min-h-0 overflow-y-auto bg-zinc-950 xl:block">
           <div className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/95 px-4 py-3">
             <div className="flex items-center gap-2 text-sm font-medium"><Bot size={15} className="text-sky-400" /> Tasks</div>
             <span className="text-[11px] text-zinc-500">cursor {streams.cursors.task}</span>
@@ -624,7 +786,7 @@ export default function JarvisPage() {
           </div>
         </section>
 
-        <section className="min-h-0 overflow-y-auto bg-zinc-950">
+        <section className="hidden min-h-0 overflow-y-auto bg-zinc-950 xl:block">
           <div className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/95 px-4 py-3">
             <div className="flex items-center gap-2 text-sm font-medium"><Activity size={15} className="text-emerald-400" /> Activity</div>
             <span className="text-[11px] text-zinc-500">session {streams.cursors.session}</span>
@@ -640,7 +802,7 @@ export default function JarvisPage() {
               </div>
             ))}
 
-            <div className="mt-4 rounded-2xl border border-dashed border-violet-500/30 bg-violet-500/5">
+            {preferences?.developer_mode && <div className="mt-4 rounded-2xl border border-dashed border-violet-500/30 bg-violet-500/5">
               <button type="button" onClick={() => setLabOpen((value) => !value)} className="flex w-full items-center justify-between px-3 py-3 text-left text-xs font-medium text-violet-200">
                 <span className="flex items-center gap-2"><FlaskConical size={14} /> Developer conversation lab</span>
                 <span>{labOpen ? "Hide" : "Show"}</span>
@@ -658,10 +820,52 @@ export default function JarvisPage() {
                   <LabButton label="Download voice trace" disabled={realtime.status === "idle"} onClick={downloadRealtimeTrace} />
                 </div>
               )}
-            </div>
+            </div>}
           </div>
         </section>
       </main>
+      {mobilePanel && (
+        <div className="fixed inset-0 z-40 bg-black/60 xl:hidden" onClick={() => setMobilePanel(null)}>
+          <section
+            role="dialog"
+            aria-label={mobilePanel === "tasks" ? "Jarvis tasks" : "Jarvis activity"}
+            className="absolute inset-x-0 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] max-h-[70dvh] overflow-hidden rounded-t-3xl border-t border-zinc-700 bg-zinc-950 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex min-h-14 items-center justify-between border-b border-zinc-800 px-4">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                {mobilePanel === "tasks" ? <Bot size={17} className="text-sky-400" /> : <Activity size={17} className="text-emerald-400" />}
+                {mobilePanel === "tasks" ? "Tasks" : "Activity"}
+              </div>
+              <button type="button" aria-label="Close panel" onClick={() => setMobilePanel(null)} className="flex h-12 w-12 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-900">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="max-h-[calc(70dvh-3.5rem)] space-y-3 overflow-y-auto p-3">
+              {mobilePanel === "tasks" ? (
+                !state?.tasks.length ? <p className="py-12 text-center text-sm text-zinc-600">No active tasks</p> : state.tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    question={state.pending_questions.find((item) => item.task_id === task.id)}
+                    disabled={submitting}
+                    onAction={(action) => void run(action)}
+                  />
+                ))
+              ) : (
+                !streams.activity.length ? <p className="py-12 text-center text-sm text-zinc-600">No activity yet</p> : [...streams.activity].reverse().map((item) => (
+                  <div key={item.key} className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
+                    <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
+                      <span>{item.domain}</span><span>{new Date(item.createdAt).toLocaleTimeString()}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-zinc-300">{activitySummary(item.eventType, item.payload)}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -688,10 +892,10 @@ function TaskCard({
           </div>
         </div>
         {ACTIVE_TASKS.has(task.status) && (
-          <button type="button" disabled={disabled} onClick={() => onAction(() => cancelTask(task.id))} className="text-[11px] text-rose-300 disabled:opacity-40">Cancel</button>
+          <button type="button" disabled={disabled} onClick={() => onAction(() => cancelTask(task.id))} className="min-h-12 rounded-xl px-3 text-[11px] text-rose-300 disabled:opacity-40">Cancel</button>
         )}
         {["failed", "interrupted", "cancelled"].includes(task.status) && (
-          <button type="button" disabled={disabled} onClick={() => onAction(() => retryTask(task.id))} className="text-[11px] text-sky-300 disabled:opacity-40">Retry</button>
+          <button type="button" disabled={disabled} onClick={() => onAction(() => retryTask(task.id))} className="min-h-12 rounded-xl px-3 text-[11px] text-sky-300 disabled:opacity-40">Retry</button>
         )}
       </div>
       {task.terminal_summary && <p className="mt-2 line-clamp-3 text-xs text-zinc-400">{task.terminal_summary}</p>}

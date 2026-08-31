@@ -21,6 +21,7 @@ export interface JarvisWakeHandoff {
   localStream: MediaStream;
   utterance: Promise<Float32Array>;
   sampleRate: number;
+  wakeProbability: number | null;
 }
 
 interface JarvisWakeWorker {
@@ -144,6 +145,7 @@ export class JarvisWakeRuntime {
       localStream: this.stream,
       utterance: Promise.resolve(new Float32Array(0)),
       sampleRate: JARVIS_WAKE_SAMPLE_RATE,
+      wakeProbability: null,
     };
   }
 
@@ -178,6 +180,7 @@ export class JarvisWakeRuntime {
         localStream: this.stream,
         utterance,
         sampleRate: JARVIS_WAKE_SAMPLE_RATE,
+        wakeProbability: event.probability,
       });
       return;
     }
