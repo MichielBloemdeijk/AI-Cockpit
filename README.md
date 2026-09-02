@@ -15,7 +15,7 @@ This repository currently targets local development. Windows has convenience scr
 - Dispatch durable background tasks with ordered traces, isolated attempts, and explicit cancel/retry controls.
 - Use Jarvis for streamed conversation, durable reminders, natural task follow-up, reviewed memory, local history recall, and phone or Android system-assistant access.
 
-For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The living implementation and release-acceptance record is [docs/JARVIS_FOLLOW_UP_PLAN.md](docs/JARVIS_FOLLOW_UP_PLAN.md); wake-model provenance remains in [docs/JARVIS_WAKE_MODEL.md](docs/JARVIS_WAKE_MODEL.md).
+For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The living implementation plan is [docs/JARVIS_FOLLOW_UP_PLAN.md](docs/JARVIS_FOLLOW_UP_PLAN.md), active acceptance failures are tracked in [docs/JARVIS_GAPS.md](docs/JARVIS_GAPS.md), and wake-model provenance remains in [docs/JARVIS_WAKE_MODEL.md](docs/JARVIS_WAKE_MODEL.md).
 
 ## Quick Start
 
@@ -330,7 +330,8 @@ AI-Cockpit/
 ├── frontend/                Next.js UI and generated-app route host
 ├── android/                 Android 17 system-assistant companion
 ├── docs/ARCHITECTURE.md     Current implementation architecture
-├── docs/JARVIS_FOLLOW_UP_PLAN.md  Living Jarvis v2 plan and acceptance record
+├── docs/JARVIS_FOLLOW_UP_PLAN.md  Living Jarvis v2 plan
+├── docs/JARVIS_GAPS.md            Active Jarvis acceptance gaps
 ├── knowledge/               Approved local knowledge and preference template
 ├── .env.example             Safe local configuration template
 ├── start-backend.ps1        Portable Windows backend launcher

@@ -1,14 +1,14 @@
 # Jarvis Follow-Up Plan v2
 
-Status: Implemented; release acceptance pending
-Date: 2026-08-31
+Status: Critical acceptance failures under active repair
+Date: 2026-09-02
 
 ## Implementation Checkpoint
 
-The v2 software path is implemented across the backend, phone-first web client,
-local wake/address flow, and Android 17 companion. The repository now has one
-living plan plus the current architecture and wake-model record; superseded
-planning documents remain available through Git history.
+The v2 software path exists across the backend, phone-first web client, local
+wake/address flow, and Android 17 companion, but it has not met acceptance for
+reliable reminders, model situation awareness, or concise voice behavior. The
+active failures and incident evidence are tracked in [JARVIS_GAPS.md](JARVIS_GAPS.md).
 
 Completed implementation includes:
 
