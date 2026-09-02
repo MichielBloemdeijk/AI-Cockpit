@@ -26,7 +26,6 @@ import {
   answerTaskQuestion,
   cancelTask,
   closeJarvisRealtimeSession,
-  considerJarvisPresentations,
   createJarvisRealtimeCall,
   getJarvisLogEvents,
   getJarvisPreferences,
@@ -35,7 +34,6 @@ import {
   getTaskEvents,
   jarvisLiveUrl,
   injectFakeJarvisEvent,
-  reserveJarvisPresentations,
   retryTask,
   startFreshJarvisLog,
   updateJarvisPreferences,
@@ -144,7 +142,6 @@ export default function JarvisPage() {
   );
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
-  const presentationCycleRef = useRef(false);
   const liveCursorRef = useRef(0);
   const pendingWakeAddressRef = useRef<{ wakeScore: number; detectedAt: number } | null>(null);
   const currentConversationId = state?.current_log?.id ?? null;
@@ -152,12 +149,6 @@ export default function JarvisPage() {
   const newestMessageId = currentMessages.length
     ? currentMessages[currentMessages.length - 1].id
     : null;
-  const pendingPresentationCount = state?.pending_presentations.length ?? 0;
-  const presentationSessionId = state?.session?.id ?? null;
-  const presentationGeneration = state?.session?.generation ?? null;
-  const presentationAdapter = state?.session?.provider_adapter ?? null;
-  const presentationFloor = state?.session?.floor_state ?? null;
-  const presentationLifecycle = state?.session?.lifecycle_state ?? null;
 
   useConversationAutoScroll(
     conversationScrollRef,
@@ -429,37 +420,6 @@ export default function JarvisPage() {
   }, [currentConversationId]);
 
   useEffect(() => {
-    if (
-      !pendingPresentationCount
-      || !presentationSessionId
-      || presentationGeneration === null
-      || presentationLifecycle !== "ready"
-      || presentationFloor !== "listening"
-      || (presentationAdapter === "openai" && realtime.status !== "connected")
-      || presentationCycleRef.current
-    ) return;
-
-    presentationCycleRef.current = true;
-    void considerJarvisPresentations(presentationSessionId, presentationGeneration)
-      .then(() => refresh())
-      .catch((cause) => {
-        setError(cause instanceof Error ? cause.message : "Unable to consider task updates");
-      })
-      .finally(() => {
-        presentationCycleRef.current = false;
-      });
-  }, [
-    pendingPresentationCount,
-    presentationAdapter,
-    presentationFloor,
-    presentationGeneration,
-    presentationLifecycle,
-    presentationSessionId,
-    realtime.status,
-    refresh,
-  ]);
-
-  useEffect(() => {
     navigator.serviceWorker
       ?.register("/sw.js", { scope: "/", updateViaCache: "none" })
       .catch(() => undefined);
@@ -536,21 +496,6 @@ export default function JarvisPage() {
       event_id: `lab-${crypto.randomUUID()}`,
       kind,
       payload,
-    });
-  };
-
-  const presentPending = async () => {
-    const liveSession = state?.session;
-    if (!liveSession) throw new Error("Start a fake controller first");
-    const reservation = await reserveJarvisPresentations(liveSession.id, liveSession.generation);
-    if (!reservation.presentation_ids.length) throw new Error("No presentation is ready at this boundary");
-    await inject("assistant_response", {
-      response_id: `lab-presentation-${crypto.randomUUID()}`,
-      item_id: `lab-presentation-item-${crypto.randomUUID()}`,
-      transcript: reservation.facts
-        .map((fact) => String(fact.summary ?? fact.question ?? fact.status ?? "Task update"))
-        .join(" "),
-      presentation_ids: reservation.presentation_ids,
     });
   };
 
@@ -889,7 +834,6 @@ export default function JarvisPage() {
                   <LabButton label="Direct reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_response", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This is a deterministic direct response." }))} />
                   <LabButton label="Interrupt reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_interrupted", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This response was interrupted before it finished.", heard_transcript: "This response was interrupted" }))} />
                   <LabButton label="Delegate demo" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("shell_call", { call_id: `lab-${crypto.randomUUID()}`, name: "dispatch_task", arguments: { goal: "Prepare the developer lab report" } }))} />
-                  <LabButton label="Present updates" disabled={!sessionReady || submitting} onClick={() => void run(presentPending)} />
                   <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisRealtimeCall(controllerIdRef.current, "controller"); })} />
                   <LabButton label="Provider error" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("provider_error", { reason: "simulated_failure" }))} />
                   <LabButton label="Download voice trace" disabled={realtime.status === "idle"} onClick={downloadRealtimeTrace} />
