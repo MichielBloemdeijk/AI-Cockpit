@@ -76,6 +76,12 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .post(payload.toString().toRequestBody(json)).build()).close()
     }
 
+    suspend fun acknowledgeDelivery(deliveryId: String, state: String = "opened") {
+        val payload = JSONObject().put("state", state)
+        execute(authenticated("/api/notifications/deliveries/$deliveryId/ack")
+            .post(payload.toString().toRequestBody(json)).build()).close()
+    }
+
     fun liveEvents(cursor: Long, listener: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit): EventSource {
         val request = authenticated("/api/jarvis/live?cursor=$cursor").get().build()
         return EventSources.createFactory(client).newEventSource(request, object : EventSourceListener() {

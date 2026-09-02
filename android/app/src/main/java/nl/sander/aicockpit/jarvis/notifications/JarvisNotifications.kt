@@ -7,10 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
-import nl.sander.aicockpit.jarvis.MainActivity
 import nl.sander.aicockpit.jarvis.R
 import nl.sander.aicockpit.jarvis.wake.WakeForegroundService
-import nl.sander.aicockpit.jarvis.web.JarvisWebViewActivity
 
 object JarvisNotifications {
     const val WAKE_NOTIFICATION_ID = 2101
@@ -48,6 +46,7 @@ object JarvisNotifications {
         taskLabel: String,
         notificationId: Int,
         taskPath: String? = null,
+        deliveryId: String? = null,
         snoozable: Boolean = false,
     ): Notification {
         val builder = NotificationCompat.Builder(context, UPDATE_CHANNEL)
@@ -56,24 +55,28 @@ object JarvisNotifications {
             .setContentText(summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
             .setAutoCancel(true)
-            .setContentIntent(open(context, taskPath, notificationId))
-            .addAction(0, "Open task", open(context, taskPath, notificationId))
-            .addAction(0, "Stop", action(context, "stop", taskLabel, notificationId))
-            .addAction(0, "Sleep", action(context, "sleep", taskLabel, notificationId))
+            .setContentIntent(open(context, taskPath, deliveryId, notificationId))
+            .addAction(0, "Open task", open(context, taskPath, deliveryId, notificationId))
+            .addAction(0, "Stop", action(context, "stop", taskLabel, notificationId, deliveryId))
+            .addAction(0, "Sleep", action(context, "sleep", taskLabel, notificationId, deliveryId))
         if (snoozable) {
-            builder.addAction(0, "Snooze 10m", action(context, "snooze", taskLabel, notificationId))
+            builder.addAction(0, "Snooze 10m", action(context, "snooze", taskLabel, notificationId, deliveryId))
         }
         return builder.build()
     }
 
-    private fun open(context: Context, taskPath: String? = null, notificationId: Int = 0): PendingIntent {
-        val intent = if (taskPath == null) {
-            Intent(context, MainActivity::class.java)
-        } else {
-            Intent(context, JarvisWebViewActivity::class.java)
-                .putExtra(JarvisWebViewActivity.EXTRA_PATH, taskPath)
-        }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return PendingIntent.getActivity(
+    private fun open(
+        context: Context,
+        taskPath: String? = null,
+        deliveryId: String? = null,
+        notificationId: Int = 0,
+    ): PendingIntent {
+        val intent = Intent(context, NotificationActionReceiver::class.java)
+            .setAction("open")
+            .putExtra("task_path", taskPath)
+            .putExtra("delivery_id", deliveryId)
+            .putExtra("notification_id", notificationId)
+        return PendingIntent.getBroadcast(
             context,
             2 + notificationId,
             intent,
@@ -86,11 +89,13 @@ object JarvisNotifications {
         action: String,
         label: String = "",
         notificationId: Int = 0,
+        deliveryId: String? = null,
     ) = PendingIntent.getBroadcast(
         context, 31 * action.hashCode() + notificationId,
         Intent(context, NotificationActionReceiver::class.java)
             .setAction(action)
             .putExtra("task_label", label)
+            .putExtra("delivery_id", deliveryId)
             .putExtra("notification_id", notificationId),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )

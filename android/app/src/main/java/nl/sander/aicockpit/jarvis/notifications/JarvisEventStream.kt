@@ -12,7 +12,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import nl.sander.aicockpit.jarvis.JarvisApplication
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.CredentialStore
 import okhttp3.sse.EventSource
@@ -62,16 +61,12 @@ class JarvisEventStream(private val context: Context) : AutoCloseable {
             scope.launch { runCatching { api.updateDevice(lockState(context), sequence) } }
         }
         listeners.forEach { listener -> runCatching { listener(event) } }
-        val application = context.applicationContext as? JarvisApplication
-        if (application?.voiceSessionVisible == true) return
         val eventType = event.optString("event_type")
         if (eventType !in NOTIFIABLE) return
         val payload = event.optJSONObject("payload") ?: JSONObject()
-        val summary = sequenceOf("summary", "question", "goal", "reason")
-            .map { payload.optString(it) }
-            .firstOrNull { it.isNotBlank() }
-            ?: "There is a new Jarvis update."
-        val title = when (eventType) {
+        val summary = payload.optString("summary", "There is a new Jarvis update.")
+        val eventKind = payload.optString("event_kind")
+        val title = when (eventKind) {
             "task.reminder.due" -> "Reminder"
             "task.requires_input" -> "Jarvis needs your input"
             "task.completed" -> "Task completed"
@@ -79,8 +74,9 @@ class JarvisEventStream(private val context: Context) : AutoCloseable {
             else -> "Jarvis task update"
         }
         val notificationId = JarvisNotifications.UPDATE_NOTIFICATION_ID + (sequence % 100_000).toInt()
-        val taskPath = event.optString("source_domain").takeIf { it == "task" }
-            ?.let { "/tasks/${event.optString("source_id")}" }
+        val taskPath = payload.optString("url").takeIf { it.isNotBlank() }
+            ?: payload.optString("task_id").takeIf { it.isNotBlank() }?.let { "/tasks/$it" }
+        val deliveryId = payload.optString("delivery_id").takeIf { it.isNotBlank() }
         context.getSystemService(NotificationManager::class.java).notify(
             notificationId,
             JarvisNotifications.update(
@@ -90,7 +86,8 @@ class JarvisEventStream(private val context: Context) : AutoCloseable {
                 summary,
                 notificationId,
                 taskPath,
-                snoozable = eventType == "task.reminder.due",
+                deliveryId,
+                snoozable = eventKind == "task.reminder.due",
             ),
         )
     }
@@ -102,10 +99,7 @@ class JarvisEventStream(private val context: Context) : AutoCloseable {
     }
 
     companion object {
-        val NOTIFIABLE = setOf(
-            "task.completed", "task.failed", "task.interrupted", "task.cancelled",
-            "task.requires_input", "task.reminder.due",
-        )
+        val NOTIFIABLE = setOf("notification.available")
 
         fun lockState(context: Context): String = if (
             context.getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked
