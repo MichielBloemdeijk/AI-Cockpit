@@ -372,6 +372,9 @@ class RealtimeSession(Base):
     last_event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     timing_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     usage_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    client_time_zone: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    client_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -590,6 +593,9 @@ class JarvisPreference(Base):
     wake_behavior: Mapped[str] = mapped_column(String(32), nullable=False, default="follow_up", server_default="follow_up")
     developer_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     android_privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    time_zone: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="Europe/Amsterdam", server_default="Europe/Amsterdam"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

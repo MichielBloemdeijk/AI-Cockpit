@@ -13,6 +13,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import org.json.JSONObject
 import java.time.Instant
+import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -44,10 +45,17 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
     }
 
     suspend fun createRealtimeCall(offer: String): RealtimeCall {
+        val observedAt = Instant.now()
+        val timeZone = ZoneId.systemDefault()
+        val clientContext = JSONObject()
+            .put("time_zone", timeZone.id)
+            .put("utc_offset_minutes", timeZone.rules.getOffset(observedAt).totalSeconds / 60)
+            .put("observed_at", observedAt.toString())
         val payload = JSONObject()
             .put("controller_id", store.deviceId)
             .put("role", "controller")
             .put("provider_adapter", "openai")
+            .put("client_context", clientContext)
             .put("sdp_offer", offer)
         val response = execute(authenticated("/api/jarvis/realtime/calls")
             .post(payload.toString().toRequestBody(json)).build())

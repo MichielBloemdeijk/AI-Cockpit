@@ -1,10 +1,11 @@
 """Typed API contracts for the Jarvis daily-log lifecycle."""
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any, Literal
+from datetime import date as DateValue
+from datetime import datetime, time as TimeValue
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.conversations import ConversationDetail, ConversationSummary, ConversationMessageView
 from app.models.conversations import ConversationEventView
@@ -29,6 +30,9 @@ class JarvisSessionView(BaseModel):
     created_at: datetime
     ready_at: datetime | None = None
     disconnected_at: datetime | None = None
+    client_time_zone: str | None = None
+    client_utc_offset_minutes: int | None = None
+    client_observed_at: datetime | None = None
 
 
 class JarvisPendingQuestionView(BaseModel):
@@ -70,7 +74,7 @@ class JarvisSessionEventReplayResponse(BaseModel):
 
 
 class JarvisStateResponse(BaseModel):
-    operational_day: date
+    operational_day: DateValue
     state_revision: int
     current_log: ConversationDetail | None = None
     tasks: list[TaskSummaryView] = Field(default_factory=list)
@@ -107,6 +111,7 @@ class JarvisRealtimeCallRequest(BaseModel):
     role: Literal["controller", "observer"] = "controller"
     provider_adapter: Literal["fake", "openai"] = "fake"
     sdp_offer: str | None = Field(default=None, min_length=1, max_length=1_000_000)
+    client_context: "JarvisClientContext | None" = None
 
 
 class JarvisRealtimeCallResponse(BaseModel):
@@ -143,6 +148,7 @@ class JarvisPreferencesView(BaseModel):
     wake_behavior: Literal["manual", "wake_word", "follow_up"] = "follow_up"
     developer_mode: bool = False
     android_privacy: dict[str, Any] = Field(default_factory=dict)
+    time_zone: str = "Europe/Amsterdam"
     updated_at: datetime | None = None
 
 
@@ -152,6 +158,7 @@ class JarvisPreferencesPatch(BaseModel):
     wake_behavior: Literal["manual", "wake_word", "follow_up"] | None = None
     developer_mode: bool | None = None
     android_privacy: dict[str, Any] | None = None
+    time_zone: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class JarvisLiveEventView(BaseModel):
@@ -165,16 +172,59 @@ class JarvisLiveEventView(BaseModel):
     created_at: datetime
 
 
+class JarvisClientContext(BaseModel):
+    time_zone: str = Field(min_length=1, max_length=255)
+    utc_offset_minutes: int = Field(ge=-840, le=840)
+    observed_at: datetime
+
+
+class ReminderAfterTiming(BaseModel):
+    kind: Literal["after"]
+    seconds: int = Field(ge=1, le=31_536_000)
+
+
+class ReminderLocalTiming(BaseModel):
+    kind: Literal["local"]
+    date: DateValue | None = None
+    time: TimeValue
+    time_zone: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class ReminderInstantTiming(BaseModel):
+    kind: Literal["instant"]
+    due_at: datetime
+
+
+ReminderTiming = Annotated[
+    ReminderAfterTiming | ReminderLocalTiming | ReminderInstantTiming,
+    Field(discriminator="kind"),
+]
+
+
 class ReminderCreateRequest(BaseModel):
     text: str | None = Field(default=None, max_length=2000)
-    due_at: datetime
+    timing: ReminderTiming | None = None
+    due_at: datetime | None = None
     idempotency_key: str = Field(min_length=1, max_length=255)
     allow_duplicate: bool = False
 
+    @model_validator(mode="after")
+    def require_one_timing(self) -> "ReminderCreateRequest":
+        if (self.timing is None) == (self.due_at is None):
+            raise ValueError("Provide exactly one of timing or the deprecated due_at")
+        return self
+
 
 class ReminderSnoozeRequest(BaseModel):
-    due_at: datetime
+    timing: ReminderTiming | None = None
+    due_at: datetime | None = None
     idempotency_key: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def require_one_timing(self) -> "ReminderSnoozeRequest":
+        if (self.timing is None) == (self.due_at is None):
+            raise ValueError("Provide exactly one of timing or the deprecated due_at")
+        return self
 
 
 class TaskReferenceRequest(BaseModel):

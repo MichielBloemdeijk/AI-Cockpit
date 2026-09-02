@@ -171,6 +171,7 @@ async def get_jarvis_preferences() -> JarvisPreferencesView:
         wake_behavior=preferences.wake_behavior,
         developer_mode=preferences.developer_mode,
         android_privacy=preferences.android_privacy,
+        time_zone=preferences.time_zone,
         updated_at=preferences.updated_at,
     )
 
@@ -188,6 +189,7 @@ async def patch_jarvis_preferences(request: JarvisPreferencesPatch) -> JarvisPre
         wake_behavior=preferences.wake_behavior,
         developer_mode=preferences.developer_mode,
         android_privacy=preferences.android_privacy,
+        time_zone=preferences.time_zone,
         updated_at=preferences.updated_at,
     )
 
@@ -239,10 +241,13 @@ async def list_reminders() -> list[TaskSummaryView]:
 @router.post("/reminders", response_model=TaskSummaryView, status_code=status.HTTP_201_CREATED)
 async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
     state = await jarvis_daily_service.get_state()
+    preferences = await jarvis_preferences_service.get()
     try:
         snapshot = await reminder_scheduler.create(
             text=request.text,
             due_at=request.due_at,
+            timing=request.timing,
+            active_time_zone=preferences.time_zone,
             idempotency_key=request.idempotency_key,
             origin_conversation_id=None if state.current_log is None else state.current_log.id,
             allow_duplicate=request.allow_duplicate,
@@ -255,10 +260,13 @@ async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
 
 @router.post("/reminders/{task_id}/snooze", response_model=TaskSummaryView)
 async def snooze_reminder(task_id: str, request: ReminderSnoozeRequest) -> TaskSummaryView:
+    preferences = await jarvis_preferences_service.get()
     try:
         snapshot = await reminder_scheduler.snooze(
             task_id,
             due_at=request.due_at,
+            timing=request.timing,
+            active_time_zone=preferences.time_zone,
             idempotency_key=request.idempotency_key,
         )
     except ValueError as exc:
@@ -351,6 +359,7 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
             controller_id=request.controller_id,
             adapter_name=request.provider_adapter,
             sdp_offer=request.sdp_offer,
+            client_context=request.client_context,
         )
     except ValueError as exc:
         raise _http_error(exc) from exc

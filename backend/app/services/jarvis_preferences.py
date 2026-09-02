@@ -6,6 +6,7 @@ from datetime import datetime
 
 from app.db.session import session_scope
 from app.db.tables import JarvisPreference
+from app.services.jarvis_time import canonical_time_zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +16,7 @@ class JarvisPreferences:
     wake_behavior: str
     developer_mode: bool
     android_privacy: dict
+    time_zone: str
     updated_at: datetime | None
 
 
@@ -39,6 +41,8 @@ class JarvisPreferencesService:
             for key in ("voice", "concision", "wake_behavior", "developer_mode"):
                 if key in values and values[key] is not None:
                     setattr(row, key, values[key])
+            if values.get("time_zone") is not None:
+                row.time_zone = canonical_time_zone(str(values["time_zone"]))
             if values.get("android_privacy") is not None:
                 row.android_privacy_json = dict(values["android_privacy"] or {})
             await session.flush()
@@ -53,6 +57,7 @@ class JarvisPreferencesService:
             wake_behavior=row.wake_behavior,
             developer_mode=row.developer_mode,
             android_privacy=dict(row.android_privacy_json or {}),
+            time_zone=row.time_zone,
             updated_at=row.updated_at,
         )
 

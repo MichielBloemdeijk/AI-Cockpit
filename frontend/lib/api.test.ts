@@ -156,7 +156,11 @@ describe("Jarvis daily-log api", () => {
     await getJarvisLogEvents("log/1", 4);
     await getTaskEvents(8);
     await getJarvisSessionEvents("session/1", 3);
-    await createJarvisRealtimeCall("browser-1");
+    await createJarvisRealtimeCall("browser-1", "controller", "fake", undefined, {
+      time_zone: "Europe/Amsterdam",
+      utc_offset_minutes: 120,
+      observed_at: "2026-09-02T20:00:00.000Z",
+    });
     await injectFakeJarvisEvent("session/1", {
       generation: 2,
       event_id: "event-1",
@@ -180,7 +184,16 @@ describe("Jarvis daily-log api", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ controller_id: "browser-1", role: "controller", provider_adapter: "fake" }),
+      body: JSON.stringify({
+        controller_id: "browser-1",
+        role: "controller",
+        provider_adapter: "fake",
+        client_context: {
+          time_zone: "Europe/Amsterdam",
+          utc_offset_minutes: 120,
+          observed_at: "2026-09-02T20:00:00.000Z",
+        },
+      }),
     });
     expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/jarvis/fake/sessions/session%2F1/events", {
       method: "POST",

@@ -29,6 +29,7 @@ from app.db.tables import (
 )
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
+from app.services.jarvis_time import normalize_client_context, temporal_frame
 from app.services.task_presentations import task_presentation_service
 from app.services.task_notifications import route_pending_task_notifications
 from app.services.voice_session_adapter import (
@@ -76,6 +77,9 @@ class SessionRecord:
     created_at: datetime
     ready_at: datetime | None
     disconnected_at: datetime | None
+    client_time_zone: str | None
+    client_utc_offset_minutes: int | None
+    client_observed_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +344,7 @@ class JarvisCoordinator:
         controller_id: str,
         adapter_name: str = "fake",
         sdp_offer: str | None = None,
+        client_context: object | None = None,
     ) -> ControllerBootstrap:
         adapter = get_voice_session_adapter(adapter_name)
         superseded_adapters: list[tuple[str, int, str]] = []
@@ -376,6 +381,16 @@ class JarvisCoordinator:
             latest_generation = int((await session.execute(
                 select(func.max(RealtimeSession.generation))
             )).scalar_one_or_none() or 0)
+            preferences = await session.get(JarvisPreference, "current")
+            if preferences is None:
+                preferences = JarvisPreference(id="current")
+                session.add(preferences)
+                await session.flush()
+            temporal = normalize_client_context(
+                client_context,
+                fallback_time_zone=preferences.time_zone,
+            )
+            preferences.time_zone = temporal.time_zone
             realtime = RealtimeSession(
                 id=str(uuid4()),
                 conversation_id=conversation_id,
@@ -383,6 +398,9 @@ class JarvisCoordinator:
                 provider_adapter=adapter.name,
                 lifecycle_state="connecting",
                 controller_id=controller_id,
+                client_time_zone=temporal.time_zone,
+                client_utc_offset_minutes=temporal.utc_offset_minutes,
+                client_observed_at=temporal.observed_at,
             )
             session.add(realtime)
             await session.flush()
@@ -737,6 +755,7 @@ class JarvisCoordinator:
                 .limit(1)
             )).scalar_one_or_none()
             conversation_id = realtime.conversation_id
+            active_time_zone = realtime.client_time_zone
         try:
             if controller_locked and tool_name in {
                 "dispatch_task", "answer_task_question", "cancel_task",
@@ -749,6 +768,8 @@ class JarvisCoordinator:
                 call_id=call_id,
                 conversation_id=conversation_id,
                 origin_turn_id=last_turn_id,
+                active_time_zone=active_time_zone or "Europe/Amsterdam",
+                now=utc_now(),
             )
             output = result.output
             control = result.control
@@ -1039,6 +1060,11 @@ class JarvisCoordinator:
             .where(TaskPresentation.state.in_(["pending", "reserved"]))
             .order_by(TaskPresentation.created_at.asc())
         )).scalars().all())
+        active_time_zone = (
+            snapshot.realtime_session.client_time_zone
+            if snapshot.realtime_session is not None and snapshot.realtime_session.client_time_zone
+            else ("Europe/Amsterdam" if preferences is None else preferences.time_zone)
+        )
         return {
             "conversation_id": snapshot.conversation.id,
             "dialogue": dialogue,
@@ -1073,7 +1099,9 @@ class JarvisCoordinator:
                 "voice": "marin" if preferences is None else preferences.voice,
                 "concision": "concise" if preferences is None else preferences.concision,
                 "wake_behavior": "follow_up" if preferences is None else preferences.wake_behavior,
+                "time_zone": active_time_zone,
             },
+            "temporal": temporal_frame(time_zone=active_time_zone),
         }
 
     @staticmethod
@@ -1090,6 +1118,9 @@ class JarvisCoordinator:
             created_at=realtime.created_at,
             ready_at=realtime.ready_at,
             disconnected_at=realtime.disconnected_at,
+            client_time_zone=realtime.client_time_zone,
+            client_utc_offset_minutes=realtime.client_utc_offset_minutes,
+            client_observed_at=realtime.client_observed_at,
         )
 
 

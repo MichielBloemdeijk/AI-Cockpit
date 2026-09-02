@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
@@ -73,6 +74,7 @@ class TaskService:
         idempotency_key: str,
         origin_conversation_id: str | None = None,
         allow_duplicate: bool = False,
+        timing_metadata: dict[str, Any] | None = None,
     ) -> TaskSnapshot:
         requested_text = " ".join(str(text or "").split()).strip()
         normalized = requested_text or GENERIC_REMINDER_TEXT
@@ -119,7 +121,11 @@ class TaskService:
                 task.waiting_until = due
                 task.resume_at = due
                 task.wait_reason = "reminder"
-                task.scheduled_delivery_json = {"kind": "reminder", "text": normalized}
+                task.scheduled_delivery_json = {
+                    "kind": "reminder",
+                    "text": normalized,
+                    **({"timing": dict(timing_metadata)} if timing_metadata else {}),
+                }
                 task.scheduled_delivery_key = f"reminder:{idempotency_key}"
                 await repo.append_event(
                     task_id=task.id,

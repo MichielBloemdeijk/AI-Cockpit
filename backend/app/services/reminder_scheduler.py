@@ -13,6 +13,7 @@ from app.db.session import session_scope
 from app.db.tables import Task, TaskAttempt
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import TaskSnapshot, task_service
+from app.services.jarvis_time import DEFAULT_TIME_ZONE, resolve_reminder_time
 
 
 def utc_now() -> datetime:
@@ -123,24 +124,37 @@ class ReminderScheduler:
         self,
         *,
         text: str | None,
-        due_at: datetime,
+        due_at: datetime | str | None = None,
+        timing: object | None = None,
+        active_time_zone: str = DEFAULT_TIME_ZONE,
+        now: datetime | None = None,
         idempotency_key: str,
         origin_conversation_id: str | None = None,
         allow_duplicate: bool = False,
     ) -> TaskSnapshot:
+        resolved = resolve_reminder_time(
+            timing=timing,
+            due_at=due_at,
+            active_time_zone=active_time_zone,
+            now=now,
+        )
         return await task_service.schedule_reminder(
             text=text,
-            due_at=due_at,
+            due_at=resolved.due_at,
             idempotency_key=idempotency_key,
             origin_conversation_id=origin_conversation_id,
             allow_duplicate=allow_duplicate,
+            timing_metadata=resolved.timing,
         )
 
     async def snooze(
         self,
         task_id: str,
         *,
-        due_at: datetime,
+        due_at: datetime | str | None = None,
+        timing: object | None = None,
+        active_time_zone: str = DEFAULT_TIME_ZONE,
+        now: datetime | None = None,
         idempotency_key: str,
     ) -> TaskSnapshot:
         detail = await task_service.get_task(task_id)
@@ -155,6 +169,9 @@ class ReminderScheduler:
         return await self.create(
             text=text_value,
             due_at=due_at,
+            timing=timing,
+            active_time_zone=active_time_zone,
+            now=now,
             idempotency_key=f"snooze:{task_id}:{idempotency_key}",
             origin_conversation_id=detail.task.origin_conversation_id,
         )

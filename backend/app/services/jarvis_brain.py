@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+import re
 from typing import Any
-from zoneinfo import ZoneInfo
+from sqlalchemy import select
 
+from app.db.session import session_scope
+from app.db.tables import ConversationMessage
 from app.services.history_retrieval import history_retrieval_service
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.natural_task_resolver import natural_task_resolver, task_title
@@ -49,12 +52,22 @@ class RestrictedBrainGateway:
         call_id: str,
         conversation_id: str,
         origin_turn_id: str | None,
+        active_time_zone: str = "Europe/Amsterdam",
+        now: datetime | None = None,
     ) -> BrainResult:
         if tool_name not in ALLOWED_SHELL_TOOLS:
             raise ValueError(f"Jarvis shell tool is not allowed: {tool_name}")
 
         if tool_name == "dispatch_task":
             goal = " ".join(str(arguments.get("goal") or "").split()).strip()
+            if await self._is_timed_reminder_request(
+                goal=goal,
+                conversation_id=conversation_id,
+                origin_turn_id=origin_turn_id,
+            ):
+                raise ValueError(
+                    "This is a timed reminder. Call create_reminder with structured timing; no task was created."
+                )
             snapshot = await task_service.dispatch(
                 goal=goal,
                 origin_surface="jarvis",
@@ -160,7 +173,10 @@ class RestrictedBrainGateway:
         if tool_name == "create_reminder":
             snapshot = await reminder_scheduler.create(
                 text=str(arguments.get("text") or ""),
-                due_at=self._date_time(arguments.get("due_at")),
+                timing=arguments.get("timing"),
+                due_at=arguments.get("due_at"),
+                active_time_zone=active_time_zone,
+                now=now,
                 idempotency_key=f"jarvis-shell:{call_id}:reminder",
                 origin_conversation_id=conversation_id,
                 allow_duplicate=bool(arguments.get("allow_duplicate", False)),
@@ -176,7 +192,10 @@ class RestrictedBrainGateway:
             task = await self._resolve_task(arguments, mutation=False)
             snapshot = await reminder_scheduler.snooze(
                 task.id,
-                due_at=self._date_time(arguments.get("due_at")),
+                timing=arguments.get("timing"),
+                due_at=arguments.get("due_at"),
+                active_time_zone=active_time_zone,
+                now=now,
                 idempotency_key=f"jarvis-shell:{call_id}:snooze",
             )
             await natural_task_resolver.touch(snapshot.task.id)
@@ -248,15 +267,28 @@ class RestrictedBrainGateway:
         return result.task
 
     @staticmethod
-    def _date_time(value: Any) -> datetime:
-        raw = str(value or "").strip()
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError("Use an unambiguous ISO-8601 reminder time") from exc
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
-        return parsed.astimezone(timezone.utc)
+    async def _is_timed_reminder_request(
+        *,
+        goal: str,
+        conversation_id: str,
+        origin_turn_id: str | None,
+    ) -> bool:
+        transcript = ""
+        if origin_turn_id:
+            async with session_scope() as session:
+                transcript = str((await session.execute(
+                    select(ConversationMessage.content)
+                    .where(ConversationMessage.id == origin_turn_id)
+                    .where(ConversationMessage.conversation_id == conversation_id)
+                )).scalar_one_or_none() or "")
+        value = f"{transcript} {goal}".casefold()
+        has_reminder_intent = re.search(r"\b(remind(?:er)?|alarm|herinner(?:ing|en)?)\b", value) is not None
+        has_timing = re.search(
+            r"\b(in|at|on|today|tomorrow|tonight|minute|minutes|hour|hours|"
+            r"over|om|vandaag|morgen|vanavond|minuut|minuten|uur)\b|\b\d{1,2}[:.]\d{2}\b",
+            value,
+        ) is not None
+        return has_reminder_intent and has_timing
 
     @staticmethod
     def _targets(value: Any) -> tuple[tuple[str, str, bool], ...]:
