@@ -14,9 +14,6 @@ from app.models.jarvis import (
     JarvisDomainCursors,
     JarvisFakeProviderEventRequest,
     JarvisPendingQuestionView,
-    JarvisPresentationReservationResponse,
-    JarvisPresentationConsiderationResponse,
-    JarvisPresentationReserveRequest,
     JarvisPresentationView,
     JarvisPreferencesPatch,
     JarvisPreferencesView,
@@ -248,6 +245,7 @@ async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
             due_at=request.due_at,
             idempotency_key=request.idempotency_key,
             origin_conversation_id=None if state.current_log is None else state.current_log.id,
+            allow_duplicate=request.allow_duplicate,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -423,51 +421,6 @@ async def inject_fake_provider_event(
     except ValueError as exc:
         raise _http_error(exc) from exc
     return {"accepted": True}
-
-
-@router.post(
-    "/sessions/{session_id}/presentations/reserve",
-    response_model=JarvisPresentationReservationResponse,
-)
-async def reserve_presentations(
-    session_id: str,
-    request: JarvisPresentationReserveRequest,
-) -> JarvisPresentationReservationResponse:
-    try:
-        reservation = await jarvis_coordinator.reserve_presentations(
-            session_id=session_id,
-            generation=request.generation,
-        )
-    except ValueError as exc:
-        raise _http_error(exc) from exc
-    if reservation is None:
-        return JarvisPresentationReservationResponse()
-    return JarvisPresentationReservationResponse(
-        presentation_ids=list(reservation.presentation_ids),
-        facts=list(reservation.facts),
-    )
-
-
-@router.post(
-    "/sessions/{session_id}/presentations/consider",
-    response_model=JarvisPresentationConsiderationResponse,
-)
-async def consider_presentations(
-    session_id: str,
-    request: JarvisPresentationReserveRequest,
-) -> JarvisPresentationConsiderationResponse:
-    try:
-        result = await jarvis_coordinator.consider_presentations(
-            session_id=session_id,
-            generation=request.generation,
-        )
-    except ValueError as exc:
-        raise _http_error(exc) from exc
-    return JarvisPresentationConsiderationResponse(
-        decision=result.decision,
-        reason=result.reason,
-        presentation_ids=list(result.presentation_ids),
-    )
 
 
 @router.delete("/realtime/sessions/{session_id}", status_code=204)

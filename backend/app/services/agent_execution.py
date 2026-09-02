@@ -112,7 +112,7 @@ class TaskExecutionSink:
         )
 
     async def complete(self, summary: str, final_text: str) -> None:
-        artifact = await task_service.add_artifact(
+        await task_service.add_artifact(
             self.context.task_id,
             artifact_type="result",
             mime_type="text/markdown",
@@ -124,14 +124,6 @@ class TaskExecutionSink:
             self.context.task_id,
             summary=summary or final_text,
             idempotency_key=self._key("task.completed"),
-        )
-        await task_service.enqueue_presentation(
-            self.context.task_id,
-            candidate_type="terminal_result",
-            coalescing_key=f"task:{self.context.task_id}:terminal",
-            source_task_event_id=artifact.source_task_event_id,
-            importance="normal",
-            idempotency_key=f"runtime-presentation:{self.context.attempt_id}:terminal",
         )
 
     async def fail(self, error: str) -> None:

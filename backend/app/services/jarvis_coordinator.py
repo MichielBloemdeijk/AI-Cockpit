@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -29,8 +29,8 @@ from app.db.tables import (
 )
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
-from app.services.task_presentations import PresentationReservation, task_presentation_service
-from app.services.update_timing import TimingPolicyResult, update_timing_policy
+from app.services.task_presentations import task_presentation_service
+from app.services.task_notifications import route_pending_task_notifications
 from app.services.voice_session_adapter import (
     VoiceProviderEvent,
     fake_voice_session_adapter,
@@ -91,14 +91,79 @@ class ControllerBootstrap:
     sdp_answer: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class PresentationConsideration:
-    decision: str
-    reason: str
-    presentation_ids: tuple[str, ...] = ()
+@dataclass(slots=True)
+class _ResponseGate:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pending: set[str] = field(default_factory=set)
+    inflight: bool = False
+
+
+_RESPONSE_PRIORITY = {
+    "tool_continuation": 0,
+    "user_turn": 1,
+    "task_update": 2,
+}
 
 
 class JarvisCoordinator:
+    def __init__(self) -> None:
+        self._response_gates: dict[tuple[str, int], _ResponseGate] = {}
+        self._delivery_task: asyncio.Task[None] | None = None
+        self._delivery_stop: asyncio.Event | None = None
+
+    async def start(self) -> None:
+        if self._delivery_task is not None and not self._delivery_task.done():
+            return
+        await task_presentation_service.recover_reservations()
+        self._delivery_stop = asyncio.Event()
+        self._delivery_task = asyncio.create_task(
+            self._run_delivery_loop(self._delivery_stop),
+            name="jarvis-response-arbiter",
+        )
+
+    async def stop(self) -> None:
+        if self._delivery_stop is not None:
+            self._delivery_stop.set()
+        if self._delivery_task is not None:
+            await asyncio.gather(self._delivery_task, return_exceptions=True)
+        self._delivery_task = None
+        self._delivery_stop = None
+        self._response_gates.clear()
+
+    async def _run_delivery_loop(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            try:
+                await task_presentation_service.sync_candidates()
+                active = await self.get_active_session()
+                voice_connected = False
+                if active is not None and active.lifecycle_state == "ready":
+                    adapter = get_voice_session_adapter(active.provider_adapter)
+                    voice_connected = adapter.is_connected(
+                        session_id=active.id,
+                        generation=active.generation,
+                    )
+                    if voice_connected:
+                        pending = await task_presentation_service.list_pending()
+                        if pending:
+                            await self._queue_controlled_response(
+                                active.id,
+                                active.generation,
+                                "task_update",
+                            )
+                await route_pending_task_notifications(voice_connected=voice_connected)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Durable candidates remain pending; the next poll retries them.
+                pass
+            try:
+                await asyncio.wait_for(
+                    stop.wait(),
+                    timeout=max(0.05, settings.jarvis_update_poll_seconds),
+                )
+            except TimeoutError:
+                pass
+
     async def request_voice_rotation(self, voice: str) -> None:
         """Signal the active controller to reconnect at its next safe boundary."""
         active = await self.get_active_session()
@@ -126,6 +191,8 @@ class JarvisCoordinator:
             content,
             idempotency_key=idempotency_key,
         )
+        if not accepted.created:
+            return accepted
         active = await self.get_active_session()
         if active is None or active.conversation_id != accepted.conversation.id:
             active = await self.open_controller(
@@ -140,7 +207,106 @@ class JarvisCoordinator:
             turn_id=accepted.message.id,
             text=accepted.message.content,
         )
+        await self._queue_controlled_response(active.id, active.generation, "user_turn")
         return accepted
+
+    async def _queue_controlled_response(
+        self,
+        session_id: str,
+        generation: int,
+        reason: str,
+    ) -> None:
+        key = (session_id, generation)
+        gate = self._response_gates.setdefault(key, _ResponseGate())
+        adapter = None
+        reservation = None
+        context = None
+        selected_reason = reason
+        async with gate.lock:
+            gate.pending.add(reason)
+            if gate.inflight:
+                return
+            async with session_scope() as session:
+                realtime = await self._require_current_generation(session, session_id, generation)
+                floor = await self._floor_state(session, session_id)
+                adapter = get_voice_session_adapter(realtime.provider_adapter)
+                if not adapter.is_connected(session_id=session_id, generation=generation):
+                    return
+            selected_reason = min(
+                gate.pending,
+                key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
+            )
+            if floor in {"user_speaking", "assistant_speaking", "connecting", "text_fallback"}:
+                return
+            if selected_reason == "task_update" and floor != "listening":
+                return
+
+            context = await self.context(session_id)
+            if context is None:
+                return
+            reservation = await task_presentation_service.reserve(
+                session_id=session_id,
+                generation=generation,
+                user_owns_floor=False,
+                limit=3,
+            )
+            if selected_reason == "task_update" and reservation is None:
+                gate.pending.discard(selected_reason)
+                return
+            if reservation is not None:
+                context["pending_update_count"] = reservation.total_pending
+            gate.pending.discard(selected_reason)
+            gate.inflight = True
+
+        presentation_ids = () if reservation is None else reservation.presentation_ids
+        facts = () if reservation is None else reservation.facts
+        try:
+            assert adapter is not None and context is not None
+            await adapter.create_response(
+                session_id=session_id,
+                generation=generation,
+                response_kind=selected_reason,
+                presentation_ids=presentation_ids,
+                facts=facts,
+                context=context,
+            )
+            async with session_scope() as session:
+                await self._require_current_generation(session, session_id, generation)
+                await JarvisDomainRepository(session).append_session_event(
+                    session_id=session_id,
+                    event_type="response.arbiter.started",
+                    payload_json={
+                        "reason": selected_reason,
+                        "presentation_ids": list(presentation_ids),
+                    },
+                    idempotency_key=f"response-arbiter:{session_id}:{generation}:{uuid4()}",
+                )
+        except Exception:
+            async with gate.lock:
+                gate.inflight = False
+                gate.pending.add(selected_reason)
+            if reservation is not None:
+                await task_presentation_service.requeue(
+                    presentation_ids=reservation.presentation_ids,
+                    session_id=session_id,
+                    generation=generation,
+                    error="controlled_response_create_failed",
+                )
+            raise
+
+    async def _finish_controlled_response(self, session_id: str, generation: int) -> None:
+        gate = self._response_gates.get((session_id, generation))
+        if gate is None:
+            return
+        async with gate.lock:
+            gate.inflight = False
+            has_pending = bool(gate.pending)
+        if has_pending:
+            pending_reason = min(
+                gate.pending,
+                key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
+            )
+            await self._queue_controlled_response(session_id, generation, pending_reason)
 
     async def start_fresh_log(self, *, idempotency_key: str):
         current = await self.get_active_session()
@@ -319,8 +485,12 @@ class JarvisCoordinator:
         event: VoiceProviderEvent,
     ) -> None:
         shell_call: tuple[str, dict[str, Any], str] | None = None
-        presentation_action: tuple[str, tuple[str, ...], DeliveryRecord] | None = None
+        presentation_action: tuple[tuple[str, ...], DeliveryRecord, str] | None = None
+        requeue_presentations: tuple[str, ...] = ()
         release_reservations = False
+        response_finished = False
+        queue_user_response = False
+        queue_task_updates = False
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             repo = JarvisDomainRepository(session)
@@ -341,15 +511,20 @@ class JarvisCoordinator:
             if event.kind == "ready":
                 realtime.lifecycle_state = "ready"
                 realtime.ready_at = realtime.ready_at or utc_now()
+                queue_task_updates = True
             elif event.kind in {"disconnected", "provider_error"}:
                 realtime.lifecycle_state = "disconnected"
                 realtime.disconnected_at = utc_now()
                 release_reservations = True
+                response_finished = True
 
             if event.kind == "user_transcript":
                 await self._persist_user_transcript(session, realtime, event)
+            elif event.kind == "user_stopped":
+                queue_user_response = True
             elif event.kind in {"assistant_response", "assistant_interrupted"}:
                 delivery = await self._persist_delivery(session, realtime, event)
+                response_finished = True
                 raw_presentation_ids = payload.get("presentation_ids")
                 presentation_ids = tuple(
                     str(item)
@@ -357,33 +532,44 @@ class JarvisCoordinator:
                     if item
                 )
                 if presentation_ids:
-                    action = "present" if delivery.state == "completed" or bool(payload.get("facts_heard")) else "defer"
-                    presentation_action = (action, presentation_ids, delivery)
+                    heard_transcript = str(
+                        payload.get("heard_transcript")
+                        or (payload.get("transcript") if delivery.state == "completed" else "")
+                        or ""
+                    )
+                    presentation_action = (presentation_ids, delivery, heard_transcript)
             elif event.kind == "shell_call":
+                response_finished = True
                 tool_name = str(payload.get("name") or "")
                 arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
                 call_id = str(payload.get("call_id") or event.event_id)
                 shell_call = (tool_name, dict(arguments), call_id)
+                raw_presentation_ids = payload.get("presentation_ids")
+                requeue_presentations = tuple(
+                    str(item)
+                    for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
+                    if item
+                )
 
         if presentation_action is not None:
-            action, presentation_ids, delivery = presentation_action
-            if action == "present":
-                await task_presentation_service.mark_presented(
-                    presentation_ids=presentation_ids,
-                    session_id=session_id,
-                    generation=generation,
-                    turn_id=delivery.turn_id,
-                    delivery_id=delivery.id,
-                    allow_superseded=True,
-                )
-            else:
-                await task_presentation_service.defer(
-                    presentation_ids=presentation_ids,
-                    session_id=session_id,
-                    generation=generation,
-                    error="delivery_interrupted_before_required_facts",
-                    allow_superseded=True,
-                )
+            presentation_ids, delivery, heard_transcript = presentation_action
+            await task_presentation_service.settle_delivery(
+                presentation_ids=presentation_ids,
+                session_id=session_id,
+                generation=generation,
+                turn_id=delivery.turn_id,
+                delivery_id=delivery.id,
+                heard_transcript=heard_transcript,
+            )
+
+        if requeue_presentations:
+            await task_presentation_service.requeue(
+                presentation_ids=requeue_presentations,
+                session_id=session_id,
+                generation=generation,
+                error="response_requested_tool_before_speaking_updates",
+                allow_superseded=True,
+            )
 
         if release_reservations:
             await task_presentation_service.release_session_reservations(
@@ -391,6 +577,15 @@ class JarvisCoordinator:
                 generation=generation,
                 error=f"provider_{event.kind}",
             )
+
+        if response_finished:
+            await self._finish_controlled_response(session_id, generation)
+
+        if queue_user_response:
+            await self._queue_controlled_response(session_id, generation, "user_turn")
+
+        if queue_task_updates:
+            await self._queue_controlled_response(session_id, generation, "task_update")
 
         if shell_call is not None:
             tool_name, arguments, call_id = shell_call
@@ -420,139 +615,6 @@ class JarvisCoordinator:
             event=VoiceProviderEvent(event_id=event_id, kind=kind, payload=payload),
         )
 
-    async def reserve_presentations(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-    ) -> PresentationReservation | None:
-        async with session_scope() as session:
-            await self._require_current_generation(session, session_id, generation)
-            floor = await self._floor_state(session, session_id)
-        reservation = await task_presentation_service.reserve(
-            session_id=session_id,
-            generation=generation,
-            user_owns_floor=floor == "user_speaking",
-        )
-        if reservation is not None:
-            async with session_scope() as session:
-                await JarvisDomainRepository(session).append_session_event(
-                    session_id=session_id,
-                    event_type="presentation.reserved",
-                    payload_json={
-                        "presentation_ids": list(reservation.presentation_ids),
-                        "facts": list(reservation.facts),
-                    },
-                    idempotency_key=f"presentation-reserved:{session_id}:{generation}:{':'.join(reservation.presentation_ids)}",
-                )
-        return reservation
-
-    async def consider_presentations(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-    ) -> PresentationConsideration:
-        """Run one safe-boundary presentation cycle using the replaceable policy."""
-        async with session_scope() as session:
-            realtime = await self._require_current_generation(session, session_id, generation)
-            floor = await self._floor_state(session, session_id)
-            adapter_name = realtime.provider_adapter
-        if floor != "listening":
-            return PresentationConsideration("WAIT", f"floor_{floor}")
-
-        reservation = await self.reserve_presentations(
-            session_id=session_id,
-            generation=generation,
-        )
-        if reservation is None:
-            return PresentationConsideration("NONE", "no_ready_candidates")
-
-        adapter = get_voice_session_adapter(adapter_name)
-        try:
-            policy_result: TimingPolicyResult = await update_timing_policy.decide(
-                judge=adapter,
-                session_id=session_id,
-                generation=generation,
-                facts=reservation.facts,
-            )
-        except asyncio.CancelledError:
-            await task_presentation_service.defer(
-                presentation_ids=reservation.presentation_ids,
-                session_id=session_id,
-                generation=generation,
-                error="timing_request_cancelled",
-            )
-            raise
-        async with session_scope() as session:
-            await self._require_current_generation(session, session_id, generation)
-            current_floor = await self._floor_state(session, session_id)
-            await JarvisDomainRepository(session).append_session_event(
-                session_id=session_id,
-                event_type="presentation.timing_decided",
-                payload_json={
-                    "presentation_ids": list(reservation.presentation_ids),
-                    "decision": policy_result.decision,
-                    "reason": policy_result.reason,
-                },
-                idempotency_key=f"presentation-timing:{session_id}:{generation}:{uuid4()}",
-            )
-
-        if policy_result.decision != "DEFER" and current_floor != "listening":
-            reason = f"floor_changed_to_{current_floor}"
-            await task_presentation_service.defer(
-                presentation_ids=reservation.presentation_ids,
-                session_id=session_id,
-                generation=generation,
-                error=reason,
-            )
-            return PresentationConsideration("WAIT", reason, reservation.presentation_ids)
-
-        if policy_result.decision == "DEFER":
-            await task_presentation_service.defer(
-                presentation_ids=reservation.presentation_ids,
-                session_id=session_id,
-                generation=generation,
-                error=policy_result.reason,
-                retry_after_seconds=settings.jarvis_presentation_retry_seconds,
-            )
-            return PresentationConsideration(
-                "DEFER",
-                policy_result.reason,
-                reservation.presentation_ids,
-            )
-
-        try:
-            if policy_result.decision == "PRESENT":
-                await adapter.present_task_updates(
-                    session_id=session_id,
-                    generation=generation,
-                    presentation_ids=reservation.presentation_ids,
-                    facts=reservation.facts,
-                )
-            else:
-                await adapter.fold_task_updates(
-                    session_id=session_id,
-                    generation=generation,
-                    presentation_ids=reservation.presentation_ids,
-                    facts=reservation.facts,
-                )
-        except Exception as exc:
-            reason = f"presentation_delivery_failed:{type(exc).__name__}"
-            await task_presentation_service.defer(
-                presentation_ids=reservation.presentation_ids,
-                session_id=session_id,
-                generation=generation,
-                error=reason,
-                retry_after_seconds=settings.jarvis_presentation_retry_seconds,
-            )
-            return PresentationConsideration("DEFER", reason, reservation.presentation_ids)
-        return PresentationConsideration(
-            policy_result.decision,
-            policy_result.reason,
-            reservation.presentation_ids,
-        )
-
     async def supersede_session(self, session_id: str, *, generation: int, reason: str) -> None:
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
@@ -569,6 +631,7 @@ class JarvisCoordinator:
             generation=generation,
             error=f"session_superseded:{reason}",
         )
+        self._response_gates.pop((session_id, generation), None)
         if realtime.provider_adapter == "fake":
             fake_voice_session_adapter.detach(session_id=session_id, generation=generation)
         else:
@@ -594,6 +657,7 @@ class JarvisCoordinator:
             reason=reason,
             emit_event=True,
         )
+        self._response_gates.pop((session_id, generation), None)
 
     async def replay_session_events(
         self,
@@ -675,7 +739,8 @@ class JarvisCoordinator:
             conversation_id = realtime.conversation_id
         try:
             if controller_locked and tool_name in {
-                "dispatch_task", "answer_task_question", "cancel_task", "set_jarvis_voice",
+                "dispatch_task", "answer_task_question", "cancel_task",
+                "set_task_update_policy", "set_jarvis_voice",
             }:
                 raise ValueError("That action is unavailable while the device is locked")
             result = await restricted_brain_gateway.execute(
@@ -715,6 +780,11 @@ class JarvisCoordinator:
                 generation=generation,
                 call_id=call_id,
                 output={"ok": ok, "result": output},
+            )
+            await self._queue_controlled_response(
+                session_id,
+                generation,
+                "tool_continuation",
             )
         elif control == "start_new_jarvis_log":
             await self.start_fresh_log(idempotency_key=f"brain:{call_id}:fresh")
@@ -893,11 +963,19 @@ class JarvisCoordinator:
             .order_by(VoiceSessionEvent.sequence.desc())
             .limit(50)
         )).scalars().all())
-        for event_type in event_types:
+        for index, event_type in enumerate(event_types):
             if event_type == "provider.event.ignored":
                 continue
             if event_type.startswith("provider."):
-                return FLOOR_EVENT_TYPES.get(event_type.removeprefix("provider."), "thinking")
+                provider_kind = event_type.removeprefix("provider.")
+                if provider_kind in {"assistant_response", "assistant_interrupted"}:
+                    for older_event_type in event_types[index + 1 :]:
+                        older_kind = older_event_type.removeprefix("provider.")
+                        if older_kind in {"user_speaking", "user_transcript_delta"}:
+                            return "user_speaking"
+                        if older_kind in {"user_stopped", "user_transcript"}:
+                            break
+                return FLOOR_EVENT_TYPES.get(provider_kind, "thinking")
             if event_type == "session.connecting":
                 return "connecting"
             if event_type == "session.superseded":
@@ -958,7 +1036,7 @@ class JarvisCoordinator:
             )).scalars().all())
         presentations = list((await session.execute(
             select(TaskPresentation)
-            .where(TaskPresentation.state.in_(["pending", "deferred", "reserved"]))
+            .where(TaskPresentation.state.in_(["pending", "reserved"]))
             .order_by(TaskPresentation.created_at.asc())
         )).scalars().all())
         return {

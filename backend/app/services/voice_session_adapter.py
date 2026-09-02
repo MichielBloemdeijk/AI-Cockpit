@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from uuid import uuid4
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,31 +59,18 @@ class VoiceSessionAdapter(Protocol):
         output: dict[str, Any],
     ) -> None: ...
 
-    async def judge_presentation_timing(
+    async def create_response(
         self,
         *,
         session_id: str,
         generation: int,
-        facts: tuple[dict[str, Any], ...],
-    ) -> str: ...
-
-    async def present_task_updates(
-        self,
-        *,
-        session_id: str,
-        generation: int,
+        response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
+        context: dict[str, Any],
     ) -> None: ...
 
-    async def fold_task_updates(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        presentation_ids: tuple[str, ...],
-        facts: tuple[dict[str, Any], ...],
-    ) -> None: ...
+    def is_connected(self, *, session_id: str, generation: int) -> bool: ...
 
     async def close(
         self,
@@ -106,10 +94,8 @@ class FakeVoiceSessionAdapter:
 
     def __init__(self) -> None:
         self._handlers: dict[tuple[str, int], ProviderEventHandler] = {}
-        self._timing_decisions: list[str] = []
-        self._folded_updates: dict[
-            tuple[str, int], tuple[tuple[str, ...], tuple[dict[str, Any], ...]]
-        ] = {}
+        self._pending_text: dict[tuple[str, int], tuple[str, str]] = {}
+        self._pending_tool_results: dict[tuple[str, int], dict[str, Any]] = {}
 
     async def connect(
         self,
@@ -140,7 +126,27 @@ class FakeVoiceSessionAdapter:
         turn_id: str,
         text: str,
     ) -> None:
-        response_id = f"fake-response:{turn_id}"
+        key = (session_id, generation)
+        if key not in self._handlers:
+            raise ValueError("Fake provider session is not connected")
+        self._pending_text[key] = (turn_id, text)
+
+    async def create_response(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        response_kind: str,
+        presentation_ids: tuple[str, ...],
+        facts: tuple[dict[str, Any], ...],
+        context: dict[str, Any],
+    ) -> None:
+        key = (session_id, generation)
+        if key not in self._handlers:
+            raise ValueError("Fake provider session is not connected")
+        pending_text = self._pending_text.pop(key, None)
+        pending_tool = self._pending_tool_results.pop(key, None)
+        response_id = f"fake-response:{uuid4()}"
         await self.inject(
             session_id=session_id,
             generation=generation,
@@ -150,7 +156,7 @@ class FakeVoiceSessionAdapter:
                 payload={"response_id": response_id},
             ),
         )
-        normalized = text.strip()
+        normalized = "" if pending_text is None else pending_text[1].strip()
         if normalized.lower().startswith("delegate:"):
             goal = normalized.split(":", 1)[1].strip()
             await self.inject(
@@ -160,20 +166,26 @@ class FakeVoiceSessionAdapter:
                     event_id=f"{response_id}:dispatch",
                     kind="shell_call",
                     payload={
+                        "response_id": response_id,
                         "call_id": f"{response_id}:dispatch",
                         "name": "dispatch_task",
                         "arguments": {"goal": goal},
+                        "presentation_ids": list(presentation_ids),
                     },
                 ),
             )
+            return
+        if pending_tool is not None:
             transcript = "I've started that in the background."
+        elif normalized:
+            transcript = f"I heard: {normalized}"
         else:
-            transcript = f"I heard: {text}"
-        folded = self._folded_updates.pop((session_id, generation), None)
-        presentation_ids = folded[0] if folded else ()
-        folded_facts = folded[1] if folded else ()
-        if folded_facts:
-            transcript = f"{transcript} {self._summarize_facts(folded_facts)}".strip()
+            transcript = ""
+        if facts:
+            total_updates = max(len(facts), int(context.get("pending_update_count") or 0))
+            count_prefix = f"There are {total_updates} updates. " if total_updates > 3 else ""
+            transcript = f"{transcript} {count_prefix}{self._summarize_facts(facts)}".strip()
+        transcript = transcript or "All set."
         await self.inject(
             session_id=session_id,
             generation=generation,
@@ -197,73 +209,13 @@ class FakeVoiceSessionAdapter:
         call_id: str,
         output: dict[str, Any],
     ) -> None:
-        # The fake adapter emits its deterministic acknowledgement before the
-        # shell call. Keeping this a no-op still exercises the shared method.
-        if (session_id, generation) not in self._handlers:
+        key = (session_id, generation)
+        if key not in self._handlers:
             raise ValueError("Fake provider session is not connected")
+        self._pending_tool_results[key] = output
 
-    async def judge_presentation_timing(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        facts: tuple[dict[str, Any], ...],
-    ) -> str:
-        if (session_id, generation) not in self._handlers:
-            raise ValueError("Fake provider session is not connected")
-        return self._timing_decisions.pop(0) if self._timing_decisions else "PRESENT"
-
-    async def present_task_updates(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        presentation_ids: tuple[str, ...],
-        facts: tuple[dict[str, Any], ...],
-    ) -> None:
-        response_id = f"fake-presentation:{presentation_ids[0]}"
-        await self.inject(
-            session_id=session_id,
-            generation=generation,
-            event=VoiceProviderEvent(
-                event_id=f"{response_id}:generating",
-                kind="assistant_generating",
-                payload={"response_id": response_id},
-            ),
-        )
-        await self.inject(
-            session_id=session_id,
-            generation=generation,
-            event=VoiceProviderEvent(
-                event_id=f"{response_id}:completed",
-                kind="assistant_response",
-                payload={
-                    "response_id": response_id,
-                    "item_id": f"{response_id}:item",
-                    "transcript": self._summarize_facts(facts),
-                    "presentation_ids": list(presentation_ids),
-                },
-            ),
-        )
-
-    async def fold_task_updates(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        presentation_ids: tuple[str, ...],
-        facts: tuple[dict[str, Any], ...],
-    ) -> None:
-        if (session_id, generation) not in self._handlers:
-            raise ValueError("Fake provider session is not connected")
-        existing_ids, existing_facts = self._folded_updates.get(
-            (session_id, generation),
-            ((), ()),
-        )
-        self._folded_updates[(session_id, generation)] = (
-            existing_ids + presentation_ids,
-            existing_facts + facts,
-        )
+    def is_connected(self, *, session_id: str, generation: int) -> bool:
+        return (session_id, generation) in self._handlers
 
     async def close(
         self,
@@ -287,7 +239,8 @@ class FakeVoiceSessionAdapter:
                 ),
             )
         self._handlers.pop(key, None)
-        self._folded_updates.pop(key, None)
+        self._pending_text.pop(key, None)
+        self._pending_tool_results.pop(key, None)
 
     async def inject(
         self,
@@ -304,21 +257,24 @@ class FakeVoiceSessionAdapter:
     def reset(self) -> None:
         """Forget process-local test connections; durable rows remain intact."""
         self._handlers.clear()
-        self._timing_decisions.clear()
-        self._folded_updates.clear()
+        self._pending_text.clear()
+        self._pending_tool_results.clear()
 
     def detach(self, *, session_id: str, generation: int) -> None:
         self._handlers.pop((session_id, generation), None)
-        self._folded_updates.pop((session_id, generation), None)
-
-    def queue_timing_decision(self, decision: str) -> None:
-        """Queue one deterministic policy response for a test or developer probe."""
-        self._timing_decisions.append(decision)
+        self._pending_text.pop((session_id, generation), None)
+        self._pending_tool_results.pop((session_id, generation), None)
 
     @staticmethod
     def _summarize_facts(facts: tuple[dict[str, Any], ...]) -> str:
         values = [
-            str(fact.get("summary") or fact.get("question") or fact.get("status") or "Task update")
+            str(
+                fact.get("required_spoken_phrase")
+                or fact.get("summary")
+                or fact.get("question")
+                or fact.get("status")
+                or "Task update"
+            )
             for fact in facts
         ]
         return " ".join(value.strip() for value in values if value.strip())

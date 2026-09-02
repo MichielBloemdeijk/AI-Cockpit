@@ -2,13 +2,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+import re
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import RealtimeSession, Task, TaskEvent, TaskPresentation
+from app.db.tables import (
+    NotificationOutbox,
+    RealtimeSession,
+    Task,
+    TaskEvent,
+    TaskPresentation,
+    TaskQuestion,
+)
+from app.services.task_notifications import enqueue_task_notification
+from app.services.task_service import GENERIC_REMINDER_TEXT
+from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
 
 
 PRESENTABLE_EVENT_TYPES = {
@@ -20,7 +31,7 @@ PRESENTABLE_EVENT_TYPES = {
     "task.cancelled": "terminal_result",
     "task.reminder.due": "reminder",
 }
-UNFINISHED_PRESENTATION_STATES = {"pending", "reserved", "deferred"}
+UNFINISHED_PRESENTATION_STATES = {"pending", "reserved"}
 
 
 def utc_now() -> datetime:
@@ -31,9 +42,27 @@ def utc_now() -> datetime:
 class PresentationReservation:
     presentation_ids: tuple[str, ...]
     facts: tuple[dict, ...]
+    total_pending: int
 
 
 class TaskPresentationService:
+    async def recover_reservations(self) -> int:
+        recovered = 0
+        async with session_scope() as session:
+            candidates = list((await session.execute(
+                select(TaskPresentation).where(TaskPresentation.state == "reserved")
+            )).scalars().all())
+            for candidate in candidates:
+                candidate.state = "pending"
+                candidate.reserved_session_id = None
+                candidate.reserved_generation = None
+                candidate.reserved_at = None
+                candidate.defer_until = None
+                candidate.retry_count += 1
+                candidate.last_error = "process_restarted"
+                recovered += 1
+        return recovered
+
     async def sync_candidates(self) -> int:
         """Project presentation candidates from durable task events.
 
@@ -47,6 +76,11 @@ class TaskPresentationService:
                 .where(TaskEvent.event_type.in_([*sorted(PRESENTABLE_EVENT_TYPES), "task.question.answered"]))
                 .order_by(TaskEvent.sequence.asc())
             )).scalars().all())
+            latest_terminal_sequence = {
+                event.task_id: event.sequence
+                for event in events
+                if PRESENTABLE_EVENT_TYPES.get(event.event_type) == "terminal_result"
+            }
             for event in events:
                 if event.event_type == "task.question.answered":
                     continue
@@ -56,15 +90,40 @@ class TaskPresentationService:
                     .where(TaskPresentation.source_task_event_id == event.id)
                     .limit(1)
                 )).scalar_one_or_none()
-                if existing is not None:
-                    continue
                 task = (await session.execute(
                     select(Task).where(Task.id == event.task_id).limit(1)
                 )).scalar_one_or_none()
-                if task is None or task.presentation_policy == "never":
+                if task is None:
+                    continue
+
+                if (
+                    candidate_type == "terminal_result"
+                    and latest_terminal_sequence.get(task.id) != event.sequence
+                ):
+                    if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
+                        existing.state = "superseded"
+                        existing.reserved_session_id = None
+                        existing.reserved_generation = None
+                    await self._supersede_notification(session, event.id)
+                    continue
+
+                policy = normalize_task_update_policy(task.presentation_policy)
+                if task.presentation_policy != policy:
+                    task.presentation_policy = policy
+                if policy == SILENT or (candidate_type == "progress" and policy != FOLLOW_PROGRESS):
+                    if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
+                        existing.state = "superseded"
+                        existing.reserved_session_id = None
+                        existing.reserved_generation = None
+                        await self._supersede_notification(session, event.id)
                     continue
 
                 facts = self._facts(event, task)
+                if existing is not None:
+                    existing.required_facts_json = facts
+                    existing.importance = task.importance
+                    await self._ensure_notification(session, task, event)
+                    continue
                 if candidate_type == "terminal_result":
                     await self._supersede_progress(session, task.id)
                     existing_terminal = (await session.execute(
@@ -76,16 +135,20 @@ class TaskPresentationService:
                         .limit(1)
                     )).scalar_one_or_none()
                     if existing_terminal is not None:
+                        previous_event_id = existing_terminal.source_task_event_id
+                        if previous_event_id and previous_event_id != event.id:
+                            await self._supersede_notification(session, previous_event_id)
                         existing_terminal.source_task_event_id = event.id
                         existing_terminal.required_facts_json = facts
                         existing_terminal.importance = task.importance
+                        await self._ensure_notification(session, task, event)
                         continue
                 elif candidate_type == "progress":
                     terminal = (await session.execute(
                         select(TaskPresentation.id)
                         .where(TaskPresentation.task_id == task.id)
                         .where(TaskPresentation.candidate_type == "terminal_result")
-                        .where(TaskPresentation.state.in_(["pending", "reserved", "presented", "deferred"]))
+                        .where(TaskPresentation.state.in_(["pending", "reserved", "presented"]))
                         .limit(1)
                     )).scalar_one_or_none()
                     if terminal is not None:
@@ -105,11 +168,12 @@ class TaskPresentationService:
                         idempotency_key=f"task-event-presentation:{event.id}",
                     )
                 )
+                await self._ensure_notification(session, task, event)
                 created += 1
 
             answered_events = [event for event in events if event.event_type == "task.question.answered"]
             if answered_events:
-                await self._fold_answered_questions(session, answered_events)
+                await self._supersede_answered_questions(session, answered_events)
         return created
 
     async def list_pending(self) -> tuple[TaskPresentation, ...]:
@@ -118,14 +182,13 @@ class TaskPresentationService:
         async with session_scope() as session:
             result = await session.execute(
                 select(TaskPresentation)
-                .where(TaskPresentation.state.in_(["pending", "deferred"]))
-                .where(or_(TaskPresentation.defer_until.is_(None), TaskPresentation.defer_until <= now))
+                .where(TaskPresentation.state == "pending")
                 .order_by(
                     TaskPresentation.created_at.asc(),
                     TaskPresentation.id.asc(),
                 )
             )
-            return tuple(result.scalars().all())
+            return tuple(sorted(result.scalars().all(), key=self._delivery_priority))
 
     async def reserve(
         self,
@@ -149,15 +212,14 @@ class TaskPresentationService:
                 raise ValueError("Realtime session generation is stale")
             result = await session.execute(
                 select(TaskPresentation)
-                .where(TaskPresentation.state.in_(["pending", "deferred"]))
-                .where(or_(TaskPresentation.defer_until.is_(None), TaskPresentation.defer_until <= now))
+                .where(TaskPresentation.state == "pending")
                 .order_by(
                     TaskPresentation.created_at.asc(),
                     TaskPresentation.id.asc(),
                 )
-                .limit(limit)
             )
-            candidates = list(result.scalars().all())
+            pending = sorted(result.scalars().all(), key=self._delivery_priority)
+            candidates = pending[:limit]
             if not candidates:
                 return None
             for candidate in candidates:
@@ -169,6 +231,7 @@ class TaskPresentationService:
             return PresentationReservation(
                 presentation_ids=tuple(item.id for item in candidates),
                 facts=tuple(dict(item.required_facts_json or {}) for item in candidates),
+                total_pending=len(pending),
             )
 
     async def mark_presented(
@@ -187,7 +250,7 @@ class TaskPresentationService:
                 candidate = await session.get(TaskPresentation, presentation_id)
                 if candidate is None:
                     raise ValueError(f"Task presentation not found: {presentation_id}")
-                if allow_superseded and candidate.state in {"folded", "superseded"}:
+                if allow_superseded and candidate.state == "superseded":
                     continue
                 if (
                     candidate.state != "reserved"
@@ -201,14 +264,75 @@ class TaskPresentationService:
                 candidate.presented_at = now
                 candidate.updated_at = now
 
-    async def defer(
+    async def settle_delivery(
+        self,
+        *,
+        presentation_ids: tuple[str, ...],
+        session_id: str,
+        generation: int,
+        turn_id: str | None,
+        delivery_id: str | None,
+        heard_transcript: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Acknowledge only facts whose required phrase was actually heard."""
+        now = utc_now()
+        normalized_heard = self._normalize_spoken_text(heard_transcript)
+        delivered: list[str] = []
+        requeued: list[str] = []
+        async with session_scope() as session:
+            for presentation_id in presentation_ids:
+                candidate = await session.get(TaskPresentation, presentation_id)
+                if candidate is None or candidate.state in {"superseded", "acknowledged"}:
+                    continue
+                if (
+                    candidate.state != "reserved"
+                    or candidate.reserved_session_id != session_id
+                    or candidate.reserved_generation != generation
+                ):
+                    continue
+                phrase = str(
+                    (candidate.required_facts_json or {}).get("required_spoken_phrase") or ""
+                ).strip()
+                phrase_heard = bool(
+                    phrase
+                    and self._normalize_spoken_text(phrase) in normalized_heard
+                )
+                if phrase_heard:
+                    candidate.state = "presented"
+                    candidate.presented_turn_id = turn_id
+                    candidate.presented_delivery_id = delivery_id
+                    candidate.presented_at = now
+                    delivered.append(candidate.id)
+                    if candidate.source_task_event_id:
+                        rows = list((await session.execute(
+                            select(NotificationOutbox).where(
+                                NotificationOutbox.task_event_id == candidate.source_task_event_id
+                            )
+                        )).scalars().all())
+                        for row in rows:
+                            if row.acknowledged_at is None:
+                                row.acknowledged_at = now
+                                row.acknowledgement_state = "spoken"
+                                row.status = "acknowledged"
+                else:
+                    candidate.state = "pending"
+                    candidate.retry_count += 1
+                    candidate.last_error = "required_spoken_phrase_not_heard"
+                    requeued.append(candidate.id)
+                candidate.reserved_session_id = None
+                candidate.reserved_generation = None
+                candidate.reserved_at = None
+                candidate.defer_until = None
+                candidate.updated_at = now
+        return tuple(delivered), tuple(requeued)
+
+    async def requeue(
         self,
         *,
         presentation_ids: tuple[str, ...],
         session_id: str,
         generation: int,
         error: str | None = None,
-        retry_after_seconds: float = 0,
         allow_superseded: bool = False,
     ) -> None:
         now = utc_now()
@@ -217,7 +341,7 @@ class TaskPresentationService:
                 candidate = await session.get(TaskPresentation, presentation_id)
                 if candidate is None:
                     continue
-                if allow_superseded and candidate.state in {"folded", "superseded"}:
+                if allow_superseded and candidate.state == "superseded":
                     continue
                 if (
                     candidate.state != "reserved"
@@ -225,16 +349,12 @@ class TaskPresentationService:
                     or candidate.reserved_generation != generation
                 ):
                     raise ValueError("Task presentation reservation is stale")
-                candidate.state = "deferred"
+                candidate.state = "pending"
                 candidate.reserved_session_id = None
                 candidate.reserved_generation = None
                 candidate.reserved_at = None
                 candidate.retry_count += 1
-                candidate.defer_until = (
-                    now + timedelta(seconds=max(0, retry_after_seconds))
-                    if retry_after_seconds > 0
-                    else None
-                )
+                candidate.defer_until = None
                 candidate.last_error = error
                 candidate.updated_at = now
 
@@ -256,7 +376,7 @@ class TaskPresentationService:
                 .where(TaskPresentation.reserved_generation == generation)
             )).scalars().all())
             for candidate in candidates:
-                candidate.state = "deferred"
+                candidate.state = "pending"
                 candidate.reserved_session_id = None
                 candidate.reserved_generation = None
                 candidate.reserved_at = None
@@ -279,9 +399,13 @@ class TaskPresentationService:
             candidate.state = "superseded"
             candidate.reserved_session_id = None
             candidate.reserved_generation = None
+            if candidate.source_task_event_id:
+                await TaskPresentationService._supersede_notification(
+                    session, candidate.source_task_event_id
+                )
 
     @staticmethod
-    async def _fold_answered_questions(session, events: list[TaskEvent]) -> None:
+    async def _supersede_answered_questions(session, events: list[TaskEvent]) -> None:
         answered_ids = {
             str((event.payload_json or {}).get("question_id") or "")
             for event in events
@@ -294,9 +418,34 @@ class TaskPresentationService:
         for candidate in candidates:
             question_id = str((candidate.required_facts_json or {}).get("question_id") or "")
             if question_id in answered_ids:
-                candidate.state = "folded"
+                candidate.state = "superseded"
                 candidate.reserved_session_id = None
                 candidate.reserved_generation = None
+                if candidate.source_task_event_id:
+                    await TaskPresentationService._supersede_notification(
+                        session, candidate.source_task_event_id
+                    )
+
+    @staticmethod
+    async def _supersede_notification(session, task_event_id: str) -> None:
+        rows = list((await session.execute(
+            select(NotificationOutbox)
+            .where(NotificationOutbox.task_event_id == task_event_id)
+            .where(NotificationOutbox.status.in_(["queued", "failed", "sending"]))
+        )).scalars().all())
+        for row in rows:
+            row.status = "superseded"
+            row.next_attempt_at = None
+
+    @staticmethod
+    async def _ensure_notification(session, task: Task, event: TaskEvent) -> None:
+        question = None
+        if event.event_type == "task.requires_input":
+            question_id = str((event.payload_json or {}).get("question_id") or "")
+            question = await session.get(TaskQuestion, question_id) if question_id else None
+            if question is None:
+                return
+        await enqueue_task_notification(session, task=task, event=event, question=question)
 
     @staticmethod
     def _facts(event: TaskEvent, task: Task) -> dict:
@@ -306,7 +455,9 @@ class TaskPresentationService:
             "progress": "progress",
             "question": "question",
             "terminal_result": "result",
+            "reminder": "reminder",
         }[candidate_type]
+        spoken_phrase = TaskPresentationService._spoken_phrase(event, task, payload)
         coalescing_key = f"task:{task.id}:{candidate_type}"
         return {
             "task_id": task.id,
@@ -315,6 +466,7 @@ class TaskPresentationService:
             **payload,
             "schema": "jarvis.task_update.v1",
             "kind": kind,
+            "required_spoken_phrase": spoken_phrase,
             "task": {
                 "id": task.id,
                 "goal": task.goal,
@@ -337,6 +489,51 @@ class TaskPresentationService:
                 "importance": task.importance,
             },
         }
+
+    @staticmethod
+    def _spoken_phrase(event: TaskEvent, task: Task, payload: dict) -> str:
+        goal = " ".join(str(task.goal or "Task").split()).strip() or "Task"
+        if goal.lower().startswith("remind me:"):
+            goal = goal.split(":", 1)[1].strip() or "Reminder"
+        goal = goal[:96].rstrip()
+        summary = " ".join(
+            str(payload.get("summary") or task.terminal_summary or "").split()
+        ).strip()
+        if event.event_type == "task.reminder.due":
+            if not summary or summary == GENERIC_REMINDER_TEXT:
+                return GENERIC_REMINDER_TEXT
+            return f"Reminder: {summary}"[:240].rstrip()
+        if event.event_type == "task.requires_input":
+            question = " ".join(str(payload.get("question") or "").split()).strip()
+            return f"{goal} needs your input: {question}"[:240].rstrip()
+        if event.event_type == "task.completed":
+            detail = summary or "It finished successfully."
+            return f"{goal} is complete: {detail}"[:240].rstrip()
+        if event.event_type in {"task.failed", "task.interrupted"}:
+            detail = summary or "It could not finish."
+            return f"{goal} failed: {detail}"[:240].rstrip()
+        if event.event_type == "task.cancelled":
+            return f"{goal} was cancelled."
+        detail = summary or "Progress is available."
+        return f"{goal}: {detail}"[:240].rstrip()
+
+    @staticmethod
+    def _normalize_spoken_text(value: str) -> str:
+        return " ".join(re.sub(r"[^\w]+", " ", str(value or "").casefold()).split())
+
+    @staticmethod
+    def _delivery_priority(candidate: TaskPresentation) -> tuple[int, datetime, str]:
+        event_type = str((candidate.required_facts_json or {}).get("event_type") or "")
+        rank = {
+            "task.reminder.due": 0,
+            "task.requires_input": 1,
+            "task.failed": 2,
+            "task.interrupted": 2,
+            "task.cancelled": 2,
+            "task.completed": 3,
+            "task.progress": 4,
+        }.get(event_type, 5)
+        return rank, candidate.created_at, candidate.id
 
 
 task_presentation_service = TaskPresentationService()

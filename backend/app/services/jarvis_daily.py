@@ -48,6 +48,7 @@ class JarvisAcceptedTurn:
     conversation: ConversationRecord
     message: MessageRecord
     event_sequence: int
+    created: bool = True
 
 
 class JarvisDailyService:
@@ -115,6 +116,7 @@ class JarvisDailyService:
                         conversation=_conversation_record(conversation),
                         message=_message_record(existing_message),
                         event_sequence=event.sequence,
+                        created=False,
                     )
 
             message = await repo.create_message(
@@ -138,6 +140,7 @@ class JarvisDailyService:
                 conversation=_conversation_record(conversation),
                 message=_message_record(message),
                 event_sequence=event.sequence,
+                created=True,
             )
 
     async def start_fresh_log(

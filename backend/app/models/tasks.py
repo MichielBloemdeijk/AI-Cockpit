@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from app.services.task_update_policy import CRITICAL_ONLY
+
+
+TaskUpdatePolicy = Literal["critical_only", "follow_progress", "silent"]
 
 
 class TaskSummaryView(BaseModel):
@@ -18,7 +23,7 @@ class TaskSummaryView(BaseModel):
     current_attempt_id: str | None = None
     cancellation_requested_at: datetime | None = None
     importance: str
-    presentation_policy: str
+    presentation_policy: TaskUpdatePolicy
     terminal_summary: str | None = None
     waiting_until: datetime | None = None
     resume_at: datetime | None = None
@@ -125,7 +130,7 @@ class TaskDispatchRequest(BaseModel):
     origin_conversation_id: str | None = None
     origin_turn_id: str | None = None
     importance: str = "normal"
-    presentation_policy: str = "natural"
+    presentation_policy: TaskUpdatePolicy = CRITICAL_ONLY
     targets: list["TaskTargetRequest"] = Field(default_factory=list)
 
 

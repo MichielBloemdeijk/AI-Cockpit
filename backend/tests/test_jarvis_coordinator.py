@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -7,13 +9,15 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import SpeechDelivery, TaskEvent, TaskPresentation
+from app.db.tables import JarvisLiveEvent, NotificationOutbox, SpeechDelivery
 from app.main import app
 from app.services.conversation_store import conversation_store
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
+from app.services.reminder_scheduler import reminder_scheduler
+from app.services.task_notifications import route_pending_task_notifications
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
-from app.services.voice_session_adapter import VoiceProviderEvent, fake_voice_session_adapter
+from app.services.voice_session_adapter import VoiceProviderEvent
 
 
 @pytest.mark.asyncio
@@ -172,130 +176,48 @@ async def test_controller_supersession_observer_and_stale_generation_rejection()
 
 
 @pytest.mark.asyncio
-async def test_presentations_coalesce_defer_while_user_speaks_and_present_once() -> None:
-    accepted = await jarvis_coordinator.accept_text_turn("Track a task", idempotency_key="track")
-    session = await jarvis_coordinator.get_active_session()
-    assert session is not None
-    task = await task_service.dispatch(
-        goal="Build the report",
-        origin_surface="jarvis",
-        origin_conversation_id=accepted.conversation.id,
-        origin_turn_id=accepted.message.id,
-        idempotency_key="presentation-task",
+async def test_progress_is_quiet_by_default_and_opted_in_progress_coalesces() -> None:
+    quiet = await task_service.dispatch(
+        goal="Quiet progress task",
+        idempotency_key="quiet-progress-task",
+        origin_surface="test",
     )
-    await task_service.publish_progress(task.task.id, summary="Drafting", idempotency_key="progress-1")
-    await task_service.publish_progress(task.task.id, summary="Reviewing", idempotency_key="progress-2")
-    _, projected_events = await task_service.replay_events(after_sequence=0)
-    assert [item.event_type for item in projected_events] == ["task.queued", "task.progress", "task.progress"]
-    assert task.task.presentation_policy == "natural"
-    async with session_scope() as db:
-        matched = list((await db.execute(select(TaskEvent).where(TaskEvent.event_type.in_(["task.progress"])))).scalars().all())
-        assert len(matched) == 2
-        assert {item.task_id for item in matched} == {task.task.id}
+    await task_service.publish_progress(
+        quiet.task.id,
+        summary="This should stay quiet",
+        idempotency_key="quiet-progress",
+    )
+
+    followed = await task_service.dispatch(
+        goal="Followed progress task",
+        presentation_policy="follow_progress",
+        idempotency_key="follow-progress-task",
+        origin_surface="test",
+    )
+    await task_service.publish_progress(
+        followed.task.id,
+        summary="Drafting",
+        idempotency_key="follow-progress-1",
+    )
+    await task_service.publish_progress(
+        followed.task.id,
+        summary="Reviewing",
+        idempotency_key="follow-progress-2",
+    )
     assert await task_presentation_service.sync_candidates() == 2
-    projected = await task_service.get_task(task.task.id)
-    assert projected is not None
-    assert sorted((item.candidate_type, item.state) for item in projected.presentations) == [
-        ("progress", "pending"),
-        ("progress", "superseded"),
-    ]
-    pending_progress = next(item for item in projected.presentations if item.state == "pending")
-    assert pending_progress.required_facts_json is not None
-    assert pending_progress.required_facts_json["summary"] == "Reviewing"
-    assert pending_progress.required_facts_json["schema"] == "jarvis.task_update.v1"
-    assert pending_progress.required_facts_json["kind"] == "progress"
-    assert pending_progress.required_facts_json["task"]["id"] == task.task.id
-    assert pending_progress.required_facts_json["fact"]["data"]["summary"] == "Reviewing"
-    assert pending_progress.required_facts_json["source"]["domain"] == "task"
-    assert pending_progress.required_facts_json["presentation"]["candidate_type"] == "progress"
 
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(event_id="user-floor", kind="user_speaking"),
-    )
-    assert await jarvis_coordinator.reserve_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    ) is None
-
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(event_id="user-floor-ended", kind="user_stopped"),
-    )
-    reservation = await jarvis_coordinator.reserve_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    )
-    assert reservation is not None
-    assert [fact["summary"] for fact in reservation.facts] == ["Reviewing"]
-
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(
-            event_id="presentation-interrupted",
-            kind="assistant_interrupted",
-            payload={
-                "response_id": "presentation-response-1",
-                "item_id": "presentation-item-1",
-                "transcript": "The report is being reviewed.",
-                "heard_transcript": "The report",
-                "presentation_ids": list(reservation.presentation_ids),
-                "facts_heard": False,
-            },
-        ),
-    )
-    retry = await jarvis_coordinator.reserve_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    )
-    assert retry is not None and retry.presentation_ids == reservation.presentation_ids
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(
-            event_id="presentation-complete",
-            kind="assistant_response",
-            payload={
-                "response_id": "presentation-response-2",
-                "item_id": "presentation-item-2",
-                "transcript": "The report is being reviewed.",
-                "presentation_ids": list(retry.presentation_ids),
-            },
-        ),
-    )
-    detail = await task_service.get_task(task.task.id)
-    assert detail is not None
-    progress = [item for item in detail.presentations if item.candidate_type == "progress"]
-    assert sorted(item.state for item in progress) == ["presented", "superseded"]
-
-    await task_service.complete(
-        task.task.id,
-        summary="Report complete",
-        idempotency_key="slow-task-complete",
-    )
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(event_id="completion-during-user-floor", kind="user_speaking"),
-    )
-    assert await jarvis_coordinator.reserve_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    ) is None
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(event_id="completion-after-user-floor", kind="user_stopped"),
-    )
-    terminal = await jarvis_coordinator.reserve_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    )
-    assert terminal is not None
-    assert terminal.facts[0]["summary"] == "Report complete"
+    quiet_detail = await task_service.get_task(quiet.task.id)
+    followed_detail = await task_service.get_task(followed.task.id)
+    assert quiet_detail is not None and quiet_detail.presentations == ()
+    assert followed_detail is not None
+    assert followed_detail.task.presentation_policy == "follow_progress"
+    assert sorted(
+        (item.candidate_type, item.state) for item in followed_detail.presentations
+    ) == [("progress", "pending"), ("progress", "superseded")]
+    pending = next(item for item in followed_detail.presentations if item.state == "pending")
+    assert pending.required_facts_json is not None
+    assert pending.required_facts_json["summary"] == "Reviewing"
+    assert pending.required_facts_json["required_spoken_phrase"]
 
 
 @pytest.mark.asyncio
@@ -323,115 +245,309 @@ async def test_fast_task_completion_projects_a_terminal_candidate() -> None:
     detail = await task_service.get_task(task.task.id)
     assert detail is not None
     assert sorted((item.candidate_type, item.state) for item in detail.presentations) == [
-        ("progress", "superseded"),
         ("terminal_result", "pending"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_automatic_presentation_policy_presents_and_folds_exactly_once() -> None:
-    accepted = await jarvis_coordinator.accept_text_turn("Track updates", idempotency_key="auto-origin")
+async def test_pending_update_merges_into_the_next_user_response() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Track updates", idempotency_key="merge-origin")
     session = await jarvis_coordinator.get_active_session()
     assert session is not None
     task = await task_service.dispatch(
-        goal="Prepare the automatic report",
+        goal="Prepare the merged report",
         origin_surface="jarvis",
         origin_conversation_id=accepted.conversation.id,
         origin_turn_id=accepted.message.id,
-        idempotency_key="auto-task",
-    )
-    await task_service.publish_progress(
-        task.task.id,
-        summary="Automatic draft ready",
-        idempotency_key="auto-progress",
-    )
-
-    presented = await jarvis_coordinator.consider_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    )
-    assert presented.decision == "PRESENT"
-    detail = await task_service.get_task(task.task.id)
-    assert detail is not None
-    assert [item.state for item in detail.presentations if item.candidate_type == "progress"] == [
-        "presented"
-    ]
-    with pytest.raises(ValueError, match="stale"):
-        await task_presentation_service.mark_presented(
-            presentation_ids=presented.presentation_ids,
-            session_id=session.id,
-            generation=session.generation,
-            turn_id=None,
-            delivery_id=None,
-        )
-    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
-    assert messages[-1].content == "Automatic draft ready"
-
-    question = await task_service.ask_question(
-        task.task.id,
-        question="Which audience should receive it?",
-        idempotency_key="auto-question",
-    )
-    fake_voice_session_adapter.queue_timing_decision("FOLD")
-    folded = await jarvis_coordinator.consider_presentations(
-        session_id=session.id,
-        generation=session.generation,
-    )
-    assert folded.decision == "FOLD"
-    waiting = await task_service.get_task(task.task.id)
-    assert waiting is not None
-    folded_candidate = next(
-        item for item in waiting.presentations if item.candidate_type == "question"
-    )
-    assert folded_candidate.state == "reserved"
-
-    await jarvis_coordinator.accept_text_turn(
-        "Let me think about it",
-        idempotency_key="folded-natural-turn",
-    )
-    completed = await task_service.get_task(task.task.id)
-    assert completed is not None
-    folded_candidate = next(
-        item for item in completed.presentations if item.candidate_type == "question"
-    )
-    assert folded_candidate.state == "presented"
-    assert folded_candidate.presented_turn_id is not None
-    assert question.id in str(folded_candidate.required_facts_json)
-
-
-@pytest.mark.asyncio
-async def test_invalid_timing_output_defers_with_backoff() -> None:
-    accepted = await jarvis_coordinator.accept_text_turn("Invalid timing", idempotency_key="invalid-origin")
-    session = await jarvis_coordinator.get_active_session()
-    assert session is not None
-    task = await task_service.dispatch(
-        goal="Test invalid timing",
-        origin_surface="jarvis",
-        origin_conversation_id=accepted.conversation.id,
-        origin_turn_id=accepted.message.id,
-        idempotency_key="invalid-task",
+        idempotency_key="merge-task",
     )
     await task_service.complete(
         task.task.id,
-        summary="Invalid timing result",
-        idempotency_key="invalid-complete",
+        summary="The merged report is complete.",
+        idempotency_key="merge-complete",
     )
-    fake_voice_session_adapter.queue_timing_decision("PRESENT because it is important")
+    await task_presentation_service.sync_candidates()
 
-    result = await jarvis_coordinator.consider_presentations(
+    await jarvis_coordinator.accept_text_turn(
+        "What changed?",
+        idempotency_key="merge-user-turn",
+    )
+    detail = await task_service.get_task(task.task.id)
+    assert detail is not None
+    candidate = next(item for item in detail.presentations if item.candidate_type == "terminal_result")
+    assert candidate.state == "presented"
+    assert candidate.required_facts_json is not None
+    phrase = candidate.required_facts_json["required_spoken_phrase"]
+    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
+    assert messages[-2].content == "What changed?"
+    assert messages[-1].content == f"I heard: What changed? {phrase}"
+
+
+@pytest.mark.asyncio
+async def test_update_arriving_after_response_start_waits_for_completion() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Start a response", idempotency_key="late-origin")
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    gate = jarvis_coordinator._response_gates[(session.id, session.generation)]
+    gate.inflight = True
+    task = await task_service.dispatch(
+        goal="Late update",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        idempotency_key="late-task",
+    )
+    await task_service.complete(
+        task.task.id,
+        summary="Late update complete.",
+        idempotency_key="late-complete",
+    )
+    await task_presentation_service.sync_candidates()
+    await jarvis_coordinator._queue_controlled_response(
+        session.id,
+        session.generation,
+        "task_update",
+    )
+    waiting = await task_service.get_task(task.task.id)
+    assert waiting is not None and waiting.presentations[0].state == "pending"
+
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="late-current-response-complete",
+            kind="assistant_response",
+            payload={
+                "response_id": "late-current-response",
+                "item_id": "late-current-item",
+                "transcript": "The current response is done.",
+            },
+        ),
+    )
+    delivered = await task_service.get_task(task.task.id)
+    assert delivered is not None and delivered.presentations[0].state == "presented"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_update_is_requeued_until_required_phrase_is_heard() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Track delivery", idempotency_key="retry-origin")
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    task = await task_service.dispatch(
+        goal="Test interrupted delivery",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        origin_turn_id=accepted.message.id,
+        idempotency_key="retry-task",
+    )
+    await task_service.complete(
+        task.task.id,
+        summary="The retry task is complete.",
+        idempotency_key="retry-complete",
+    )
+    reservation = await task_presentation_service.reserve(
         session_id=session.id,
         generation=session.generation,
+        user_owns_floor=False,
     )
-    assert result.decision == "DEFER"
-    assert result.reason == "invalid_timing_judgement"
+    assert reservation is not None
+    phrase = reservation.facts[0]["required_spoken_phrase"]
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="retry-interrupted",
+            kind="assistant_interrupted",
+            payload={
+                "response_id": "retry-response-1",
+                "item_id": "retry-item-1",
+                "transcript": phrase,
+                "heard_transcript": "The retry task",
+                "presentation_ids": list(reservation.presentation_ids),
+            },
+        ),
+    )
+    retry = await task_presentation_service.reserve(
+        session_id=session.id,
+        generation=session.generation,
+        user_owns_floor=False,
+    )
+    assert retry is not None and retry.presentation_ids == reservation.presentation_ids
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="retry-completed",
+            kind="assistant_response",
+            payload={
+                "response_id": "retry-response-2",
+                "item_id": "retry-item-2",
+                "transcript": phrase,
+                "presentation_ids": list(retry.presentation_ids),
+            },
+        ),
+    )
+    detail = await task_service.get_task(task.task.id)
+    assert detail is not None
+    candidate = next(item for item in detail.presentations if item.candidate_type == "terminal_result")
+    assert candidate.state == "presented"
+    assert candidate.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_interruption_does_not_release_the_floor_while_user_is_speaking() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Start", idempotency_key="floor-origin")
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(event_id="floor-user-started", kind="user_speaking"),
+    )
+    task = await task_service.dispatch(
+        goal="Finish during interruption",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        idempotency_key="floor-task",
+    )
+    await task_service.complete(
+        task.task.id,
+        summary="Finished safely.",
+        idempotency_key="floor-task-complete",
+    )
+    await task_presentation_service.sync_candidates()
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="floor-assistant-interrupted",
+            kind="assistant_interrupted",
+            payload={
+                "response_id": "floor-response",
+                "item_id": "floor-item",
+                "transcript": "I was interrupted.",
+                "heard_transcript": "I was",
+            },
+        ),
+    )
+
+    current = await jarvis_coordinator.get_session(session.id)
+    assert current is not None and current.floor_state == "user_speaking"
+    await jarvis_coordinator._queue_controlled_response(
+        session.id,
+        session.generation,
+        "task_update",
+    )
+    waiting = await task_service.get_task(task.task.id)
+    assert waiting is not None and waiting.presentations[0].state == "pending"
+
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(event_id="floor-user-stopped", kind="user_stopped"),
+    )
+    delivered = await task_service.get_task(task.task.id)
+    assert delivered is not None and delivered.presentations[0].state == "presented"
+
+
+@pytest.mark.asyncio
+async def test_recap_reserves_urgent_updates_first_and_leaves_the_rest_pending() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Prioritize updates", idempotency_key="priority-origin")
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    completed = await task_service.dispatch(
+        goal="Routine result",
+        origin_surface="test",
+        idempotency_key="priority-complete-task",
+    )
+    await task_service.complete(
+        completed.task.id,
+        summary="Routine result complete.",
+        idempotency_key="priority-complete",
+    )
+    failed = await task_service.dispatch(
+        goal="Failed result",
+        origin_surface="test",
+        idempotency_key="priority-failed-task",
+    )
+    await task_service.complete(
+        failed.task.id,
+        status="failed",
+        summary="Failed result stopped.",
+        idempotency_key="priority-failed",
+    )
+    question_task = await task_service.dispatch(
+        goal="Blocking question",
+        origin_surface="test",
+        idempotency_key="priority-question-task",
+    )
+    await task_service.ask_question(
+        question_task.task.id,
+        question="Which option?",
+        idempotency_key="priority-question",
+    )
+    now = datetime.now(timezone.utc)
+    await reminder_scheduler.create(
+        text=None,
+        due_at=now + timedelta(seconds=1),
+        idempotency_key="priority-reminder",
+        origin_conversation_id=accepted.conversation.id,
+    )
+    await reminder_scheduler.run_due(now=now + timedelta(seconds=2))
+
+    reservation = await task_presentation_service.reserve(
+        session_id=session.id,
+        generation=session.generation,
+        user_owns_floor=False,
+        limit=3,
+    )
+    assert reservation is not None and reservation.total_pending == 4
+    assert [fact["event_type"] for fact in reservation.facts] == [
+        "task.reminder.due",
+        "task.requires_input",
+        "task.failed",
+    ]
+    remaining = await task_presentation_service.list_pending()
+    assert [item.required_facts_json["event_type"] for item in remaining] == ["task.completed"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_reminder_is_spoken_once_without_fallback_notification() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Set a reminder", idempotency_key="reminder-origin")
+    due = datetime.now(timezone.utc) + timedelta(seconds=1)
+    reminder = await reminder_scheduler.create(
+        text=None,
+        due_at=due,
+        idempotency_key="reminder-provider-call-1",
+        origin_conversation_id=accepted.conversation.id,
+    )
+    duplicate = await reminder_scheduler.create(
+        text="  ",
+        due_at=due,
+        idempotency_key="reminder-provider-call-2",
+        origin_conversation_id=accepted.conversation.id,
+    )
+    assert duplicate.task.id == reminder.task.id
+    assert await reminder_scheduler.run_due(now=due + timedelta(seconds=1)) == 1
+
+    await jarvis_coordinator.accept_text_turn("Anything due?", idempotency_key="reminder-follow-up")
+    detail = await task_service.get_task(reminder.task.id)
+    assert detail is not None and len(detail.presentations) == 1
+    presentation = detail.presentations[0]
+    assert presentation.state == "presented"
+    assert presentation.required_facts_json["required_spoken_phrase"] == "This is your reminder."
+    await route_pending_task_notifications(voice_connected=False)
+    await asyncio.sleep(0.05)
     async with session_scope() as db:
-        candidate = (await db.execute(
-            select(TaskPresentation).where(TaskPresentation.task_id == task.task.id)
-        )).scalar_one()
-        assert candidate.state == "deferred"
-        assert candidate.defer_until is not None
-        assert candidate.retry_count == 1
-        assert candidate.last_error == "invalid_timing_judgement"
+        outbox = list((await db.execute(
+            select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
+        )).scalars().all())
+        live_notifications = list((await db.execute(
+            select(JarvisLiveEvent).where(JarvisLiveEvent.event_type == "notification.available")
+        )).scalars().all())
+    assert len(outbox) == 1
+    assert outbox[0].status == "acknowledged"
+    assert outbox[0].acknowledgement_state == "spoken"
+    assert live_notifications == []
 
 
 @pytest.mark.asyncio

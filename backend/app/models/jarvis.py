@@ -137,21 +137,6 @@ class JarvisFakeProviderEventRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class JarvisPresentationReserveRequest(BaseModel):
-    generation: int = Field(gt=0)
-
-
-class JarvisPresentationReservationResponse(BaseModel):
-    presentation_ids: list[str] = Field(default_factory=list)
-    facts: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class JarvisPresentationConsiderationResponse(BaseModel):
-    decision: Literal["PRESENT", "FOLD", "DEFER", "WAIT", "NONE"]
-    reason: str
-    presentation_ids: list[str] = Field(default_factory=list)
-
-
 class JarvisPreferencesView(BaseModel):
     voice: Literal["marin", "cedar"] = "marin"
     concision: Literal["concise", "balanced"] = "concise"
@@ -181,9 +166,10 @@ class JarvisLiveEventView(BaseModel):
 
 
 class ReminderCreateRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+    text: str | None = Field(default=None, max_length=2000)
     due_at: datetime
     idempotency_key: str = Field(min_length=1, max_length=255)
+    allow_duplicate: bool = False
 
 
 class ReminderSnoozeRequest(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.services.conversation_store import EventRecord, conversation_store
 from app.services.conversation_timeline import build_background_task_timeline_item
 from app.services.task_service import TaskSnapshot, task_service
+from app.services.task_update_policy import CRITICAL_ONLY, FOLLOW_PROGRESS, SILENT
 
 
 def _title(goal: str) -> str:
@@ -29,6 +30,12 @@ async def delegate_background_task(
     normalized_policy = str(notify_policy or "important").strip().lower()
     if normalized_policy not in {"important", "completion", "all", "none"}:
         normalized_policy = "important"
+    task_update_policy = {
+        "important": CRITICAL_ONLY,
+        "completion": CRITICAL_ONLY,
+        "all": FOLLOW_PROGRESS,
+        "none": SILENT,
+    }[normalized_policy]
     normalized_priority = "high" if str(priority or "").strip().lower() == "high" else "normal"
     parent_metadata = dict(parent.metadata_json) if isinstance(parent.metadata_json, dict) else {}
     task = await task_service.dispatch(
@@ -37,7 +44,7 @@ async def delegate_background_task(
         origin_conversation_id=parent.conversation_id,
         origin_turn_id=str(parent_metadata.get("origin_turn_id") or "").strip() or None,
         importance=normalized_priority,
-        presentation_policy=normalized_policy,
+        presentation_policy=task_update_policy,
         idempotency_key=idempotency_key,
     )
     event = await conversation_store.append_event(
@@ -50,7 +57,7 @@ async def delegate_background_task(
             "title": _title(normalized_goal),
             "goal": normalized_goal,
             "priority": normalized_priority,
-            "presentation_policy": normalized_policy,
+            "presentation_policy": task_update_policy,
             "requested_notification": bool(requested_notification),
             "status": task.task.status,
         },

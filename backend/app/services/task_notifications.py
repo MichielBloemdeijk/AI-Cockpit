@@ -14,13 +14,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import NotificationOutbox, PushSubscription, Task, TaskEvent, TaskQuestion
+from app.db.tables import (
+    JarvisLiveEvent,
+    NotificationOutbox,
+    PushSubscription,
+    Task,
+    TaskEvent,
+    TaskPresentation,
+    TaskQuestion,
+)
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )
-NOTIFIABLE_TASK_EVENTS = TERMINAL_TASK_EVENTS | {"task.requires_input", "task.reminder.due"}
+NOTIFIABLE_TASK_EVENTS = TERMINAL_TASK_EVENTS | {
+    "task.progress",
+    "task.requires_input",
+    "task.reminder.due",
+}
 _MAX_RETRY_DELAY_SECONDS = 30.0
 _outbox_tasks: set[asyncio.Task[None]] = set()
+_scheduled_outbox_ids: set[str] = set()
 
 
 def utc_now() -> datetime:
@@ -71,11 +84,13 @@ async def enqueue_task_notification(
         "event_kind": event.event_type,
     }
     dedupe_key = f"task-event:{event.id}"
+    outbox_id = str(uuid4())
     await session.execute(
         sqlite_insert(NotificationOutbox)
         .values(
-            id=str(uuid4()),
+            id=outbox_id,
             task_id=task.id,
+            task_event_id=event.id,
             question_id=question_id,
             event_kind=event.event_type,
             dedupe_key=dedupe_key,
@@ -102,25 +117,24 @@ def payload_for_task_notification(outbox: NotificationOutbox) -> dict[str, Any]:
         "question_id": outbox.question_id,
         "task_title": payload.get("task_title") or "Jarvis update",
         "importance": payload.get("importance") or "normal",
+        "event_kind": outbox.event_kind,
         "summary": payload.get("summary") or "There is a new Jarvis update.",
         "url": outbox.deep_link,
     }
 
 
 async def schedule_task_notification(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
-    if not settings.web_push_enabled or not settings.vapid_private_key:
+    if outbox_id in _scheduled_outbox_ids:
         return
-    async with session_scope() as session:
-        subscription_id = (
-            await session.execute(select(PushSubscription.id).limit(1))
-        ).scalar_one_or_none()
-    if subscription_id is None:
-        return
+    _scheduled_outbox_ids.add(outbox_id)
 
     async def deliver() -> None:
-        if delay_seconds > 0:
-            await asyncio.sleep(delay_seconds)
-        await _send_outbox_by_id(outbox_id)
+        try:
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+            await _send_outbox_by_id(outbox_id)
+        finally:
+            _scheduled_outbox_ids.discard(outbox_id)
 
     task = asyncio.create_task(deliver(), name=f"task-push:{outbox_id}")
     _outbox_tasks.add(task)
@@ -128,33 +142,54 @@ async def schedule_task_notification(outbox_id: str, *, delay_seconds: float = 0
 
 
 async def recover_pending_task_notifications() -> int:
-    if not settings.web_push_enabled:
-        return 0
-    now = utc_now()
     async with session_scope() as session:
         await session.execute(
             update(NotificationOutbox)
             .where(NotificationOutbox.status == "sending")
             .values(status="queued", next_attempt_at=None)
         )
-        rows = list(
-            (
-                await session.execute(
-                    select(NotificationOutbox.id, NotificationOutbox.next_attempt_at)
-                    .where(NotificationOutbox.status.in_(["queued", "failed"]))
-                    .where(NotificationOutbox.attempts < settings.notification_retry_limit)
-                    .order_by(NotificationOutbox.created_at.asc(), NotificationOutbox.id.asc())
-                )
-            ).all()
-        )
-    for outbox_id, next_attempt_at in rows:
-        delay_seconds = 0.0
-        if next_attempt_at is not None:
-            if next_attempt_at.tzinfo is None:
-                next_attempt_at = next_attempt_at.replace(tzinfo=timezone.utc)
-            delay_seconds = max(0.0, (next_attempt_at - now).total_seconds())
-        await schedule_task_notification(outbox_id, delay_seconds=delay_seconds)
+        rows = list((await session.execute(
+            select(NotificationOutbox)
+            .where(NotificationOutbox.status.in_(["queued", "failed"]))
+            .where(NotificationOutbox.attempts < settings.notification_retry_limit)
+        )).scalars().all())
+        for row in rows:
+            row.next_attempt_at = None
+    await route_pending_task_notifications(voice_connected=False)
     return len(rows)
+
+
+async def route_pending_task_notifications(*, voice_connected: bool) -> int:
+    """Release notifications now when away, or after the voice grace period."""
+    now = utc_now()
+    due_ids: list[str] = []
+    async with session_scope() as session:
+        rows = list((await session.execute(
+            select(NotificationOutbox)
+            .where(NotificationOutbox.status.in_(["queued", "failed"]))
+            .where(NotificationOutbox.acknowledged_at.is_(None))
+            .where(NotificationOutbox.attempts < settings.notification_retry_limit)
+            .order_by(NotificationOutbox.created_at.asc(), NotificationOutbox.id.asc())
+        )).scalars().all())
+        for row in rows:
+            created_at = row.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if voice_connected:
+                if row.next_attempt_at is None:
+                    row.next_attempt_at = created_at + timedelta(
+                        seconds=max(0.0, settings.jarvis_notification_grace_seconds)
+                    )
+            elif row.status == "queued" or row.next_attempt_at is None:
+                row.next_attempt_at = now
+            next_attempt = row.next_attempt_at or now
+            if next_attempt.tzinfo is None:
+                next_attempt = next_attempt.replace(tzinfo=timezone.utc)
+            if next_attempt <= now:
+                due_ids.append(row.id)
+    for outbox_id in due_ids:
+        await schedule_task_notification(outbox_id)
+    return len(due_ids)
 
 
 async def _send_outbox_by_id(outbox_id: str) -> None:
@@ -179,13 +214,33 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
         subscriptions = list((await session.execute(select(PushSubscription))).scalars().all())
         if outbox is None:
             return
-        body = json.dumps(payload_for_task_notification(outbox), ensure_ascii=False)
+        notification_payload = payload_for_task_notification(outbox)
+        await session.execute(
+            sqlite_insert(JarvisLiveEvent)
+            .values(
+                id=str(uuid4()),
+                event_type="notification.available",
+                source_domain="notification",
+                source_id=outbox.id,
+                source_sequence=None,
+                payload_json=notification_payload,
+                idempotency_key=f"notification:{outbox.id}",
+            )
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+        )
+        body = json.dumps(notification_payload, ensure_ascii=False)
 
-    if not settings.vapid_private_key or not subscriptions:
+    if (
+        not settings.web_push_enabled
+        or not settings.vapid_private_key
+        or not subscriptions
+    ):
         async with session_scope() as session:
             row = await session.get(NotificationOutbox, outbox_id)
             if row is not None and row.status == "sending":
-                row.status = "queued"
+                row.status = "delivered"
+                row.delivered_at = utc_now()
+                row.last_error = None
         return
 
     successes = 0
@@ -214,7 +269,6 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
             else:
                 transient_errors.append(str(exc)[:1000])
 
-    retry_delay: float | None = None
     async with session_scope() as session:
         for subscription_id in stale_ids:
             stale = await session.get(PushSubscription, subscription_id)
@@ -234,17 +288,14 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
             row.next_attempt_at = utc_now() + timedelta(seconds=retry_delay)
             row.last_error = "; ".join(transient_errors)[:1000]
         else:
-            row.status = "queued"
-            row.next_attempt_at = None
-            row.last_error = "No active Push subscriptions remain."
-
-    if retry_delay is not None:
-        await schedule_task_notification(outbox_id, delay_seconds=retry_delay)
+            row.status = "delivered"
+            row.delivered_at = utc_now()
+            row.last_error = None
 
 
 async def acknowledge_task_notification(delivery_id: str, state: str) -> bool:
-    if state not in {"opened", "spoken"}:
-        raise ValueError("Delivery state must be opened or spoken")
+    if state not in {"opened", "spoken", "snoozed"}:
+        raise ValueError("Delivery state must be opened, spoken, or snoozed")
     async with session_scope() as session:
         row = await session.get(NotificationOutbox, delivery_id)
         if row is None:
@@ -252,9 +303,22 @@ async def acknowledge_task_notification(delivery_id: str, state: str) -> bool:
         if row.acknowledged_at is None:
             row.acknowledged_at = utc_now()
             row.status = "acknowledged"
+            row.acknowledgement_state = state
             payload = dict(row.payload_json or {})
             payload["acknowledgement_state"] = state
             row.payload_json = payload
+            if row.task_event_id:
+                candidates = list((await session.execute(
+                    select(TaskPresentation)
+                    .where(TaskPresentation.source_task_event_id == row.task_event_id)
+                    .where(TaskPresentation.state.in_(["pending", "reserved"]))
+                )).scalars().all())
+                for candidate in candidates:
+                    candidate.state = "acknowledged"
+                    candidate.reserved_session_id = None
+                    candidate.reserved_generation = None
+                    candidate.reserved_at = None
+                    candidate.defer_until = None
         return True
 
 
@@ -264,5 +328,6 @@ __all__ = [
     "enqueue_task_notification",
     "payload_for_task_notification",
     "recover_pending_task_notifications",
+    "route_pending_task_notifications",
     "schedule_task_notification",
 ]

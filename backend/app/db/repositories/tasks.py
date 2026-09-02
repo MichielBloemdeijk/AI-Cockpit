@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.conversations import utc_now
 from app.db.tables import Task, TaskEvent, TaskStatus
+from app.services.task_update_policy import CRITICAL_ONLY
 
 
 class TaskRepository:
@@ -26,7 +27,7 @@ class TaskRepository:
         origin_conversation_id: str | None = None,
         origin_turn_id: str | None = None,
         importance: str = "normal",
-        presentation_policy: str = "natural",
+        presentation_policy: str = CRITICAL_ONLY,
     ) -> Task:
         """Create a task once and return the original task on retries."""
         task_id = str(uuid4())

@@ -11,6 +11,7 @@ from app.db.session import session_scope
 from app.db.tables import ResourceLease
 from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
 from app.services import agent_execution as agent_execution_module
+from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
 
@@ -61,6 +62,7 @@ async def test_deterministic_real_agent_task_completes_through_worker(monkeypatc
 
     assert result.task_id == created.task.id
     assert result.status == "completed"
+    await task_presentation_service.sync_candidates()
     detail = await task_service.get_task(created.task.id)
     assert detail is not None
     assert detail.task.status == "completed"

@@ -24,7 +24,7 @@ async def test_subscription_upsert_is_idempotent_and_deletable() -> None:
 @pytest.mark.asyncio
 async def test_acknowledgement_accepts_only_task_outbox_deliveries() -> None:
     assert await acknowledge_delivery("missing", "opened") is False
-    with pytest.raises(ValueError, match="opened or spoken"):
+    with pytest.raises(ValueError, match="opened, spoken, or snoozed"):
         await acknowledge_delivery("missing", "dismissed")
 
 

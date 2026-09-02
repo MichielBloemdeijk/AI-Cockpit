@@ -19,7 +19,6 @@ from app.db.tables import (
     TaskTarget,
     WorkerInstance,
 )
-from app.services.task_notifications import enqueue_task_notification, schedule_task_notification
 
 
 ACTIVE_WORKER_STATES = {"starting", "idle", "busy"}
@@ -71,7 +70,6 @@ class WorkerCoordinator:
         timestamp = now or utc_now()
         candidate_id = worker_id or str(uuid4())
         cutoff = timestamp - timedelta(seconds=settings.worker_stale_after_seconds)
-        outbox_ids: list[str] = []
         async with session_scope() as session:
             # Inserting the candidate obtains SQLite's writer lock. Competing
             # registrations then observe the committed winner instead of both
@@ -109,13 +107,10 @@ class WorkerCoordinator:
                     stale_worker,
                     timestamp=timestamp,
                 )
-                took_over.extend(task_id for task_id, _outbox_id in reconciled)
-                outbox_ids.extend(outbox_id for _task_id, outbox_id in reconciled)
+                took_over.extend(reconciled)
             candidate.state = "idle"
             candidate.heartbeat_at = timestamp
             registration = WorkerRegistration(worker_id=candidate_id, took_over=tuple(took_over))
-        for outbox_id in outbox_ids:
-            await schedule_task_notification(outbox_id)
         return registration
 
     async def heartbeat(
@@ -434,7 +429,7 @@ class WorkerCoordinator:
         worker: WorkerInstance,
         *,
         timestamp: datetime,
-    ) -> list[tuple[str, str]]:
+    ) -> list[str]:
         attempts_result = await session.execute(
             select(TaskAttempt, Task)
             .join(Task, Task.current_attempt_id == TaskAttempt.id)
@@ -444,7 +439,7 @@ class WorkerCoordinator:
                 Task.status == "running",
             )
         )
-        interrupted: list[tuple[str, str]] = []
+        interrupted: list[str] = []
         repo = TaskRepository(session)
         for attempt, task in attempts_result.all():
             attempt.ended_at = timestamp
@@ -454,16 +449,14 @@ class WorkerCoordinator:
             task.updated_at = timestamp
             task.terminal_summary = "Worker heartbeat was lost; the task was not retried."
             await session.execute(delete(ResourceLease).where(ResourceLease.owner_attempt_id == attempt.id))
-            event = await repo.append_event(
+            await repo.append_event(
                 task_id=task.id,
                 attempt_id=attempt.id,
                 event_type="task.interrupted",
                 payload_json={"status": "interrupted", "reason": "worker_stale", "worker_id": worker.id},
                 idempotency_key=f"task.worker-stale:{attempt.id}",
             )
-            outbox_id = await enqueue_task_notification(session, task=task, event=event)
-            if outbox_id is not None:
-                interrupted.append((task.id, outbox_id))
+            interrupted.append(task.id)
         worker.state = "stale"
         worker.stopped_at = timestamp
         return interrupted

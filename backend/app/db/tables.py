@@ -560,7 +560,7 @@ class Task(Base):
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     importance: Mapped[str] = mapped_column(String(32), nullable=False, default="normal", server_default="normal")
     presentation_policy: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="natural", server_default="natural"
+        String(32), nullable=False, default="critical_only", server_default="critical_only"
     )
     terminal_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     waiting_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -877,6 +877,9 @@ class NotificationOutbox(Base):
     task_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
+    task_event_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_events.id", ondelete="CASCADE"), nullable=True
+    )
     question_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("task_questions.id", ondelete="CASCADE"), nullable=True
     )
@@ -888,6 +891,7 @@ class NotificationOutbox(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledgement_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -946,6 +950,11 @@ Index("ix_worker_instances_heartbeat", WorkerInstance.heartbeat_at)
 Index("ix_task_presentations_state_created", TaskPresentation.state, TaskPresentation.created_at)
 Index("ix_task_presentations_task", TaskPresentation.task_id, TaskPresentation.created_at)
 Index("ix_notification_outbox_status_created", NotificationOutbox.status, NotificationOutbox.created_at)
+Index(
+    "uq_notification_outbox_task_event",
+    NotificationOutbox.task_event_id,
+    unique=True,
+)
 Index("ix_jarvis_live_events_created", JarvisLiveEvent.created_at)
 Index("ix_recall_documents_source", RecallDocument.source_type, RecallDocument.source_id)
 Index("ix_recall_documents_timestamp", RecallDocument.source_timestamp)

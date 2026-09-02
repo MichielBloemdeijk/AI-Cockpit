@@ -65,8 +65,8 @@ async def delete_subscription(subscription_id: str) -> bool:
 
 async def acknowledge_delivery(delivery_id: str, state: str) -> bool:
     normalized = str(state or "").lower()
-    if normalized not in {"opened", "spoken"}:
-        raise ValueError("Delivery state must be opened or spoken")
+    if normalized not in {"opened", "spoken", "snoozed"}:
+        raise ValueError("Delivery state must be opened, spoken, or snoozed")
     return await acknowledge_task_notification(delivery_id, normalized)
 
 

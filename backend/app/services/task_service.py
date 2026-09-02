@@ -22,12 +22,16 @@ from app.db.tables import (
     TaskTarget,
     WorkerInstance,
 )
-from app.services.task_notifications import enqueue_task_notification, schedule_task_notification
+from app.services.task_update_policy import (
+    CRITICAL_ONLY,
+    normalize_task_update_policy,
+)
 
 
 ACTIVE_TASK_STATUSES = {"queued", "running", "waiting_for_input", "waiting_until"}
 TERMINAL_TASK_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
 RETRYABLE_TASK_STATUSES = {"failed", "interrupted", "cancelled"}
+GENERIC_REMINDER_TEXT = "This is your reminder."
 
 
 def utc_now() -> datetime:
@@ -64,27 +68,42 @@ class TaskService:
     async def schedule_reminder(
         self,
         *,
-        text: str,
+        text: str | None,
         due_at: datetime,
         idempotency_key: str,
         origin_conversation_id: str | None = None,
+        allow_duplicate: bool = False,
     ) -> TaskSnapshot:
-        normalized = " ".join(text.split()).strip()
+        requested_text = " ".join(str(text or "").split()).strip()
+        normalized = requested_text or GENERIC_REMINDER_TEXT
         due = due_at if due_at.tzinfo is not None else due_at.replace(tzinfo=timezone.utc)
         due = due.astimezone(timezone.utc)
-        if not normalized:
-            raise ValueError("Reminder text cannot be empty")
         if due <= utc_now():
             raise ValueError("Reminder time must be in the future")
         async with session_scope() as session:
+            if not allow_duplicate:
+                existing_reminders = list((await session.execute(
+                    select(Task)
+                    .where(Task.origin_surface == "jarvis_reminder")
+                    .where(Task.origin_conversation_id == origin_conversation_id)
+                    .where(Task.status == "waiting_until")
+                    .where(Task.resume_at == due)
+                    .order_by(Task.creation_order.asc())
+                )).scalars().all())
+                normalized_key = normalized.casefold()
+                for existing in existing_reminders:
+                    delivery = dict(existing.scheduled_delivery_json or {})
+                    existing_text = " ".join(str(delivery.get("text") or "").split()).strip()
+                    if existing_text.casefold() == normalized_key:
+                        return TaskSnapshot(task=existing, queue_position=None)
             repo = TaskRepository(session)
             task = await repo.dispatch_task(
                 origin_surface="jarvis_reminder",
-                goal=f"Remind me: {normalized}",
+                goal=(f"Remind me: {normalized}" if requested_text else "Reminder"),
                 idempotency_key=idempotency_key,
                 origin_conversation_id=origin_conversation_id,
                 importance="high",
-                presentation_policy="natural",
+                presentation_policy=CRITICAL_ONLY,
             )
             task = await self._lock_task(session, task.id)
             attempt = await self._ensure_attempt(session, task)
@@ -162,12 +181,13 @@ class TaskService:
         origin_conversation_id: str | None = None,
         origin_turn_id: str | None = None,
         importance: str = "normal",
-        presentation_policy: str = "natural",
+        presentation_policy: str = CRITICAL_ONLY,
         targets: tuple[tuple[str, str, bool], ...] = (),
     ) -> TaskSnapshot:
         normalized_goal = " ".join(goal.split()).strip()
         if not normalized_goal:
             raise ValueError("Task goal cannot be empty")
+        normalized_policy = normalize_task_update_policy(presentation_policy)
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await repo.dispatch_task(
@@ -177,7 +197,7 @@ class TaskService:
                 origin_conversation_id=origin_conversation_id,
                 origin_turn_id=origin_turn_id,
                 importance=importance,
-                presentation_policy=presentation_policy,
+                presentation_policy=normalized_policy,
             )
             task = await self._lock_task(session, task.id)
             await self._ensure_targets(session, task.id, targets)
@@ -190,6 +210,22 @@ class TaskService:
                 idempotency_key=f"task.dispatch:{idempotency_key}",
             )
             await session.refresh(task)
+            return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
+
+    async def set_update_policy(self, task_id: str, policy: str) -> TaskSnapshot:
+        normalized_policy = normalize_task_update_policy(policy)
+        async with session_scope() as session:
+            task = await self._lock_task(session, task_id)
+            task.presentation_policy = normalized_policy
+            task.updated_at = utc_now()
+            await TaskRepository(session).append_event(
+                task_id=task.id,
+                attempt_id=task.current_attempt_id,
+                event_type="task.update_policy.changed",
+                payload_json={"presentation_policy": normalized_policy},
+                idempotency_key=f"task.update-policy:{task.id}:{normalized_policy}:{uuid4()}",
+            )
+            await session.flush()
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
 
     async def list_tasks(self, *, statuses: set[str] | None = None) -> list[TaskSnapshot]:
@@ -297,7 +333,6 @@ class TaskService:
             return await self._worker_health(session)
 
     async def cancel(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
-        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -322,19 +357,16 @@ class TaskService:
                 task.terminal_summary = "Task cancelled by user."
                 task.waiting_until = None
                 task.resume_at = None
-                event = await repo.append_event(
+                await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
                     event_type="task.cancelled",
                     payload_json={"status": "cancelled", "summary": task.terminal_summary},
                     idempotency_key=f"task.cancel:{task_id}:{idempotency_key}",
                 )
-                outbox_id = await enqueue_task_notification(session, task=task, event=event)
                 await self._end_current_attempt(session, task, reason="cancelled")
             await session.flush()
             snapshot = TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
-        if outbox_id is not None:
-            await schedule_task_notification(outbox_id)
         return snapshot
 
     async def retry(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
@@ -373,7 +405,6 @@ class TaskService:
         normalized = " ".join(question.split()).strip()
         if not normalized:
             raise ValueError("Task question cannot be empty")
-        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -406,16 +437,8 @@ class TaskService:
             task.status = "waiting_for_input"
             task.updated_at = utc_now()
             await self._end_current_attempt(session, task, reason="waiting_for_input")
-            outbox_id = await enqueue_task_notification(
-                session,
-                task=task,
-                event=event,
-                question=question_row,
-            )
             await session.flush()
             saved_question = question_row
-        if outbox_id is not None:
-            await schedule_task_notification(outbox_id)
         return saved_question
 
     async def answer_question(
@@ -498,7 +521,6 @@ class TaskService:
 
     async def finish_cancellation(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
         """Record that a running attempt observed a requested cancellation."""
-        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -511,19 +533,16 @@ class TaskService:
                 task.finished_at = now
                 task.updated_at = now
                 task.terminal_summary = "Task cancelled by user."
-                event = await repo.append_event(
+                await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
                     event_type="task.cancelled",
                     payload_json={"status": "cancelled", "summary": task.terminal_summary},
                     idempotency_key=event_key,
                 )
-                outbox_id = await enqueue_task_notification(session, task=task, event=event)
                 await self._end_current_attempt(session, task, reason="cancelled")
             await session.flush()
             snapshot = TaskSnapshot(task=task, queue_position=None)
-        if outbox_id is not None:
-            await schedule_task_notification(outbox_id)
         return snapshot
 
     async def complete(
@@ -537,7 +556,6 @@ class TaskService:
         if status not in {"completed", "failed", "interrupted"}:
             raise ValueError(f"Invalid terminal task status: {status}")
         normalized = " ".join(summary.split()).strip()
-        outbox_id: str | None = None
         async with session_scope() as session:
             repo = TaskRepository(session)
             task = await self._lock_task(session, task_id)
@@ -550,19 +568,16 @@ class TaskService:
                 task.terminal_summary = normalized or None
                 task.finished_at = now
                 task.updated_at = now
-                event = await repo.append_event(
+                await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
                     event_type=f"task.{status}",
                     payload_json={"status": status, "summary": normalized},
                     idempotency_key=event_key,
                 )
-                outbox_id = await enqueue_task_notification(session, task=task, event=event)
                 await self._end_current_attempt(session, task, reason=status)
             await session.flush()
             snapshot = TaskSnapshot(task=task, queue_position=None)
-        if outbox_id is not None:
-            await schedule_task_notification(outbox_id)
         return snapshot
 
     async def add_artifact(
@@ -610,39 +625,6 @@ class TaskService:
             artifact.source_task_event_id = event.id
             await session.flush()
             return artifact
-
-    async def enqueue_presentation(
-        self,
-        task_id: str,
-        *,
-        candidate_type: str,
-        coalescing_key: str,
-        idempotency_key: str,
-        importance: str = "normal",
-        source_task_event_id: str | None = None,
-    ) -> TaskPresentation:
-        async with session_scope() as session:
-            await self._lock_task(session, task_id)
-            await session.execute(
-                sqlite_insert(TaskPresentation)
-                .values(
-                    id=str(uuid4()),
-                    task_id=task_id,
-                    candidate_type=candidate_type,
-                    coalescing_key=coalescing_key,
-                    importance=importance,
-                    state="pending",
-                    source_task_event_id=source_task_event_id,
-                    idempotency_key=idempotency_key,
-                )
-                .on_conflict_do_nothing(index_elements=["idempotency_key"])
-            )
-            result = await session.execute(
-                select(TaskPresentation)
-                .where(TaskPresentation.idempotency_key == idempotency_key)
-                .limit(1)
-            )
-            return result.scalar_one()
 
     async def attach_runtime_reference(self, task_id: str, runtime_reference: str) -> None:
         """Link the current attempt to a temporary or durable execution runtime."""

@@ -17,6 +17,7 @@ from app.services.conversation_store import conversation_store
 from app.services.run_supervisor import run_supervisor
 from app.services.task_notifications import recover_pending_task_notifications
 from app.services.reminder_scheduler import reminder_scheduler
+from app.services.jarvis_coordinator import jarvis_coordinator
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -32,9 +33,11 @@ async def lifespan(_: FastAPI):
     await conversation_store.mark_running_runs_interrupted()
     await recover_pending_task_notifications()
     await reminder_scheduler.start()
+    await jarvis_coordinator.start()
     try:
         yield
     finally:
+        await jarvis_coordinator.stop()
         await reminder_scheduler.stop()
         await run_supervisor.stop()
         await close_engine()

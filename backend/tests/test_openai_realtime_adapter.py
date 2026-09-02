@@ -113,7 +113,7 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert session_config["audio"]["input"]["turn_detection"] == {
         "type": "semantic_vad",
         "eagerness": "low",
-        "create_response": True,
+        "create_response": False,
         "interrupt_response": True,
     }
     assert session_config["audio"]["input"]["transcription"]["model"] == "gpt-live-transcribe"
@@ -131,6 +131,7 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
         "list_reminders",
         "snooze_reminder",
         "history_grep",
+        "set_task_update_policy",
         "set_jarvis_voice",
         "start_new_jarvis_log",
         "end_voice_session",
@@ -149,10 +150,9 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
         call_id="call-1",
         output={"ok": True, "result": {"task_id": "task-1"}},
     )
-    assert socket.sent[-4]["item"]["content"][0]["text"] == "Typed continuation"
-    assert socket.sent[-3]["type"] == "response.create"
-    assert socket.sent[-2]["item"]["type"] == "function_call_output"
-    assert socket.sent[-1]["type"] == "response.create"
+    assert socket.sent[-2]["item"]["content"][0]["text"] == "Typed continuation"
+    assert socket.sent[-1]["item"]["type"] == "function_call_output"
+    assert not any(item["type"] == "response.create" for item in socket.sent)
 
     await adapter.close(
         session_id="internal-session",
@@ -319,7 +319,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
 
 
 @pytest.mark.asyncio
-async def test_openai_adapter_uses_out_of_band_timing_and_tracks_presented_facts(
+async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "openai_api_key", "test-secret-key")
@@ -355,55 +355,33 @@ async def test_openai_adapter_uses_out_of_band_timing_and_tracks_presented_facts
         on_event=on_event,
         sdp_offer="offer",
     )
-    facts = ({"schema": "jarvis.task_update.v1", "summary": "The report is complete."},)
-    judgement_task = asyncio.create_task(
-        adapter.judge_presentation_timing(
-            session_id="session-presentations",
-            generation=1,
-            facts=facts,
-        )
-    )
-    await asyncio.sleep(0)
-    timing_request = socket.sent[-1]
-    assert timing_request["response"]["conversation"] == "none"
-    assert timing_request["response"]["output_modalities"] == ["text"]
-    metadata = timing_request["response"]["metadata"]
-    await socket.feed(
+    facts = (
         {
-            "type": "response.created",
-            "event_id": "timing-created",
-            "response": {"id": "timing-response", "metadata": metadata},
-        }
+            "schema": "jarvis.task_update.v1",
+            "summary": "The report is complete.",
+            "required_spoken_phrase": "The report is complete.",
+        },
     )
-    await socket.feed(
-        {
-            "type": "response.done",
-            "event_id": "timing-done",
-            "response": {
-                "id": "timing-response",
-                "status": "completed",
-                "output": [
-                    {
-                        "id": "timing-item",
-                        "type": "message",
-                        "content": [{"type": "output_text", "text": "PRESENT"}],
-                    }
-                ],
-            },
-        }
-    )
-    assert await judgement_task == "PRESENT"
-    assert [event.kind for event in events] == ["ready"]
-
-    await adapter.present_task_updates(
+    await adapter.create_response(
         session_id="session-presentations",
         generation=1,
+        response_kind="user_turn",
         presentation_ids=("presentation-1",),
         facts=facts,
+        context={
+            "tasks": [{"task_id": "task-1", "status": "completed"}],
+            "questions": [],
+            "pending_update_count": 5,
+        },
     )
     presentation_request = socket.sent[-1]
     presentation_metadata = presentation_request["response"]["metadata"]
     assert presentation_request["response"]["output_modalities"] == ["audio"]
+    assert presentation_metadata["jarvis_purpose"] == "user_turn"
+    assert json.loads(presentation_metadata["jarvis_presentation_ids"]) == ["presentation-1"]
+    assert "The report is complete." in presentation_request["response"]["instructions"]
+    assert "completed" in presentation_request["response"]["instructions"]
+    assert "there are 5 updates" in presentation_request["response"]["instructions"]
     await socket.feed(
         {
             "type": "response.created",

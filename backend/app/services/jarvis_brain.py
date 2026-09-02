@@ -20,6 +20,7 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "get_task",
         "answer_task_question",
         "cancel_task",
+        "set_task_update_policy",
         "create_reminder",
         "list_reminders",
         "snooze_reminder",
@@ -60,7 +61,7 @@ class RestrictedBrainGateway:
                 origin_conversation_id=conversation_id,
                 origin_turn_id=origin_turn_id,
                 importance=str(arguments.get("importance") or "normal"),
-                presentation_policy=str(arguments.get("presentation_policy") or "natural"),
+                presentation_policy=str(arguments.get("presentation_policy") or "critical_only"),
                 targets=self._targets(arguments.get("targets")),
                 idempotency_key=f"jarvis-shell:{call_id}:dispatch",
             )
@@ -144,12 +145,25 @@ class RestrictedBrainGateway:
             await natural_task_resolver.touch(task.id)
             return BrainResult(output={"title": task_title(task), "status": snapshot.task.status})
 
+        if tool_name == "set_task_update_policy":
+            task = await self._resolve_task(arguments, mutation=True)
+            snapshot = await task_service.set_update_policy(
+                task.id,
+                str(arguments.get("presentation_policy") or "critical_only"),
+            )
+            await natural_task_resolver.touch(task.id)
+            return BrainResult(output={
+                "title": task_title(task),
+                "presentation_policy": snapshot.task.presentation_policy,
+            })
+
         if tool_name == "create_reminder":
             snapshot = await reminder_scheduler.create(
                 text=str(arguments.get("text") or ""),
                 due_at=self._date_time(arguments.get("due_at")),
                 idempotency_key=f"jarvis-shell:{call_id}:reminder",
                 origin_conversation_id=conversation_id,
+                allow_duplicate=bool(arguments.get("allow_duplicate", False)),
             )
             await natural_task_resolver.touch(snapshot.task.id)
             return BrainResult(output={

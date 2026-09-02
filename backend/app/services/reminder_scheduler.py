@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
-from app.db.tables import RealtimeSession, Task, TaskAttempt
-from app.services.task_notifications import enqueue_task_notification, schedule_task_notification
+from app.db.tables import Task, TaskAttempt
+from app.services.task_presentations import task_presentation_service
 from app.services.task_service import TaskSnapshot, task_service
 
 
@@ -63,8 +63,6 @@ class ReminderScheduler:
         return processed
 
     async def _resume_one(self, task_id: str, *, timestamp: datetime) -> bool:
-        outbox_id: str | None = None
-        presentation: tuple[str, str] | None = None
         async with session_scope() as session:
             task = (await session.execute(
                 select(Task).where(Task.id == task_id).limit(1)
@@ -83,7 +81,7 @@ class ReminderScheduler:
                 task.updated_at = timestamp
                 task.scheduled_delivered_at = timestamp
                 task.terminal_summary = str(delivery.get("text") or task.goal)
-                event = await repo.append_event(
+                await repo.append_event(
                     task_id=task.id,
                     event_type="task.reminder.due",
                     payload_json={
@@ -94,15 +92,6 @@ class ReminderScheduler:
                     },
                     idempotency_key=f"task.reminder.due:{key}",
                 )
-                active_session = (await session.execute(
-                    select(RealtimeSession.id)
-                    .where(RealtimeSession.lifecycle_state.in_(["connecting", "ready"]))
-                    .limit(1)
-                )).scalar_one_or_none()
-                if active_session is None:
-                    outbox_id = await enqueue_task_notification(session, task=task, event=event)
-                else:
-                    presentation = (task.id, event.id)
             else:
                 max_attempt = int((await session.execute(
                     select(func.max(TaskAttempt.attempt_number)).where(TaskAttempt.task_id == task.id)
@@ -127,33 +116,24 @@ class ReminderScheduler:
                     idempotency_key=f"task.resumed:{task.id}:{due.isoformat()}",
                 )
             await session.flush()
-        if outbox_id is not None:
-            await schedule_task_notification(outbox_id)
-        if presentation is not None:
-            presentation_task_id, event_id = presentation
-            await task_service.enqueue_presentation(
-                presentation_task_id,
-                candidate_type="reminder",
-                coalescing_key=f"reminder:{presentation_task_id}",
-                source_task_event_id=event_id,
-                importance="high",
-                idempotency_key=f"reminder-presentation:{event_id}",
-            )
+        await task_presentation_service.sync_candidates()
         return True
 
     async def create(
         self,
         *,
-        text: str,
+        text: str | None,
         due_at: datetime,
         idempotency_key: str,
         origin_conversation_id: str | None = None,
+        allow_duplicate: bool = False,
     ) -> TaskSnapshot:
         return await task_service.schedule_reminder(
             text=text,
             due_at=due_at,
             idempotency_key=idempotency_key,
             origin_conversation_id=origin_conversation_id,
+            allow_duplicate=allow_duplicate,
         )
 
     async def snooze(

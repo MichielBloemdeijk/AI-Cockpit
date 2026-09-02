@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.services.conversation_store import conversation_store
+from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 
 
@@ -163,7 +164,7 @@ async def test_task_trace_is_exposed_without_polluting_conversation_history() ->
         summary="Reviewed the code",
         idempotency_key="trace-progress",
     )
-    artifact = await task_service.add_artifact(
+    await task_service.add_artifact(
         created.task.id,
         artifact_type="result",
         mime_type="text/markdown",
@@ -171,18 +172,12 @@ async def test_task_trace_is_exposed_without_polluting_conversation_history() ->
         content_text="Everything is traceable.",
         idempotency_key="trace-artifact",
     )
-    await task_service.enqueue_presentation(
-        created.task.id,
-        candidate_type="terminal_result",
-        coalescing_key=f"task:{created.task.id}:result",
-        source_task_event_id=artifact.source_task_event_id,
-        idempotency_key="trace-presentation",
-    )
     await task_service.complete(
         created.task.id,
         summary="Report complete",
         idempotency_key="trace-complete",
     )
+    await task_presentation_service.sync_candidates()
 
     assert await conversation_store.list_messages(conversation.id) == []
 
