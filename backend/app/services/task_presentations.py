@@ -69,116 +69,119 @@ class TaskPresentationService:
         This projection can be safely rebuilt after a process restart. Existing
         worker-created terminal candidates are enriched instead of duplicated.
         """
-        created = 0
         async with session_scope() as session:
-            events = list((await session.execute(
-                select(TaskEvent)
-                .where(TaskEvent.event_type.in_([*sorted(PRESENTABLE_EVENT_TYPES), "task.question.answered"]))
-                .order_by(TaskEvent.sequence.asc())
-            )).scalars().all())
-            latest_terminal_sequence = {
-                event.task_id: event.sequence
-                for event in events
-                if PRESENTABLE_EVENT_TYPES.get(event.event_type) == "terminal_result"
-            }
-            for event in events:
-                if event.event_type == "task.question.answered":
-                    continue
-                candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
-                existing = (await session.execute(
+            return await self.sync_candidates_in_session(session)
+
+    async def sync_candidates_in_session(self, session) -> int:
+        """Project candidates inside an existing response-snapshot transaction."""
+        created = 0
+        events = list((await session.execute(
+            select(TaskEvent)
+            .where(TaskEvent.event_type.in_([*sorted(PRESENTABLE_EVENT_TYPES), "task.question.answered"]))
+            .order_by(TaskEvent.sequence.asc())
+        )).scalars().all())
+        latest_terminal_sequence = {
+            event.task_id: event.sequence
+            for event in events
+            if PRESENTABLE_EVENT_TYPES.get(event.event_type) == "terminal_result"
+        }
+        for event in events:
+            if event.event_type == "task.question.answered":
+                continue
+            candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
+            existing = (await session.execute(
+                select(TaskPresentation)
+                .where(TaskPresentation.source_task_event_id == event.id)
+                .limit(1)
+            )).scalar_one_or_none()
+            task = (await session.execute(
+                select(Task).where(Task.id == event.task_id).limit(1)
+            )).scalar_one_or_none()
+            if task is None:
+                continue
+
+            if (
+                candidate_type == "terminal_result"
+                and latest_terminal_sequence.get(task.id) != event.sequence
+            ):
+                if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
+                    existing.state = "superseded"
+                    existing.reserved_session_id = None
+                    existing.reserved_generation = None
+                await self._supersede_notification(session, event.id)
+                continue
+
+            policy = normalize_task_update_policy(task.presentation_policy)
+            if task.presentation_policy != policy:
+                task.presentation_policy = policy
+            if policy == SILENT or (candidate_type == "progress" and policy != FOLLOW_PROGRESS):
+                if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
+                    existing.state = "superseded"
+                    existing.reserved_session_id = None
+                    existing.reserved_generation = None
+                    await self._supersede_notification(session, event.id)
+                continue
+
+            facts = self._facts(event, task)
+            if existing is not None:
+                existing.required_facts_json = facts
+                existing.importance = task.importance
+                await self._ensure_notification(session, task, event)
+                continue
+            if candidate_type == "terminal_result":
+                await self._supersede_progress(session, task.id)
+                existing_terminal = (await session.execute(
                     select(TaskPresentation)
-                    .where(TaskPresentation.source_task_event_id == event.id)
+                    .where(TaskPresentation.task_id == task.id)
+                    .where(TaskPresentation.candidate_type == "terminal_result")
+                    .where(TaskPresentation.state.in_(sorted(UNFINISHED_PRESENTATION_STATES)))
+                    .order_by(TaskPresentation.created_at.desc())
                     .limit(1)
                 )).scalar_one_or_none()
-                task = (await session.execute(
-                    select(Task).where(Task.id == event.task_id).limit(1)
-                )).scalar_one_or_none()
-                if task is None:
-                    continue
-
-                if (
-                    candidate_type == "terminal_result"
-                    and latest_terminal_sequence.get(task.id) != event.sequence
-                ):
-                    if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
-                        existing.state = "superseded"
-                        existing.reserved_session_id = None
-                        existing.reserved_generation = None
-                    await self._supersede_notification(session, event.id)
-                    continue
-
-                policy = normalize_task_update_policy(task.presentation_policy)
-                if task.presentation_policy != policy:
-                    task.presentation_policy = policy
-                if policy == SILENT or (candidate_type == "progress" and policy != FOLLOW_PROGRESS):
-                    if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
-                        existing.state = "superseded"
-                        existing.reserved_session_id = None
-                        existing.reserved_generation = None
-                        await self._supersede_notification(session, event.id)
-                    continue
-
-                facts = self._facts(event, task)
-                if existing is not None:
-                    existing.required_facts_json = facts
-                    existing.importance = task.importance
+                if existing_terminal is not None:
+                    previous_event_id = existing_terminal.source_task_event_id
+                    if previous_event_id and previous_event_id != event.id:
+                        await self._supersede_notification(session, previous_event_id)
+                    existing_terminal.source_task_event_id = event.id
+                    existing_terminal.required_facts_json = facts
+                    existing_terminal.importance = task.importance
                     await self._ensure_notification(session, task, event)
                     continue
-                if candidate_type == "terminal_result":
-                    await self._supersede_progress(session, task.id)
-                    existing_terminal = (await session.execute(
-                        select(TaskPresentation)
-                        .where(TaskPresentation.task_id == task.id)
-                        .where(TaskPresentation.candidate_type == "terminal_result")
-                        .where(TaskPresentation.state.in_(sorted(UNFINISHED_PRESENTATION_STATES)))
-                        .order_by(TaskPresentation.created_at.desc())
-                        .limit(1)
-                    )).scalar_one_or_none()
-                    if existing_terminal is not None:
-                        previous_event_id = existing_terminal.source_task_event_id
-                        if previous_event_id and previous_event_id != event.id:
-                            await self._supersede_notification(session, previous_event_id)
-                        existing_terminal.source_task_event_id = event.id
-                        existing_terminal.required_facts_json = facts
-                        existing_terminal.importance = task.importance
-                        await self._ensure_notification(session, task, event)
-                        continue
-                elif candidate_type == "progress":
-                    terminal = (await session.execute(
-                        select(TaskPresentation.id)
-                        .where(TaskPresentation.task_id == task.id)
-                        .where(TaskPresentation.candidate_type == "terminal_result")
-                        .where(TaskPresentation.state.in_(["pending", "reserved", "presented"]))
-                        .limit(1)
-                    )).scalar_one_or_none()
-                    if terminal is not None:
-                        continue
-                    await self._supersede_progress(session, task.id)
+            elif candidate_type == "progress":
+                terminal = (await session.execute(
+                    select(TaskPresentation.id)
+                    .where(TaskPresentation.task_id == task.id)
+                    .where(TaskPresentation.candidate_type == "terminal_result")
+                    .where(TaskPresentation.state.in_(["pending", "reserved", "presented"]))
+                    .limit(1)
+                )).scalar_one_or_none()
+                if terminal is not None:
+                    continue
+                await self._supersede_progress(session, task.id)
 
-                session.add(
-                    TaskPresentation(
-                        id=str(uuid4()),
-                        task_id=task.id,
-                        candidate_type=candidate_type,
-                        coalescing_key=f"task:{task.id}:{candidate_type}",
-                        importance=task.importance,
-                        state="pending",
-                        source_task_event_id=event.id,
-                        required_facts_json=facts,
-                        idempotency_key=f"task-event-presentation:{event.id}",
-                    )
+            session.add(
+                TaskPresentation(
+                    id=str(uuid4()),
+                    task_id=task.id,
+                    candidate_type=candidate_type,
+                    coalescing_key=f"task:{task.id}:{candidate_type}",
+                    importance=task.importance,
+                    state="pending",
+                    source_task_event_id=event.id,
+                    required_facts_json=facts,
+                    idempotency_key=f"task-event-presentation:{event.id}",
                 )
-                await self._ensure_notification(session, task, event)
-                created += 1
+            )
+            await self._ensure_notification(session, task, event)
+            created += 1
 
-            answered_events = [event for event in events if event.event_type == "task.question.answered"]
-            if answered_events:
-                await self._supersede_answered_questions(session, answered_events)
+        answered_events = [event for event in events if event.event_type == "task.question.answered"]
+        if answered_events:
+            await self._supersede_answered_questions(session, answered_events)
         return created
 
     async def list_pending(self) -> tuple[TaskPresentation, ...]:
         await self.sync_candidates()
-        now = utc_now()
         async with session_scope() as session:
             result = await session.execute(
                 select(TaskPresentation)
@@ -198,41 +201,64 @@ class TaskPresentationService:
         user_owns_floor: bool,
         limit: int = 3,
     ) -> PresentationReservation | None:
-        await self.sync_candidates()
+        async with session_scope() as session:
+            await self.sync_candidates_in_session(session)
+            return await self.reserve_in_session(
+                session,
+                session_id=session_id,
+                generation=generation,
+                user_owns_floor=user_owns_floor,
+                limit=limit,
+            )
+
+    async def reserve_in_session(
+        self,
+        session,
+        *,
+        session_id: str,
+        generation: int,
+        user_owns_floor: bool,
+        limit: int = 3,
+    ) -> PresentationReservation | None:
+        """Reserve pending facts in the same transaction as a situation snapshot."""
         if user_owns_floor:
             return None
+        realtime = await session.get(RealtimeSession, session_id)
+        if (
+            realtime is None
+            or realtime.generation != generation
+            or realtime.lifecycle_state != "ready"
+        ):
+            raise ValueError("Realtime session generation is stale")
+        result = await session.execute(
+            select(TaskPresentation)
+            .where(TaskPresentation.state == "pending")
+            .order_by(
+                TaskPresentation.created_at.asc(),
+                TaskPresentation.id.asc(),
+            )
+        )
+        pending = sorted(result.scalars().all(), key=self._delivery_priority)
+        candidates = pending[:limit]
+        if not candidates:
+            return None
         now = utc_now()
-        async with session_scope() as session:
-            realtime = await session.get(RealtimeSession, session_id)
-            if (
-                realtime is None
-                or realtime.generation != generation
-                or realtime.lifecycle_state != "ready"
-            ):
-                raise ValueError("Realtime session generation is stale")
-            result = await session.execute(
-                select(TaskPresentation)
-                .where(TaskPresentation.state == "pending")
-                .order_by(
-                    TaskPresentation.created_at.asc(),
-                    TaskPresentation.id.asc(),
-                )
-            )
-            pending = sorted(result.scalars().all(), key=self._delivery_priority)
-            candidates = pending[:limit]
-            if not candidates:
-                return None
-            for candidate in candidates:
-                candidate.state = "reserved"
-                candidate.reserved_session_id = session_id
-                candidate.reserved_generation = generation
-                candidate.reserved_at = now
-                candidate.updated_at = now
-            return PresentationReservation(
-                presentation_ids=tuple(item.id for item in candidates),
-                facts=tuple(dict(item.required_facts_json or {}) for item in candidates),
-                total_pending=len(pending),
-            )
+        facts: list[dict] = []
+        for candidate in candidates:
+            candidate.state = "reserved"
+            candidate.reserved_session_id = session_id
+            candidate.reserved_generation = generation
+            candidate.reserved_at = now
+            candidate.updated_at = now
+            fact = dict(candidate.required_facts_json or {})
+            if candidate.last_error == "contradictory_spoken_delivery":
+                fact["delivery"] = {"correction_required": True}
+            facts.append(fact)
+        return PresentationReservation(
+            presentation_ids=tuple(item.id for item in candidates),
+            facts=tuple(facts),
+            total_pending=len(pending),
+        )
 
     async def mark_presented(
         self,
@@ -273,8 +299,9 @@ class TaskPresentationService:
         turn_id: str | None,
         delivery_id: str | None,
         heard_transcript: str,
+        response_kind: str | None = None,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Acknowledge only facts whose required phrase was actually heard."""
+        """Acknowledge only complete, non-contradictory speech of required facts."""
         now = utc_now()
         normalized_heard = self._normalize_spoken_text(heard_transcript)
         delivered: list[str] = []
@@ -293,15 +320,23 @@ class TaskPresentationService:
                 phrase = str(
                     (candidate.required_facts_json or {}).get("required_spoken_phrase") or ""
                 ).strip()
-                phrase_heard = bool(
-                    phrase
-                    and self._normalize_spoken_text(phrase) in normalized_heard
+                normalized_phrase = self._normalize_spoken_text(phrase)
+                delivery_error = self._delivery_error(
+                    facts=dict(candidate.required_facts_json or {}),
+                    normalized_heard=normalized_heard,
+                    normalized_phrase=normalized_phrase,
+                    require_exact=(
+                        response_kind == "task_update"
+                        and len(presentation_ids) == 1
+                        and candidate.candidate_type == "reminder"
+                    ),
                 )
-                if phrase_heard:
+                if delivery_error is None:
                     candidate.state = "presented"
                     candidate.presented_turn_id = turn_id
                     candidate.presented_delivery_id = delivery_id
                     candidate.presented_at = now
+                    candidate.last_error = None
                     delivered.append(candidate.id)
                     if candidate.source_task_event_id:
                         rows = list((await session.execute(
@@ -317,7 +352,7 @@ class TaskPresentationService:
                 else:
                     candidate.state = "pending"
                     candidate.retry_count += 1
-                    candidate.last_error = "required_spoken_phrase_not_heard"
+                    candidate.last_error = delivery_error
                     requeued.append(candidate.id)
                 candidate.reserved_session_id = None
                 candidate.reserved_generation = None
@@ -520,6 +555,48 @@ class TaskPresentationService:
     @staticmethod
     def _normalize_spoken_text(value: str) -> str:
         return " ".join(re.sub(r"[^\w]+", " ", str(value or "").casefold()).split())
+
+    @staticmethod
+    def _delivery_error(
+        *,
+        facts: dict,
+        normalized_heard: str,
+        normalized_phrase: str,
+        require_exact: bool,
+    ) -> str | None:
+        if not normalized_phrase or normalized_phrase not in normalized_heard:
+            return "required_spoken_phrase_not_heard"
+        if require_exact and normalized_heard != normalized_phrase:
+            return "proactive_reminder_not_exact"
+
+        remainder = normalized_heard.replace(normalized_phrase, " ", 1)
+        event_type = str(facts.get("event_type") or "")
+        contradictory_phrases = {
+            "task.reminder.due": (
+                "queued", "scheduled", "will remind", "not due", "still waiting",
+            ),
+            "task.completed": (
+                "still queued", "still running", "not complete", "not completed",
+                "not finished", "has not started", "hasn t started", "is waiting",
+            ),
+            "task.failed": (
+                "completed successfully", "is complete", "succeeded", "still running",
+                "still queued",
+            ),
+            "task.interrupted": (
+                "completed successfully", "is complete", "still running", "still queued",
+            ),
+            "task.cancelled": (
+                "still running", "still queued", "will continue", "not cancelled",
+            ),
+            "task.requires_input": (
+                "no input needed", "does not need your input", "doesn t need your input",
+            ),
+        }.get(event_type, ())
+        padded_remainder = f" {remainder} "
+        if any(f" {phrase} " in padded_remainder for phrase in contradictory_phrases):
+            return "contradictory_spoken_delivery"
+        return None
 
     @staticmethod
     def _delivery_priority(candidate: TaskPresentation) -> tuple[int, datetime, str]:

@@ -411,6 +411,39 @@ async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
     delivery = next(event for event in events if event.kind == "assistant_response")
     assert delivery.payload["presentation_ids"] == ["presentation-1"]
     assert delivery.payload["transcript"] == "The report is complete."
+    assert delivery.payload["response_kind"] == "user_turn"
+
+    reminder_facts = (
+        {
+            "schema": "jarvis.task_update.v1",
+            "event_type": "task.reminder.due",
+            "required_spoken_phrase": "Reminder: take a break.",
+        },
+    )
+    await adapter.create_response(
+        session_id="session-presentations",
+        generation=1,
+        response_kind="task_update",
+        presentation_ids=("reminder-presentation",),
+        facts=reminder_facts,
+        context={
+            "dialogue": [{"role": "assistant", "content": "Stale queued confirmation"}],
+            "conversation_summary": "Stale history must not leak.",
+            "pending_update_count": 1,
+        },
+    )
+    proactive = socket.sent[-1]["response"]
+    assert proactive["conversation"] == "none"
+    assert proactive["tools"] == []
+    assert proactive["tool_choice"] == "none"
+    assert proactive["max_output_tokens"] == 80
+    assert proactive["input"][0]["role"] == "user"
+    proactive_input = proactive["input"][0]["content"][0]["text"]
+    assert "Reminder: take a break." in proactive_input
+    assert "Stale queued confirmation" not in proactive_input
+    assert "Stale history must not leak" not in proactive["instructions"]
+    assert "Say exactly" in proactive["instructions"]
+    assert "Do not call tools" in proactive["instructions"]
     await adapter.close(session_id="session-presentations", generation=1, reason="done")
 
 

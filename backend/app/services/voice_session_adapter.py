@@ -153,7 +153,7 @@ class FakeVoiceSessionAdapter:
             event=VoiceProviderEvent(
                 event_id=f"{response_id}:generating",
                 kind="assistant_generating",
-                payload={"response_id": response_id},
+                payload={"response_id": response_id, "response_kind": response_kind},
             ),
         )
         normalized = "" if pending_text is None else pending_text[1].strip()
@@ -171,11 +171,14 @@ class FakeVoiceSessionAdapter:
                         "name": "dispatch_task",
                         "arguments": {"goal": goal},
                         "presentation_ids": list(presentation_ids),
+                        "response_kind": response_kind,
                     },
                 ),
             )
             return
-        if pending_tool is not None:
+        if response_kind == "task_update":
+            transcript = ""
+        elif pending_tool is not None:
             transcript = "I've started that in the background."
         elif normalized:
             transcript = f"I heard: {normalized}"
@@ -197,6 +200,7 @@ class FakeVoiceSessionAdapter:
                     "item_id": f"{response_id}:item",
                     "transcript": transcript,
                     "presentation_ids": list(presentation_ids),
+                    "response_kind": response_kind,
                 },
             ),
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -143,6 +143,8 @@ class JarvisCoordinator:
     async def _run_delivery_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             voice_connected = False
+            voice_floor_held = False
+            stale_voice_floor = False
             try:
                 await task_presentation_service.sync_candidates()
                 active = await self.get_active_session()
@@ -153,6 +155,24 @@ class JarvisCoordinator:
                         generation=active.generation,
                     )
                     if voice_connected:
+                        async with session_scope() as session:
+                            floor, floor_at = await self._floor_observation(session, active.id)
+                        busy_floor = floor in {
+                            "user_speaking", "assistant_speaking", "thinking", "connecting"
+                        }
+                        if busy_floor and floor_at is not None:
+                            observed_at = (
+                                floor_at
+                                if floor_at.tzinfo is not None
+                                else floor_at.replace(tzinfo=timezone.utc)
+                            )
+                            stale_voice_floor = observed_at <= utc_now() - timedelta(
+                                seconds=max(
+                                    0.0,
+                                    settings.jarvis_notification_floor_stale_seconds,
+                                )
+                            )
+                        voice_floor_held = busy_floor and not stale_voice_floor
                         pending = await task_presentation_service.list_pending()
                         if pending:
                             await self._queue_controlled_response(
@@ -167,7 +187,10 @@ class JarvisCoordinator:
                 # Durable candidates remain pending; the next poll retries them.
                 await runtime_health_service.failed("response_arbiter", exc)
             try:
-                await route_pending_task_notifications(voice_connected=voice_connected)
+                await route_pending_task_notifications(
+                    voice_connected=voice_connected and not stale_voice_floor,
+                    voice_floor_held=voice_floor_held,
+                )
                 await runtime_health_service.healthy("notification_router")
             except asyncio.CancelledError:
                 raise
@@ -243,37 +266,42 @@ class JarvisCoordinator:
             gate.pending.add(reason)
             if gate.inflight:
                 return
+            selected_reason = min(
+                gate.pending,
+                key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
+            )
             async with session_scope() as session:
                 realtime = await self._require_current_generation(session, session_id, generation)
                 floor = await self._floor_state(session, session_id)
                 adapter = get_voice_session_adapter(realtime.provider_adapter)
                 if not adapter.is_connected(session_id=session_id, generation=generation):
                     return
-            selected_reason = min(
-                gate.pending,
-                key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
-            )
-            if floor in {"user_speaking", "assistant_speaking", "connecting", "text_fallback"}:
-                return
-            if selected_reason == "task_update" and floor != "listening":
-                return
+                if floor in {"user_speaking", "assistant_speaking", "connecting", "text_fallback"}:
+                    return
+                if selected_reason == "task_update" and floor != "listening":
+                    return
 
-            context = await self.context(session_id)
-            if context is None:
-                return
-            reservation = await task_presentation_service.reserve(
-                session_id=session_id,
-                generation=generation,
-                user_owns_floor=False,
-                limit=3,
-            )
-            if selected_reason == "task_update" and reservation is None:
+                await task_presentation_service.sync_candidates_in_session(session)
+                projected = await jarvis_situation_projector.project_in_session(
+                    session,
+                    conversation_id=realtime.conversation_id,
+                    session_id=session_id,
+                )
+                context = projected.payload
+                reservation = await task_presentation_service.reserve_in_session(
+                    session,
+                    session_id=session_id,
+                    generation=generation,
+                    user_owns_floor=False,
+                    limit=3,
+                )
+                if selected_reason == "task_update" and reservation is None:
+                    gate.pending.discard(selected_reason)
+                    return
+                if reservation is not None:
+                    context["pending_update_count"] = reservation.total_pending
                 gate.pending.discard(selected_reason)
-                return
-            if reservation is not None:
-                context["pending_update_count"] = reservation.total_pending
-            gate.pending.discard(selected_reason)
-            gate.inflight = True
+                gate.inflight = True
 
         presentation_ids = () if reservation is None else reservation.presentation_ids
         facts = () if reservation is None else reservation.facts
@@ -516,7 +544,7 @@ class JarvisCoordinator:
         event: VoiceProviderEvent,
     ) -> None:
         shell_call: tuple[str, dict[str, Any], str] | None = None
-        presentation_action: tuple[tuple[str, ...], DeliveryRecord, str] | None = None
+        presentation_action: tuple[tuple[str, ...], DeliveryRecord, str, str] | None = None
         requeue_presentations: tuple[str, ...] = ()
         release_reservations = False
         response_finished = False
@@ -568,7 +596,12 @@ class JarvisCoordinator:
                         or (payload.get("transcript") if delivery.state == "completed" else "")
                         or ""
                     )
-                    presentation_action = (presentation_ids, delivery, heard_transcript)
+                    presentation_action = (
+                        presentation_ids,
+                        delivery,
+                        heard_transcript,
+                        str(payload.get("response_kind") or ""),
+                    )
             elif event.kind == "shell_call":
                 response_finished = True
                 tool_name = str(payload.get("name") or "")
@@ -583,7 +616,7 @@ class JarvisCoordinator:
                 )
 
         if presentation_action is not None:
-            presentation_ids, delivery, heard_transcript = presentation_action
+            presentation_ids, delivery, heard_transcript, response_kind = presentation_action
             await task_presentation_service.settle_delivery(
                 presentation_ids=presentation_ids,
                 session_id=session_id,
@@ -591,6 +624,7 @@ class JarvisCoordinator:
                 turn_id=delivery.turn_id,
                 delivery_id=delivery.id,
                 heard_transcript=heard_transcript,
+                response_kind=response_kind,
             )
 
         if requeue_presentations:
@@ -991,30 +1025,40 @@ class JarvisCoordinator:
 
     @staticmethod
     async def _floor_state(session, session_id: str) -> str:
-        event_types = list((await session.execute(
-            select(VoiceSessionEvent.event_type)
+        floor, _observed_at = await JarvisCoordinator._floor_observation(session, session_id)
+        return floor
+
+    @staticmethod
+    async def _floor_observation(
+        session,
+        session_id: str,
+    ) -> tuple[str, datetime | None]:
+        events = list((await session.execute(
+            select(VoiceSessionEvent)
             .where(VoiceSessionEvent.session_id == session_id)
             .order_by(VoiceSessionEvent.sequence.desc())
             .limit(50)
         )).scalars().all())
-        for index, event_type in enumerate(event_types):
+        for index, event in enumerate(events):
+            event_type = event.event_type
             if event_type == "provider.event.ignored":
                 continue
             if event_type.startswith("provider."):
                 provider_kind = event_type.removeprefix("provider.")
                 if provider_kind in {"assistant_response", "assistant_interrupted"}:
-                    for older_event_type in event_types[index + 1 :]:
+                    for older_event in events[index + 1 :]:
+                        older_event_type = older_event.event_type
                         older_kind = older_event_type.removeprefix("provider.")
                         if older_kind in {"user_speaking", "user_transcript_delta"}:
-                            return "user_speaking"
+                            return "user_speaking", older_event.created_at
                         if older_kind in {"user_stopped", "user_transcript"}:
                             break
-                return FLOOR_EVENT_TYPES.get(provider_kind, "thinking")
+                return FLOOR_EVENT_TYPES.get(provider_kind, "thinking"), event.created_at
             if event_type == "session.connecting":
-                return "connecting"
+                return "connecting", event.created_at
             if event_type == "session.superseded":
-                return "text_fallback"
-        return "thinking"
+                return "text_fallback", event.created_at
+        return "thinking", None
 
     @staticmethod
     async def _is_late_delivery_state(session, realtime: RealtimeSession, event: VoiceProviderEvent) -> bool:

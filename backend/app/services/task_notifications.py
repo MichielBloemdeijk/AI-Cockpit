@@ -159,8 +159,12 @@ async def recover_pending_task_notifications() -> int:
     return len(rows)
 
 
-async def route_pending_task_notifications(*, voice_connected: bool) -> int:
-    """Release notifications now when away, or after the voice grace period."""
+async def route_pending_task_notifications(
+    *,
+    voice_connected: bool,
+    voice_floor_held: bool = False,
+) -> int:
+    """Hold during legitimate speech, then apply the voice-delivery grace."""
     now = utc_now()
     due_ids: list[str] = []
     async with session_scope() as session:
@@ -172,12 +176,12 @@ async def route_pending_task_notifications(*, voice_connected: bool) -> int:
             .order_by(NotificationOutbox.created_at.asc(), NotificationOutbox.id.asc())
         )).scalars().all())
         for row in rows:
-            created_at = row.created_at
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
+            if voice_connected and voice_floor_held:
+                row.next_attempt_at = None
+                continue
             if voice_connected:
                 if row.next_attempt_at is None:
-                    row.next_attempt_at = created_at + timedelta(
+                    row.next_attempt_at = now + timedelta(
                         seconds=max(0.0, settings.jarvis_notification_grace_seconds)
                     )
             elif row.status == "queued" or row.next_attempt_at is None:

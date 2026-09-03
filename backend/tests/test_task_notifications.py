@@ -237,8 +237,22 @@ async def test_connected_voice_holds_fallback_until_disconnect(
 
     monkeypatch.setattr(task_notifications.settings, "jarvis_notification_grace_seconds", 8.0)
     monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
-    assert await task_notifications.route_pending_task_notifications(voice_connected=True) == 0
+    assert await task_notifications.route_pending_task_notifications(
+        voice_connected=True,
+        voice_floor_held=True,
+    ) == 0
     assert scheduled == []
+    async with session_scope() as session:
+        held = await session.get(NotificationOutbox, row.id)
+        assert held is not None and held.next_attempt_at is None
+
+    assert await task_notifications.route_pending_task_notifications(
+        voice_connected=True,
+        voice_floor_held=False,
+    ) == 0
+    async with session_scope() as session:
+        eligible = await session.get(NotificationOutbox, row.id)
+        assert eligible is not None and eligible.next_attempt_at is not None
     assert await task_notifications.route_pending_task_notifications(voice_connected=False) == 1
     assert scheduled == [(row.id, 0.0)]
 

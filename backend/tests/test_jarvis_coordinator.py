@@ -8,9 +8,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import JarvisLiveEvent, NotificationOutbox, SpeechDelivery
+from app.db.tables import JarvisLiveEvent, NotificationOutbox, SpeechDelivery, VoiceSessionEvent
 from app.main import app
+from app.services import task_notifications
 from app.services.conversation_store import conversation_store
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.reminder_scheduler import reminder_scheduler
@@ -397,6 +399,89 @@ async def test_interrupted_update_is_requeued_until_required_phrase_is_heard() -
 
 
 @pytest.mark.asyncio
+async def test_contradictory_reminder_speech_is_requeued_and_corrected() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Set a reminder",
+        idempotency_key="contradiction-origin",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    due = datetime.now(timezone.utc) + timedelta(seconds=1)
+    reminder = await reminder_scheduler.create(
+        text="check the oven",
+        due_at=due,
+        idempotency_key="contradiction-reminder",
+        origin_conversation_id=accepted.conversation.id,
+    )
+    assert await reminder_scheduler.run_due(now=due + timedelta(seconds=1)) == 1
+    reservation = await task_presentation_service.reserve(
+        session_id=session.id,
+        generation=session.generation,
+        user_owns_floor=False,
+    )
+    assert reservation is not None
+    phrase = reservation.facts[0]["required_spoken_phrase"]
+
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="contradictory-reminder-delivery",
+            kind="assistant_response",
+            payload={
+                "response_id": "contradictory-reminder-response",
+                "item_id": "contradictory-reminder-item",
+                "transcript": f"{phrase} It's queued.",
+                "presentation_ids": list(reservation.presentation_ids),
+                "response_kind": "user_turn",
+            },
+        ),
+    )
+
+    rejected = await task_service.get_task(reminder.task.id)
+    assert rejected is not None
+    candidate = rejected.presentations[0]
+    assert candidate.state == "pending"
+    assert candidate.last_error == "contradictory_spoken_delivery"
+    async with session_scope() as db:
+        outbox = (await db.execute(
+            select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
+        )).scalar_one()
+        assert outbox.acknowledged_at is None
+
+    correction = await task_presentation_service.reserve(
+        session_id=session.id,
+        generation=session.generation,
+        user_owns_floor=False,
+    )
+    assert correction is not None
+    assert correction.facts[0]["delivery"] == {"correction_required": True}
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="corrected-reminder-delivery",
+            kind="assistant_response",
+            payload={
+                "response_id": "corrected-reminder-response",
+                "item_id": "corrected-reminder-item",
+                "transcript": phrase,
+                "presentation_ids": list(correction.presentation_ids),
+                "response_kind": "task_update",
+            },
+        ),
+    )
+    corrected = await task_service.get_task(reminder.task.id)
+    assert corrected is not None and corrected.presentations[0].state == "presented"
+    async with session_scope() as db:
+        outbox = (await db.execute(
+            select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
+        )).scalar_one()
+        assert outbox.status == "acknowledged"
+        assert outbox.acknowledgement_state == "spoken"
+
+
+@pytest.mark.asyncio
 async def test_interruption_does_not_release_the_floor_while_user_is_speaking() -> None:
     accepted = await jarvis_coordinator.accept_text_turn("Start", idempotency_key="floor-origin")
     session = await jarvis_coordinator.get_active_session()
@@ -450,6 +535,64 @@ async def test_interruption_does_not_release_the_floor_while_user_is_speaking() 
     )
     delivered = await task_service.get_task(task.task.id)
     assert delivered is not None and delivered.presentations[0].state == "presented"
+
+
+@pytest.mark.asyncio
+async def test_stale_busy_floor_releases_notification_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Start",
+        idempotency_key="stale-floor-origin",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(event_id="stale-floor-user-started", kind="user_speaking"),
+    )
+    task = await task_service.dispatch(
+        goal="Finish while the voice floor stalls",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        idempotency_key="stale-floor-task",
+    )
+    await task_service.complete(
+        task.task.id,
+        summary="The stalled-floor result is ready.",
+        idempotency_key="stale-floor-complete",
+    )
+    await task_presentation_service.sync_candidates()
+    async with session_scope() as db:
+        floor_event = (await db.execute(
+            select(VoiceSessionEvent)
+            .where(VoiceSessionEvent.session_id == session.id)
+            .where(VoiceSessionEvent.event_type == "provider.user_speaking")
+        )).scalar_one()
+        floor_event.created_at = datetime.now(timezone.utc) - timedelta(seconds=31)
+        outbox = (await db.execute(
+            select(NotificationOutbox).where(NotificationOutbox.task_id == task.task.id)
+        )).scalar_one()
+        outbox_id = outbox.id
+
+    scheduled: list[str] = []
+
+    async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
+        scheduled.append(outbox_id)
+
+    monkeypatch.setattr(settings, "jarvis_update_poll_seconds", 0.01)
+    monkeypatch.setattr(settings, "jarvis_notification_floor_stale_seconds", 30.0)
+    monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
+    await jarvis_coordinator.start()
+    try:
+        await asyncio.sleep(0.08)
+    finally:
+        await jarvis_coordinator.stop()
+
+    assert outbox_id in scheduled
+    detail = await task_service.get_task(task.task.id)
+    assert detail is not None and detail.presentations[0].state == "pending"
 
 
 @pytest.mark.asyncio
