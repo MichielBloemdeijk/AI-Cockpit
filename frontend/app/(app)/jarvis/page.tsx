@@ -69,6 +69,7 @@ import { useConversationAutoScroll } from "@/lib/conversation-auto-scroll";
 import { classifyJarvisAddress } from "@/lib/jarvis-address-detection";
 import {
   mergeProvisionalTranscript,
+  provisionalTranscriptIsPersisted,
   type ProvisionalTranscript,
 } from "@/lib/jarvis-transcript-state";
 import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
@@ -144,11 +145,22 @@ export default function JarvisPage() {
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const liveCursorRef = useRef(0);
   const pendingWakeAddressRef = useRef<{ wakeScore: number; detectedAt: number } | null>(null);
+  const newestMessageIdRef = useRef<string | null>(null);
   const currentConversationId = state?.current_log?.id ?? null;
   const currentMessages = state?.current_log?.messages ?? [];
   const newestMessageId = currentMessages.length
     ? currentMessages[currentMessages.length - 1].id
     : null;
+  const provisionalUserPersisted = provisionalTranscriptIsPersisted(
+    currentMessages,
+    provisionalUser,
+    "user",
+  );
+  const provisionalAssistantPersisted = provisionalTranscriptIsPersisted(
+    currentMessages,
+    provisionalAssistant,
+    "assistant",
+  );
 
   useConversationAutoScroll(
     conversationScrollRef,
@@ -158,10 +170,19 @@ export default function JarvisPage() {
   );
 
   useEffect(() => {
+    newestMessageIdRef.current = newestMessageId;
+  }, [newestMessageId]);
+
+  useEffect(() => {
     if (!provisionalUser?.text && !provisionalAssistant?.text) return;
     const viewport = conversationScrollRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
   }, [provisionalAssistant?.text, provisionalUser?.text]);
+
+  useEffect(() => {
+    if (provisionalUserPersisted) setProvisionalUser(null);
+    if (provisionalAssistantPersisted) setProvisionalAssistant(null);
+  }, [provisionalAssistantPersisted, provisionalUserPersisted]);
 
   const setLiveStreams = useCallback((next: JarvisLiveStreamState) => {
     streamsRef.current = next;
@@ -244,23 +265,27 @@ export default function JarvisPage() {
           setProvisionalUser((current) => mergeProvisionalTranscript(current, {
             id: String(event.item_id ?? "live-user"),
             delta: String(event.delta ?? ""),
+            afterMessageId: newestMessageIdRef.current,
           }));
         } else if (eventType === "conversation.item.input_audio_transcription.completed") {
           setProvisionalUser((current) => mergeProvisionalTranscript(current, {
             id: String(event.item_id ?? current?.id ?? "live-user"),
             transcript: String(event.transcript ?? ""),
             replace: true,
+            afterMessageId: newestMessageIdRef.current,
           }));
         } else if (["response.output_audio_transcript.delta", "response.output_text.delta"].includes(eventType)) {
           setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
             id: String(event.response_id ?? event.item_id ?? "assistant-live"),
             delta: String(event.delta ?? ""),
+            afterMessageId: newestMessageIdRef.current,
           }));
         } else if (["response.output_audio_transcript.done", "response.output_text.done"].includes(eventType)) {
           setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
             id: String(event.response_id ?? event.item_id ?? current?.id ?? "assistant-live"),
             transcript: String(event.transcript ?? event.text ?? ""),
             replace: true,
+            afterMessageId: newestMessageIdRef.current,
           }));
         }
       },
@@ -343,6 +368,7 @@ export default function JarvisPage() {
           setProvisionalUser((current) => mergeProvisionalTranscript(current, {
             id: String(event.payload?.item_id ?? "live-user"),
             transcript: String(event.payload?.transcript ?? ""),
+            afterMessageId: newestMessageIdRef.current,
           }));
           return;
         }
@@ -369,6 +395,7 @@ export default function JarvisPage() {
             id: itemId,
             transcript: String(event.payload?.transcript ?? ""),
             replace: true,
+            afterMessageId: newestMessageIdRef.current,
           }));
           void refresh().finally(() => setProvisionalUser((current) => (
             current?.id === itemId ? null : current
@@ -380,6 +407,7 @@ export default function JarvisPage() {
           setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
             id: responseId,
             transcript: String(event.payload?.transcript ?? ""),
+            afterMessageId: newestMessageIdRef.current,
           }));
           return;
         }
@@ -718,7 +746,7 @@ export default function JarvisPage() {
                   }}
                 />
               ))}
-              {provisionalUser?.text && (
+              {provisionalUser?.text && !provisionalUserPersisted && (
                 <ChatMessage
                   key={`provisional-user-${provisionalUser.id}`}
                   message={{
@@ -733,7 +761,7 @@ export default function JarvisPage() {
                   }}
                 />
               )}
-              {provisionalAssistant?.text && (
+              {provisionalAssistant?.text && !provisionalAssistantPersisted && (
                 <ChatMessage
                   key={`provisional-${provisionalAssistant.id}`}
                   message={{

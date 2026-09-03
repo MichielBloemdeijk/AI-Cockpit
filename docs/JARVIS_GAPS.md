@@ -62,6 +62,9 @@ The 2026-09-02 production log provides the regression scenario:
 - User and assistant transcript deltas are streamed through resumable live
   events and rendered provisionally in the Jarvis page. Verify ordering,
   replacement, and interruption behavior on the Pixel browser and Android app.
+- Provisional transcript bubbles are now reconciled against durable messages
+  created after that provider item began, preventing the reminder-completion
+  race from briefly rendering the same message twice. Verify on the Pixel.
 - The phone layout uses a compact arm/sleep toggle and reduced conversation
   height. Verify that the listening banner, keyboard, composer, and safe-area
   insets require no page scrolling on the Pixel.
