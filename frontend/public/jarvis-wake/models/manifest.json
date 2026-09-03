@@ -1,10 +1,10 @@
 {
   "schema": "jarvis.wake_models.v1",
-  "installed_at": "2026-08-30T09:37:39.903Z",
+  "installed_at": "2026-09-03T14:55:27.785Z",
   "hey_buddy_model_revision": "68a13d58e216e8e4837559ae665ca3e9769b41c2",
   "wake_model": {
     "phrase": "jarvis",
-    "version": "jarvis-en-phase9-pass1-20260829",
+    "version": "jarvis-en-personal-v1r-20260903",
     "training_record": "docs/JARVIS_WAKE_MODEL.md"
   },
   "assets": [
@@ -28,9 +28,9 @@
     },
     {
       "name": "jarvis.onnx",
-      "sha256": "de9240d6cc080e2900abcd8e34c72d877f453052f43ae1bce6cc5a50e5567c10",
+      "sha256": "ccf08b70f827ee33a5b55bad160bee796715929ede8390742d562d795575cf23",
       "source": "local-training-artifact",
-      "source_name": "jarvis-en-phase9-pass1-20260829.onnx",
+      "source_name": "jarvis-en-personal-v1r-20260903.onnx",
       "bytes": 1031919
     }
   ]
