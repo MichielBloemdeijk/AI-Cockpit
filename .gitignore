@@ -41,6 +41,7 @@ out/
 
 # Local runtime data
 .cockpit/
+.local/
 backend/data/
 backend/chroma_data/
 backend/models/
