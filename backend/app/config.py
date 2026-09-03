@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     openai_realtime_transcript_margin_ms: int = 250
     jarvis_update_poll_seconds: float = 0.2
     jarvis_notification_grace_seconds: float = 8.0
+    jarvis_component_stale_after_seconds: float = 5.0
+    jarvis_watchdog_poll_seconds: float = 1.0
 
     # Local OpenAI-compatible model server (for example llama.cpp)
     local_llm_enabled: bool = True

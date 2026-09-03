@@ -106,6 +106,7 @@ class ConversationLifecycle(str, Enum):
 
 class TaskStatus(str, Enum):
     queued = "queued"
+    waiting_for_worker = "waiting_for_worker"
     running = "running"
     waiting_for_input = "waiting_for_input"
     waiting_until = "waiting_until"
@@ -341,6 +342,8 @@ class JarvisState(Base):
     jarvis_day_key: Mapped[date | None] = mapped_column(Date(), nullable=True)
     jarvis_day_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    situation_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    conversation_summary: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     focused_task_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
@@ -539,7 +542,7 @@ class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'running', 'waiting_for_input', 'waiting_until', 'completed', "
+            "status IN ('queued', 'waiting_for_worker', 'running', 'waiting_for_input', 'waiting_until', 'completed', "
             "'failed', 'interrupted', 'cancelled')",
             name="ck_tasks_status",
         ),
@@ -558,6 +561,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default=TaskStatus.queued.value, server_default="queued"
     )
+    status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     current_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -684,6 +688,23 @@ class WorkerInstance(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RuntimeComponentHealth(Base):
+    """Durable liveness and failure state for Jarvis runtime components."""
+
+    __tablename__ = "runtime_component_health"
+
+    component: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class TaskAttempt(Base):

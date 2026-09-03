@@ -43,6 +43,7 @@ def _summary(task: Task, queue_position: int | None) -> TaskSummaryView:
         origin_turn_id=task.origin_turn_id,
         goal=task.goal,
         status=task.status,
+        status_reason=task.status_reason,
         creation_order=task.creation_order,
         current_attempt_id=task.current_attempt_id,
         cancellation_requested_at=task.cancellation_requested_at,

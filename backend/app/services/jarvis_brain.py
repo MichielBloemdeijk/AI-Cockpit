@@ -83,6 +83,7 @@ class RestrictedBrainGateway:
                 "accepted": True,
                 "title": task_title(snapshot.task),
                 "status": snapshot.task.status,
+                "status_reason": snapshot.task.status_reason,
                 "queue_position": snapshot.queue_position,
                 "internal_task_id": snapshot.task.id,
                 "internal_fields_are_not_user_facing": True,
@@ -95,6 +96,7 @@ class RestrictedBrainGateway:
                 {
                     "title": task_title(item.task),
                     "status": item.task.status,
+                    "status_reason": item.task.status_reason,
                     "summary": item.task.terminal_summary,
                     "due_at": item.task.resume_at.isoformat() if item.task.resume_at else None,
                     "internal_task_id": item.task.id,
@@ -118,6 +120,7 @@ class RestrictedBrainGateway:
                 "title": task_title(detail.task),
                 "goal": detail.task.goal,
                 "status": detail.task.status,
+                "status_reason": detail.task.status_reason,
                 "summary": detail.task.terminal_summary,
                 "questions": [
                     {
@@ -252,7 +255,7 @@ class RestrictedBrainGateway:
             detail = await task_service.get_task(internal_id)
             if detail is not None:
                 if mutation and detail.task.status not in {
-                    "queued", "running", "waiting_for_input", "waiting_until"
+                    "queued", "waiting_for_worker", "running", "waiting_for_input", "waiting_until"
                 }:
                     raise ValueError("That task is no longer active.")
                 return detail.task

@@ -530,7 +530,8 @@ export interface TaskSummary {
   origin_conversation_id: string | null;
   origin_turn_id: string | null;
   goal: string;
-  status: "queued" | "running" | "waiting_for_input" | "waiting_until" | "completed" | "failed" | "interrupted" | "cancelled";
+  status: "queued" | "waiting_for_worker" | "running" | "waiting_for_input" | "waiting_until" | "completed" | "failed" | "interrupted" | "cancelled";
+  status_reason: string | null;
   creation_order: number;
   current_attempt_id: string | null;
   cancellation_requested_at: string | null;
@@ -1001,12 +1002,18 @@ export async function updateChatSettings(
 export interface JarvisStateResponse {
   operational_day: string;
   state_revision: number;
+  situation_revision: number;
   current_log: ConversationDetail | null;
   tasks: TaskSummary[];
   pending_questions: JarvisPendingQuestion[];
   pending_presentations: JarvisPresentation[];
   session: JarvisSession | null;
   worker_health: { status: string; worker_id: string | null; heartbeat_at: string | null };
+  component_health: Record<string, {
+    status: string;
+    detail?: string | null;
+    heartbeat_at?: string | null;
+  }>;
   cursors: JarvisDomainCursors;
   focused_task_id: string | null;
   recent_task_refs: string[];

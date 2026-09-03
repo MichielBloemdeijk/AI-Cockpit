@@ -99,7 +99,7 @@ async def test_delegated_task_projects_as_one_task_card_without_a_child_run():
     assert task_items[0]["item_id"] == f"task:{task.task.id}"
     assert task_items[0]["metadata"]["task_id"] == task.task.id
     assert task_items[0]["metadata"]["task_run_id"] == task.task.id
-    assert task_items[0]["status"] == "queued"
+    assert task_items[0]["status"] == "waiting_for_worker"
     assert [run.id for run in runs] == [parent.id]
 
 

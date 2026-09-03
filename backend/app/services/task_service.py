@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -29,7 +30,7 @@ from app.services.task_update_policy import (
 )
 
 
-ACTIVE_TASK_STATUSES = {"queued", "running", "waiting_for_input", "waiting_until"}
+ACTIVE_TASK_STATUSES = {"queued", "waiting_for_worker", "running", "waiting_for_input", "waiting_until"}
 TERMINAL_TASK_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
 RETRYABLE_TASK_STATUSES = {"failed", "interrupted", "cancelled"}
 GENERIC_REMINDER_TEXT = "This is your reminder."
@@ -156,7 +157,7 @@ class TaskService:
             task = await self._lock_task(session, task_id)
             event_key = f"task.wait-until:{task_id}:{idempotency_key}"
             if await self._event_by_key(session, event_key) is None:
-                if task.status not in {"queued", "running"}:
+                if task.status not in {"queued", "waiting_for_worker", "running"}:
                     raise ValueError(f"Task in {task.status} cannot wait until a scheduled time")
                 task.status = "waiting_until"
                 task.waiting_until = due
@@ -214,6 +215,12 @@ class TaskService:
                 event_type="task.queued",
                 payload_json={"goal": task.goal, "status": task.status},
                 idempotency_key=f"task.dispatch:{idempotency_key}",
+            )
+            await self._assign_worker_eligibility(
+                session,
+                task,
+                repo=repo,
+                idempotency_key=f"task.waiting-for-worker:{task.id}",
             )
             await session.refresh(task)
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
@@ -275,8 +282,16 @@ class TaskService:
             )).scalars().all())
             presentations = tuple((await session.execute(
                 select(TaskPresentation)
+                .outerjoin(
+                    TaskEvent,
+                    TaskPresentation.source_task_event_id == TaskEvent.id,
+                )
                 .where(TaskPresentation.task_id == task_id)
-                .order_by(TaskPresentation.created_at.asc(), TaskPresentation.id.asc())
+                .order_by(
+                    TaskEvent.sequence.asc(),
+                    TaskPresentation.created_at.asc(),
+                    TaskPresentation.id.asc(),
+                )
             )).scalars().all())
             return TaskDetailSnapshot(
                 task=task,
@@ -338,6 +353,47 @@ class TaskService:
         async with session_scope() as session:
             return await self._worker_health(session)
 
+    async def repair_invalid_reminder_tasks(self) -> int:
+        """Quarantine reminder-like work incorrectly sent to the worker queue."""
+        repaired = 0
+        now = utc_now()
+        async with session_scope() as session:
+            repo = TaskRepository(session)
+            tasks = list((await session.execute(
+                select(Task)
+                .where(Task.origin_surface != "jarvis_reminder")
+                .where(Task.status.in_(sorted(ACTIVE_TASK_STATUSES)))
+            )).scalars().all())
+            for task in tasks:
+                value = task.goal.casefold()
+                reminder = re.search(r"\b(remind(?:er)?|alarm|herinner(?:ing|en)?)\b", value)
+                timing = re.search(
+                    r"\b(in|at|on|today|tomorrow|tonight|minute|minutes|hour|hours|"
+                    r"over|om|vandaag|morgen|vanavond|minuut|minuten|uur)\b|\b\d{1,2}[:.]\d{2}\b",
+                    value,
+                )
+                if reminder is None or timing is None:
+                    continue
+                task.status = "failed"
+                task.status_reason = "Reminder request was routed to background work and was not scheduled."
+                task.terminal_summary = task.status_reason
+                task.finished_at = now
+                task.updated_at = now
+                await repo.append_event(
+                    task_id=task.id,
+                    attempt_id=task.current_attempt_id,
+                    event_type="task.failed",
+                    payload_json={
+                        "status": "failed",
+                        "reason": "misrouted_reminder",
+                        "summary": task.terminal_summary,
+                    },
+                    idempotency_key=f"task.repair-misrouted-reminder:{task.id}",
+                )
+                await self._end_current_attempt(session, task, reason="misrouted_reminder")
+                repaired += 1
+        return repaired
+
     async def cancel(self, task_id: str, *, idempotency_key: str) -> TaskSnapshot:
         async with session_scope() as session:
             repo = TaskRepository(session)
@@ -354,7 +410,9 @@ class TaskService:
                     payload_json={"status": "running"},
                     idempotency_key=f"task.cancel:{task_id}:{idempotency_key}",
                 )
-            elif existing is None and task.status in {"queued", "waiting_for_input", "waiting_until"}:
+            elif existing is None and task.status in {
+                "queued", "waiting_for_worker", "waiting_for_input", "waiting_until"
+            }:
                 now = utc_now()
                 task.status = "cancelled"
                 task.cancellation_requested_at = now
@@ -398,6 +456,12 @@ class TaskService:
                     payload_json={"status": "queued", "attempt_number": attempt.attempt_number},
                     idempotency_key=event_key,
                 )
+                await self._assign_worker_eligibility(
+                    session,
+                    task,
+                    repo=repo,
+                    idempotency_key=f"task.retry-waiting-for-worker:{event_key}",
+                )
             await session.flush()
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
 
@@ -421,7 +485,7 @@ class TaskService:
                 saved = await session.get(TaskQuestion, question_id)
                 if saved is not None:
                     return saved
-            if task.status not in {"queued", "running"}:
+            if task.status not in {"queued", "waiting_for_worker", "running"}:
                 raise ValueError(f"Task in {task.status} cannot ask a question")
             question_row = TaskQuestion(
                 id=str(uuid4()),
@@ -490,6 +554,12 @@ class TaskService:
                     },
                     idempotency_key=event_key,
                 )
+                await self._assign_worker_eligibility(
+                    session,
+                    task,
+                    repo=repo,
+                    idempotency_key=f"task.answer-waiting-for-worker:{event_key}",
+                )
             await session.flush()
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
 
@@ -512,6 +582,7 @@ class TaskService:
             if task.status not in {"queued", "running"}:
                 raise ValueError(f"Task in {task.status} cannot publish progress")
             task.status = "running"
+            task.status_reason = None
             task.updated_at = utc_now()
             attempt = await self._current_attempt(session, task)
             if attempt is not None and attempt.started_at is None:
@@ -735,7 +806,12 @@ class TaskService:
         )
         return int(result.scalar_one())
 
-    async def _worker_health(self, session: AsyncSession) -> WorkerHealth:
+    async def _worker_health(
+        self,
+        session: AsyncSession,
+        *,
+        now: datetime | None = None,
+    ) -> WorkerHealth:
         result = await session.execute(
             select(WorkerInstance)
             .where(
@@ -753,11 +829,35 @@ class TaskService:
             heartbeat = heartbeat.replace(tzinfo=timezone.utc)
         status = (
             "online"
-            if heartbeat >= utc_now() - timedelta(seconds=settings.worker_stale_after_seconds)
+            if heartbeat >= (now or utc_now()) - timedelta(seconds=settings.worker_stale_after_seconds)
             and worker.stopped_at is None
             else "offline"
         )
         return WorkerHealth(status=status, worker_id=worker.id, heartbeat_at=worker.heartbeat_at)
+
+    async def _assign_worker_eligibility(
+        self,
+        session: AsyncSession,
+        task: Task,
+        *,
+        repo: TaskRepository,
+        idempotency_key: str,
+    ) -> None:
+        if task.status != "queued":
+            return
+        if (await self._worker_health(session)).status == "online":
+            task.status_reason = None
+            return
+        task.status = "waiting_for_worker"
+        task.status_reason = "No live worker is available; this task has not started."
+        task.updated_at = utc_now()
+        await repo.append_event(
+            task_id=task.id,
+            attempt_id=task.current_attempt_id,
+            event_type="task.waiting_for_worker",
+            payload_json={"status": task.status, "reason": task.status_reason},
+            idempotency_key=idempotency_key,
+        )
 
 
 task_service = TaskService()

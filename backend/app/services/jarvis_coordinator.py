@@ -29,7 +29,9 @@ from app.db.tables import (
 )
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
-from app.services.jarvis_time import normalize_client_context, temporal_frame
+from app.services.jarvis_time import normalize_client_context
+from app.services.jarvis_situation import jarvis_situation_projector
+from app.services.runtime_health import runtime_health_service
 from app.services.task_presentations import task_presentation_service
 from app.services.task_notifications import route_pending_task_notifications
 from app.services.voice_session_adapter import (
@@ -119,6 +121,8 @@ class JarvisCoordinator:
         if self._delivery_task is not None and not self._delivery_task.done():
             return
         await task_presentation_service.recover_reservations()
+        await runtime_health_service.healthy("response_arbiter", force=True)
+        await runtime_health_service.healthy("notification_router", force=True)
         self._delivery_stop = asyncio.Event()
         self._delivery_task = asyncio.create_task(
             self._run_delivery_loop(self._delivery_stop),
@@ -133,13 +137,15 @@ class JarvisCoordinator:
         self._delivery_task = None
         self._delivery_stop = None
         self._response_gates.clear()
+        await runtime_health_service.offline("response_arbiter", detail="Response arbiter stopped.")
+        await runtime_health_service.offline("notification_router", detail="Notification router stopped.")
 
     async def _run_delivery_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
+            voice_connected = False
             try:
                 await task_presentation_service.sync_candidates()
                 active = await self.get_active_session()
-                voice_connected = False
                 if active is not None and active.lifecycle_state == "ready":
                     adapter = get_voice_session_adapter(active.provider_adapter)
                     voice_connected = adapter.is_connected(
@@ -154,12 +160,19 @@ class JarvisCoordinator:
                                 active.generation,
                                 "task_update",
                             )
-                await route_pending_task_notifications(voice_connected=voice_connected)
+                await runtime_health_service.healthy("response_arbiter")
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 # Durable candidates remain pending; the next poll retries them.
-                pass
+                await runtime_health_service.failed("response_arbiter", exc)
+            try:
+                await route_pending_task_notifications(voice_connected=voice_connected)
+                await runtime_health_service.healthy("notification_router")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await runtime_health_service.failed("notification_router", exc)
             try:
                 await asyncio.wait_for(
                     stop.wait(),
@@ -1021,88 +1034,12 @@ class JarvisCoordinator:
 
     @staticmethod
     async def _context_in_session(session, snapshot) -> dict[str, Any]:
-        preferences = await session.get(JarvisPreference, "current")
-        messages = list((await session.execute(
-            select(ConversationMessage)
-            .where(ConversationMessage.conversation_id == snapshot.conversation.id)
-            .where(ConversationMessage.communication_state.in_(["completed", "interrupted"]))
-            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
-            .limit(60)
-        )).scalars().all())
-        messages.reverse()
-        dialogue: list[dict[str, str]] = []
-        remaining = 30_000
-        for message in reversed(messages):
-            content = message.content[-remaining:]
-            dialogue.append(
-                {
-                    "role": message.role,
-                    "content": content,
-                    "communication_state": message.communication_state,
-                }
-            )
-            remaining -= len(content)
-            if remaining <= 0:
-                break
-        dialogue.reverse()
-
-        task_ids = [task.id for task in snapshot.tasks]
-        questions: list[TaskQuestion] = []
-        if task_ids:
-            questions = list((await session.execute(
-                select(TaskQuestion)
-                .where(TaskQuestion.task_id.in_(task_ids))
-                .where(TaskQuestion.state == "asked")
-                .order_by(TaskQuestion.asked_at.asc())
-            )).scalars().all())
-        presentations = list((await session.execute(
-            select(TaskPresentation)
-            .where(TaskPresentation.state.in_(["pending", "reserved"]))
-            .order_by(TaskPresentation.created_at.asc())
-        )).scalars().all())
-        active_time_zone = (
-            snapshot.realtime_session.client_time_zone
-            if snapshot.realtime_session is not None and snapshot.realtime_session.client_time_zone
-            else ("Europe/Amsterdam" if preferences is None else preferences.time_zone)
+        projected = await jarvis_situation_projector.project_in_session(
+            session,
+            conversation_id=snapshot.conversation.id,
+            session_id=None if snapshot.realtime_session is None else snapshot.realtime_session.id,
         )
-        return {
-            "conversation_id": snapshot.conversation.id,
-            "dialogue": dialogue,
-            "tasks": [
-                {
-                    "task_id": task.id,
-                    "goal": task.goal,
-                    "status": task.status,
-                    "summary": task.terminal_summary,
-                }
-                for task in snapshot.tasks
-            ],
-            "questions": [
-                {"task_id": item.task_id, "question_id": item.id, "question": item.question}
-                for item in questions
-            ],
-            "presentations": [
-                {
-                    "presentation_id": item.id,
-                    "task_id": item.task_id,
-                    "type": item.candidate_type,
-                    "facts": item.required_facts_json,
-                }
-                for item in presentations
-            ],
-            "cursors": {
-                "conversation": snapshot.conversation_cursor,
-                "task": snapshot.task_cursor,
-                "session": snapshot.session_cursor,
-            },
-            "preferences": {
-                "voice": "marin" if preferences is None else preferences.voice,
-                "concision": "concise" if preferences is None else preferences.concision,
-                "wake_behavior": "follow_up" if preferences is None else preferences.wake_behavior,
-                "time_zone": active_time_zone,
-            },
-            "temporal": temporal_frame(time_zone=active_time_zone),
-        }
+        return projected.payload
 
     @staticmethod
     def _record(realtime: RealtimeSession, *, floor_state: str) -> SessionRecord:

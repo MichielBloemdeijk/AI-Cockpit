@@ -19,6 +19,7 @@ class TaskSummaryView(BaseModel):
     origin_turn_id: str | None = None
     goal: str
     status: str
+    status_reason: str | None = None
     creation_order: int
     current_attempt_id: str | None = None
     cancellation_requested_at: datetime | None = None

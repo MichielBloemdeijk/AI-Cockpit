@@ -16,6 +16,7 @@ from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.natural_task_resolver import natural_task_resolver
 from app.services.reminder_scheduler import reminder_scheduler
 from app.services.task_service import task_service
+from app.services.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio
@@ -37,6 +38,7 @@ async def test_preferences_are_durable_and_report_voice_rotation() -> None:
 
 @pytest.mark.asyncio
 async def test_live_replay_unifies_task_events_with_monotonic_cursor() -> None:
+    assert await worker_coordinator.activate(process_identity="v2-live-worker") is not None
     task = await task_service.dispatch(
         goal="Index the heliotrope launch notes",
         origin_surface="jarvis",

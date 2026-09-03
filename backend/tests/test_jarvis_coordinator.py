@@ -17,6 +17,7 @@ from app.services.reminder_scheduler import reminder_scheduler
 from app.services.task_notifications import route_pending_task_notifications
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
+from app.services.worker_coordinator import worker_coordinator
 from app.services.voice_session_adapter import VoiceProviderEvent
 
 
@@ -177,6 +178,7 @@ async def test_controller_supersession_observer_and_stale_generation_rejection()
 
 @pytest.mark.asyncio
 async def test_progress_is_quiet_by_default_and_opted_in_progress_coalesces() -> None:
+    assert await worker_coordinator.activate(process_identity="progress-worker") is not None
     quiet = await task_service.dispatch(
         goal="Quiet progress task",
         idempotency_key="quiet-progress-task",
@@ -222,6 +224,7 @@ async def test_progress_is_quiet_by_default_and_opted_in_progress_coalesces() ->
 
 @pytest.mark.asyncio
 async def test_fast_task_completion_projects_a_terminal_candidate() -> None:
+    assert await worker_coordinator.activate(process_identity="fast-worker") is not None
     accepted = await jarvis_coordinator.accept_text_turn("Fast task", idempotency_key="fast-origin")
     task = await task_service.dispatch(
         goal="Finish immediately",
@@ -584,7 +587,7 @@ async def test_question_answer_and_fresh_log_keep_task_identity() -> None:
     )
     answered = await task_service.get_task(task.task.id)
     assert answered is not None
-    assert answered.task.status == "queued"
+    assert answered.task.status == "waiting_for_worker"
     assert answered.questions[0].answer == "main"
 
     fresh = await jarvis_coordinator.start_fresh_log(idempotency_key="fresh-after-question")

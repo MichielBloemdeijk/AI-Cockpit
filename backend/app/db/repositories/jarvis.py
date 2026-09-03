@@ -119,7 +119,9 @@ class JarvisDomainRepository:
 
         task_result = await self.session.execute(
             select(Task)
-            .where(Task.status.in_(["queued", "running", "waiting_for_input"]))
+            .where(Task.status.in_([
+                "queued", "waiting_for_worker", "running", "waiting_for_input", "waiting_until"
+            ]))
             .order_by(Task.creation_order.asc())
         )
         tasks = tuple(task_result.scalars().all())

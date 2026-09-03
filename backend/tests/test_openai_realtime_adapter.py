@@ -535,11 +535,12 @@ async def test_openai_adapter_waits_for_provider_playout_cutoff_before_finalizin
     assert len(deliveries) == 1
     assert deliveries[0].payload["transcript"].endswith("not heard.")
     assert deliveries[0].payload["heard_transcript"] == "I can explain"
-    assert deliveries[0].payload["timing_summary"] == {
+    timing_summary = deliveries[0].payload["timing_summary"]
+    assert 0 <= timing_summary.pop("playback_duration_ms") <= 50
+    assert timing_summary == {
         "estimator_source": "provider_audio_end_calibrated_text",
         "audio_end_ms": 1200,
         "generated_audio_ms": None,
-        "playback_duration_ms": 0,
         "transcript_margin_ms": 250,
         "cutoff_char": len("I can explain"),
         "duration_scale": 1.0,

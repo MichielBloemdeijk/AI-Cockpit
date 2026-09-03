@@ -14,6 +14,7 @@ from app.db.tables import Task, TaskAttempt
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import TaskSnapshot, task_service
 from app.services.jarvis_time import DEFAULT_TIME_ZONE, resolve_reminder_time
+from app.services.runtime_health import runtime_health_service
 
 
 def utc_now() -> datetime:
@@ -28,6 +29,11 @@ class ReminderScheduler:
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        try:
+            await self.run_due()
+            await runtime_health_service.healthy("reminder_scheduler", force=True)
+        except Exception as exc:
+            await runtime_health_service.failed("reminder_scheduler", exc)
         self._stop = asyncio.Event()
         self._task = asyncio.create_task(self.run_forever(self._stop), name="jarvis-reminder-scheduler")
 
@@ -38,10 +44,20 @@ class ReminderScheduler:
             await asyncio.gather(self._task, return_exceptions=True)
         self._task = None
         self._stop = None
+        await runtime_health_service.offline(
+            "reminder_scheduler",
+            detail="Reminder scheduler stopped.",
+        )
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            await self.run_due()
+            try:
+                await self.run_due()
+                await runtime_health_service.healthy("reminder_scheduler")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await runtime_health_service.failed("reminder_scheduler", exc)
             try:
                 await asyncio.wait_for(stop.wait(), timeout=settings.reminder_poll_interval_seconds)
             except TimeoutError:
@@ -103,7 +119,13 @@ class ReminderScheduler:
                     attempt_number=max_attempt + 1,
                 )
                 session.add(attempt)
-                task.status = "queued"
+                worker_health = await task_service._worker_health(session, now=timestamp)
+                task.status = "queued" if worker_health.status == "online" else "waiting_for_worker"
+                task.status_reason = (
+                    None
+                    if worker_health.status == "online"
+                    else "No live worker is available; this task has not started."
+                )
                 task.current_attempt_id = attempt.id
                 task.waiting_until = None
                 task.resume_at = None
@@ -113,7 +135,11 @@ class ReminderScheduler:
                     task_id=task.id,
                     attempt_id=attempt.id,
                     event_type="task.resumed",
-                    payload_json={"status": "queued", "attempt_number": attempt.attempt_number},
+                    payload_json={
+                        "status": task.status,
+                        "status_reason": task.status_reason,
+                        "attempt_number": attempt.attempt_number,
+                    },
                     idempotency_key=f"task.resumed:{task.id}:{due.isoformat()}",
                 )
             await session.flush()

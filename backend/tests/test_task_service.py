@@ -9,6 +9,7 @@ from app.main import app
 from app.services.conversation_store import conversation_store
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
+from app.services.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio
@@ -29,7 +30,12 @@ async def test_dispatch_is_idempotent_under_contention() -> None:
     detail = await task_service.get_task(snapshots[0].task.id)
     assert detail is not None
     assert len(detail.attempts) == 1
-    assert [event.event_type for event in detail.events] == ["task.queued"]
+    assert detail.task.status == "waiting_for_worker"
+    assert detail.task.status_reason == "No live worker is available; this task has not started."
+    assert [event.event_type for event in detail.events] == [
+        "task.queued",
+        "task.waiting_for_worker",
+    ]
     assert [(target.resource_type, target.resource_key) for target in detail.targets] == [
         ("repository", "AI-Cockpit")
     ]
@@ -37,6 +43,7 @@ async def test_dispatch_is_idempotent_under_contention() -> None:
 
 @pytest.mark.asyncio
 async def test_global_event_cursor_is_ordered_replayable_and_deduplicated() -> None:
+    assert await worker_coordinator.activate(process_identity="cursor-worker") is not None
     first = await task_service.dispatch(
         goal="First",
         origin_surface="test",
@@ -95,7 +102,7 @@ async def test_question_answer_is_once_and_creates_new_attempt() -> None:
     )
 
     assert answered.task.id == retried_request.task.id == created.task.id
-    assert answered.task.status == "queued"
+    assert answered.task.status == "waiting_for_worker"
     detail = await task_service.get_task(created.task.id)
     assert detail is not None
     assert [attempt.attempt_number for attempt in detail.attempts] == [1, 2]
@@ -124,11 +131,13 @@ async def test_cancellation_state_machine_and_explicit_retry() -> None:
 
     retried = await task_service.retry(queued.task.id, idempotency_key="retry-cancelled")
     assert retried.task.id == queued.task.id
-    assert retried.task.status == "queued"
+    assert retried.task.status == "waiting_for_worker"
     detail = await task_service.get_task(queued.task.id)
     assert detail is not None
     assert [attempt.attempt_number for attempt in detail.attempts] == [1, 2]
 
+    worker = await worker_coordinator.activate(process_identity="cancellation-worker")
+    assert worker is not None
     running = await task_service.dispatch(
         goal="Cancel while running",
         origin_surface="test",
@@ -151,6 +160,8 @@ async def test_cancellation_state_machine_and_explicit_retry() -> None:
 
 @pytest.mark.asyncio
 async def test_task_trace_is_exposed_without_polluting_conversation_history() -> None:
+    worker_registration = await worker_coordinator.activate(process_identity="trace-worker")
+    assert worker_registration is not None
     conversation = await conversation_store.create_conversation(title="Keep history clean")
     created = await task_service.dispatch(
         goal="Produce a report",
@@ -178,6 +189,7 @@ async def test_task_trace_is_exposed_without_polluting_conversation_history() ->
         idempotency_key="trace-complete",
     )
     await task_presentation_service.sync_candidates()
+    await worker_coordinator.stop(worker_registration.worker_id)
 
     assert await conversation_store.list_messages(conversation.id) == []
 

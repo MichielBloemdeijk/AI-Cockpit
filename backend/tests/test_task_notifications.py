@@ -13,6 +13,7 @@ from app.services import task_notifications
 from app.services.task_notifications import payload_for_task_notification
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
+from app.services.worker_coordinator import worker_coordinator
 
 
 async def _outbox() -> list[NotificationOutbox]:
@@ -28,6 +29,7 @@ async def _outbox() -> list[NotificationOutbox]:
 
 @pytest.mark.asyncio
 async def test_progress_does_not_push_and_blocking_question_enqueues_once() -> None:
+    assert await worker_coordinator.activate(process_identity="notification-worker") is not None
     snapshot = await task_service.dispatch(
         goal="Prepare the launch report",
         idempotency_key="notification-question-task",

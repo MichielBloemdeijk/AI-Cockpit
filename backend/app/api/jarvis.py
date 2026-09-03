@@ -39,6 +39,7 @@ from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinato
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.jarvis_live import jarvis_live_service
 from app.services.jarvis_preferences import jarvis_preferences_service
+from app.services.jarvis_situation import jarvis_situation_projector
 from app.services.natural_task_resolver import natural_task_resolver, task_title
 from app.services.reminder_scheduler import reminder_scheduler
 from app.services.openai_realtime_adapter import OpenAIRealtimeConfigurationError
@@ -63,6 +64,7 @@ def _task_summary(snapshot) -> TaskSummaryView:
         origin_turn_id=task.origin_turn_id,
         goal=task.goal,
         status=task.status,
+        status_reason=task.status_reason,
         creation_order=task.creation_order,
         current_attempt_id=task.current_attempt_id,
         cancellation_requested_at=task.cancellation_requested_at,
@@ -95,9 +97,13 @@ def _http_error(exc: ValueError) -> HTTPException:
 @router.get("/state", response_model=JarvisStateResponse)
 async def get_jarvis_state() -> JarvisStateResponse:
     state = await jarvis_daily_service.get_state()
+    situation = None
     detail = None
     conversation_cursor = 0
     if state.current_log is not None:
+        situation = await jarvis_situation_projector.project(
+            conversation_id=state.current_log.id,
+        )
         detail = await conversation_read_model.get_conversation_detail(state.current_log.id)
         conversation_cursor, _ = await jarvis_coordinator.replay_conversation_events(
             state.current_log.id,
@@ -131,6 +137,7 @@ async def get_jarvis_state() -> JarvisStateResponse:
     return JarvisStateResponse(
         operational_day=state.operational_day,
         state_revision=state.state_revision,
+        situation_revision=0 if situation is None else situation.revision,
         current_log=detail,
         tasks=[_task_summary(item) for item in tasks],
         pending_questions=questions,
@@ -152,6 +159,7 @@ async def get_jarvis_state() -> JarvisStateResponse:
             worker_id=worker.worker_id,
             heartbeat_at=worker.heartbeat_at,
         ),
+        component_health={} if situation is None else situation.payload["component_health"],
         cursors=JarvisDomainCursors(
             conversation=conversation_cursor,
             task=latest_task_cursor,

@@ -76,12 +76,14 @@ class JarvisSessionEventReplayResponse(BaseModel):
 class JarvisStateResponse(BaseModel):
     operational_day: DateValue
     state_revision: int
+    situation_revision: int = 0
     current_log: ConversationDetail | None = None
     tasks: list[TaskSummaryView] = Field(default_factory=list)
     pending_questions: list[JarvisPendingQuestionView] = Field(default_factory=list)
     pending_presentations: list[JarvisPresentationView] = Field(default_factory=list)
     session: JarvisSessionView | None = None
     worker_health: WorkerHealthView = Field(default_factory=lambda: WorkerHealthView(status="offline"))
+    component_health: dict[str, dict[str, Any]] = Field(default_factory=dict)
     cursors: JarvisDomainCursors = Field(default_factory=JarvisDomainCursors)
     focused_task_id: str | None = None
     recent_task_refs: list[str] = Field(default_factory=list)

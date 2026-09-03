@@ -36,6 +36,7 @@ def _aware(value: datetime) -> datetime:
 class WorkerRegistration:
     worker_id: str
     took_over: tuple[str, ...]
+    promoted: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +111,16 @@ class WorkerCoordinator:
                 took_over.extend(reconciled)
             candidate.state = "idle"
             candidate.heartbeat_at = timestamp
-            registration = WorkerRegistration(worker_id=candidate_id, took_over=tuple(took_over))
+            promoted = await self._promote_waiting_tasks(
+                session,
+                timestamp=timestamp,
+                worker_id=candidate_id,
+            )
+            registration = WorkerRegistration(
+                worker_id=candidate_id,
+                took_over=tuple(took_over),
+                promoted=tuple(promoted),
+            )
         return registration
 
     async def heartbeat(
@@ -144,6 +154,40 @@ class WorkerCoordinator:
                 .where(WorkerInstance.id == worker_id, WorkerInstance.stopped_at.is_(None))
                 .values(state="stopped", stopped_at=timestamp, heartbeat_at=timestamp)
             )
+        await self.reconcile_availability(now=timestamp)
+
+    async def reconcile_availability(self, *, now: datetime | None = None) -> tuple[int, int]:
+        """Reconcile stale workers and tasks waiting for executable capacity."""
+        timestamp = now or utc_now()
+        cutoff = timestamp - timedelta(seconds=settings.worker_stale_after_seconds)
+        interrupted = 0
+        changed = 0
+        async with session_scope() as session:
+            workers = list((await session.execute(
+                select(WorkerInstance)
+                .where(
+                    WorkerInstance.stopped_at.is_(None),
+                    WorkerInstance.state.in_(sorted(ACTIVE_WORKER_STATES)),
+                )
+                .order_by(WorkerInstance.heartbeat_at.desc())
+            )).scalars().all())
+            live = [worker for worker in workers if _aware(worker.heartbeat_at) >= cutoff]
+            for worker in workers:
+                if worker not in live:
+                    interrupted += len(await self._reconcile_stale_worker(
+                        session,
+                        worker,
+                        timestamp=timestamp,
+                    ))
+            if live:
+                changed = len(await self._promote_waiting_tasks(
+                    session,
+                    timestamp=timestamp,
+                    worker_id=live[0].id,
+                ))
+            else:
+                changed = len(await self._hold_queued_tasks(session, timestamp=timestamp))
+        return interrupted, changed
 
     async def claim_next(
         self,
@@ -165,6 +209,12 @@ class WorkerCoordinator:
             )
             if locked.rowcount != 1:
                 return ClaimResult(task=None)
+
+            await self._promote_waiting_tasks(
+                session,
+                timestamp=timestamp,
+                worker_id=worker_id,
+            )
 
             await session.execute(delete(ResourceLease).where(ResourceLease.expires_at <= timestamp))
             task_result = await session.execute(
@@ -230,6 +280,7 @@ class WorkerCoordinator:
             if not attempt.agent_runtime_reference:
                 attempt.agent_runtime_reference = f"worker:{worker_id}"
             task.status = "running"
+            task.status_reason = None
             task.updated_at = timestamp
             worker_result = await session.execute(
                 select(WorkerInstance).where(WorkerInstance.id == worker_id).limit(1)
@@ -381,6 +432,7 @@ class WorkerCoordinator:
             session.add(next_attempt)
             await session.flush()
             task.status = "queued"
+            task.status_reason = None
             task.current_attempt_id = next_attempt.id
             task.updated_at = timestamp
             await TaskRepository(session).append_event(
@@ -460,6 +512,62 @@ class WorkerCoordinator:
         worker.state = "stale"
         worker.stopped_at = timestamp
         return interrupted
+
+    @staticmethod
+    async def _promote_waiting_tasks(
+        session,
+        *,
+        timestamp: datetime,
+        worker_id: str,
+    ) -> list[str]:
+        tasks = list((await session.execute(
+            select(Task)
+            .where(Task.status == "waiting_for_worker")
+            .order_by(Task.creation_order.asc())
+        )).scalars().all())
+        repo = TaskRepository(session)
+        promoted: list[str] = []
+        for task in tasks:
+            task.status = "queued"
+            task.status_reason = None
+            task.updated_at = timestamp
+            await repo.append_event(
+                task_id=task.id,
+                attempt_id=task.current_attempt_id,
+                event_type="task.worker_available",
+                payload_json={"status": "queued", "worker_id": worker_id},
+                idempotency_key=(
+                    f"task.worker-available:{task.current_attempt_id or task.id}:{worker_id}"
+                ),
+            )
+            promoted.append(task.id)
+        return promoted
+
+    @staticmethod
+    async def _hold_queued_tasks(session, *, timestamp: datetime) -> list[str]:
+        tasks = list((await session.execute(
+            select(Task)
+            .where(Task.status == "queued")
+            .order_by(Task.creation_order.asc())
+        )).scalars().all())
+        repo = TaskRepository(session)
+        held: list[str] = []
+        for task in tasks:
+            task.status = "waiting_for_worker"
+            task.status_reason = "No live worker is available; this task has not started."
+            task.updated_at = timestamp
+            await repo.append_event(
+                task_id=task.id,
+                attempt_id=task.current_attempt_id,
+                event_type="task.waiting_for_worker",
+                payload_json={"status": task.status, "reason": task.status_reason},
+                idempotency_key=(
+                    f"task.worker-unavailable:{task.current_attempt_id or task.id}:"
+                    f"{timestamp.isoformat()}"
+                ),
+            )
+            held.append(task.id)
+        return held
 
     def _workspace_path(self, task_id: str, attempt_number: int) -> Path:
         return settings.task_workspaces_path / task_id / f"attempt-{attempt_number}"

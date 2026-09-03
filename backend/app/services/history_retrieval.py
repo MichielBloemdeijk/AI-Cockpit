@@ -120,7 +120,7 @@ class HistoryRetrievalService:
             documents = list((await session.execute(statement)).scalars().all())
         scan_truncated = len(documents) > MAX_SCAN
         documents = documents[:MAX_SCAN]
-        scored: list[tuple[int, object, HistoryMatch]] = []
+        scored: list[tuple[int, int, object, HistoryMatch]] = []
         for document in documents:
             if not self._path_allowed(document.virtual_path, query):
                 continue
@@ -141,6 +141,7 @@ class HistoryRetrievalService:
                 )
                 scored.append((
                     len(matches),
+                    int(document.virtual_path.endswith("/summary.txt")),
                     document.source_timestamp,
                     HistoryMatch(
                         source_type=document.source_type,
@@ -153,15 +154,22 @@ class HistoryRetrievalService:
                         context=context,
                     ),
                 ))
-                if sum(1 for _score, _time, item in scored if item.virtual_path == document.virtual_path) >= query.max_count:
+                if sum(
+                    1
+                    for _score, _summary, _time, item in scored
+                    if item.virtual_path == document.virtual_path
+                ) >= query.max_count:
                     break
         reverse = query.sort != "oldest"
         if query.sort == "relevance":
-            scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            scored.sort(
+                key=lambda item: (item[0], item[1], item[2], item[3].virtual_path),
+                reverse=True,
+            )
         else:
-            scored.sort(key=lambda item: item[1], reverse=reverse)
+            scored.sort(key=lambda item: (item[2], item[3].virtual_path), reverse=reverse)
         truncated = scan_truncated or len(scored) > query.max_count
-        matches = [item[2] for item in scored[:query.max_count]]
+        matches = [item[3] for item in scored[:query.max_count]]
         return matches, truncated, (perf_counter() - started) * 1000
 
     async def rebuild(self) -> int:
