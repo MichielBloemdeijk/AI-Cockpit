@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 import os
 import socket
+
+from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.services.agent_execution import (
@@ -16,6 +19,9 @@ from app.services.agent_execution import (
 )
 from app.services.task_service import task_service
 from app.services.worker_coordinator import ClaimedTask, WorkerCoordinator, worker_coordinator
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +70,20 @@ class TaskWorker:
         stop = stop_event or asyncio.Event()
         try:
             while not stop.is_set():
-                result = await self.run_once()
+                try:
+                    result = await self.run_once()
+                except OperationalError as exc:
+                    if "database is locked" not in str(exc).casefold():
+                        raise
+                    logger.warning("Task worker is waiting for the SQLite write lock")
+                    try:
+                        await asyncio.wait_for(
+                            stop.wait(),
+                            timeout=settings.worker_poll_interval_seconds,
+                        )
+                    except TimeoutError:
+                        pass
+                    continue
                 if result.status in {"idle", "blocked"}:
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=settings.worker_poll_interval_seconds)

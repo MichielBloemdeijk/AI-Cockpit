@@ -5,6 +5,8 @@ param(
   [int]$LlamaPort = 8080,
   [int]$BackendPort = 8000,
   [int]$FrontendPort = 3000,
+  [string]$BackendHost = "127.0.0.1",
+  [string]$FrontendHost = "127.0.0.1",
   [int]$ContextSize = 16384,
   [string]$LogDirectory = "",
   [switch]$DryRun
@@ -75,9 +77,9 @@ Assert-File $uv "uv"
 Assert-File $npm "npm"
 
 $llamaArgs = @("-m", $gemma, "--host", "127.0.0.1", "--port", "$LlamaPort", "--ctx-size", "$ContextSize", "--n-gpu-layers", "all", "--jinja", "--parallel", "1", "--reasoning", "off")
-$backendArgs = @("run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$BackendPort")
+$backendArgs = @("run", "uvicorn", "app.main:app", "--host", $BackendHost, "--port", "$BackendPort")
 $workerArgs = @("run", "python", "-m", "app.worker")
-$frontendArgs = @("run", "dev", "--", "--hostname", "127.0.0.1", "--port", "$FrontendPort")
+$frontendArgs = @("run", "dev", "--", "--hostname", $FrontendHost, "--port", "$FrontendPort")
 Write-Host "llama-server: $llama $($llamaArgs -join ' ')"
 Write-Host "backend: uv $($backendArgs -join ' ')"
 Write-Host "worker: uv $($workerArgs -join ' ')"

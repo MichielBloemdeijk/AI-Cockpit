@@ -5,6 +5,7 @@ import json
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.db.session import session_scope
@@ -14,6 +15,7 @@ from app.services import agent_execution as agent_execution_module
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
+from app.services.worker_coordinator import ClaimResult
 
 
 def control_response(name: str, arguments: dict, *, content: str = "") -> ModelResponse:
@@ -136,3 +138,40 @@ async def test_running_cancellation_is_observed_and_releases_leases(monkeypatch)
     assert detail is not None and detail.task.status == "cancelled"
     async with session_scope() as session:
         assert list((await session.execute(select(ResourceLease))).scalars().all()) == []
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_transient_sqlite_lock_instead_of_exiting(monkeypatch) -> None:
+    stop = asyncio.Event()
+
+    class LockThenIdleCoordinator:
+        def __init__(self) -> None:
+            self.claim_calls = 0
+            self.stopped = False
+
+        async def claim_next(self, worker_id: str) -> ClaimResult:
+            self.claim_calls += 1
+            if self.claim_calls == 1:
+                raise OperationalError(
+                    "UPDATE worker_instances",
+                    {},
+                    Exception("database is locked"),
+                )
+            stop.set()
+            return ClaimResult(task=None)
+
+        async def heartbeat(self, worker_id: str, *, state: str) -> bool:
+            return True
+
+        async def stop(self, worker_id: str) -> None:
+            self.stopped = True
+
+    coordinator = LockThenIdleCoordinator()
+    worker = TaskWorker(coordinator=coordinator)  # type: ignore[arg-type]
+    worker.worker_id = "worker-1"
+    monkeypatch.setattr(settings, "worker_poll_interval_seconds", 0.01)
+
+    await asyncio.wait_for(worker.run_forever(stop), timeout=1)
+
+    assert coordinator.claim_calls == 2
+    assert coordinator.stopped is True

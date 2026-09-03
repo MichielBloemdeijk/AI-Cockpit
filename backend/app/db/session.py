@@ -1,10 +1,12 @@
 """Async SQLAlchemy engine and session helpers."""
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from collections.abc import AsyncIterator
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+import time
 
 from alembic import command
 from alembic.config import Config
@@ -50,6 +52,7 @@ def initialize_engine(database_url: str | None = None) -> AsyncEngine:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
 
     _engine = engine
@@ -97,6 +100,58 @@ async def ensure_database_ready() -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
 
+@contextmanager
+def _sqlite_migration_lock(database_url: str, *, timeout_seconds: float = 60.0):
+    """Serialize Alembic across local processes without leaving a stale lock."""
+    url = make_url(database_url)
+    database = url.database
+    if not url.drivername.startswith("sqlite") or database in (None, "", ":memory:"):
+        yield
+        return
+
+    database_path = Path(database).resolve()
+    lock_path = database_path.with_name(f"{database_path.name}.migration.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_seconds
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+
+        while True:
+            try:
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for database migration lock: {lock_path}"
+                    ) from exc
+                time.sleep(0.1)
+
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def run_migrations() -> None:
     alembic_config_path = settings.alembic_config_path
     config = Config(str(alembic_config_path))
@@ -115,4 +170,5 @@ def run_migrations() -> None:
         config.set_main_option("script_location", str(settings.backend_root / "alembic"))
         config.set_main_option("sqlalchemy.url", settings.database_url.replace("+aiosqlite", ""))
 
-    command.upgrade(config, "head")
+    with _sqlite_migration_lock(settings.database_url):
+        command.upgrade(config, "head")
