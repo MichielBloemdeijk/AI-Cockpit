@@ -759,6 +759,10 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         assert body["current_log"]["messages"][-1]["content"] == "I understand."
         assert body["session"]["provider_adapter"] == "fake"
         assert set(body["cursors"]) == {"conversation", "task", "session"}
+        situation_revision = body["situation_revision"]
+        repeated_state = await client.get("/api/jarvis/state")
+        assert repeated_state.status_code == 200
+        assert repeated_state.json()["situation_revision"] == situation_revision
 
         conversation_events = await client.get(
             f"/api/jarvis/logs/{body['current_log']['id']}/events",

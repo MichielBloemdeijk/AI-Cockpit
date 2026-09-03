@@ -138,6 +138,7 @@ export default function JarvisPage() {
   const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
   const wakeLifecycleRef = useRef<JarvisWakeLifecycle | null>(null);
   const wakeRuntimeRef = useRef<JarvisWakeRuntime | null>(null);
+  const refreshInFlightRef = useRef(false);
   const rearmWakeRef = useRef<(reason: "idle_timeout" | "explicit_sleep") => Promise<void>>(
     async () => undefined,
   );
@@ -190,6 +191,8 @@ export default function JarvisPage() {
   }, []);
 
   const refresh = useCallback(async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     try {
       const projection = await getJarvisState();
       const logId = projection.current_log?.id ?? null;
@@ -223,6 +226,7 @@ export default function JarvisPage() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to load Jarvis");
     } finally {
+      refreshInFlightRef.current = false;
       setLoading(false);
     }
   }, [setLiveStreams]);

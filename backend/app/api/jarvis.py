@@ -103,6 +103,7 @@ async def get_jarvis_state() -> JarvisStateResponse:
     if state.current_log is not None:
         situation = await jarvis_situation_projector.project(
             conversation_id=state.current_log.id,
+            advance_revision=False,
         )
         detail = await conversation_read_model.get_conversation_detail(state.current_log.id)
         conversation_cursor, _ = await jarvis_coordinator.replay_conversation_events(

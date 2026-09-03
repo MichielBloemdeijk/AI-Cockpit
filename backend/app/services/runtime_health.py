@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
@@ -39,6 +39,7 @@ class RuntimeHealthService:
         if self._task is not None and not self._task.done():
             return
         await self.mark_stale_components()
+        await self.healthy("runtime_watchdog", force=True)
         self._stop = asyncio.Event()
         self._task = asyncio.create_task(self._run(self._stop), name="jarvis-runtime-watchdog")
 
@@ -126,23 +127,29 @@ class RuntimeHealthService:
         cutoff = timestamp - timedelta(seconds=settings.jarvis_component_stale_after_seconds)
         changed = 0
         async with session_scope() as session:
-            rows = list((await session.execute(select(RuntimeComponentHealth))).scalars().all())
-            by_name = {row.component: row for row in rows}
             for component in EXPECTED_COMPONENTS:
-                row = by_name.get(component)
-                if row is None:
-                    session.add(RuntimeComponentHealth(
+                result = await session.execute(
+                    sqlite_insert(RuntimeComponentHealth)
+                    .values(
                         component=component,
                         status="starting",
                         detail="Awaiting first heartbeat.",
                         heartbeat_at=timestamp,
-                    ))
-                    changed += 1
-                elif row.status != "offline" and _aware(row.heartbeat_at) < cutoff:
-                    row.status = "offline"
-                    row.detail = "Heartbeat is stale."
-                    row.updated_at = timestamp
-                    changed += 1
+                    )
+                    .on_conflict_do_nothing(index_elements=["component"])
+                )
+                changed += max(0, result.rowcount or 0)
+            result = await session.execute(
+                update(RuntimeComponentHealth)
+                .where(RuntimeComponentHealth.status != "offline")
+                .where(RuntimeComponentHealth.heartbeat_at < cutoff)
+                .values(
+                    status="offline",
+                    detail="Heartbeat is stale.",
+                    updated_at=timestamp,
+                )
+            )
+            changed += max(0, result.rowcount or 0)
         return changed
 
     @staticmethod
@@ -174,6 +181,7 @@ class RuntimeHealthService:
 
                 await worker_coordinator.reconcile_availability()
                 await self.mark_stale_components()
+                await self.healthy("runtime_watchdog")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

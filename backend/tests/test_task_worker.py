@@ -16,6 +16,7 @@ from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
 from app.services.worker_coordinator import ClaimResult
+from app.worker import wait_for_worker_activation
 
 
 def control_response(name: str, arguments: dict, *, content: str = "") -> ModelResponse:
@@ -30,6 +31,26 @@ def control_response(name: str, arguments: dict, *, content: str = "") -> ModelR
         ],
         finish_reason="tool_calls",
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_startup_waits_for_an_abrupt_predecessor_lease(monkeypatch) -> None:
+    class DelayedWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def activate(self) -> bool:
+            self.calls += 1
+            return self.calls >= 3
+
+    worker = DelayedWorker()
+
+    async def immediate_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", immediate_sleep)
+    await wait_for_worker_activation(worker, timeout_seconds=1)  # type: ignore[arg-type]
+    assert worker.calls == 3
 
 
 @pytest.mark.asyncio

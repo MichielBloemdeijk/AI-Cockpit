@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import Task
+from app.db.tables import RuntimeComponentHealth, Task
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.jarvis_situation import jarvis_situation_projector
 from app.services.reminder_scheduler import reminder_scheduler
@@ -88,6 +88,27 @@ async def test_situation_snapshot_exposes_durable_component_failures() -> None:
     assert scheduler["detail"] == "scheduler loop crashed"
     assert scheduler["failure_count"] == 1
     assert situation.payload["component_health"]["worker"]["status"] == "offline"
+
+
+@pytest.mark.asyncio
+async def test_health_watchdog_atomically_marks_stale_rows_and_recovers() -> None:
+    now = datetime.now(timezone.utc)
+    await runtime_health_service.healthy("reminder_scheduler", force=True)
+    await runtime_health_service.failed("runtime_watchdog", "database is locked")
+    async with session_scope() as session:
+        scheduler = await session.get(RuntimeComponentHealth, "reminder_scheduler")
+        assert scheduler is not None
+        scheduler.heartbeat_at = now - timedelta(minutes=1)
+
+    changed = await runtime_health_service.mark_stale_components(now=now)
+    await runtime_health_service.healthy("runtime_watchdog", force=True)
+
+    async with session_scope() as session:
+        snapshot = await runtime_health_service.snapshot_in_session(session, now=now)
+    assert changed >= 1
+    assert snapshot["reminder_scheduler"]["status"] == "offline"
+    assert snapshot["runtime_watchdog"]["status"] == "healthy"
+    assert snapshot["runtime_watchdog"]["detail"] is None
 
 
 @pytest.mark.asyncio

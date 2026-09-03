@@ -53,6 +53,7 @@ class JarvisSituationProjector:
         conversation_id: str,
         session_id: str | None = None,
         now: datetime | None = None,
+        advance_revision: bool = True,
     ) -> JarvisSituationSnapshot:
         async with session_scope() as session:
             return await self.project_in_session(
@@ -60,6 +61,7 @@ class JarvisSituationProjector:
                 conversation_id=conversation_id,
                 session_id=session_id,
                 now=now,
+                advance_revision=advance_revision,
             )
 
     async def project_in_session(
@@ -69,18 +71,20 @@ class JarvisSituationProjector:
         conversation_id: str,
         session_id: str | None = None,
         now: datetime | None = None,
+        advance_revision: bool = True,
     ) -> JarvisSituationSnapshot:
         timestamp = (now or utc_now()).astimezone(timezone.utc)
         conversation = await session.get(Conversation, conversation_id)
         state = await session.get(JarvisState, "current")
         if conversation is None or state is None:
             raise ValueError("Jarvis situation requires the current conversation")
-        await session.execute(
-            update(JarvisState)
-            .where(JarvisState.id == "current")
-            .values(situation_revision=JarvisState.situation_revision + 1)
-        )
-        await session.refresh(state)
+        if advance_revision:
+            await session.execute(
+                update(JarvisState)
+                .where(JarvisState.id == "current")
+                .values(situation_revision=JarvisState.situation_revision + 1)
+            )
+            await session.refresh(state)
 
         preferences = await session.get(JarvisPreference, "current")
         realtime = await session.get(RealtimeSession, session_id) if session_id else None
@@ -180,7 +184,7 @@ class JarvisSituationProjector:
             for message in historical_messages[:-40]
             if message.role in {"user", "assistant"} and message.content.strip()
         ]
-        if summary_lines:
+        if summary_lines and advance_revision:
             state.conversation_summary = "\n".join(summary_lines)[-4_000:]
 
         worker = (await session.execute(
