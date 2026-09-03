@@ -26,6 +26,7 @@ from app.db.tables import (
 )
 from app.services.jarvis_time import temporal_frame
 from app.services.runtime_health import runtime_health_service
+from app.services.task_error_messages import public_failure_summary
 from app.services.task_service import ACTIVE_TASK_STATUSES
 
 
@@ -214,12 +215,18 @@ class JarvisSituationProjector:
 
         def task_value(task: Task) -> dict[str, Any]:
             due = _aware(task.resume_at)
+            summary = task.terminal_summary
+            diagnostics_available = False
+            if task.status in {"failed", "interrupted"} and summary:
+                summary = public_failure_summary(summary)
+                diagnostics_available = True
             return {
                 "task_id": task.id,
                 "goal": task.goal,
                 "status": task.status,
                 "status_reason": task.status_reason,
-                "summary": task.terminal_summary,
+                "summary": summary,
+                "diagnostics_available": diagnostics_available,
                 "importance": task.importance,
                 "due_at": None if due is None else due.isoformat(),
                 "overdue": bool(task.status == "waiting_until" and due is not None and due <= timestamp),

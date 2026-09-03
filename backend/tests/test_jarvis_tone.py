@@ -25,4 +25,4 @@ def test_calm_butler_evaluator_rejects_excited_verbose_filler() -> None:
 
 def test_latest_session_filler_is_kept_as_a_regression_corpus() -> None:
     for response in CALM_BUTLER_REGRESSION_RESPONSES:
-        assert "generic_filler" in calm_acknowledgement_violations(response), response
+        assert calm_acknowledgement_violations(response), response

@@ -1,45 +1,34 @@
 # Jarvis Product Gaps
 
 Status: Active recovery backlog
-Last updated: 2026-09-02
+Last updated: 2026-09-03
 
 This document is the acceptance record for user-visible Jarvis shortcomings. A
 feature is not considered complete merely because its code path or automated
 tests exist; it remains open until the real interaction behaves correctly.
 
-## Critical open gaps
+## Open acceptance gaps
 
 ### Reliable reminders and time
 
-- Jarvis has no trusted device timezone or current-time context in the voice
-  contract, so it may ask the user for the time or calculate relative reminders
-  incorrectly.
-- Reminder intent can be routed into the generic task queue instead of the
-  deterministic reminder scheduler.
-- A due reminder can trigger a voice response that repeats stale queue language.
-- Delivery is currently accepted when a required phrase appears anywhere in the
-  transcript, even when surrounding words contradict the fact.
-- Jarvis does not consistently know whether an update was spoken, opened as a
-  notification, or is still owed.
+- The authoritative-time, reminder-routing, contradiction-checking, and durable
+  delivery changes pass automated tests but still need end-to-end phone
+  acceptance with real Realtime audio and notification timing.
 
 ### Situation awareness and task truth
 
-- The model-facing task snapshot omits `waiting_until` reminders and recent
-  terminal tasks.
-- Worker and scheduler health are not included in Jarvis's response context.
-- A task may remain described as queued after its worker has gone offline.
-- Old dialogue and tool outputs can outweigh newer durable state in a Realtime
-  response.
-- Historical conversation recall exists, but current task state, recent events,
-  and outstanding communication are not projected as one authoritative view.
+- The authoritative situation projection and component-health state pass
+  automated tests. Natural recall and truthful answers after real worker,
+  scheduler, and session failures still need conversational acceptance testing.
 
 ### Conversation style
 
 - Jarvis remains too verbose and too enthusiastic for routine interactions.
-- It uses filler such as acknowledgements, process narration, repeated requests,
-  and generic offers of further help when a shorter response would suffice.
-- The target is a calm, understated butler: polite, direct, and normally one
-  short sentence.
+- The current acceptance target is a calm, collected, low-energy personal aide
+  that consumes as little of the user's time and attention as possible. Every
+  sentence must answer, clarify, warn, or confirm something necessary.
+- Prompt and regression-corpus changes are implemented, but subjective vocal
+  delivery and concision still require repeated real-session evaluation.
 
 ## Latest reminder incident
 
@@ -60,6 +49,15 @@ The 2026-09-02 production log provides the regression scenario:
    given that health state and promised an update anyway.
 
 ## Implemented, awaiting device acceptance
+
+- Technical task errors remain available in durable history and explicit
+  diagnostic task lookups, while unsolicited speech, situation context, and
+  notifications receive only a short classified explanation. Verify that a
+  normal failure says only what failed and why, while “why exactly?” can still
+  retrieve the underlying diagnostic.
+- Jarvis now has an explicit least-interruption behavior contract and calm,
+  even-paced vocal direction. It has no hard response token cap; explicitly
+  requested long answers must finish naturally.
 
 - User and assistant transcript deltas are streamed through resumable live
   events and rendered provisionally in the Jarvis page. Verify ordering,

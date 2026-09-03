@@ -13,6 +13,7 @@ from app.services.history_retrieval import history_retrieval_service
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.natural_task_resolver import natural_task_resolver, task_title
 from app.services.reminder_scheduler import reminder_scheduler
+from app.services.task_error_messages import public_failure_summary
 from app.services.task_service import task_service
 
 
@@ -97,7 +98,15 @@ class RestrictedBrainGateway:
                     "title": task_title(item.task),
                     "status": item.task.status,
                     "status_reason": item.task.status_reason,
-                    "summary": item.task.terminal_summary,
+                    "summary": (
+                        public_failure_summary(item.task.terminal_summary)
+                        if item.task.status in {"failed", "interrupted"}
+                        else item.task.terminal_summary
+                    ),
+                    "diagnostics_available": bool(
+                        item.task.status in {"failed", "interrupted"}
+                        and item.task.terminal_summary
+                    ),
                     "due_at": item.task.resume_at.isoformat() if item.task.resume_at else None,
                     "internal_task_id": item.task.id,
                 }
@@ -115,13 +124,22 @@ class RestrictedBrainGateway:
             if detail is None:
                 raise ValueError("Task not found")
             await natural_task_resolver.touch(task.id)
-            return BrainResult(output={
+            include_diagnostics = bool(arguments.get("include_diagnostics"))
+            output = {
                 "internal_task_id": detail.task.id,
                 "title": task_title(detail.task),
                 "goal": detail.task.goal,
                 "status": detail.task.status,
                 "status_reason": detail.task.status_reason,
-                "summary": detail.task.terminal_summary,
+                "summary": (
+                    public_failure_summary(detail.task.terminal_summary)
+                    if detail.task.status in {"failed", "interrupted"}
+                    else detail.task.terminal_summary
+                ),
+                "diagnostics_available": bool(
+                    detail.task.status in {"failed", "interrupted"}
+                    and detail.task.terminal_summary
+                ),
                 "questions": [
                     {
                         "internal_question_id": item.id,
@@ -131,7 +149,10 @@ class RestrictedBrainGateway:
                     for item in detail.questions
                 ],
                 "internal_fields_are_not_user_facing": True,
-            })
+            }
+            if include_diagnostics and detail.task.terminal_summary:
+                output["diagnostic_error"] = detail.task.terminal_summary
+            return BrainResult(output=output)
 
         if tool_name == "answer_task_question":
             task = await self._resolve_task(arguments, mutation=True)

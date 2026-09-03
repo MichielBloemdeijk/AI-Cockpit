@@ -23,6 +23,7 @@ from app.db.tables import (
     TaskPresentation,
     TaskQuestion,
 )
+from app.services.task_error_messages import public_failure_summary
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )
@@ -53,9 +54,10 @@ def _summary(task: Task, event: TaskEvent, question: TaskQuestion | None) -> str
     payload = event.payload_json if isinstance(event.payload_json, dict) else {}
     if question is not None:
         return sanitize_summary(question.question)
-    return sanitize_summary(
-        str(payload.get("summary") or task.terminal_summary or f"Task {task.status}.")
-    )
+    value = str(payload.get("summary") or task.terminal_summary or f"Task {task.status}.")
+    if event.event_type in {"task.failed", "task.interrupted"}:
+        value = public_failure_summary(value)
+    return sanitize_summary(value)
 
 
 async def enqueue_task_notification(
@@ -98,7 +100,13 @@ async def enqueue_task_notification(
             deep_link=deep_link,
             status="queued",
         )
-        .on_conflict_do_nothing(index_elements=["dedupe_key"])
+        .on_conflict_do_update(
+            index_elements=["dedupe_key"],
+            set_={
+                "payload_json": payload,
+                "deep_link": deep_link,
+            },
+        )
     )
     result = await session.execute(
         select(NotificationOutbox.id)

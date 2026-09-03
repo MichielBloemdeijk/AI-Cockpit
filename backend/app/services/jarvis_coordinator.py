@@ -28,6 +28,7 @@ from app.db.tables import (
     VoiceSessionEvent,
 )
 from app.services.jarvis_brain import restricted_brain_gateway
+from app.services.task_error_messages import public_tool_error
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.jarvis_time import normalize_client_context
 from app.services.jarvis_situation import jarvis_situation_projector
@@ -819,10 +820,12 @@ class JarvisCoordinator:
                 now=utc_now(),
             )
             output = result.output
+            durable_output = output
             control = result.control
             ok = True
         except Exception as exc:
-            output = {"error": str(exc)}
+            durable_output = {"error": str(exc)}
+            output = public_tool_error(str(exc))
             control = None
             ok = False
 
@@ -835,7 +838,7 @@ class JarvisCoordinator:
                     "call_id": call_id,
                     "name": tool_name,
                     "ok": ok,
-                    "output": output,
+                    "output": durable_output,
                 },
                 idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
             )

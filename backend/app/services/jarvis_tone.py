@@ -12,6 +12,8 @@ BANNED_OPENINGS = (
     "of course",
     "absolutely",
     "great",
+    "got it",
+    "alright",
     "i hear you",
 )
 BANNED_FILLER = (
@@ -25,6 +27,11 @@ BANNED_FILLER = (
     "i'll keep it",
     "i'd be delighted",
     "i would be delighted",
+    "speak when you're ready",
+    "speak when you are ready",
+    "i am speaking as text",
+    "i'll weigh this carefully",
+    "i will weigh this carefully",
 )
 
 
@@ -35,6 +42,8 @@ class CalmButlerCase:
 
 
 CALM_BUTLER_ACKNOWLEDGEMENT_CORPUS: tuple[CalmButlerCase, ...] = (
+    CalmButlerCase("Hello.", "Hello."),
+    CalmButlerCase("Are you there?", "Yes."),
     CalmButlerCase("Thanks.", "You're welcome."),
     CalmButlerCase("Remind me in ten minutes.", "Reminder set."),
     CalmButlerCase("Queue that task.", "It's queued."),
@@ -47,6 +56,10 @@ CALM_BUTLER_REGRESSION_RESPONSES: tuple[str, ...] = (
     "I keep it brief, but I still try to be clear and polite in conversation. If you prefer, I can be even more minimal.",
     "Let me pick up the thread and continue the story from there.",
     "Let me think about where to pick the story up cleanly and keep it moving.",
+    "Yes. I'm here. Speak when you're ready.",
+    "Alright, picking up the story again and keeping it concise.",
+    "Got it, I'll weigh this carefully and then give you a single choice.",
+    "I am speaking as text for you to hear.",
 )
 
 
@@ -55,7 +68,7 @@ def calm_acknowledgement_violations(response: str) -> tuple[str, ...]:
     normalized_words = re.sub(r"[^\w']+", " ", normalized).strip()
     words = re.findall(r"\b[\w']+\b", normalized)
     violations: list[str] = []
-    if not 2 <= len(words) <= 8:
+    if not 1 <= len(words) <= 8:
         violations.append("word_count")
     if "!" in response:
         violations.append("excitement")

@@ -122,14 +122,19 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     }
     assert "multi-step or substantial analysis with dispatch_task" in session_config["instructions"]
     assert "has no permission to browse, edit files, run commands" in session_config["instructions"]
-    assert "two to eight words for a simple acknowledgement" in session_config["instructions"]
-    assert "Do not restate the request" in session_config["instructions"]
+    assert "one to eight words" in session_config["instructions"]
+    assert "Do not warm up" in session_config["instructions"]
     assert "Never use exclamation marks" in session_config["instructions"]
     assert "Remain silent until its result exists" in session_config["instructions"]
     assert "It hasn't started; the worker is offline." in session_config["instructions"]
     assert "Never add a preamble" in session_config["instructions"]
     assert "Begin the requested content immediately" in session_config["instructions"]
     assert "continue until it is naturally complete" in session_config["instructions"]
+    assert "not a customer-service chatbot" in session_config["instructions"]
+    assert "taking as little of their time and attention as possible" in session_config["instructions"]
+    assert "collected, even pace and low emotional intensity" in session_config["instructions"]
+    assert "include_diagnostics=true" in session_config["instructions"]
+    assert "Never read SQL" in session_config["instructions"]
     assert {tool["name"] for tool in session_config["tools"]} == {
         "dispatch_task",
         "list_tasks",

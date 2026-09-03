@@ -18,6 +18,7 @@ from app.db.tables import (
     TaskQuestion,
 )
 from app.services.task_notifications import enqueue_task_notification
+from app.services.task_error_messages import failure_category, public_failure_summary
 from app.services.task_service import GENERIC_REMINDER_TEXT
 from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
 
@@ -485,6 +486,12 @@ class TaskPresentationService:
     @staticmethod
     def _facts(event: TaskEvent, task: Task) -> dict:
         payload = dict(event.payload_json or {})
+        if event.event_type in {"task.failed", "task.interrupted"}:
+            raw_failure = str(payload.get("summary") or task.terminal_summary or "")
+            payload["summary"] = public_failure_summary(raw_failure)
+            for key in ("error", "exception", "traceback", "stack", "stderr"):
+                payload.pop(key, None)
+            payload["diagnostics_available"] = bool(raw_failure)
         candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
         kind = {
             "progress": "progress",
@@ -545,6 +552,14 @@ class TaskPresentationService:
             detail = summary or "It finished successfully."
             return f"{goal} is complete: {detail}"[:240].rstrip()
         if event.event_type in {"task.failed", "task.interrupted"}:
+            category = failure_category(
+                str((event.payload_json or {}).get("summary") or task.terminal_summary or "")
+            )
+            if category:
+                short_goal = goal[:56].rstrip()
+                if len(goal) > 56:
+                    short_goal = short_goal.rstrip(" ,;:-") + "…"
+                return f"{short_goal} failed because of {category}."[:240].rstrip()
             detail = summary or "It could not finish."
             return f"{goal} failed: {detail}"[:240].rstrip()
         if event.event_type == "task.cancelled":
