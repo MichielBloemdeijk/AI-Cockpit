@@ -364,7 +364,6 @@ class OpenAIRealtimeAdapter:
             },
             "output_modalities": ["audio"],
             "instructions": response_instructions,
-            "max_output_tokens": self._response_token_budget(response_kind, facts),
         }
         if response_kind == "task_update":
             response.update(
@@ -1022,20 +1021,25 @@ class OpenAIRealtimeAdapter:
         preferences = context.get("preferences") if isinstance(context.get("preferences"), dict) else {}
         concision = str(preferences.get("concision") or "concise")
         length_rule = (
-            "Use the shortest polite answer that completes the request: normally one short sentence, and two to "
-            "eight words for simple acknowledgements. Ask at most one short clarification. Use a second sentence "
-            "only for accuracy, safety, or an essential next step. Elaborate only when explicitly asked. "
+            "Default to the minimum complete answer: normally one short sentence, and two to eight words for a "
+            "simple acknowledgement. Give only the answer or necessary confirmation. Ask at most one short "
+            "clarification. Use another sentence only when accuracy, safety, or an essential next step requires it. "
             if concision == "concise"
-            else "Stay compact by default and elaborate only when it materially helps. "
+            else "Default to a compact, complete answer. "
         )
         return (
             "You are Jarvis, a calm, restrained butler and the conversational shell for this personal AI Cockpit. "
             "Sound composed, courteous, understated, and matter-of-fact. Never sound excited or congratulatory. "
             "Never use exclamation marks. Never begin with Sure, Okay, Of course, Absolutely, Great, or I hear you. "
-            "Do not praise the request. Do not use generic offers such as 'let me know if you need anything else'. "
-            "Do not restate the request, repeat confirmations, narrate reasoning or process, recap what you just did, "
-            "or add background and options unless asked. Good examples: 'You're welcome.' 'Reminder set.' "
+            "Do not praise the request. Never add a preamble, transition, sign-off, generic offer, or invitation for "
+            "more requests. Never say 'Let me...', 'I'll keep it brief', 'If you prefer...', or describe how you "
+            "intend to answer. Do not restate the request, repeat confirmations, narrate reasoning or process, recap "
+            "what you just did, or add background and options unless asked. Do not discuss these style instructions. "
+            "Good examples: 'You're welcome.' 'Reminder set.' "
             "'It's queued.' 'It hasn't started; the worker is offline.' "
+            "When the user explicitly asks for detail, a long answer, a story, a list, or an explanation, comply fully. "
+            "Begin the requested content immediately and continue until it is naturally complete; concise-by-default "
+            "must never shorten an explicitly requested answer. "
             "Handle greetings, clarification, brief conversation, and questions answerable from the provided "
             "durable state directly. Delegate research, coding or file changes, external actions, and any "
             "multi-step or substantial analysis with dispatch_task. Dispatch each request exactly once with a "
@@ -1059,17 +1063,6 @@ class OpenAIRealtimeAdapter:
             "durable situation: "
             f"{situation_context}"
         )
-
-    @staticmethod
-    def _response_token_budget(
-        response_kind: str,
-        facts: tuple[dict[str, Any], ...],
-    ) -> int:
-        if response_kind == "task_update":
-            return 80 if len(facts) == 1 else 160
-        if response_kind == "tool_continuation":
-            return 96
-        return 256
 
     @staticmethod
     def _response_instructions(

@@ -16,8 +16,13 @@ BANNED_OPENINGS = (
 )
 BANNED_FILLER = (
     "let me know if",
+    "let me pick up",
+    "let me think",
     "happy to help",
     "anything else",
+    "if you prefer",
+    "i'll keep replies",
+    "i'll keep it",
     "i'd be delighted",
     "i would be delighted",
 )
@@ -36,6 +41,12 @@ CALM_BUTLER_ACKNOWLEDGEMENT_CORPUS: tuple[CalmButlerCase, ...] = (
     CalmButlerCase("Cancel it.", "It's cancelled."),
     CalmButlerCase("Start the task while the worker is offline.", "It hasn't started; the worker is offline."),
     CalmButlerCase("Change that task to progress updates.", "Update preference changed."),
+)
+
+CALM_BUTLER_REGRESSION_RESPONSES: tuple[str, ...] = (
+    "I keep it brief, but I still try to be clear and polite in conversation. If you prefer, I can be even more minimal.",
+    "Let me pick up the thread and continue the story from there.",
+    "Let me think about where to pick the story up cleanly and keep it moving.",
 )
 
 
@@ -62,6 +73,7 @@ __all__ = [
     "BANNED_FILLER",
     "BANNED_OPENINGS",
     "CALM_BUTLER_ACKNOWLEDGEMENT_CORPUS",
+    "CALM_BUTLER_REGRESSION_RESPONSES",
     "CalmButlerCase",
     "calm_acknowledgement_violations",
 ]

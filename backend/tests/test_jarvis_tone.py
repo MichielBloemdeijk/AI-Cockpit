@@ -1,5 +1,6 @@
 from app.services.jarvis_tone import (
     CALM_BUTLER_ACKNOWLEDGEMENT_CORPUS,
+    CALM_BUTLER_REGRESSION_RESPONSES,
     calm_acknowledgement_violations,
 )
 
@@ -20,3 +21,8 @@ def test_calm_butler_evaluator_rejects_excited_verbose_filler() -> None:
         "banned_opening",
         "generic_filler",
     }
+
+
+def test_latest_session_filler_is_kept_as_a_regression_corpus() -> None:
+    for response in CALM_BUTLER_REGRESSION_RESPONSES:
+        assert "generic_filler" in calm_acknowledgement_violations(response), response
