@@ -7,9 +7,9 @@ import { ArrowLeft, Ban, Bot, ExternalLink, Loader2, RefreshCw, Send } from "luc
 import { ChatMessage } from "@/components/ChatMessage";
 import { acknowledgePushDelivery, answerTaskQuestion, cancelTask, getTask, retryTask, type TaskDetail } from "@/lib/api";
 import { taskEventToChatMessage } from "@/lib/task-trace";
+import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
 
 const RETRYABLE = new Set(["failed", "interrupted", "cancelled"]);
-const ACTIVE = new Set(["queued", "running", "waiting_for_input"]);
 
 export default function TaskDetailPage({ params }: { params: Promise<{ taskId: string }> }) {
   const { taskId } = use(params);
@@ -95,7 +95,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
             <h1 className="truncate text-sm font-semibold text-zinc-100">{task?.goal || "Task"}</h1>
             <p className="mt-0.5 text-xs text-zinc-500">{task?.id}</p>
           </div>
-          {task && ACTIVE.has(task.status) && (
+          {task && ACTIVE_TASK_STATUSES.has(task.status) && (
             <button onClick={() => void act("cancel")} disabled={busy || Boolean(task.cancellation_requested_at)} className="flex items-center gap-1.5 rounded-xl border border-red-500/30 px-3 py-2 text-xs text-red-300 disabled:opacity-40"><Ban size={13} /> Cancel</button>
           )}
           {task && RETRYABLE.has(task.status) && (
@@ -126,7 +126,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
               <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4 text-sm">
                 <h2 className="font-medium text-zinc-100">State</h2>
                 <dl className="mt-3 space-y-2 text-xs">
-                  <div className="flex justify-between gap-3"><dt className="text-zinc-500">Status</dt><dd className="capitalize text-zinc-200">{task.status.replaceAll("_", " ")}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-zinc-500">Status</dt><dd className="capitalize text-zinc-200">{taskStatusLabel(task)}</dd></div>
                   <div className="flex justify-between gap-3"><dt className="text-zinc-500">Queue</dt><dd className="text-zinc-200">{task.queue_position ? `#${task.queue_position}` : "—"}</dd></div>
                   <div className="flex justify-between gap-3"><dt className="text-zinc-500">Worker</dt><dd className={task.worker_health.status === "online" ? "text-emerald-300" : "text-zinc-400"}>{task.worker_health.status}</dd></div>
                   <div className="flex justify-between gap-3"><dt className="text-zinc-500">Origin</dt><dd className="text-zinc-200">{task.origin_surface.replaceAll("_", " ")}</dd></div>
@@ -140,6 +140,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                   </Link>
                 )}
                 {task.cancellation_requested_at && task.status === "running" && <p className="mt-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">Cancellation requested; waiting for the worker to exit safely.</p>}
+                {task.status_reason && <p className="mt-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">{task.status_reason}</p>}
                 {task.terminal_summary && <p className="mt-3 border-t border-zinc-800 pt-3 text-zinc-300">{task.terminal_summary}</p>}
               </section>
             )}

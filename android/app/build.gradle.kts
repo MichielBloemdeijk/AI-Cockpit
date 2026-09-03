@@ -45,5 +45,6 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20250517")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

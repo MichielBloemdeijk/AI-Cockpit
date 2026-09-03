@@ -179,16 +179,16 @@ class FakeVoiceSessionAdapter:
         if response_kind == "task_update":
             transcript = ""
         elif pending_tool is not None:
-            transcript = "I've started that in the background."
+            transcript = self._tool_confirmation(pending_tool)
         elif normalized:
-            transcript = f"I heard: {normalized}"
+            transcript = "I understand."
         else:
             transcript = ""
         if facts:
             total_updates = max(len(facts), int(context.get("pending_update_count") or 0))
             count_prefix = f"There are {total_updates} updates. " if total_updates > 3 else ""
             transcript = f"{transcript} {count_prefix}{self._summarize_facts(facts)}".strip()
-        transcript = transcript or "All set."
+        transcript = transcript or "That's done."
         await self.inject(
             session_id=session_id,
             generation=generation,
@@ -282,6 +282,24 @@ class FakeVoiceSessionAdapter:
             for fact in facts
         ]
         return " ".join(value.strip() for value in values if value.strip())
+
+    @staticmethod
+    def _tool_confirmation(output: dict[str, Any]) -> str:
+        if not bool(output.get("ok")):
+            return "That didn't work."
+        result = output.get("result") if isinstance(output.get("result"), dict) else {}
+        status = str(result.get("status") or "")
+        if status == "waiting_for_worker":
+            return "It hasn't started; the worker is offline."
+        if status == "queued":
+            return "It's queued."
+        if status == "cancelled":
+            return "It's cancelled."
+        if result.get("due_at"):
+            return "Reminder set."
+        if result.get("presentation_policy"):
+            return "Update preference changed."
+        return "That's done."
 
 
 fake_voice_session_adapter = FakeVoiceSessionAdapter()

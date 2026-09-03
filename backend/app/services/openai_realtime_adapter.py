@@ -364,6 +364,7 @@ class OpenAIRealtimeAdapter:
             },
             "output_modalities": ["audio"],
             "instructions": response_instructions,
+            "max_output_tokens": self._response_token_budget(response_kind, facts),
         }
         if response_kind == "task_update":
             response.update(
@@ -383,7 +384,6 @@ class OpenAIRealtimeAdapter:
                     ],
                     "tools": [],
                     "tool_choice": "none",
-                    "max_output_tokens": 80 if len(facts) == 1 else 160,
                 }
             )
         await self._send(
@@ -1022,17 +1022,20 @@ class OpenAIRealtimeAdapter:
         preferences = context.get("preferences") if isinstance(context.get("preferences"), dict) else {}
         concision = str(preferences.get("concision") or "concise")
         length_rule = (
-            "Answer like a practical voice assistant. Use the shortest polite answer that completes the request: "
-            "normally one short sentence, and two to eight words for simple acknowledgements. Do not restate the "
-            "request, narrate your reasoning, recap what you just did, offer extra help, add background, or list "
-            "options unless asked. Ask at most one short clarification. Use a second sentence only when accuracy, "
-            "safety, or an essential next step requires it. Elaborate only when explicitly asked. "
+            "Use the shortest polite answer that completes the request: normally one short sentence, and two to "
+            "eight words for simple acknowledgements. Ask at most one short clarification. Use a second sentence "
+            "only for accuracy, safety, or an essential next step. Elaborate only when explicitly asked. "
             if concision == "concise"
-            else "Be polite and compact by default. Avoid restating the request, process narration, generic offers "
-            "of more help, and detail that does not materially help. "
+            else "Stay compact by default and elaborate only when it materially helps. "
         )
         return (
-            "You are Jarvis, the concise conversational shell for this personal AI Cockpit. "
+            "You are Jarvis, a calm, restrained butler and the conversational shell for this personal AI Cockpit. "
+            "Sound composed, courteous, understated, and matter-of-fact. Never sound excited or congratulatory. "
+            "Never use exclamation marks. Never begin with Sure, Okay, Of course, Absolutely, Great, or I hear you. "
+            "Do not praise the request. Do not use generic offers such as 'let me know if you need anything else'. "
+            "Do not restate the request, repeat confirmations, narrate reasoning or process, recap what you just did, "
+            "or add background and options unless asked. Good examples: 'You're welcome.' 'Reminder set.' "
+            "'It's queued.' 'It hasn't started; the worker is offline.' "
             "Handle greetings, clarification, brief conversation, and questions answerable from the provided "
             "durable state directly. Delegate research, coding or file changes, external actions, and any "
             "multi-step or substantial analysis with dispatch_task. Dispatch each request exactly once with a "
@@ -1041,6 +1044,8 @@ class OpenAIRealtimeAdapter:
             "work is already complete. Resolve tasks through natural descriptions and recency; never ask the user "
             "for an ID or speak an internal ID. Use get_task for durable status and the question/cancellation tools only "
             "for their named purposes. Use history_grep for narrow local recall and reminder tools for one-shot reminders. "
+            "When a tool is needed, emit only the function call and no spoken or written assistant prose. Remain "
+            "silent until its result exists, then give only the necessary confirmation or error. "
             "For reminders, never ask for the current time when CURRENT_TIME is present. Pass relative requests "
             "as after timing and local clock requests as local timing; never calculate an absolute time yourself. "
             "A timed reminder must use create_reminder, never dispatch_task. If dispatch_task rejects a reminder, "
@@ -1054,6 +1059,17 @@ class OpenAIRealtimeAdapter:
             "durable situation: "
             f"{situation_context}"
         )
+
+    @staticmethod
+    def _response_token_budget(
+        response_kind: str,
+        facts: tuple[dict[str, Any], ...],
+    ) -> int:
+        if response_kind == "task_update":
+            return 80 if len(facts) == 1 else 160
+        if response_kind == "tool_continuation":
+            return 96
+        return 256
 
     @staticmethod
     def _response_instructions(
@@ -1158,7 +1174,10 @@ class OpenAIRealtimeAdapter:
             "audio": {
                 "input": {
                     "noise_reduction": {"type": settings.openai_realtime_noise_reduction},
-                    "transcription": {"model": settings.openai_realtime_transcription_model},
+                    "transcription": {
+                        "model": settings.openai_realtime_transcription_model,
+                        "keywords": ["Jarvis", "queued", "reminder", "snooze"],
+                    },
                     "turn_detection": {
                         "type": "semantic_vad",
                         "eagerness": settings.openai_realtime_vad_eagerness,

@@ -20,6 +20,53 @@ import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
 data class RealtimeCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
+data class JarvisAssistantStatus(
+    val workerStatus: String,
+    val waitingForWorkerCount: Int,
+    val overdueReminderCount: Int,
+    val degradedComponents: List<String>,
+)
+
+internal fun parseJarvisAssistantStatus(
+    body: JSONObject,
+    now: Instant = Instant.now(),
+): JarvisAssistantStatus {
+    val tasks = body.optJSONArray("tasks")
+    var waitingForWorker = 0
+    var overdueReminders = 0
+    if (tasks != null) {
+        for (index in 0 until tasks.length()) {
+            val task = tasks.optJSONObject(index) ?: continue
+            val status = task.optString("status")
+            if (status == "waiting_for_worker") waitingForWorker += 1
+            val scheduled = task.optJSONObject("scheduled_delivery")
+            val dueAt = task.optString("resume_at").takeIf { it.isNotBlank() }
+                ?: task.optString("waiting_until").takeIf { it.isNotBlank() }
+            val overdue = dueAt?.let { value ->
+                runCatching { !Instant.parse(value).isAfter(now) }.getOrDefault(false)
+            } ?: false
+            if (status == "waiting_until" && scheduled?.optString("kind") == "reminder" && overdue) {
+                overdueReminders += 1
+            }
+        }
+    }
+    val components = body.optJSONObject("component_health") ?: JSONObject()
+    val degraded = buildList {
+        val names = components.keys()
+        while (names.hasNext()) {
+            val name = names.next()
+            if (name == "worker") continue
+            val status = components.optJSONObject(name)?.optString("status").orEmpty()
+            if (status !in setOf("healthy", "online")) add(name)
+        }
+    }.sorted()
+    return JarvisAssistantStatus(
+        workerStatus = body.optJSONObject("worker_health")?.optString("status", "offline") ?: "offline",
+        waitingForWorkerCount = waitingForWorker,
+        overdueReminderCount = overdueReminders,
+        degradedComponents = degraded,
+    )
+}
 
 class CockpitApi(private val store: CredentialStore, private val client: OkHttpClient = OkHttpClient()) {
     private val json = "application/json; charset=utf-8".toMediaType()
@@ -88,6 +135,11 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
         val payload = JSONObject().put("state", state)
         execute(authenticated("/api/notifications/deliveries/$deliveryId/ack")
             .post(payload.toString().toRequestBody(json)).build()).close()
+    }
+
+    suspend fun assistantStatus(): JarvisAssistantStatus {
+        val response = execute(authenticated("/api/jarvis/state").get().build())
+        return parseJarvisAssistantStatus(JSONObject(response.body?.string().orEmpty()))
     }
 
     fun liveEvents(cursor: Long, listener: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit): EventSource {

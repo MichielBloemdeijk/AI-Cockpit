@@ -90,12 +90,15 @@ if ($DryRun) {
 
 New-Item -ItemType Directory -Path $logs -Force | Out-Null
 $records = [System.Collections.Generic.List[object]]::new()
-function Start-LoggedProcess([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory, [string]$Name) {
+function Start-LoggedProcess([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory, [string]$Name, [int]$StartupProbeMilliseconds = 750) {
   $stdout = Join-Path $logs "$Name.out.log"
   $stderr = Join-Path $logs "$Name.err.log"
   $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-  Start-Sleep -Milliseconds 500
-  if ($process.HasExited) { throw "$Name exited during startup; inspect $stderr" }
+  Start-Sleep -Milliseconds $StartupProbeMilliseconds
+  if ($process.HasExited) {
+    $tail = if (Test-Path -LiteralPath $stderr -PathType Leaf) { (Get-Content -LiteralPath $stderr -Tail 20 -ErrorAction SilentlyContinue) -join [Environment]::NewLine } else { "No stderr log was created." }
+    throw "$Name exited during startup. Recent stderr from ${stderr}:$([Environment]::NewLine)$tail"
+  }
   $startedUtc = $process.StartTime.ToUniversalTime()
   $records.Add([pscustomobject]@{
     name = $Name
@@ -105,7 +108,7 @@ function Start-LoggedProcess([string]$FilePath, [string[]]$Arguments, [string]$W
     started_at = $startedUtc.ToString("o")
     started_filetime_utc = $startedUtc.ToFileTimeUtc()
   })
-  Write-Host "$Name started (PID $($process.Id)); logs: $stdout"
+  Write-Host "$Name started and remained live for $StartupProbeMilliseconds ms (PID $($process.Id)); logs: $stdout"
 }
 
 function Stop-StartedProcessTree([int]$ProcessId) {
@@ -118,12 +121,18 @@ function Stop-StartedProcessTree([int]$ProcessId) {
 try {
   Start-LoggedProcess $llama $llamaArgs $repo "llama-server"
   Start-LoggedProcess $uv $backendArgs $backend "backend"
-  Start-LoggedProcess $uv $workerArgs $backend "worker"
+  Start-LoggedProcess $uv $workerArgs $backend "worker" 2500
   Start-LoggedProcess $npm $frontendArgs $frontend "frontend"
+  foreach ($record in $records) {
+    if (-not (Get-Process -Id $record.id -ErrorAction SilentlyContinue)) {
+      throw "$($record.name) exited before startup completed; inspect the logs in $logs"
+    }
+  }
   New-Item -ItemType Directory -Path (Split-Path -Parent $pidFile) -Force | Out-Null
   $payload = [pscustomobject]@{ version = 1; processes = @($records) }
   [IO.File]::WriteAllText($pidFile, ($payload | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
   Write-Host "Jarvis local services started. Stop them with scripts/stop-jarvis-local.ps1."
+  Write-Host "Worker startup was verified. If a task shows 'waiting for worker', inspect $logs\worker.err.log immediately."
 } catch {
   foreach ($record in $records) { Stop-StartedProcessTree ([int]$record.id) }
   throw

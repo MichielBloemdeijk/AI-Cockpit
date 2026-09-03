@@ -71,9 +71,9 @@ import {
   mergeProvisionalTranscript,
   type ProvisionalTranscript,
 } from "@/lib/jarvis-transcript-state";
+import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
 
 
-const ACTIVE_TASKS = new Set(["queued", "running", "waiting_for_input", "waiting_until"]);
 const WAKE_MODEL_CONFIGURATION = configuredJarvisWakeModel();
 const FOLLOW_UP_ACTIVITY_EVENTS = new Set([
   "input_audio_buffer.speech_started",
@@ -85,7 +85,7 @@ const FOLLOW_UP_ACTIVITY_EVENTS = new Set([
 
 function statusTone(status: string): string {
   if (status === "completed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
-  if (["waiting_for_input", "waiting_until"].includes(status)) return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+  if (["waiting_for_worker", "waiting_for_input", "waiting_until"].includes(status)) return "border-amber-500/30 bg-amber-500/10 text-amber-200";
   if (["failed", "interrupted", "cancelled"].includes(status)) {
     return "border-rose-500/30 bg-rose-500/10 text-rose-300";
   }
@@ -505,6 +505,9 @@ export default function JarvisPage() {
   const ownsController = session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
   const realtimeBusy = realtime.status === "connecting" || realtime.status === "reconnecting";
   const voiceActive = realtime.status !== "idle";
+  const degradedComponents = Object.entries(state?.component_health ?? {}).filter(
+    ([name, component]) => name !== "worker" && !["healthy", "online"].includes(component.status),
+  );
 
   const armVoice = async () => {
     if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
@@ -582,7 +585,9 @@ export default function JarvisPage() {
               <span className={`h-2.5 w-2.5 rounded-full ${sessionReady || realtime.status === "connected" ? "bg-emerald-400" : "bg-zinc-600"}`} />
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold">Jarvis</span>
-                <span className="block text-xs capitalize text-zinc-400">{floorLabel(state)}</span>
+                <span className="block truncate text-xs capitalize text-zinc-400">
+                  {floorLabel(state)}{degradedComponents.length ? ` · ${degradedComponents.length} system issue${degradedComponents.length === 1 ? "" : "s"}` : ""}
+                </span>
               </span>
             </span>
             {statusOpen ? <ChevronUp size={18} className="text-zinc-400" /> : <ChevronDown size={18} className="text-zinc-400" />}
@@ -591,6 +596,8 @@ export default function JarvisPage() {
             <div className="mb-2 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-xs">
               <div><span className="text-zinc-500">Voice</span><p className="mt-1 capitalize text-zinc-200">{preferences?.voice ?? "marin"}</p></div>
               <div><span className="text-zinc-500">Wake</span><p className="mt-1 capitalize text-zinc-200">{wake.status.replaceAll("_", " ")}</p></div>
+              <div><span className="text-zinc-500">Worker</span><p className={`mt-1 capitalize ${state?.worker_health.status === "online" ? "text-emerald-300" : "text-amber-200"}`}>{state?.worker_health.status ?? "offline"}</p></div>
+              <div><span className="text-zinc-500">Systems</span><p className={`mt-1 ${degradedComponents.length ? "text-amber-200" : "text-emerald-300"}`}>{degradedComponents.length ? `${degradedComponents.length} degraded` : "Healthy"}</p></div>
               <button
                 type="button"
                 disabled={!preferences || submitting}
@@ -617,6 +624,11 @@ export default function JarvisPage() {
               <span className={state?.worker_health.status === "online" ? "text-xs text-emerald-400" : "text-xs text-zinc-500"}>
                 worker {state?.worker_health.status || "offline"}
               </span>
+              {!!degradedComponents.length && (
+                <span className="text-xs text-amber-300" title={degradedComponents.map(([name, value]) => `${name}: ${value.detail || value.status}`).join("\n")}>
+                  systems degraded · {degradedComponents.length}
+                </span>
+              )}
               {realtime.status !== "idle" && (
                 <span className={realtime.status === "connected" ? "text-xs text-emerald-400" : realtime.status === "text_fallback" ? "text-xs text-amber-300" : "text-xs text-violet-300"}>
                   voice {realtime.status.replaceAll("_", " ")}{realtimeBusy ? ` · attempt ${realtime.attempt}` : ""}
@@ -906,11 +918,11 @@ function TaskCard({
         <div className="min-w-0">
           <Link href={`/tasks/${task.id}`} className="line-clamp-2 text-sm font-medium text-zinc-100 hover:text-sky-300">{task.goal}</Link>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className={`rounded-full border px-2 py-0.5 text-[10px] capitalize ${statusTone(task.status)}`}>{task.status.replaceAll("_", " ")}</span>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] capitalize ${statusTone(task.status)}`}>{taskStatusLabel(task)}</span>
             {task.queue_position ? <span className="text-[10px] text-zinc-500">queue #{task.queue_position}</span> : null}
           </div>
         </div>
-        {ACTIVE_TASKS.has(task.status) && (
+        {ACTIVE_TASK_STATUSES.has(task.status) && (
           <button type="button" disabled={disabled} onClick={() => onAction(() => cancelTask(task.id))} className="min-h-12 rounded-xl px-3 text-[11px] text-rose-300 disabled:opacity-40">Cancel</button>
         )}
         {["failed", "interrupted", "cancelled"].includes(task.status) && (
@@ -918,6 +930,7 @@ function TaskCard({
         )}
       </div>
       {task.terminal_summary && <p className="mt-2 line-clamp-3 text-xs text-zinc-400">{task.terminal_summary}</p>}
+      {task.status_reason && <p className="mt-2 text-xs text-amber-200">{task.status_reason}</p>}
       {question && (
         <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-2.5">
           <p className="text-xs text-amber-100">{question.question}</p>

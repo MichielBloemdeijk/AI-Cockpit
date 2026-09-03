@@ -116,11 +116,17 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
         "create_response": False,
         "interrupt_response": True,
     }
-    assert session_config["audio"]["input"]["transcription"]["model"] == "gpt-live-transcribe"
+    assert session_config["audio"]["input"]["transcription"] == {
+        "model": "gpt-live-transcribe",
+        "keywords": ["Jarvis", "queued", "reminder", "snooze"],
+    }
     assert "multi-step or substantial analysis with dispatch_task" in session_config["instructions"]
     assert "has no permission to browse, edit files, run commands" in session_config["instructions"]
     assert "two to eight words for simple acknowledgements" in session_config["instructions"]
     assert "Do not restate the request" in session_config["instructions"]
+    assert "Never use exclamation marks" in session_config["instructions"]
+    assert "Remain silent until its result exists" in session_config["instructions"]
+    assert "It hasn't started; the worker is offline." in session_config["instructions"]
     assert {tool["name"] for tool in session_config["tools"]} == {
         "dispatch_task",
         "list_tasks",
@@ -377,6 +383,7 @@ async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
     presentation_request = socket.sent[-1]
     presentation_metadata = presentation_request["response"]["metadata"]
     assert presentation_request["response"]["output_modalities"] == ["audio"]
+    assert presentation_request["response"]["max_output_tokens"] == 256
     assert presentation_metadata["jarvis_purpose"] == "user_turn"
     assert json.loads(presentation_metadata["jarvis_presentation_ids"]) == ["presentation-1"]
     assert "The report is complete." in presentation_request["response"]["instructions"]

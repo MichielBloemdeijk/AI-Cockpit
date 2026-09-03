@@ -5,13 +5,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronRight, ListTodo, Loader2, Plus } from "lucide-react";
 
 import { dispatchTask, getTaskWorkerHealth, listTasks, type TaskSummary } from "@/lib/api";
+import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
 
-const ACTIVE = new Set(["queued", "running", "waiting_for_input"]);
 
 function statusClass(status: string): string {
   if (status === "completed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
   if (["failed", "interrupted", "cancelled"].includes(status)) return "border-red-500/30 bg-red-500/10 text-red-300";
-  if (status === "waiting_for_input") return "border-amber-500/30 bg-amber-500/10 text-amber-300";
+  if (["waiting_for_worker", "waiting_for_input", "waiting_until"].includes(status)) return "border-amber-500/30 bg-amber-500/10 text-amber-300";
   return "border-blue-500/30 bg-blue-500/10 text-blue-300";
 }
 
@@ -44,7 +44,7 @@ export default function TasksPage() {
   }, [refresh]);
 
   const visible = useMemo(
-    () => tasks.filter((task) => showFinished || ACTIVE.has(task.status)),
+    () => tasks.filter((task) => showFinished || ACTIVE_TASK_STATUSES.has(task.status)),
     [showFinished, tasks],
   );
 
@@ -72,7 +72,7 @@ export default function TasksPage() {
             <div className="flex items-center gap-2 text-zinc-100">
               <ListTodo size={19} className="text-blue-400" />
               <h1 className="font-semibold">Tasks</h1>
-              <span className="text-xs text-zinc-500">{tasks.filter((task) => ACTIVE.has(task.status)).length} active</span>
+              <span className="text-xs text-zinc-500">{tasks.filter((task) => ACTIVE_TASK_STATUSES.has(task.status)).length} active</span>
               <span className={workerStatus === "online" ? "text-xs text-emerald-400" : "text-xs text-zinc-500"}>worker {workerStatus}</span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">Global background work, independent from conversation history.</p>
@@ -136,7 +136,7 @@ export default function TasksPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-medium text-zinc-100">{task.goal}</span>
                       <span className={`rounded-full border px-2 py-0.5 text-[11px] capitalize ${statusClass(task.status)}`}>
-                        {task.status.replaceAll("_", " ")}
+                        {taskStatusLabel(task)}
                       </span>
                       {task.queue_position && <span className="text-[11px] text-zinc-500">queue #{task.queue_position}</span>}
                       {task.cancellation_requested_at && task.status === "running" && (
@@ -149,6 +149,7 @@ export default function TasksPage() {
                       <span>{new Date(task.created_at).toLocaleString()}</span>
                     </div>
                     {task.terminal_summary && <p className="mt-2 line-clamp-2 text-sm text-zinc-400">{task.terminal_summary}</p>}
+                    {task.status_reason && <p className="mt-2 line-clamp-2 text-xs text-amber-200">{task.status_reason}</p>}
                   </div>
                   <ChevronRight size={17} className="shrink-0 text-zinc-600" />
                 </Link>

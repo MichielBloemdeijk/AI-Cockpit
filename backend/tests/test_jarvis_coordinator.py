@@ -35,7 +35,7 @@ async def test_fake_provider_direct_response_and_delegation_acknowledgement() ->
     messages = await conversation_store.list_messages(first.conversation.id, final_only=True)
     assert [(item.role, item.content) for item in messages] == [
         ("user", "Status check"),
-        ("assistant", "I heard: Status check"),
+        ("assistant", "I understand."),
     ]
 
     delegated = await jarvis_coordinator.accept_text_turn(
@@ -52,8 +52,8 @@ async def test_fake_provider_direct_response_and_delegation_acknowledgement() ->
     assert tasks[0].task.goal == "prepare the launch brief"
     assert tasks[0].task.origin_turn_id == delegated.message.id
     messages = await conversation_store.list_messages(first.conversation.id, final_only=True)
-    assert messages[-1].content == "I've started that in the background."
-    assert sum(item.content == "I've started that in the background." for item in messages) == 1
+    assert messages[-1].content == "It hasn't started; the worker is offline."
+    assert sum(item.content == "It hasn't started; the worker is offline." for item in messages) == 1
     _, events = await jarvis_coordinator.replay_session_events(session.id)
     assert "brain.tool.result" in [event.event_type for event in events]
     await jarvis_coordinator.inject_fake_event(
@@ -285,7 +285,7 @@ async def test_pending_update_merges_into_the_next_user_response() -> None:
     phrase = candidate.required_facts_json["required_spoken_phrase"]
     messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
     assert messages[-2].content == "What changed?"
-    assert messages[-1].content == f"I heard: What changed? {phrase}"
+    assert messages[-1].content == f"I understand. {phrase}"
 
 
 @pytest.mark.asyncio
@@ -756,7 +756,7 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         state = await client.get("/api/jarvis/state")
         assert state.status_code == 200
         body = state.json()
-        assert body["current_log"]["messages"][-1]["content"] == "I heard: API command"
+        assert body["current_log"]["messages"][-1]["content"] == "I understand."
         assert body["session"]["provider_adapter"] == "fake"
         assert set(body["cursors"]) == {"conversation", "task", "session"}
 

@@ -27,6 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +43,7 @@ import kotlinx.coroutines.launch
 import nl.sander.aicockpit.jarvis.appfunctions.AppFunctionsProbe
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.CredentialStore
+import nl.sander.aicockpit.jarvis.data.JarvisAssistantStatus
 import nl.sander.aicockpit.jarvis.notifications.JarvisEventStream
 import nl.sander.aicockpit.jarvis.wake.WakeForegroundService
 import nl.sander.aicockpit.jarvis.web.JarvisWebViewActivity
@@ -86,8 +88,17 @@ class MainActivity : ComponentActivity() {
         var wakeAfterBoot by remember { mutableStateOf(store.wakeAfterBoot) }
         var assistOptIn by remember { mutableStateOf(store.assistStructureOptIn) }
         var appFunctions by remember { mutableStateOf(store.appFunctionsEnabled) }
+        var assistantHealth by remember { mutableStateOf<JarvisAssistantStatus?>(null) }
         val scope = rememberCoroutineScope()
         val paired = store.credential() != null
+
+        LaunchedEffect(paired) {
+            if (paired) {
+                runCatching { api.assistantStatus() }
+                    .onSuccess { assistantHealth = it }
+                    .onFailure { status = it.message ?: "Unable to load assistant status" }
+            } else assistantHealth = null
+        }
 
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -135,6 +146,39 @@ class MainActivity : ComponentActivity() {
                         },
                     ) { Text(if (paired) "Pair again" else "Pair") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            if (paired) Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Current assistant status", style = MaterialTheme.typography.titleMedium)
+                    val health = assistantHealth
+                    if (health == null) {
+                        Text("Loading…", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text(
+                            "Worker ${health.workerStatus}",
+                            color = if (health.workerStatus == "online") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        )
+                        if (health.waitingForWorkerCount > 0) {
+                            Text("${health.waitingForWorkerCount} task${if (health.waitingForWorkerCount == 1) "" else "s"} waiting for the worker")
+                        }
+                        if (health.overdueReminderCount > 0) {
+                            Text("${health.overdueReminderCount} overdue reminder${if (health.overdueReminderCount == 1) "" else "s"}", color = MaterialTheme.colorScheme.error)
+                        }
+                        if (health.degradedComponents.isNotEmpty()) {
+                            Text("Degraded: ${health.degradedComponents.joinToString { it.replace('_', ' ') }}", color = MaterialTheme.colorScheme.error)
+                        } else {
+                            Text("Runtime components healthy", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            runCatching { api.assistantStatus() }
+                                .onSuccess { assistantHealth = it }
+                                .onFailure { status = it.message ?: "Unable to load assistant status" }
+                        }
+                    }) { Text("Refresh status") }
                 }
             }
 
