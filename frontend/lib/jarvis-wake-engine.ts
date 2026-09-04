@@ -19,6 +19,8 @@ export interface JarvisWakeEngineOptions {
   onDetected: (probability: number) => void;
   onUtterance: (samples: Float32Array) => void;
   onError: (cause: unknown) => void;
+  onSpeechStart?: (probability: number) => void;
+  onSpeechEnd?: (probability: number) => void;
   wakeThreshold?: number;
   candidateWakeThreshold?: number;
   candidateWakeHits?: number;
@@ -40,8 +42,11 @@ export class JarvisWakeEngine {
   private readonly inference: JarvisWakeInference;
   private readonly options: Required<Omit<
     JarvisWakeEngineOptions,
-    "inference" | "onDetected" | "onUtterance" | "onError"
-  >> & Pick<JarvisWakeEngineOptions, "onDetected" | "onUtterance" | "onError">;
+    "inference" | "onDetected" | "onUtterance" | "onError" | "onSpeechStart" | "onSpeechEnd"
+  >> & Pick<
+    JarvisWakeEngineOptions,
+    "onDetected" | "onUtterance" | "onError" | "onSpeechStart" | "onSpeechEnd"
+  >;
   private readonly history = new Float32RingBuffer(
     Math.round(JARVIS_WAKE_SAMPLE_RATE * JARVIS_WAKE_RING_SECONDS),
   );
@@ -58,6 +63,7 @@ export class JarvisWakeEngine {
   private candidateWindows = 0;
   private candidateHits = 0;
   private candidateProbability = 0;
+  private speechActive = false;
   private destroyed = false;
 
   constructor(options: JarvisWakeEngineOptions) {
@@ -66,6 +72,8 @@ export class JarvisWakeEngine {
       onDetected: options.onDetected,
       onUtterance: options.onUtterance,
       onError: options.onError,
+      onSpeechStart: options.onSpeechStart,
+      onSpeechEnd: options.onSpeechEnd,
       wakeThreshold: options.wakeThreshold ?? 0.45,
       candidateWakeThreshold: options.candidateWakeThreshold ?? 0.18,
       candidateWakeHits: options.candidateWakeHits ?? 2,
@@ -161,6 +169,7 @@ export class JarvisWakeEngine {
   }
 
   private applyResult(result: JarvisWakeInferenceResult): void {
+    this.observeSpeechBoundary(result.speechProbability);
     if (!this.recording) {
       this.advanceRecallGate(result);
       const strongWake = result.wakeProbability >= this.options.wakeThreshold;
@@ -183,6 +192,18 @@ export class JarvisWakeEngine {
       this.negativeCount = 0;
     }
     if (this.negativeCount > this.options.negativeVadCount) this.finishUtterance();
+  }
+
+  private observeSpeechBoundary(probability: number): void {
+    if (!this.speechActive && probability >= this.options.positiveVadThreshold) {
+      this.speechActive = true;
+      this.options.onSpeechStart?.(probability);
+      return;
+    }
+    if (this.speechActive && probability < this.options.negativeVadThreshold) {
+      this.speechActive = false;
+      this.options.onSpeechEnd?.(probability);
+    }
   }
 
   private advanceRecallGate(result: JarvisWakeInferenceResult): void {
@@ -247,6 +268,7 @@ export class JarvisWakeEngine {
     this.recording = false;
     this.negativeCount = 0;
     this.intervalSamples = 0;
+    this.speechActive = false;
     this.resetRecallGate();
   }
 }

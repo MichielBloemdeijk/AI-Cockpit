@@ -67,6 +67,16 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
         and (event.payload_json or {}).get("reason") == "user_turn"
         for event in after
     )
+    arbiter_event = next(
+        event
+        for event in after
+        if event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+    )
+    assert arbiter_event.payload_json["timing_ms"]["gate_wait"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["situation_snapshot"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["provider_submit"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["total_to_provider_submit"] >= 0
 
 
 @pytest.mark.asyncio

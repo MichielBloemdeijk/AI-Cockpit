@@ -49,6 +49,7 @@ export interface JarvisWakeRuntimeDependencies {
 export interface JarvisWakeRuntimeOptions {
   onSnapshot?: (snapshot: JarvisWakeRuntimeSnapshot) => void;
   onReady?: (stream: MediaStream) => void;
+  onTrace?: (kind: string, detail?: Record<string, unknown>) => void;
   onWake: (handoff: JarvisWakeHandoff) => void;
 }
 
@@ -87,6 +88,7 @@ export class JarvisWakeRuntime {
   async start(configuration: JarvisWakeModelConfiguration): Promise<void> {
     const operation = ++this.operation;
     await this.releaseResources(true);
+    this.options.onTrace?.("wake_runtime_starting");
     this.publish({ status: "starting", error: null });
     try {
       const stream = await this.dependencies.getUserMedia({
@@ -97,6 +99,7 @@ export class JarvisWakeRuntime {
           noiseSuppression: true,
         },
       });
+      this.options.onTrace?.("wake_microphone_ready");
       if (operation !== this.operation) {
         for (const track of stream.getTracks()) track.stop();
         return;
@@ -118,6 +121,7 @@ export class JarvisWakeRuntime {
       }
       this.capture = capture;
       await capture.resume();
+      this.options.onTrace?.("wake_capture_ready");
       if (operation !== this.operation) return;
       worker.postMessage({ type: "init", configuration });
     } catch (cause) {
@@ -132,6 +136,7 @@ export class JarvisWakeRuntime {
     this.rejectPendingUtterance(new Error("Wake utterance was reset"));
     this.worker.postMessage({ type: "resume" });
     await this.capture.resume();
+    this.options.onTrace?.("wake_runtime_rearmed");
     this.publish({ status: "ready", error: null });
     this.options.onReady?.(this.stream);
   }
@@ -142,6 +147,7 @@ export class JarvisWakeRuntime {
     }
     this.worker.postMessage({ type: "pause" });
     this.capture.pause();
+    this.options.onTrace?.("wake_manual_handoff");
     this.publish({ status: "triggered", error: null });
     return {
       localStream: this.stream,
@@ -164,8 +170,15 @@ export class JarvisWakeRuntime {
   ): void {
     if (operation !== this.operation || worker !== this.worker) return;
     if (event.type === "ready") {
+      this.options.onTrace?.("wake_model_ready");
       this.publish({ status: "ready", error: null });
       if (this.stream) this.options.onReady?.(this.stream);
+      return;
+    }
+    if (event.type === "vad_boundary") {
+      this.options.onTrace?.(`wake_local_${event.state}`, {
+        probability: event.probability,
+      });
       return;
     }
     if (event.type === "detected") {
@@ -178,6 +191,7 @@ export class JarvisWakeRuntime {
       });
       this.utteranceResolve = resolve;
       this.utteranceReject = reject;
+      this.options.onTrace?.("wake_detected", { probability: event.probability });
       this.publish({ status: "triggered", error: null });
       this.options.onWake({
         localStream: this.stream,
@@ -189,6 +203,10 @@ export class JarvisWakeRuntime {
     }
     if (event.type === "utterance") {
       this.capture?.pause();
+      this.options.onTrace?.("wake_utterance_ready", {
+        samples: event.samples.length,
+        duration_ms: Math.round(event.samples.length / event.sampleRate * 1_000),
+      });
       const resolve = this.utteranceResolve;
       this.utteranceResolve = null;
       this.utteranceReject = null;
@@ -202,6 +220,7 @@ export class JarvisWakeRuntime {
     if (operation !== this.operation) return;
     ++this.operation;
     const error = cause instanceof Error ? cause.message : "Wake detection failed";
+    this.options.onTrace?.("wake_runtime_failed", { error });
     await this.releaseResources(true);
     this.publish({ status: "failed", error });
   }

@@ -27,6 +27,7 @@ export type JarvisWakeWorkerCommand =
 export type JarvisWakeWorkerEvent =
   | { type: "ready" }
   | { type: "detected"; probability: number }
+  | { type: "vad_boundary"; state: "speech_started" | "speech_stopped"; probability: number }
   | { type: "utterance"; samples: Float32Array; sampleRate: number }
   | { type: "error"; message: string };
 

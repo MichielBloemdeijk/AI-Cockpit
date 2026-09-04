@@ -101,6 +101,9 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
 
     assert connection.sdp_answer == "v=0\r\na=answer"
     assert events[0][2].kind == "ready"
+    assert events[0][2].payload["timing_ms"]["provider_call"] >= 0
+    assert events[0][2].payload["timing_ms"]["sideband_connect"] >= 0
+    assert events[0][2].payload["timing_ms"]["total_to_sideband_ready"] >= 0
     assert websocket_calls[0][0].endswith("?call_id=rtc_test_call")
     assert websocket_calls[0][1]["additional_headers"]["Authorization"] == "Bearer test-secret-key"
     assert call_requests[0]["api_key"] == "test-secret-key"

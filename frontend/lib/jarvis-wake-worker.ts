@@ -59,6 +59,16 @@ scope.onmessage = (event) => {
       positiveVadThreshold: command.configuration.positiveVadThreshold,
       negativeVadThreshold: command.configuration.negativeVadThreshold,
       negativeVadCount: command.configuration.negativeVadCount,
+      onSpeechStart: (probability) => emit({
+        type: "vad_boundary",
+        state: "speech_started",
+        probability,
+      }),
+      onSpeechEnd: (probability) => emit({
+        type: "vad_boundary",
+        state: "speech_stopped",
+        probability,
+      }),
       onDetected: (probability) => emit({ type: "detected", probability }),
       onUtterance: (samples) => emit(
         { type: "utterance", samples, sampleRate: JARVIS_WAKE_SAMPLE_RATE },

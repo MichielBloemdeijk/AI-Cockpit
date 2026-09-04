@@ -17,6 +17,7 @@ export interface JarvisBargeInDetector {
 export async function createJarvisBargeInDetector(
   stream: MediaStream,
   onSpeechStart: () => void,
+  onSpeechEnd: () => void = () => undefined,
 ): Promise<JarvisBargeInDetector> {
   const { MicVAD } = await import("@ricky0123/vad-web");
   const vad = await MicVAD.new({
@@ -32,7 +33,7 @@ export async function createJarvisBargeInDetector(
     preSpeechPadMs: 0,
     redemptionMs: 300,
     onSpeechStart,
-    onSpeechEnd: () => undefined,
+    onSpeechEnd,
   });
   await vad.start();
   return vad;

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -351,6 +352,10 @@ class JarvisCoordinator:
         generation: int,
         reason: str,
     ) -> None:
+        request_started = time.monotonic()
+        gate_acquired = request_started
+        snapshot_started = request_started
+        snapshot_finished = request_started
         key = (session_id, generation)
         gate = self._response_gates.setdefault(key, _ResponseGate())
         adapter = None
@@ -358,6 +363,7 @@ class JarvisCoordinator:
         context = None
         selected_reason = reason
         async with gate.lock:
+            gate_acquired = time.monotonic()
             gate.pending.add(reason)
             if gate.inflight:
                 return
@@ -372,6 +378,7 @@ class JarvisCoordinator:
                 and activation.verification_state != "accepted"
             ):
                 return
+            snapshot_started = time.monotonic()
             async with session_scope() as session:
                 realtime = await self._require_current_generation(session, session_id, generation)
                 floor = await self._floor_state(session, session_id)
@@ -404,11 +411,13 @@ class JarvisCoordinator:
                     context["pending_update_count"] = reservation.total_pending
                 gate.pending.discard(selected_reason)
                 gate.inflight = True
+            snapshot_finished = time.monotonic()
 
         presentation_ids = () if reservation is None else reservation.presentation_ids
         facts = () if reservation is None else reservation.facts
         try:
             assert adapter is not None and context is not None
+            provider_submit_started = time.monotonic()
             await adapter.create_response(
                 session_id=session_id,
                 generation=generation,
@@ -417,6 +426,7 @@ class JarvisCoordinator:
                 facts=facts,
                 context=context,
             )
+            provider_submit_finished = time.monotonic()
             async with session_scope() as session:
                 await self._require_current_generation(session, session_id, generation)
                 await JarvisDomainRepository(session).append_session_event(
@@ -425,6 +435,21 @@ class JarvisCoordinator:
                     payload_json={
                         "reason": selected_reason,
                         "presentation_ids": list(presentation_ids),
+                        "timing_ms": {
+                            "gate_wait": round((gate_acquired - request_started) * 1_000, 3),
+                            "situation_snapshot": round(
+                                (snapshot_finished - snapshot_started) * 1_000,
+                                3,
+                            ),
+                            "provider_submit": round(
+                                (provider_submit_finished - provider_submit_started) * 1_000,
+                                3,
+                            ),
+                            "total_to_provider_submit": round(
+                                (provider_submit_finished - request_started) * 1_000,
+                                3,
+                            ),
+                        },
                     },
                     idempotency_key=f"response-arbiter:{session_id}:{generation}:{uuid4()}",
                 )

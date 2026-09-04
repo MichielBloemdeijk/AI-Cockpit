@@ -9,6 +9,8 @@ function engine(results: JarvisWakeInferenceResult[]) {
   const detected = vi.fn();
   const utterances: Float32Array[] = [];
   const errors = vi.fn();
+  const speechStarted = vi.fn();
+  const speechStopped = vi.fn();
   const analyze = vi.fn(async () => results.shift() ?? {
     speechProbability: 0,
     wakeProbability: 0,
@@ -18,12 +20,14 @@ function engine(results: JarvisWakeInferenceResult[]) {
     onDetected: detected,
     onUtterance: (samples) => utterances.push(samples),
     onError: errors,
+    onSpeechStart: speechStarted,
+    onSpeechEnd: speechStopped,
     batchSamples: 4,
     batchIntervalSamples: 2,
     negativeVadCount: 1,
     maximumUtteranceSamples: 20,
   });
-  return { value, detected, utterances, errors, analyze };
+  return { value, detected, utterances, errors, analyze, speechStarted, speechStopped };
 }
 
 describe("JarvisWakeEngine", () => {
@@ -47,6 +51,8 @@ describe("JarvisWakeEngine", () => {
     wake.value.push(new Float32Array([9, 10]));
     await wake.value.idle();
     expect(wake.analyze).toHaveBeenCalledTimes(3);
+    expect(wake.speechStarted).toHaveBeenCalledWith(0.9);
+    expect(wake.speechStopped).toHaveBeenCalledWith(0.1);
   });
 
   it("accepts a strong wake hit shortly after speech instead of requiring the same frame", async () => {

@@ -56,9 +56,11 @@ function harness() {
   };
   const snapshots: JarvisWakeRuntimeSnapshot[] = [];
   const handoffs: JarvisWakeHandoff[] = [];
+  const traces: Array<{ kind: string; detail?: Record<string, unknown> }> = [];
   const runtime = new JarvisWakeRuntime(
     {
       onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onTrace: (kind, detail) => traces.push({ kind, detail }),
       onWake: (handoff) => handoffs.push(handoff),
     },
     dependencies,
@@ -71,6 +73,7 @@ function harness() {
     capture,
     snapshots,
     handoffs,
+    traces,
     pushAudio: (samples: Float32Array) => {
       if (!onSamples) throw new Error("capture not ready");
       onSamples(samples);
@@ -115,6 +118,20 @@ describe("JarvisWakeRuntime", () => {
     value.worker.emit({ type: "utterance", samples, sampleRate: 16_000 });
     await expect(value.handoffs[0].utterance).resolves.toBe(samples);
     expect(value.capture.pause).toHaveBeenCalledOnce();
+    expect(value.traces.map((trace) => trace.kind)).toContain("wake_utterance_ready");
+  });
+
+  it("reports local VAD boundaries for latency diagnostics", async () => {
+    const value = harness();
+    await value.runtime.start(configuration);
+    value.worker.emit({ type: "ready" });
+    value.worker.emit({ type: "vad_boundary", state: "speech_started", probability: 0.88 });
+    value.worker.emit({ type: "vad_boundary", state: "speech_stopped", probability: 0.12 });
+
+    expect(value.traces.slice(-2)).toEqual([
+      { kind: "wake_local_speech_started", detail: { probability: 0.88 } },
+      { kind: "wake_local_speech_stopped", detail: { probability: 0.12 } },
+    ]);
   });
 
   it("re-arms without reacquiring the microphone and releases it on stop", async () => {

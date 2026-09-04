@@ -256,6 +256,7 @@ class OpenAIRealtimeAdapter:
         on_event: ProviderEventHandler,
         sdp_offer: str | None = None,
     ) -> VoiceSessionConnection:
+        connect_started = time.monotonic()
         api_key = settings.openai_api_key.strip()
         offer = sdp_offer or ""
         if not api_key:
@@ -263,17 +264,21 @@ class OpenAIRealtimeAdapter:
         if not offer.strip():
             raise OpenAIRealtimeConfigurationError("An SDP offer is required for the OpenAI adapter")
 
+        provider_call_started = time.monotonic()
         response = await self._create_call(api_key=api_key, sdp_offer=offer, context=context)
+        provider_call_finished = time.monotonic()
         location = response.headers.get("Location") or response.headers.get("location")
         call_id = self._call_id_from_location(location)
         socket: SidebandSocket | None = None
         provider_session: _OpenAISession | None = None
         try:
+            sideband_started = time.monotonic()
             socket = await self._websocket_connector(
                 f"{settings.openai_realtime_websocket_url}?call_id={quote(call_id, safe='')}",
                 additional_headers={"Authorization": f"Bearer {api_key}"},
                 open_timeout=settings.openai_realtime_connect_timeout_seconds,
             )
+            sideband_finished = time.monotonic()
             provider_session = _OpenAISession(
                 session_id=session_id,
                 generation=generation,
@@ -294,6 +299,22 @@ class OpenAIRealtimeAdapter:
                 VoiceProviderEvent(
                     event_id=f"openai-sideband-ready:{session_id}:{generation}",
                     kind="ready",
+                    payload={
+                        "timing_ms": {
+                            "provider_call": round(
+                                (provider_call_finished - provider_call_started) * 1_000,
+                                3,
+                            ),
+                            "sideband_connect": round(
+                                (sideband_finished - sideband_started) * 1_000,
+                                3,
+                            ),
+                            "total_to_sideband_ready": round(
+                                (sideband_finished - connect_started) * 1_000,
+                                3,
+                            ),
+                        }
+                    },
                 ),
             )
             await self._hydrate_dialogue(provider_session, context)

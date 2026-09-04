@@ -1,6 +1,7 @@
 import {
   closeJarvisRealtimeSession,
   createJarvisRealtimeCall,
+  type JarvisLiveEvent,
   type JarvisSession,
 } from "./api";
 import {
@@ -49,9 +50,44 @@ export interface JarvisRealtimeActivationContext {
 export interface JarvisRealtimeTraceEntry {
   kind: string;
   monotonic_ms: number;
+  wall_time: string;
   response_id?: string;
   item_id?: string;
+  attempt?: number;
+  sequence?: number;
+  server_time?: string;
+  timing_ms?: Record<string, number>;
   detail?: string;
+}
+
+export interface JarvisRealtimeConnectionTiming {
+  attempt: number;
+  total_ms?: number;
+  offer_ms?: number;
+  backend_call_ms?: number;
+  remote_description_ms?: number;
+  wake_detect_to_connected_ms?: number;
+  provider_call_ms?: number;
+  sideband_connect_ms?: number;
+}
+
+export interface JarvisRealtimeTurnTiming {
+  turn: number;
+  kind: "wake" | "follow_up";
+  response_id?: string;
+  local_speech_stop_to_provider_stop_ms?: number;
+  wake_handoff_tail_ms?: number;
+  provider_stop_to_response_created_ms?: number;
+  response_created_to_first_audio_ms?: number;
+  provider_stop_to_playback_started_ms?: number;
+  local_speech_stop_to_playback_started_ms?: number;
+  backend_arbiter_ms?: number;
+}
+
+export interface JarvisRealtimeTimingSummary {
+  schema: "jarvis.realtime_timing.v1";
+  connections: JarvisRealtimeConnectionTiming[];
+  turns: JarvisRealtimeTurnTiming[];
 }
 
 interface BrowserConnection {
@@ -65,6 +101,8 @@ interface BrowserConnection {
   bargeInDetector: JarvisBargeInDetector | null;
   activeResponseId: string | null;
   mutedResponseId: string | null;
+  tracedAudioDeltaResponses: Set<string>;
+  tracedTranscriptDeltaItems: Set<string>;
 }
 
 interface JarvisRealtimeHandoffOutput {
@@ -97,9 +135,11 @@ export interface JarvisRealtimeDependencies {
   setTimer: (callback: () => void, milliseconds: number) => number;
   clearTimer: (timer: number) => void;
   now: () => number;
+  wallNow: () => string;
   createBargeInDetector: (
     stream: MediaStream,
     onSpeechStart: () => void,
+    onSpeechEnd: () => void,
   ) => Promise<JarvisBargeInDetector>;
   createHandoffOutput: (
     handoff: JarvisRealtimeAudioHandoff,
@@ -119,6 +159,7 @@ const browserDependencies: JarvisRealtimeDependencies = {
   setTimer: (callback, milliseconds) => window.setTimeout(callback, milliseconds),
   clearTimer: (timer) => window.clearTimeout(timer),
   now: () => performance.now(),
+  wallNow: () => new Date().toISOString(),
   createBargeInDetector: createJarvisBargeInDetector,
   createHandoffOutput: createBrowserHandoffOutput,
 };
@@ -157,8 +198,42 @@ export class JarvisRealtimeController {
     return [...this.trace];
   }
 
+  timingSummary(): JarvisRealtimeTimingSummary {
+    return summarizeJarvisRealtimeTrace(this.trace);
+  }
+
   recordPlaybackSignal(kind: string, detail?: string): void {
     this.recordTrace(kind, { detail });
+  }
+
+  recordClientSignal(kind: string, detail?: Record<string, unknown>): void {
+    this.recordTrace(kind, {
+      detail: detail ? JSON.stringify(detail) : undefined,
+    });
+  }
+
+  recordBackendEvent(event: JarvisLiveEvent): void {
+    if (event.source_domain !== "session") return;
+    const payload = event.payload ?? {};
+    const timing = payload.timing_ms;
+    const timingMs = timing && typeof timing === "object"
+      ? Object.fromEntries(
+          Object.entries(timing).filter((entry): entry is [string, number] => (
+            typeof entry[1] === "number" && Number.isFinite(entry[1])
+          )),
+        )
+      : undefined;
+    const responseId = typeof payload.response_id === "string"
+      ? payload.response_id
+      : undefined;
+    const reason = typeof payload.reason === "string" ? payload.reason : undefined;
+    this.recordTrace(`backend.${event.event_type}`, {
+      response_id: responseId,
+      sequence: event.sequence,
+      server_time: event.created_at,
+      timing_ms: timingMs,
+      detail: reason,
+    });
   }
 
   async prepare(localStream: MediaStream): Promise<void> {
@@ -168,6 +243,7 @@ export class JarvisRealtimeController {
       return;
     }
     const operation = ++this.preparationOperation;
+    this.recordTrace("realtime_transport_prepare_started");
     const previous = this.preparation;
     this.preparation = null;
     if (previous) this.disposePreparation(previous);
@@ -181,12 +257,17 @@ export class JarvisRealtimeController {
       throw new Error("Wake stream has no audio track");
     }
     const sender = peer.addTrack(track, localStream);
+    this.recordTrace("realtime_offer_started");
+    const offer = this.createLocalOffer(peer).then((value) => {
+      this.recordTrace("realtime_offer_ready");
+      return value;
+    });
     const preparation: BrowserPreparation = {
       peer,
       channel,
       localStream,
       sender,
-      offer: this.createLocalOffer(peer),
+      offer,
     };
     this.preparation = preparation;
     try {
@@ -202,6 +283,9 @@ export class JarvisRealtimeController {
   }
 
   async start(options: JarvisRealtimeStartOptions = {}): Promise<JarvisRealtimeSnapshot> {
+    this.recordTrace("realtime_start_requested", {
+      detail: options.audioHandoff ? "wake_handoff" : "direct",
+    });
     const operation = ++this.operation;
     this.cancelRotation();
     this.cancelDisconnect();
@@ -268,7 +352,9 @@ export class JarvisRealtimeController {
         error: null,
       });
       try {
-        const connection = await this.connectAttempt(operation, input);
+        const attempt = index + 1;
+        this.recordTrace("realtime_connection_attempt_started", { attempt });
+        const connection = await this.connectAttempt(operation, input, attempt);
         if (operation !== this.operation) {
           await this.disposeConnection(connection, true);
           throw new Error("Realtime connection was cancelled");
@@ -308,9 +394,15 @@ export class JarvisRealtimeController {
   private async connectAttempt(
     operation: number,
     input?: JarvisRealtimeConnectionInput,
+    attempt = 1,
   ): Promise<BrowserConnection> {
+    const mediaStarted = this.dependencies.now();
     const localStream = input?.localStream ?? await this.dependencies.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    this.recordTrace("realtime_local_stream_ready", {
+      attempt,
+      detail: `wait_ms:${Math.round(this.dependencies.now() - mediaStarted)}`,
     });
     const ownsLocalStream = input?.ownsLocalStream ?? true;
     const prepared = this.takePreparation(localStream);
@@ -320,9 +412,13 @@ export class JarvisRealtimeController {
     let connection: BrowserConnection | null = null;
     let handoffOutput: JarvisRealtimeHandoffOutput | null = null;
     try {
-      const outgoingStream = input?.audioHandoff
-        ? (handoffOutput = await this.dependencies.createHandoffOutput(input.audioHandoff)).stream
-        : localStream;
+      let outgoingStream = localStream;
+      if (input?.audioHandoff) {
+        this.recordTrace("wake_handoff_output_started", { attempt });
+        handoffOutput = await this.dependencies.createHandoffOutput(input.audioHandoff);
+        outgoingStream = handoffOutput.stream;
+        this.recordTrace("wake_handoff_output_ready", { attempt });
+      }
       if (prepared) {
         const outgoingTrack = outgoingStream.getAudioTracks()[0];
         if (!outgoingTrack) throw new Error("Realtime stream has no audio track");
@@ -368,9 +464,13 @@ export class JarvisRealtimeController {
         }
       };
 
+      if (prepared) this.recordTrace("realtime_offer_reused", { attempt });
+      else this.recordTrace("realtime_offer_started", { attempt });
       const offer = prepared ? await prepared.offer : await this.createLocalOffer(peer);
+      if (!prepared) this.recordTrace("realtime_offer_ready", { attempt });
       const sdpOffer = peer.localDescription?.sdp || offer.sdp;
       if (!sdpOffer) throw new Error("Browser did not produce an SDP offer");
+      this.recordTrace("realtime_backend_call_started", { attempt });
       const response = await this.dependencies.createCall(
         this.options.controllerId,
         "controller",
@@ -379,11 +479,13 @@ export class JarvisRealtimeController {
         undefined,
         input?.activationContext,
       );
+      this.recordTrace("realtime_backend_call_completed", { attempt });
       providerSession = response.session;
       if (!providerSession || !response.sdp_answer) {
         throw new Error("Backend did not return a complete Realtime answer");
       }
       await peer.setRemoteDescription({ type: "answer", sdp: response.sdp_answer });
+      this.recordTrace("realtime_remote_description_set", { attempt });
       connection = {
         peer,
         channel,
@@ -395,8 +497,11 @@ export class JarvisRealtimeController {
         bargeInDetector: null,
         activeResponseId: null,
         mutedResponseId: null,
+        tracedAudioDeltaResponses: new Set(),
+        tracedTranscriptDeltaItems: new Set(),
       };
       if (handoffOutput) {
+        this.recordTrace("wake_utterance_handoff_requested", { attempt });
         void handoffOutput.start()
           .then(() => this.recordTrace("wake_utterance_handoff_started"))
           .catch((cause) => this.recordTrace("wake_utterance_handoff_failed", {
@@ -407,11 +512,16 @@ export class JarvisRealtimeController {
         connection.bargeInDetector = await this.dependencies.createBargeInDetector(
           localStream,
           () => this.handleLocalSpeechStart(connection, operation),
+          () => this.handleLocalSpeechEnd(connection, operation),
         );
         this.recordTrace("local_vad_ready");
       } catch (cause) {
         this.recordTrace("local_vad_unavailable", { detail: this.errorName(cause) });
       }
+      this.recordTrace("realtime_connection_ready", {
+        attempt,
+        detail: `${providerSession.id}:${providerSession.generation}`,
+      });
       return connection;
     } catch (cause) {
       await handoffOutput?.destroy().catch(() => undefined);
@@ -526,7 +636,19 @@ export class JarvisRealtimeController {
     const traceDetail = type.includes("transcript.delta")
       ? `chars:${typeof event.delta === "string" ? event.delta.length : 0}`
       : undefined;
-    this.recordTrace(type, { response_id: responseId, item_id: itemId, detail: traceDetail });
+    let shouldTrace = true;
+    if (connection && type === "response.output_audio.delta") {
+      const key = responseId ?? "unknown";
+      shouldTrace = !connection.tracedAudioDeltaResponses.has(key);
+      connection.tracedAudioDeltaResponses.add(key);
+    } else if (connection && type.includes("transcript.delta")) {
+      const key = `${type}:${responseId ?? itemId ?? "unknown"}`;
+      shouldTrace = !connection.tracedTranscriptDeltaItems.has(key);
+      connection.tracedTranscriptDeltaItems.add(key);
+    }
+    if (shouldTrace) {
+      this.recordTrace(type, { response_id: responseId, item_id: itemId, detail: traceDetail });
+    }
     if (!connection) return;
 
     if (
@@ -558,13 +680,11 @@ export class JarvisRealtimeController {
     connection: BrowserConnection | null,
     operation: number,
   ): void {
-    if (
-      !connection
-      || operation !== this.operation
-      || this.active?.peer !== connection.peer
-      || !connection.activeResponseId
-    ) return;
-    this.recordTrace("local_speech_started", { response_id: connection.activeResponseId });
+    if (!connection || operation !== this.operation || this.active?.peer !== connection.peer) return;
+    this.recordTrace("local_speech_started", {
+      response_id: connection.activeResponseId ?? undefined,
+    });
+    if (!connection.activeResponseId) return;
     this.setPlaybackMuted(connection, true);
     void this.captureReceiverStats(connection, "local_speech_started");
     if (connection.channel.readyState !== "open") return;
@@ -574,6 +694,16 @@ export class JarvisRealtimeController {
     }));
     this.recordTrace("output_audio_buffer.clear.sent", {
       response_id: connection.activeResponseId,
+    });
+  }
+
+  private handleLocalSpeechEnd(
+    connection: BrowserConnection | null,
+    operation: number,
+  ): void {
+    if (!connection || operation !== this.operation || this.active?.peer !== connection.peer) return;
+    this.recordTrace("local_speech_stopped", {
+      response_id: connection.activeResponseId ?? undefined,
     });
   }
 
@@ -593,9 +723,14 @@ export class JarvisRealtimeController {
 
   private recordTrace(
     kind: string,
-    details: Omit<JarvisRealtimeTraceEntry, "kind" | "monotonic_ms"> = {},
+    details: Omit<JarvisRealtimeTraceEntry, "kind" | "monotonic_ms" | "wall_time"> = {},
   ): void {
-    this.trace.push({ kind, monotonic_ms: this.dependencies.now(), ...details });
+    this.trace.push({
+      kind,
+      monotonic_ms: this.dependencies.now(),
+      wall_time: this.dependencies.wallNow(),
+      ...details,
+    });
     if (this.trace.length > 2_000) this.trace.splice(0, this.trace.length - 2_000);
   }
 
@@ -645,6 +780,139 @@ export class JarvisRealtimeController {
   private errorName(cause: unknown): string {
     return cause instanceof Error ? cause.name : "unknown";
   }
+}
+
+function elapsedMilliseconds(
+  start: JarvisRealtimeTraceEntry | undefined,
+  end: JarvisRealtimeTraceEntry | undefined,
+): number | undefined {
+  if (!start || !end || end.monotonic_ms < start.monotonic_ms) return undefined;
+  return Math.round((end.monotonic_ms - start.monotonic_ms) * 10) / 10;
+}
+
+function firstTrace(
+  entries: readonly JarvisRealtimeTraceEntry[],
+  kinds: readonly string[],
+  startIndex: number,
+  endIndex = entries.length,
+): JarvisRealtimeTraceEntry | undefined {
+  for (let index = Math.max(0, startIndex); index < Math.min(endIndex, entries.length); index += 1) {
+    if (kinds.includes(entries[index].kind)) return entries[index];
+  }
+  return undefined;
+}
+
+function lastTrace(
+  entries: readonly JarvisRealtimeTraceEntry[],
+  kinds: readonly string[],
+  startIndex: number,
+  endIndex: number,
+): JarvisRealtimeTraceEntry | undefined {
+  for (let index = Math.min(endIndex, entries.length) - 1; index >= Math.max(0, startIndex); index -= 1) {
+    if (kinds.includes(entries[index].kind)) return entries[index];
+  }
+  return undefined;
+}
+
+/** Produce a compact, turn-oriented view while retaining the raw trace for deeper diagnosis. */
+export function summarizeJarvisRealtimeTrace(
+  entries: readonly JarvisRealtimeTraceEntry[],
+): JarvisRealtimeTimingSummary {
+  const attemptIndexes = entries
+    .map((entry, index) => entry.kind === "realtime_connection_attempt_started" ? index : -1)
+    .filter((index) => index >= 0);
+  const connections = attemptIndexes.map((startIndex, connectionIndex) => {
+    const endIndex = attemptIndexes[connectionIndex + 1] ?? entries.length;
+    const attemptStart = entries[startIndex];
+    const requestStart = lastTrace(entries, ["realtime_start_requested"], 0, startIndex + 1)
+      ?? attemptStart;
+    const connectionReady = firstTrace(entries, ["realtime_connection_ready"], startIndex, endIndex);
+    const backendStart = firstTrace(entries, ["realtime_backend_call_started"], startIndex, endIndex);
+    const backendEnd = firstTrace(entries, ["realtime_backend_call_completed"], startIndex, endIndex);
+    const remoteDescription = firstTrace(entries, ["realtime_remote_description_set"], startIndex, endIndex);
+    const offerEnd = firstTrace(entries, ["realtime_offer_ready"], startIndex, endIndex)
+      ?? lastTrace(entries, ["realtime_offer_ready"], 0, startIndex + 1);
+    const offerStart = offerEnd
+      ? lastTrace(
+          entries,
+          ["realtime_offer_started"],
+          0,
+          entries.indexOf(offerEnd) + 1,
+        )
+      : undefined;
+    const wakeDetected = lastTrace(entries, ["wake_detected"], 0, startIndex + 1);
+    const providerReady = firstTrace(entries, ["backend.provider.ready"], startIndex, endIndex);
+    return {
+      attempt: attemptStart.attempt ?? connectionIndex + 1,
+      total_ms: elapsedMilliseconds(requestStart, connectionReady),
+      offer_ms: elapsedMilliseconds(offerStart, offerEnd),
+      backend_call_ms: elapsedMilliseconds(backendStart, backendEnd),
+      remote_description_ms: elapsedMilliseconds(backendEnd, remoteDescription),
+      wake_detect_to_connected_ms: elapsedMilliseconds(wakeDetected, connectionReady),
+      provider_call_ms: providerReady?.timing_ms?.provider_call,
+      sideband_connect_ms: providerReady?.timing_ms?.sideband_connect,
+    };
+  });
+
+  const stopIndexes = entries
+    .map((entry, index) => entry.kind === "input_audio_buffer.speech_stopped" ? index : -1)
+    .filter((index) => index >= 0);
+  const turns = stopIndexes.map((stopIndex, turnIndex) => {
+    const segmentStart = turnIndex === 0 ? 0 : stopIndexes[turnIndex - 1] + 1;
+    const segmentEnd = stopIndexes[turnIndex + 1] ?? entries.length;
+    const providerStop = entries[stopIndex];
+    const localStop = lastTrace(
+      entries,
+      ["wake_local_speech_stopped", "local_speech_stopped"],
+      segmentStart,
+      stopIndex + 1,
+    );
+    const wakeDetected = lastTrace(entries, ["wake_detected"], segmentStart, stopIndex + 1);
+    const utteranceReady = firstTrace(
+      entries,
+      ["wake_utterance_ready"],
+      localStop ? entries.indexOf(localStop) : segmentStart,
+      stopIndex + 1,
+    );
+    const responseCreated = firstTrace(entries, ["response.created"], stopIndex + 1, segmentEnd);
+    const responseId = responseCreated?.response_id;
+    const firstAudio = firstTrace(
+      entries,
+      ["response.output_audio.delta"],
+      responseCreated ? entries.indexOf(responseCreated) + 1 : stopIndex + 1,
+      segmentEnd,
+    );
+    const playbackStarted = firstTrace(
+      entries,
+      ["output_audio_buffer.started"],
+      responseCreated ? entries.indexOf(responseCreated) + 1 : stopIndex + 1,
+      segmentEnd,
+    );
+    const arbiter = firstTrace(
+      entries,
+      ["backend.response.arbiter.started"],
+      stopIndex + 1,
+      segmentEnd,
+    );
+    return {
+      turn: turnIndex + 1,
+      kind: wakeDetected ? "wake" : "follow_up",
+      response_id: responseId,
+      local_speech_stop_to_provider_stop_ms: elapsedMilliseconds(localStop, providerStop),
+      wake_handoff_tail_ms: elapsedMilliseconds(localStop, utteranceReady),
+      provider_stop_to_response_created_ms: elapsedMilliseconds(providerStop, responseCreated),
+      response_created_to_first_audio_ms: elapsedMilliseconds(responseCreated, firstAudio),
+      provider_stop_to_playback_started_ms: elapsedMilliseconds(providerStop, playbackStarted),
+      local_speech_stop_to_playback_started_ms: elapsedMilliseconds(localStop, playbackStarted),
+      backend_arbiter_ms: arbiter?.timing_ms?.total_to_provider_submit,
+    } satisfies JarvisRealtimeTurnTiming;
+  });
+
+  return {
+    schema: "jarvis.realtime_timing.v1",
+    connections,
+    turns,
+  };
 }
 
 async function createBrowserHandoffOutput(

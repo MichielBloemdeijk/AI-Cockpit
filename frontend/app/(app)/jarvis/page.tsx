@@ -301,6 +301,7 @@ export default function JarvisPage() {
     });
     wakeLifecycleRef.current = lifecycle;
     const runtime = new JarvisWakeRuntime({
+      onTrace: (kind, detail) => realtimeController.recordClientSignal(kind, detail),
       onReady: (stream) => {
         void realtimeController.prepare(stream).catch(() => undefined);
       },
@@ -375,6 +376,7 @@ export default function JarvisPage() {
       source = new EventSource(jarvisLiveUrl(liveCursorRef.current), { withCredentials: true });
       source.addEventListener("jarvis", (raw) => {
         const event = JSON.parse((raw as MessageEvent<string>).data) as JarvisLiveEvent;
+        realtimeControllerRef.current?.recordBackendEvent(event);
         liveCursorRef.current = Math.max(liveCursorRef.current, event.sequence);
         if (event.event_type === "provider.user_transcript_delta") {
           setProvisionalUser((current) => mergeProvisionalTranscript(current, {
@@ -513,9 +515,16 @@ export default function JarvisPage() {
   };
 
   const downloadRealtimeTrace = () => {
-    const entries = realtimeControllerRef.current?.traceSnapshot() ?? [];
+    const controller = realtimeControllerRef.current;
+    const entries = controller?.traceSnapshot() ?? [];
     const url = URL.createObjectURL(new Blob(
-      [JSON.stringify({ captured_at: new Date().toISOString(), entries }, null, 2)],
+      [JSON.stringify({
+        schema: "jarvis.realtime_trace.v2",
+        captured_at: new Date().toISOString(),
+        browser: navigator.userAgent,
+        timing_summary: controller?.timingSummary() ?? null,
+        entries,
+      }, null, 2)],
       { type: "application/json" },
     ));
     const anchor = document.createElement("a");
