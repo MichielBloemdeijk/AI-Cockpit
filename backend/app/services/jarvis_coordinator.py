@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import logging
 import time
 from typing import Any
 from uuid import uuid4
@@ -44,6 +45,8 @@ from app.services.voice_session_adapter import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 ACTIVE_SESSION_STATES = {"connecting", "ready"}
 FLOOR_EVENT_TYPES = {
     "ready": "listening",
@@ -63,6 +66,15 @@ FLOOR_EVENT_TYPES = {
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _safe_connection_failure(exc: Exception) -> str:
+    """Keep enough provider context to diagnose startup without storing credentials."""
+    detail = " ".join(str(exc).split()).strip()
+    api_key = settings.openai_api_key.strip()
+    if api_key:
+        detail = detail.replace(api_key, "[redacted]")
+    return detail[:500] or "Realtime provider connection failed"
 
 
 class StaleSessionError(ValueError):
@@ -627,13 +639,31 @@ class JarvisCoordinator:
                 on_event=self.handle_provider_event,
                 sdp_offer=sdp_offer,
             )
-        except Exception:
+        except Exception as exc:
             self._clear_wake_activation(record.id, record.generation)
+            failure_type = type(exc).__name__
+            failure_detail = _safe_connection_failure(exc)
+            logger.exception(
+                "Realtime provider connection failed for session %s generation %s: %s",
+                record.id,
+                record.generation,
+                failure_detail,
+            )
             async with session_scope() as session:
                 failed = await session.get(RealtimeSession, record.id)
                 if failed is not None:
                     failed.lifecycle_state = "disconnected"
                     failed.disconnected_at = utc_now()
+                    await JarvisDomainRepository(session).append_session_event(
+                        session_id=record.id,
+                        event_type="session.connection_failed",
+                        payload_json={
+                            "adapter": adapter.name,
+                            "failure_type": failure_type,
+                            "detail": failure_detail,
+                        },
+                        idempotency_key=f"connection-failed:{record.id}:{record.generation}",
+                    )
             raise
         refreshed = await self.get_session(record.id)
         if refreshed is None:

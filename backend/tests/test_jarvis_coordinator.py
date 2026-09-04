@@ -21,6 +21,46 @@ from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 from app.services.worker_coordinator import worker_coordinator
 from app.services.voice_session_adapter import VoiceProviderEvent
+from app.services.voice_session_adapter import fake_voice_session_adapter
+
+
+@pytest.mark.asyncio
+async def test_provider_connection_failure_is_recorded_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Connection diagnostics setup",
+        idempotency_key="connection-diagnostics-setup",
+    )
+    monkeypatch.setattr(settings, "openai_api_key", "secret-test-key")
+
+    async def fail_connect(**_kwargs):
+        raise RuntimeError("provider rejected secret-test-key with HTTP 429")
+
+    monkeypatch.setattr(fake_voice_session_adapter, "connect", fail_connect)
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        await jarvis_coordinator.bootstrap_controller(
+            conversation_id=accepted.conversation.id,
+            controller_id="failing-browser",
+            adapter_name="fake",
+        )
+
+    async with session_scope() as session:
+        failed = (
+            await session.execute(
+                select(VoiceSessionEvent)
+                .where(VoiceSessionEvent.event_type == "session.connection_failed")
+                .order_by(VoiceSessionEvent.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+
+    assert failed.payload_json == {
+        "adapter": "fake",
+        "failure_type": "RuntimeError",
+        "detail": "provider rejected [redacted] with HTTP 429",
+    }
 
 
 @pytest.mark.asyncio

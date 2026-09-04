@@ -12,7 +12,6 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
-import aiohttp
 import httpx
 
 from app.config import settings
@@ -486,31 +485,25 @@ class OpenAIRealtimeAdapter:
             raise RuntimeError("OpenAI Realtime returned an empty SDP answer")
         return response
 
-    @staticmethod
     async def _default_realtime_call_creator(
+        self,
         *,
         api_key: str,
         sdp_offer: str,
         session_config: dict[str, Any],
     ) -> httpx.Response:
-        form = aiohttp.FormData(default_to_multipart=True)
-        form.add_field("sdp", sdp_offer)
-        form.add_field(
-            "session",
-            json.dumps(session_config, separators=(",", ":"), ensure_ascii=False),
-        )
-        timeout = aiohttp.ClientTimeout(total=settings.openai_realtime_connect_timeout_seconds)
-        async with aiohttp.ClientSession(timeout=timeout) as client:
-            async with client.post(
+        async with self._http_client_factory() as client:
+            return await client.post(
                 f"{settings.openai_realtime_base_url.rstrip('/')}/realtime/calls",
                 headers={"Authorization": f"Bearer {api_key}"},
-                data=form,
-            ) as response:
-                return httpx.Response(
-                    status_code=response.status,
-                    text=await response.text(),
-                    headers=dict(response.headers),
-                )
+                files={
+                    "sdp": (None, sdp_offer),
+                    "session": (
+                        None,
+                        json.dumps(session_config, separators=(",", ":"), ensure_ascii=False),
+                    ),
+                },
+            )
 
     async def _hangup(self, *, api_key: str, call_id: str) -> None:
         if not api_key or not call_id:

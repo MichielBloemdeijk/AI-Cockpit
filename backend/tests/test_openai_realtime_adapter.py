@@ -16,6 +16,33 @@ from app.services.openai_realtime_adapter import (
 )
 
 
+@pytest.mark.asyncio
+async def test_default_call_creator_uses_shared_http_client_and_multipart() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201, text="answer", headers={"Location": "/v1/realtime/calls/test"})
+
+    adapter = OpenAIRealtimeAdapter(
+        http_client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    response = await adapter._default_realtime_call_creator(
+        api_key="test-key",
+        sdp_offer="test-sdp",
+        session_config={"type": "realtime", "model": "test-model"},
+    )
+
+    assert response.status_code == 201
+    request = requests[0]
+    assert request.headers["authorization"] == "Bearer test-key"
+    assert request.headers["content-type"].startswith("multipart/form-data; boundary=")
+    body = request.content.decode()
+    assert 'name="sdp"' in body and "test-sdp" in body
+    assert 'name="session"' in body and '"model":"test-model"' in body
+
+
 class FakeSideband:
     def __init__(self) -> None:
         self.incoming: asyncio.Queue[str | None] = asyncio.Queue()
