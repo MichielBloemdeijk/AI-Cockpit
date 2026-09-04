@@ -951,6 +951,24 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         )
         assert observer.status_code == 200
         assert observer.json()["session"]["id"] == body["session"]["id"]
+        assert observer.json()["request_id"]
+
+        telemetry = await client.post(
+            "/api/jarvis/realtime/telemetry",
+            json={
+                "events": [{
+                    "trace_id": "browser-trace-1",
+                    "activation_id": "activation-1",
+                    "source": "browser",
+                    "event_type": "wake.detected",
+                    "observed_at": "2026-09-05T00:00:00Z",
+                    "monotonic_ms": 42.0,
+                    "detail": {"attempt": 1},
+                }],
+            },
+        )
+        assert telemetry.status_code == 202
+        assert telemetry.json() == {"accepted": 1}
 
         event_id = str(uuid4())
         injected = await client.post(

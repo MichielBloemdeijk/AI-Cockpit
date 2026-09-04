@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -405,6 +406,33 @@ class VoiceSessionEvent(Base):
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
     payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class JarvisRealtimeTraceEvent(Base):
+    """Short-lived, metadata-only timing events for Realtime diagnosis."""
+
+    __tablename__ = "jarvis_realtime_trace_events"
+    __table_args__ = (
+        Index("ix_jarvis_realtime_trace_events_trace", "trace_id", "sequence"),
+        Index("ix_jarvis_realtime_trace_events_created", "created_at"),
+    )
+
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    activation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_response_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    monotonic_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

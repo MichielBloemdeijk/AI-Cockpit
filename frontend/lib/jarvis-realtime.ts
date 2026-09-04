@@ -1,7 +1,9 @@
 import {
   closeJarvisRealtimeSession,
   createJarvisRealtimeCall,
+  submitJarvisRealtimeTelemetry,
   type JarvisLiveEvent,
+  type JarvisRealtimeTelemetryEvent,
   type JarvisSession,
 } from "./api";
 import {
@@ -45,6 +47,9 @@ export interface JarvisRealtimeStartOptions {
 export interface JarvisRealtimeActivationContext {
   source: "wake_word";
   wake_score: number;
+  activation_id?: string;
+  wake_detected_at?: string;
+  local_speech_started_at?: string;
 }
 
 export interface JarvisRealtimeTraceEntry {
@@ -131,6 +136,7 @@ export interface JarvisRealtimeDependencies {
   getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   createCall: typeof createJarvisRealtimeCall;
   closeSession: typeof closeJarvisRealtimeSession;
+  sendTelemetry?: typeof submitJarvisRealtimeTelemetry;
   wait: (milliseconds: number) => Promise<void>;
   setTimer: (callback: () => void, milliseconds: number) => number;
   clearTimer: (timer: number) => void;
@@ -155,6 +161,7 @@ const browserDependencies: JarvisRealtimeDependencies = {
   getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
   createCall: createJarvisRealtimeCall,
   closeSession: closeJarvisRealtimeSession,
+  sendTelemetry: submitJarvisRealtimeTelemetry,
   wait: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),
   setTimer: (callback, milliseconds) => window.setTimeout(callback, milliseconds),
   clearTimer: (timer) => window.clearTimeout(timer),
@@ -175,6 +182,10 @@ export class JarvisRealtimeController {
   private operation = 0;
   private reconnecting = false;
   private readonly trace: JarvisRealtimeTraceEntry[] = [];
+  private readonly traceId = crypto.randomUUID();
+  private activationId: string | null = null;
+  private telemetryPending: JarvisRealtimeTelemetryEvent[] = [];
+  private telemetrySending = false;
   private snapshot: JarvisRealtimeSnapshot = {
     status: "idle",
     attempt: 0,
@@ -283,6 +294,14 @@ export class JarvisRealtimeController {
   }
 
   async start(options: JarvisRealtimeStartOptions = {}): Promise<JarvisRealtimeSnapshot> {
+    this.activationId = options.activationContext?.activation_id ?? crypto.randomUUID();
+    const activationContext = options.activationContext
+      ? {
+          ...options.activationContext,
+          activation_id: this.activationId,
+          wake_detected_at: options.activationContext.wake_detected_at ?? this.dependencies.wallNow(),
+        }
+      : undefined;
     this.recordTrace("realtime_start_requested", {
       detail: options.audioHandoff ? "wake_handoff" : "direct",
     });
@@ -294,7 +313,7 @@ export class JarvisRealtimeController {
           localStream: options.audioHandoff.localStream,
           ownsLocalStream: false,
           audioHandoff: options.audioHandoff,
-          activationContext: options.activationContext,
+          activationContext,
         }
       : undefined;
     return this.connectWithRetry(operation, false, input);
@@ -311,6 +330,7 @@ export class JarvisRealtimeController {
     const current = this.active;
     this.active = null;
     if (current) await this.disposeConnection(current, true);
+    await this.flushTelemetry();
     this.options.onRemoteStream?.(null);
     this.options.onPlaybackMuted?.(false);
     this.publish({ status: "idle", attempt: 0, session: null, error: null });
@@ -375,6 +395,11 @@ export class JarvisRealtimeController {
           session: connection.session,
           error: null,
         });
+        this.recordTrace("realtime_controller_connected", {
+          attempt: index + 1,
+          detail: `${connection.session.id}:${connection.session.generation}`,
+        });
+        void this.flushTelemetry();
         this.scheduleRotation(connection.rotateAfterSeconds);
         return this.snapshot;
       } catch (cause) {
@@ -388,6 +413,7 @@ export class JarvisRealtimeController {
     this.options.onRemoteStream?.(null);
     const error = lastError instanceof Error ? lastError.message : "Realtime connection failed";
     this.publish({ status: "text_fallback", attempt: RETRY_DELAYS_MS.length, session: null, error });
+    await this.flushTelemetry();
     throw new Error(error);
   }
 
@@ -725,13 +751,52 @@ export class JarvisRealtimeController {
     kind: string,
     details: Omit<JarvisRealtimeTraceEntry, "kind" | "monotonic_ms" | "wall_time"> = {},
   ): void {
-    this.trace.push({
+    const entry: JarvisRealtimeTraceEntry = {
       kind,
       monotonic_ms: this.dependencies.now(),
       wall_time: this.dependencies.wallNow(),
       ...details,
-    });
+    };
+    this.trace.push(entry);
     if (this.trace.length > 2_000) this.trace.splice(0, this.trace.length - 2_000);
+    this.telemetryPending.push({
+      trace_id: this.traceId,
+      ...(this.activationId ? { activation_id: this.activationId } : {}),
+      ...(this.active?.session ? {
+        session_id: this.active.session.id,
+        generation: this.active.session.generation,
+      } : {}),
+      ...(entry.response_id ? { provider_response_id: entry.response_id } : {}),
+      source: "browser",
+      event_type: entry.kind.slice(0, 128),
+      observed_at: entry.wall_time,
+      monotonic_ms: entry.monotonic_ms,
+      detail: {
+        ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
+        ...(entry.sequence === undefined ? {} : { sequence: entry.sequence }),
+        ...(entry.server_time === undefined ? {} : { server_time: entry.server_time }),
+        ...(entry.timing_ms === undefined ? {} : { timing_ms: entry.timing_ms }),
+        ...(entry.detail === undefined ? {} : { detail: entry.detail.slice(0, 500) }),
+      },
+    });
+    if (this.telemetryPending.length >= 25) void this.flushTelemetry();
+  }
+
+  private async flushTelemetry(): Promise<void> {
+    if (!this.dependencies.sendTelemetry || this.telemetrySending || !this.telemetryPending.length) return;
+    this.telemetrySending = true;
+    const batch = this.telemetryPending.splice(0, 100);
+    try {
+      await this.dependencies.sendTelemetry(batch);
+    } catch {
+      this.telemetryPending.unshift(...batch);
+      if (this.telemetryPending.length > 2_000) {
+        this.telemetryPending.splice(0, this.telemetryPending.length - 2_000);
+      }
+    } finally {
+      this.telemetrySending = false;
+      if (this.telemetryPending.length >= 25) void this.flushTelemetry();
+    }
   }
 
   private async captureReceiverStats(connection: BrowserConnection, reason: string): Promise<void> {

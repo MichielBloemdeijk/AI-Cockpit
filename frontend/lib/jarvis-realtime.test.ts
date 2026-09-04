@@ -207,8 +207,28 @@ describe("JarvisRealtimeController", () => {
     expect(deps.peers).toHaveLength(1);
     expect(deps.peers[0].offerCount).toBe(1);
     expect(deps.peers[0].sender.replacements).toHaveLength(1);
-    expect(deps.createCall.mock.calls[0][5]).toEqual({ source: "wake_word", wake_score: 0.22 });
+    expect(deps.createCall.mock.calls[0][5]).toMatchObject({
+      source: "wake_word",
+      wake_score: 0.22,
+      wake_detected_at: "2026-08-28T00:00:00.000Z",
+    });
+    expect(deps.createCall.mock.calls[0][5].activation_id).toBeTruthy();
     await controller.stop();
+  });
+
+  it("uploads metadata-only timing traces in a batch", async () => {
+    const sendTelemetry = vi.fn().mockResolvedValue(undefined);
+    const deps = dependencies({ sendTelemetry });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start();
+    controller.recordClientSignal("wake_candidate", { probability: 0.8 });
+    await controller.stop();
+
+    expect(sendTelemetry).toHaveBeenCalled();
+    const events = sendTelemetry.mock.calls.flatMap(([batch]) => batch);
+    expect(events.some((event) => event.event_type === "wake_candidate")).toBe(true);
+    expect(events.every((event) => !("audio" in (event.detail ?? {})))).toBe(true);
   });
 
   it("retries at 0.5, 1, and 2 seconds before entering typed fallback", async () => {

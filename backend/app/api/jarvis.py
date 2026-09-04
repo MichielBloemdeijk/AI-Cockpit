@@ -1,6 +1,8 @@
 """Jarvis daily-log state and durable typed-turn endpoints."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -19,6 +21,8 @@ from app.models.jarvis import (
     JarvisPreferencesView,
     JarvisRealtimeCallRequest,
     JarvisRealtimeCallResponse,
+    JarvisRealtimeTelemetryAccepted,
+    JarvisRealtimeTelemetryBatch,
     ReminderCreateRequest,
     ReminderSnoozeRequest,
     JarvisSessionEventReplayResponse,
@@ -38,6 +42,7 @@ from app.services.conversation_read_model import conversation_read_model
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.jarvis_live import jarvis_live_service
+from app.services.jarvis_realtime_telemetry import jarvis_realtime_telemetry
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.jarvis_situation import jarvis_situation_projector
 from app.services.natural_task_resolver import natural_task_resolver, task_title
@@ -352,8 +357,30 @@ async def replay_jarvis_log_events(
 
 @router.post("/realtime/calls", response_model=JarvisRealtimeCallResponse)
 async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisRealtimeCallResponse:
+    request_id = str(uuid4())
+    request_started = time.monotonic()
+    activation_id = None if request.activation_context is None else request.activation_context.activation_id
+    trace_id = activation_id or request_id
+    jarvis_realtime_telemetry.record({
+        "trace_id": trace_id,
+        "activation_id": activation_id,
+        "session_id": None,
+        "generation": None,
+        "request_id": request_id,
+        "provider_response_id": None,
+        "source": "backend",
+        "event_type": "call.request_received",
+        "observed_at": datetime.now(timezone.utc),
+        "monotonic_ms": None,
+        "duration_ms": None,
+        "detail_json": {"controller_id": request.controller_id, "role": request.role},
+    })
     if request.role == "observer":
-        return JarvisRealtimeCallResponse(role="observer", session=_session_view(await jarvis_coordinator.observe()))
+        return JarvisRealtimeCallResponse(
+            role="observer",
+            request_id=request_id,
+            session=_session_view(await jarvis_coordinator.observe()),
+        )
     state = await jarvis_daily_service.get_state()
     if state.current_log is None:
         await jarvis_daily_service.start_fresh_log(
@@ -378,8 +405,9 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Realtime provider connection failed",
         ) from exc
-    return JarvisRealtimeCallResponse(
+    result = JarvisRealtimeCallResponse(
         role="controller",
+        request_id=request_id,
         session=_session_view(bootstrap.session),
         sdp_answer=bootstrap.sdp_answer,
         rotate_after_seconds=(
@@ -388,6 +416,45 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
             else None
         ),
     )
+    jarvis_realtime_telemetry.record({
+        "trace_id": trace_id,
+        "activation_id": activation_id,
+        "session_id": bootstrap.session.id,
+        "generation": bootstrap.session.generation,
+        "request_id": request_id,
+        "provider_response_id": None,
+        "source": "backend",
+        "event_type": "call.response_ready",
+        "observed_at": datetime.now(timezone.utc),
+        "monotonic_ms": None,
+        "duration_ms": round((time.monotonic() - request_started) * 1_000, 3),
+        "detail_json": None,
+    })
+    return result
+
+
+@router.post("/realtime/telemetry", response_model=JarvisRealtimeTelemetryAccepted, status_code=202)
+async def ingest_realtime_telemetry(
+    request: JarvisRealtimeTelemetryBatch,
+) -> JarvisRealtimeTelemetryAccepted:
+    accepted = jarvis_realtime_telemetry.record_many([
+        {
+            "trace_id": event.trace_id,
+            "activation_id": event.activation_id,
+            "session_id": event.session_id,
+            "generation": event.generation,
+            "request_id": event.request_id,
+            "provider_response_id": event.provider_response_id,
+            "source": event.source,
+            "event_type": event.event_type,
+            "observed_at": event.observed_at,
+            "monotonic_ms": event.monotonic_ms,
+            "duration_ms": event.duration_ms,
+            "detail_json": event.detail,
+        }
+        for event in request.events
+    ])
+    return JarvisRealtimeTelemetryAccepted(accepted=accepted)
 
 
 @router.get(

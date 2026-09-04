@@ -119,6 +119,7 @@ class JarvisRealtimeCallRequest(BaseModel):
 
 class JarvisRealtimeCallResponse(BaseModel):
     role: Literal["controller", "observer"]
+    request_id: str | None = None
     session: JarvisSessionView | None = None
     sdp_answer: str | None = None
     rotate_after_seconds: int | None = None
@@ -184,6 +185,32 @@ class JarvisClientContext(BaseModel):
 class JarvisRealtimeActivationContext(BaseModel):
     source: Literal["wake_word"]
     wake_score: float = Field(ge=0.0, le=1.0)
+    activation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    wake_detected_at: datetime | None = None
+    local_speech_started_at: datetime | None = None
+
+
+class JarvisRealtimeTelemetryEvent(BaseModel):
+    trace_id: str = Field(min_length=1, max_length=64)
+    activation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    session_id: str | None = Field(default=None, min_length=1, max_length=36)
+    generation: int | None = Field(default=None, gt=0)
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
+    provider_response_id: str | None = Field(default=None, min_length=1, max_length=255)
+    source: Literal["browser", "android", "backend", "provider"]
+    event_type: str = Field(min_length=1, max_length=128)
+    observed_at: datetime
+    monotonic_ms: float | None = None
+    duration_ms: float | None = Field(default=None, ge=0)
+    detail: dict[str, Any] | None = None
+
+
+class JarvisRealtimeTelemetryBatch(BaseModel):
+    events: list[JarvisRealtimeTelemetryEvent] = Field(min_length=1, max_length=100)
+
+
+class JarvisRealtimeTelemetryAccepted(BaseModel):
+    accepted: int = Field(ge=0)
 
 
 class ReminderAfterTiming(BaseModel):

@@ -785,6 +785,38 @@ export interface JarvisClientContext {
 export interface JarvisRealtimeActivationContext {
   source: "wake_word";
   wake_score: number;
+  activation_id?: string;
+  wake_detected_at?: string;
+  local_speech_started_at?: string;
+}
+
+export interface JarvisRealtimeTelemetryEvent {
+  trace_id: string;
+  activation_id?: string;
+  session_id?: string;
+  generation?: number;
+  request_id?: string;
+  provider_response_id?: string;
+  source: "browser" | "android" | "backend" | "provider";
+  event_type: string;
+  observed_at: string;
+  monotonic_ms?: number;
+  duration_ms?: number;
+  detail?: Record<string, unknown>;
+}
+
+export async function submitJarvisRealtimeTelemetry(
+  events: JarvisRealtimeTelemetryEvent[],
+): Promise<void> {
+  if (!events.length) return;
+  const res = await fetch(`${BASE}/api/jarvis/realtime/telemetry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    keepalive: true,
+    body: JSON.stringify({ events: events.slice(0, 100) }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 export function currentJarvisClientContext(now = new Date()): JarvisClientContext {
@@ -1115,6 +1147,7 @@ export interface TaskEventReplayResponse {
 
 export interface JarvisRealtimeCallResponse {
   role: "controller" | "observer";
+  request_id?: string | null;
   session: JarvisSession | null;
   sdp_answer: string | null;
   rotate_after_seconds: number | null;
