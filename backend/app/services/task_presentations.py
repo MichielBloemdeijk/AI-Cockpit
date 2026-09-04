@@ -1,12 +1,13 @@
 """Deterministic task-fact coalescing and generation-bound presentation."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from app.db.session import session_scope
 from app.db.tables import (
@@ -15,10 +16,12 @@ from app.db.tables import (
     Task,
     TaskEvent,
     TaskPresentation,
+    TaskProjectionCheckpoint,
     TaskQuestion,
 )
 from app.services.task_notifications import enqueue_task_notification
 from app.services.task_error_messages import failure_category, public_failure_summary
+from app.services.runtime_health import runtime_health_service
 from app.services.task_service import GENERIC_REMINDER_TEXT
 from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
 
@@ -47,6 +50,12 @@ class PresentationReservation:
 
 
 class TaskPresentationService:
+    _PROJECTION_KEY = "task_attention"
+    _BATCH_SIZE = 250
+
+    def __init__(self) -> None:
+        self._projection_lock = asyncio.Lock()
+
     async def recover_reservations(self) -> int:
         recovered = 0
         async with session_scope() as session:
@@ -65,124 +74,191 @@ class TaskPresentationService:
         return recovered
 
     async def sync_candidates(self) -> int:
-        """Project presentation candidates from durable task events.
+        try:
+            created = await self._sync_candidates()
+            await runtime_health_service.healthy("task_projector")
+            return created
+        except Exception as exc:
+            await runtime_health_service.failed("task_projector", exc)
+            raise
 
-        This projection can be safely rebuilt after a process restart. Existing
-        worker-created terminal candidates are enriched instead of duplicated.
-        """
-        async with session_scope() as session:
-            return await self.sync_candidates_in_session(session)
-
-    async def sync_candidates_in_session(self, session) -> int:
-        """Project candidates inside an existing response-snapshot transaction."""
+    async def _sync_candidates(self) -> int:
+        """Incrementally project every committed task event exactly once."""
         created = 0
-        events = list((await session.execute(
-            select(TaskEvent)
-            .where(TaskEvent.event_type.in_([*sorted(PRESENTABLE_EVENT_TYPES), "task.question.answered"]))
-            .order_by(TaskEvent.sequence.asc())
-        )).scalars().all())
-        latest_terminal_sequence = {
-            event.task_id: event.sequence
-            for event in events
-            if PRESENTABLE_EVENT_TYPES.get(event.event_type) == "terminal_result"
+        async with self._projection_lock:
+            target_sequence: int | None = None
+            while True:
+                async with session_scope() as session:
+                    checkpoint = await session.get(TaskProjectionCheckpoint, self._PROJECTION_KEY)
+                    if checkpoint is None:
+                        checkpoint = TaskProjectionCheckpoint(
+                            projection_key=self._PROJECTION_KEY,
+                            last_sequence=0,
+                        )
+                        session.add(checkpoint)
+                    if target_sequence is None:
+                        target_sequence = int((await session.execute(
+                            select(func.max(TaskEvent.sequence))
+                        )).scalar_one_or_none() or 0)
+                    if checkpoint.last_sequence >= target_sequence:
+                        return created
+                    events = list((await session.execute(
+                        select(TaskEvent)
+                        .where(TaskEvent.sequence > checkpoint.last_sequence)
+                        .where(TaskEvent.sequence <= target_sequence)
+                        .order_by(TaskEvent.sequence.asc())
+                        .limit(self._BATCH_SIZE)
+                    )).scalars().all())
+                    if not events:
+                        checkpoint.last_sequence = target_sequence
+                        checkpoint.updated_at = utc_now()
+                        return created
+                    created += await self._project_batch(session, events)
+                    checkpoint.last_sequence = events[-1].sequence
+                    checkpoint.updated_at = utc_now()
+
+    async def _project_batch(self, session, events: list[TaskEvent]) -> int:
+        relevant = [
+            event for event in events
+            if event.event_type in PRESENTABLE_EVENT_TYPES
+            or event.event_type == "task.question.answered"
+        ]
+        if not relevant:
+            return 0
+        task_ids = {event.task_id for event in relevant}
+        tasks = {
+            task.id: task
+            for task in (await session.execute(select(Task).where(Task.id.in_(task_ids)))).scalars()
         }
-        for event in events:
+        presentations = list((await session.execute(
+            select(TaskPresentation).where(TaskPresentation.task_id.in_(task_ids))
+        )).scalars().all())
+        by_event = {
+            item.source_task_event_id: item
+            for item in presentations
+            if item.source_task_event_id
+        }
+        by_task: dict[str, list[TaskPresentation]] = {}
+        for item in presentations:
+            by_task.setdefault(item.task_id, []).append(item)
+
+        question_ids = {
+            str((event.payload_json or {}).get("question_id") or "")
+            for event in relevant
+            if event.event_type == "task.requires_input"
+        }
+        questions = {
+            item.id: item
+            for item in (
+                (await session.execute(select(TaskQuestion).where(TaskQuestion.id.in_(question_ids)))).scalars()
+                if question_ids else []
+            )
+        }
+        notification_event_ids = {
+            item.source_task_event_id for item in presentations if item.source_task_event_id
+        } | {event.id for event in relevant}
+        notifications = list((await session.execute(
+            select(NotificationOutbox).where(NotificationOutbox.task_event_id.in_(notification_event_ids))
+        )).scalars().all()) if notification_event_ids else []
+        notifications_by_event: dict[str, list[NotificationOutbox]] = {}
+        for item in notifications:
+            if item.task_event_id:
+                notifications_by_event.setdefault(item.task_event_id, []).append(item)
+
+        async def supersede_notification(event_id: str | None) -> None:
+            if not event_id:
+                return
+            for row in notifications_by_event.get(event_id, []):
+                if row.status in {"queued", "failed", "sending"}:
+                    row.status = "superseded"
+                    row.next_attempt_at = None
+            await session.execute(
+                update(NotificationOutbox)
+                .where(NotificationOutbox.task_event_id == event_id)
+                .where(NotificationOutbox.status.in_(["queued", "failed", "sending"]))
+                .values(status="superseded", next_attempt_at=None)
+            )
+
+        async def supersede(candidate: TaskPresentation) -> None:
+            candidate.state = "superseded"
+            candidate.reserved_session_id = None
+            candidate.reserved_generation = None
+            candidate.reserved_at = None
+            await supersede_notification(candidate.source_task_event_id)
+
+        created = 0
+        for event in relevant:
             if event.event_type == "task.question.answered":
+                question_id = str((event.payload_json or {}).get("question_id") or "")
+                for candidate in presentations:
+                    if (
+                        candidate.candidate_type == "question"
+                        and candidate.state in UNFINISHED_PRESENTATION_STATES
+                        and str((candidate.required_facts_json or {}).get("question_id") or "") == question_id
+                    ):
+                        await supersede(candidate)
                 continue
-            candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
-            existing = (await session.execute(
-                select(TaskPresentation)
-                .where(TaskPresentation.source_task_event_id == event.id)
-                .limit(1)
-            )).scalar_one_or_none()
-            task = (await session.execute(
-                select(Task).where(Task.id == event.task_id).limit(1)
-            )).scalar_one_or_none()
+
+            task = tasks.get(event.task_id)
             if task is None:
                 continue
-
-            if (
-                candidate_type == "terminal_result"
-                and latest_terminal_sequence.get(task.id) != event.sequence
-            ):
-                if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
-                    existing.state = "superseded"
-                    existing.reserved_session_id = None
-                    existing.reserved_generation = None
-                await self._supersede_notification(session, event.id)
-                continue
-
+            candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
+            existing = by_event.get(event.id)
             policy = normalize_task_update_policy(task.presentation_policy)
             if task.presentation_policy != policy:
                 task.presentation_policy = policy
             if policy == SILENT or (candidate_type == "progress" and policy != FOLLOW_PROGRESS):
                 if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
-                    existing.state = "superseded"
-                    existing.reserved_session_id = None
-                    existing.reserved_generation = None
-                    await self._supersede_notification(session, event.id)
+                    await supersede(existing)
                 continue
 
             facts = self._facts(event, task)
+            question = questions.get(str((event.payload_json or {}).get("question_id") or ""))
             if existing is not None:
                 existing.required_facts_json = facts
                 existing.importance = task.importance
-                await self._ensure_notification(session, task, event)
+                await enqueue_task_notification(session, task=task, event=event, question=question)
                 continue
+
+            task_presentations = by_task.setdefault(task.id, [])
             if candidate_type == "terminal_result":
-                await self._supersede_progress(session, task.id)
-                existing_terminal = (await session.execute(
-                    select(TaskPresentation)
-                    .where(TaskPresentation.task_id == task.id)
-                    .where(TaskPresentation.candidate_type == "terminal_result")
-                    .where(TaskPresentation.state.in_(sorted(UNFINISHED_PRESENTATION_STATES)))
-                    .order_by(TaskPresentation.created_at.desc())
-                    .limit(1)
-                )).scalar_one_or_none()
-                if existing_terminal is not None:
-                    previous_event_id = existing_terminal.source_task_event_id
-                    if previous_event_id and previous_event_id != event.id:
-                        await self._supersede_notification(session, previous_event_id)
-                    existing_terminal.source_task_event_id = event.id
-                    existing_terminal.required_facts_json = facts
-                    existing_terminal.importance = task.importance
-                    await self._ensure_notification(session, task, event)
-                    continue
+                for candidate in task_presentations:
+                    if (
+                        candidate.candidate_type in {"progress", "terminal_result"}
+                        and candidate.state in UNFINISHED_PRESENTATION_STATES
+                    ):
+                        await supersede(candidate)
             elif candidate_type == "progress":
-                terminal = (await session.execute(
-                    select(TaskPresentation.id)
-                    .where(TaskPresentation.task_id == task.id)
-                    .where(TaskPresentation.candidate_type == "terminal_result")
-                    .where(TaskPresentation.state.in_(["pending", "reserved", "presented"]))
-                    .limit(1)
-                )).scalar_one_or_none()
-                if terminal is not None:
+                if any(
+                    candidate.candidate_type == "terminal_result"
+                    and candidate.state in {"pending", "reserved", "presented"}
+                    for candidate in task_presentations
+                ):
                     continue
-                await self._supersede_progress(session, task.id)
+                for candidate in task_presentations:
+                    if candidate.candidate_type == "progress" and candidate.state in UNFINISHED_PRESENTATION_STATES:
+                        await supersede(candidate)
 
-            session.add(
-                TaskPresentation(
-                    id=str(uuid4()),
-                    task_id=task.id,
-                    candidate_type=candidate_type,
-                    coalescing_key=f"task:{task.id}:{candidate_type}",
-                    importance=task.importance,
-                    state="pending",
-                    source_task_event_id=event.id,
-                    required_facts_json=facts,
-                    idempotency_key=f"task-event-presentation:{event.id}",
-                )
+            candidate = TaskPresentation(
+                id=str(uuid4()),
+                task_id=task.id,
+                candidate_type=candidate_type,
+                coalescing_key=f"task:{task.id}:{candidate_type}",
+                importance=task.importance,
+                state="pending",
+                source_task_event_id=event.id,
+                required_facts_json=facts,
+                idempotency_key=f"task-event-presentation:{event.id}",
             )
-            await self._ensure_notification(session, task, event)
+            session.add(candidate)
+            presentations.append(candidate)
+            task_presentations.append(candidate)
+            by_event[event.id] = candidate
+            await enqueue_task_notification(session, task=task, event=event, question=question)
             created += 1
-
-        answered_events = [event for event in events if event.event_type == "task.question.answered"]
-        if answered_events:
-            await self._supersede_answered_questions(session, answered_events)
         return created
 
     async def list_pending(self) -> tuple[TaskPresentation, ...]:
-        await self.sync_candidates()
         async with session_scope() as session:
             result = await session.execute(
                 select(TaskPresentation)
@@ -202,8 +278,8 @@ class TaskPresentationService:
         user_owns_floor: bool,
         limit: int = 3,
     ) -> PresentationReservation | None:
+        await self.sync_candidates()
         async with session_scope() as session:
-            await self.sync_candidates_in_session(session)
             return await self.reserve_in_session(
                 session,
                 session_id=session_id,

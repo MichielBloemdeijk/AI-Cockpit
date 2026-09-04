@@ -410,6 +410,7 @@ async def test_fast_task_completion_projects_a_terminal_candidate() -> None:
     )
     await task_service.complete(task.task.id, summary="Already done", idempotency_key="fast-done")
 
+    await task_presentation_service.sync_candidates()
     pending = await task_presentation_service.list_pending()
     candidate = next(item for item in pending if item.task_id == task.task.id)
     assert candidate.candidate_type == "terminal_result"

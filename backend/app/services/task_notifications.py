@@ -108,12 +108,7 @@ async def enqueue_task_notification(
             },
         )
     )
-    result = await session.execute(
-        select(NotificationOutbox.id)
-        .where(NotificationOutbox.dedupe_key == dedupe_key)
-        .limit(1)
-    )
-    return result.scalar_one()
+    return outbox_id
 
 
 def payload_for_task_notification(outbox: NotificationOutbox) -> dict[str, Any]:

@@ -391,6 +391,7 @@ class JarvisCoordinator:
             ):
                 return
             snapshot_started = time.monotonic()
+            await task_presentation_service.sync_candidates()
             async with session_scope() as session:
                 realtime = await self._require_current_generation(session, session_id, generation)
                 floor = await self._floor_state(session, session_id)
@@ -402,7 +403,6 @@ class JarvisCoordinator:
                 if selected_reason == "task_update" and floor != "listening":
                     return
 
-                await task_presentation_service.sync_candidates_in_session(session)
                 projected = await jarvis_situation_projector.project_in_session(
                     session,
                     conversation_id=realtime.conversation_id,
@@ -530,7 +530,6 @@ class JarvisCoordinator:
         adapter = get_voice_session_adapter(adapter_name)
         wake_activation = self._wake_activation(activation_context)
         superseded_adapters: list[tuple[str, int, str]] = []
-        await task_presentation_service.sync_candidates()
         async with session_scope() as session:
             conversation = await session.get(Conversation, conversation_id)
             jarvis_state = await session.get(JarvisState, "current")

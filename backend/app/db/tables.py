@@ -794,6 +794,18 @@ class TaskEvent(Base):
     )
 
 
+class TaskProjectionCheckpoint(Base):
+    """Durable cursor for replayable task-domain projections."""
+
+    __tablename__ = "task_projection_checkpoints"
+
+    projection_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class TaskQuestion(Base):
     __tablename__ = "task_questions"
 

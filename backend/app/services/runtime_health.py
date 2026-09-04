@@ -18,6 +18,7 @@ EXPECTED_COMPONENTS = (
     "reminder_scheduler",
     "notification_router",
     "response_arbiter",
+    "task_projector",
 )
 
 
