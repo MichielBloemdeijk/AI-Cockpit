@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 from typing import Any
 
 import httpx
@@ -41,6 +42,33 @@ async def test_default_call_creator_uses_shared_http_client_and_multipart() -> N
     body = request.content.decode()
     assert 'name="sdp"' in body and "test-sdp" in body
     assert 'name="session"' in body and '"model":"test-model"' in body
+
+
+@pytest.mark.asyncio
+async def test_default_websocket_connector_uses_verified_certificate_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    expected_socket = object()
+
+    async def connect(url: str, **kwargs: Any):
+        captured["url"] = url
+        captured.update(kwargs)
+        return expected_socket
+
+    monkeypatch.setattr("websockets.asyncio.client.connect", connect)
+
+    result = await OpenAIRealtimeAdapter._default_websocket_connector(
+        "wss://api.openai.com/v1/realtime?call_id=test",
+        open_timeout=12.0,
+    )
+
+    assert result is expected_socket
+    assert captured["url"].startswith("wss://api.openai.com/")
+    assert captured["open_timeout"] == 12.0
+    assert isinstance(captured["ssl"], ssl.SSLContext)
+    assert captured["ssl"].check_hostname is True
+    assert captured["ssl"].verify_mode == ssl.CERT_REQUIRED
 
 
 class FakeSideband:

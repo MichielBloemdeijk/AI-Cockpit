@@ -7,11 +7,13 @@ import binascii
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 import json
+import ssl
 import time
 from typing import Any, Protocol
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
+import certifi
 import httpx
 
 from app.config import settings
@@ -1315,6 +1317,7 @@ class OpenAIRealtimeAdapter:
     async def _default_websocket_connector(url: str, **kwargs: Any) -> SidebandSocket:
         from websockets.asyncio.client import connect
 
+        kwargs.setdefault("ssl", ssl.create_default_context(cafile=certifi.where()))
         return await connect(url, **kwargs)
 
 
