@@ -31,6 +31,7 @@ from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.task_error_messages import public_tool_error
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.jarvis_time import normalize_client_context
+from app.services.jarvis_wake import verify_wake_transcript
 from app.services.jarvis_situation import jarvis_situation_projector
 from app.services.runtime_health import runtime_health_service
 from app.services.task_presentations import task_presentation_service
@@ -105,16 +106,26 @@ class _ResponseGate:
     inflight: bool = False
 
 
+@dataclass(slots=True)
+class _WakeActivation:
+    wake_score: float
+    verification_state: str = "pending"
+    speech_stopped: bool = False
+
+
 _RESPONSE_PRIORITY = {
     "tool_continuation": 0,
     "user_turn": 1,
     "task_update": 2,
 }
+_WAKE_VERIFICATION_GRACE_SECONDS = 0.65
 
 
 class JarvisCoordinator:
     def __init__(self) -> None:
         self._response_gates: dict[tuple[str, int], _ResponseGate] = {}
+        self._wake_activations: dict[tuple[str, int], _WakeActivation] = {}
+        self._wake_verification_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
 
@@ -137,9 +148,92 @@ class JarvisCoordinator:
             await asyncio.gather(self._delivery_task, return_exceptions=True)
         self._delivery_task = None
         self._delivery_stop = None
+        verification_tasks = tuple(self._wake_verification_tasks.values())
+        for task in verification_tasks:
+            task.cancel()
+        if verification_tasks:
+            await asyncio.gather(*verification_tasks, return_exceptions=True)
+        self._wake_verification_tasks.clear()
+        self._wake_activations.clear()
         self._response_gates.clear()
         await runtime_health_service.offline("response_arbiter", detail="Response arbiter stopped.")
         await runtime_health_service.offline("notification_router", detail="Notification router stopped.")
+
+    @staticmethod
+    def _wake_activation(value: object | None) -> _WakeActivation | None:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            source = value.get("source")
+            raw_score = value.get("wake_score")
+        else:
+            source = getattr(value, "source", None)
+            raw_score = getattr(value, "wake_score", None)
+        if source != "wake_word" or raw_score is None:
+            return None
+        try:
+            wake_score = max(0.0, min(1.0, float(raw_score)))
+        except (TypeError, ValueError):
+            return None
+        return _WakeActivation(wake_score=wake_score)
+
+    def _schedule_wake_verification(self, session_id: str, generation: int) -> None:
+        key = (session_id, generation)
+        existing = self._wake_verification_tasks.get(key)
+        if existing is not None and not existing.done():
+            return
+
+        async def accept_after_grace() -> None:
+            try:
+                await asyncio.sleep(_WAKE_VERIFICATION_GRACE_SECONDS)
+                activation = self._wake_activations.get(key)
+                if (
+                    activation is None
+                    or activation.verification_state != "pending"
+                    or not activation.speech_stopped
+                ):
+                    return
+                activation.verification_state = "accepted"
+                async with session_scope() as session:
+                    realtime = await session.get(RealtimeSession, session_id)
+                    if (
+                        realtime is None
+                        or realtime.generation != generation
+                        or realtime.lifecycle_state not in ACTIVE_SESSION_STATES
+                    ):
+                        return
+                    await JarvisDomainRepository(session).append_session_event(
+                        session_id=session_id,
+                        event_type="wake.verification.accepted",
+                        payload_json={
+                            "reason": "transcript_grace_elapsed",
+                            "wake_score": activation.wake_score,
+                        },
+                        idempotency_key=f"wake-verification-timeout:{session_id}:{generation}",
+                    )
+                await self._queue_controlled_response(session_id, generation, "user_turn")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A failed verification fallback cannot bring down provider event handling.
+                return
+            finally:
+                if self._wake_verification_tasks.get(key) is asyncio.current_task():
+                    self._wake_verification_tasks.pop(key, None)
+
+        self._wake_verification_tasks[key] = asyncio.create_task(
+            accept_after_grace(),
+            name=f"jarvis-wake-verification:{session_id}:{generation}",
+        )
+
+    def _cancel_wake_verification(self, session_id: str, generation: int) -> None:
+        task = self._wake_verification_tasks.pop((session_id, generation), None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def _clear_wake_activation(self, session_id: str, generation: int) -> None:
+        self._cancel_wake_verification(session_id, generation)
+        self._wake_activations.pop((session_id, generation), None)
 
     async def _run_delivery_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -271,6 +365,13 @@ class JarvisCoordinator:
                 gate.pending,
                 key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
             )
+            activation = self._wake_activations.get(key)
+            if (
+                selected_reason == "task_update"
+                and activation is not None
+                and activation.verification_state != "accepted"
+            ):
+                return
             async with session_scope() as session:
                 realtime = await self._require_current_generation(session, session_id, generation)
                 floor = await self._floor_state(session, session_id)
@@ -387,8 +488,10 @@ class JarvisCoordinator:
         adapter_name: str = "fake",
         sdp_offer: str | None = None,
         client_context: object | None = None,
+        activation_context: object | None = None,
     ) -> ControllerBootstrap:
         adapter = get_voice_session_adapter(adapter_name)
+        wake_activation = self._wake_activation(activation_context)
         superseded_adapters: list[tuple[str, int, str]] = []
         await task_presentation_service.sync_candidates()
         async with session_scope() as session:
@@ -449,7 +552,11 @@ class JarvisCoordinator:
             await repo.append_session_event(
                 session_id=realtime.id,
                 event_type="session.connecting",
-                payload_json={"controller_id": controller_id, "adapter": adapter.name},
+                payload_json={
+                    "controller_id": controller_id,
+                    "adapter": adapter.name,
+                    "activation_source": "wake_word" if wake_activation is not None else "manual",
+                },
                 idempotency_key=f"connecting:{realtime.id}",
             )
             snapshot = await repo.read_snapshot(
@@ -459,7 +566,11 @@ class JarvisCoordinator:
             record = self._record(realtime, floor_state="connecting")
             context = await self._context_in_session(session, snapshot)
 
+        if wake_activation is not None:
+            self._wake_activations[(record.id, record.generation)] = wake_activation
+
         for old_session_id, old_generation, old_adapter in superseded_adapters:
+            self._clear_wake_activation(old_session_id, old_generation)
             await task_presentation_service.release_session_reservations(
                 session_id=old_session_id,
                 generation=old_generation,
@@ -492,6 +603,7 @@ class JarvisCoordinator:
                 sdp_offer=sdp_offer,
             )
         except Exception:
+            self._clear_wake_activation(record.id, record.generation)
             async with session_scope() as session:
                 failed = await session.get(RealtimeSession, record.id)
                 if failed is not None:
@@ -551,6 +663,9 @@ class JarvisCoordinator:
         response_finished = False
         queue_user_response = False
         queue_task_updates = False
+        schedule_wake_fallback = False
+        cancel_wake_fallback = False
+        clear_wake_activation = False
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             repo = JarvisDomainRepository(session)
@@ -571,17 +686,45 @@ class JarvisCoordinator:
             if event.kind == "ready":
                 realtime.lifecycle_state = "ready"
                 realtime.ready_at = realtime.ready_at or utc_now()
-                queue_task_updates = True
+                activation = self._wake_activations.get((session_id, generation))
+                queue_task_updates = activation is None or activation.verification_state == "accepted"
             elif event.kind in {"disconnected", "provider_error"}:
                 realtime.lifecycle_state = "disconnected"
                 realtime.disconnected_at = utc_now()
                 release_reservations = True
                 response_finished = True
+                clear_wake_activation = True
 
             if event.kind == "user_transcript":
                 await self._persist_user_transcript(session, realtime, event)
+                activation = self._wake_activations.get((session_id, generation))
+                if activation is not None and activation.verification_state == "pending":
+                    decision = verify_wake_transcript(
+                        str(event.payload.get("transcript") or ""),
+                        activation.wake_score,
+                    )
+                    activation.verification_state = "accepted" if decision.accepted else "rejected"
+                    cancel_wake_fallback = True
+                    await repo.append_session_event(
+                        session_id=session_id,
+                        event_type=f"wake.verification.{activation.verification_state}",
+                        payload_json={
+                            "reason": decision.reason,
+                            "wake_score": activation.wake_score,
+                        },
+                        idempotency_key=f"wake-verification:{session_id}:{generation}:{event.event_id}",
+                    )
+                    queue_user_response = decision.accepted and activation.speech_stopped
             elif event.kind == "user_stopped":
-                queue_user_response = True
+                activation = self._wake_activations.get((session_id, generation))
+                if activation is None:
+                    queue_user_response = True
+                else:
+                    activation.speech_stopped = True
+                    if activation.verification_state == "accepted":
+                        queue_user_response = True
+                    elif activation.verification_state == "pending":
+                        schedule_wake_fallback = True
             elif event.kind in {"assistant_response", "assistant_interrupted"}:
                 delivery = await self._persist_delivery(session, realtime, event)
                 response_finished = True
@@ -615,6 +758,13 @@ class JarvisCoordinator:
                     for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
                     if item
                 )
+
+        if cancel_wake_fallback:
+            self._cancel_wake_verification(session_id, generation)
+        if schedule_wake_fallback:
+            self._schedule_wake_verification(session_id, generation)
+        if clear_wake_activation:
+            self._clear_wake_activation(session_id, generation)
 
         if presentation_action is not None:
             presentation_ids, delivery, heard_transcript, response_kind = presentation_action
@@ -698,6 +848,7 @@ class JarvisCoordinator:
             error=f"session_superseded:{reason}",
         )
         self._response_gates.pop((session_id, generation), None)
+        self._clear_wake_activation(session_id, generation)
         if realtime.provider_adapter == "fake":
             fake_voice_session_adapter.detach(session_id=session_id, generation=generation)
         else:
@@ -724,6 +875,7 @@ class JarvisCoordinator:
             emit_event=True,
         )
         self._response_gates.pop((session_id, generation), None)
+        self._clear_wake_activation(session_id, generation)
 
     async def replay_session_events(
         self,

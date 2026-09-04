@@ -8,6 +8,10 @@ export interface JarvisWakeModelConfiguration {
   wakeModelUrl: string;
   wasmBaseUrl: string;
   wakeThreshold?: number;
+  candidateWakeThreshold?: number;
+  candidateWakeHits?: number;
+  speechLookbackMs?: number;
+  candidateLookbackMs?: number;
   positiveVadThreshold?: number;
   negativeVadThreshold?: number;
   negativeVadCount?: number;
@@ -33,6 +37,11 @@ export function defaultJarvisWakeModelConfiguration(): JarvisWakeModelConfigurat
     embeddingModelUrl: "/jarvis-wake/models/speech-embedding.onnx",
     wakeModelUrl: "/jarvis-wake/models/jarvis.onnx",
     wasmBaseUrl: "/vad/",
+    wakeThreshold: 0.45,
+    candidateWakeThreshold: 0.18,
+    candidateWakeHits: 2,
+    speechLookbackMs: 1_200,
+    candidateLookbackMs: 960,
   };
 }
 

@@ -9,8 +9,10 @@ class JarvisAddressGateTest {
         assertTrue(JarvisAddressGate.classify("Hey Jarvis, remind me at six", 0.82f, 400).accepted)
     }
 
-    @Test fun rejectsIncidentalMentionsAndWeakTiming() {
+    @Test fun rejectsIncidentalMentionsButKeepsCandidateVerificationPermissive() {
         assertFalse(JarvisAddressGate.classify("I was talking about Jarvis", 0.95f, 400).accepted)
-        assertFalse(JarvisAddressGate.classify("Jarvis", 0.51f, 50).accepted)
+        assertTrue(JarvisAddressGate.classify("Jarvis", 0.19f, 50).accepted)
+        assertTrue(JarvisAddressGate.classify("continue with the report", 0.20f, 50).accepted)
+        assertFalse(JarvisAddressGate.classify("continue with the report", 0.10f, 50).accepted)
     }
 }

@@ -20,6 +20,10 @@ export interface JarvisWakeEngineOptions {
   onUtterance: (samples: Float32Array) => void;
   onError: (cause: unknown) => void;
   wakeThreshold?: number;
+  candidateWakeThreshold?: number;
+  candidateWakeHits?: number;
+  speechLookbackMs?: number;
+  candidateLookbackMs?: number;
   positiveVadThreshold?: number;
   negativeVadThreshold?: number;
   negativeVadCount?: number;
@@ -50,6 +54,10 @@ export class JarvisWakeEngine {
   private recordingChunks: Float32Array[] = [];
   private recordingSamples = 0;
   private negativeCount = 0;
+  private recentSpeechWindows = 0;
+  private candidateWindows = 0;
+  private candidateHits = 0;
+  private candidateProbability = 0;
   private destroyed = false;
 
   constructor(options: JarvisWakeEngineOptions) {
@@ -58,7 +66,11 @@ export class JarvisWakeEngine {
       onDetected: options.onDetected,
       onUtterance: options.onUtterance,
       onError: options.onError,
-      wakeThreshold: options.wakeThreshold ?? 0.5,
+      wakeThreshold: options.wakeThreshold ?? 0.45,
+      candidateWakeThreshold: options.candidateWakeThreshold ?? 0.18,
+      candidateWakeHits: options.candidateWakeHits ?? 2,
+      speechLookbackMs: options.speechLookbackMs ?? 1_200,
+      candidateLookbackMs: options.candidateLookbackMs ?? 960,
       positiveVadThreshold: options.positiveVadThreshold ?? 0.65,
       negativeVadThreshold: options.negativeVadThreshold ?? 0.4,
       negativeVadCount: options.negativeVadCount ?? 8,
@@ -150,16 +162,17 @@ export class JarvisWakeEngine {
 
   private applyResult(result: JarvisWakeInferenceResult): void {
     if (!this.recording) {
-      if (
-        result.speechProbability >= this.options.positiveVadThreshold
-        && result.wakeProbability >= this.options.wakeThreshold
-      ) {
+      this.advanceRecallGate(result);
+      const strongWake = result.wakeProbability >= this.options.wakeThreshold;
+      const repeatedCandidate = this.candidateHits >= this.options.candidateWakeHits;
+      if (this.recentSpeechWindows > 0 && (strongWake || repeatedCandidate)) {
         this.recording = true;
         const preRoll = this.history.snapshot();
         this.recordingChunks = [preRoll];
         this.recordingSamples = preRoll.length;
         this.negativeCount = 0;
-        this.options.onDetected(result.wakeProbability);
+        this.options.onDetected(Math.max(result.wakeProbability, this.candidateProbability));
+        this.resetRecallGate();
       }
       return;
     }
@@ -170,6 +183,37 @@ export class JarvisWakeEngine {
       this.negativeCount = 0;
     }
     if (this.negativeCount > this.options.negativeVadCount) this.finishUtterance();
+  }
+
+  private advanceRecallGate(result: JarvisWakeInferenceResult): void {
+    const intervalMs = this.options.batchIntervalSamples / JARVIS_WAKE_SAMPLE_RATE * 1_000;
+    const speechWindowCount = Math.max(1, Math.ceil(this.options.speechLookbackMs / intervalMs));
+    const candidateWindowCount = Math.max(1, Math.ceil(this.options.candidateLookbackMs / intervalMs));
+
+    if (result.speechProbability >= this.options.positiveVadThreshold) {
+      this.recentSpeechWindows = speechWindowCount;
+    } else if (this.recentSpeechWindows > 0) {
+      this.recentSpeechWindows -= 1;
+    }
+
+    if (this.candidateWindows > 0) {
+      this.candidateWindows -= 1;
+    } else {
+      this.candidateHits = 0;
+      this.candidateProbability = 0;
+    }
+    if (result.wakeProbability >= this.options.candidateWakeThreshold) {
+      this.candidateHits += 1;
+      this.candidateProbability = Math.max(this.candidateProbability, result.wakeProbability);
+      this.candidateWindows = candidateWindowCount;
+    }
+  }
+
+  private resetRecallGate(): void {
+    this.recentSpeechWindows = 0;
+    this.candidateWindows = 0;
+    this.candidateHits = 0;
+    this.candidateProbability = 0;
   }
 
   private finishUtterance(): void {
@@ -203,5 +247,6 @@ export class JarvisWakeEngine {
     this.recording = false;
     this.negativeCount = 0;
     this.intervalSamples = 0;
+    this.resetRecallGate();
   }
 }

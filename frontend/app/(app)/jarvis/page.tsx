@@ -301,6 +301,9 @@ export default function JarvisPage() {
     });
     wakeLifecycleRef.current = lifecycle;
     const runtime = new JarvisWakeRuntime({
+      onReady: (stream) => {
+        void realtimeController.prepare(stream).catch(() => undefined);
+      },
       onSnapshot: (snapshot) => {
         if (disposed) return;
         setWakeRuntime(snapshot);
@@ -320,7 +323,12 @@ export default function JarvisPage() {
         }
         lifecycle.detected();
         lifecycle.connecting();
-        void realtimeController.start({ audioHandoff: handoff })
+        void realtimeController.start({
+          audioHandoff: handoff,
+          activationContext: handoff.wakeProbability === null
+            ? undefined
+            : { source: "wake_word", wake_score: handoff.wakeProbability },
+        })
           .then(() => {
             if (!disposed) lifecycle.connected();
           })

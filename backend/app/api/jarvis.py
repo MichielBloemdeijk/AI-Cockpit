@@ -369,6 +369,7 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
             adapter_name=request.provider_adapter,
             sdp_offer=request.sdp_offer,
             client_context=request.client_context,
+            activation_context=request.activation_context,
         )
     except ValueError as exc:
         raise _http_error(exc) from exc

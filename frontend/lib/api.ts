@@ -753,6 +753,7 @@ export async function createJarvisRealtimeCall(
   providerAdapter: "fake" | "openai" = "fake",
   sdpOffer?: string,
   clientContext: JarvisClientContext = currentJarvisClientContext(),
+  activationContext?: JarvisRealtimeActivationContext,
 ): Promise<JarvisRealtimeCallResponse> {
   const res = await fetch(`${BASE}/api/jarvis/realtime/calls`, {
     method: "POST",
@@ -763,6 +764,7 @@ export async function createJarvisRealtimeCall(
       role,
       provider_adapter: providerAdapter,
       client_context: clientContext,
+      ...(activationContext ? { activation_context: activationContext } : {}),
       ...(sdpOffer ? { sdp_offer: sdpOffer } : {}),
     }),
   });
@@ -778,6 +780,11 @@ export interface JarvisClientContext {
   time_zone: string;
   utc_offset_minutes: number;
   observed_at: string;
+}
+
+export interface JarvisRealtimeActivationContext {
+  source: "wake_word";
+  wake_score: number;
 }
 
 export function currentJarvisClientContext(now = new Date()): JarvisClientContext {

@@ -32,13 +32,19 @@ describe("classifyJarvisAddress", () => {
     });
   });
 
-  it("rejects a weak or non-addressed wake and accepts active follow-up speech", () => {
+  it("keeps the verifier permissive when transcription misses the wake word", () => {
     expect(classifyJarvisAddress({
       ...base,
       transcript: "continue with the report",
-      wakeScore: 0.51,
+      wakeScore: 0.2,
       speechContinuedMsAfterWake: 80,
-    }).accepted).toBe(false);
+    })).toMatchObject({ accepted: true, reason: "wake_model_candidate" });
+    expect(classifyJarvisAddress({
+      ...base,
+      transcript: "Jarvis",
+      wakeScore: 0.19,
+      speechContinuedMsAfterWake: 40,
+    })).toMatchObject({ accepted: true, reason: "direct_address" });
     expect(classifyJarvisAddress({
       ...base,
       transcript: "continue with the report",

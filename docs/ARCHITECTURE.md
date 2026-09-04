@@ -682,7 +682,7 @@ Current behavior:
 - exposes a restricted shell gateway for natural task lookup/actions, reminders, bounded `history_grep`, voice selection, fresh-log, and session-end capabilities
 - coalesces typed task-fact envelopes, preserves questions, automatically judges pending updates at a safe boundary, folds suitable facts into the next natural reply, and marks facts presented only through a generation-bound heard delivery
 - hides the deterministic developer conversation lab unless developer mode is enabled
-- runs the exact-word wake model off the main thread, applies the transcript-stage direct-address classifier, retains manual Arm, and stores calibration recordings only in local IndexedDB with review/export/delete controls
+- runs the exact-word wake model off the main thread, associates wake scores with recent speech instead of same-frame VAD, accepts one strong or two low-confidence hits, prepares browser WebRTC locally while armed, and holds the first backend response for a deliberately permissive transcript-stage check
 
 ### Generated Apps UI Flow
 
@@ -795,15 +795,15 @@ Current behavior:
 - `frontend/lib/jarvis-live-state.ts`: independent Jarvis domain cursors and merged display-only activity
 - `frontend/lib/jarvis-wake-runtime.ts`: one-microphone browser capture, AudioWorklet resampling, and dedicated-worker lifecycle
 - `frontend/lib/jarvis-wake-engine.ts`: bounded pre-roll, wake/command collection, and raw-audio destruction rules
-- `frontend/lib/jarvis-realtime.ts`: WebRTC setup, wake one-shot-to-live handoff, reconnect, and immediate barge-in controls
-- `frontend/lib/jarvis-address-detection.ts`: deterministic direct-address and incidental-mention classification
+- `frontend/lib/jarvis-realtime.ts`: armed-state WebRTC preparation, wake one-shot-to-live handoff, reconnect, and immediate barge-in controls
+- `frontend/lib/jarvis-address-detection.ts`: recall-first wake verification with explicit incidental-mention rejection
 - `frontend/lib/jarvis-calibration-store.ts`: browser-local calibration sample lifecycle
 
 ### Android
 
 - `android/app/src/main/java/.../assistant/`: assistant, session, recognition, and Compose overlay services
 - `android/app/src/main/java/.../realtime/`: native WebRTC offer/answer and microphone controller
-- `android/app/src/main/java/.../wake/`: shared ONNX inference pipeline, address gate, foreground listener, and reboot opt-in
+- `android/app/src/main/java/.../wake/`: shared ONNX inference pipeline, temporal recall-first gate, permissive address check, foreground listener, and reboot opt-in
 - `android/app/src/main/java/.../notifications/`: resumable SSE consumer and native actions
 - `android/app/src/main/java/.../data/`: paired API client and Keystore-backed credential store
 - `android/app/src/main/java/.../web/`: constrained same-origin WebView host

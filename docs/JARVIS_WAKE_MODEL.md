@@ -7,7 +7,8 @@
 - Status: installed; automated recall-first evaluation complete; manual browser and Android acceptance pending
 - Intended runtime: foreground browser Worker through ONNX Runtime Web/WASM and Android ONNX Runtime
 - Model input: one window of 16 speech-embedding frames by 96 features
-- Activation threshold: `0.5`
+- Runtime gate: one strong hit at `0.45`, or two candidate hits at `0.18`
+- Speech association: any positive VAD window in the preceding `1.2` seconds
 - ONNX size: `1,031,919` bytes
 - ONNX SHA-256: `ccf08b70f827ee33a5b55bad160bee796715929ede8390742d562d795575cf23`
 
@@ -55,8 +56,25 @@ speed, pitch, gain, timing-shift, and additive-noise variations. Fine-tuning ran
 for 200 CPU steps with AdamW at `5e-6`; checkpoint selection prioritized
 normal-volume recall, followed by overall personal recall, while enforcing
 false-positive ceilings on personal, phonetic-adversarial, and sampled generic
-speech. Step 130 was selected. The existing runtime preprocessing and activation
-threshold of `0.5` are unchanged.
+speech. Step 130 was selected. The existing runtime preprocessing is unchanged.
+The checkpoint measurements below remain reported at `0.5`; the product runtime
+now uses a separate recall-first temporal gate.
+
+## Recall-first runtime gate
+
+The browser and Android no longer require VAD and wake-model peaks to occur in
+the same 120 ms inference window. A wake is eligible when speech was observed
+in the preceding 1.2 seconds and either one score reaches 0.45 or two scores
+reach 0.18 within 960 ms. This deliberately favors recall while device testing
+is still in progress.
+
+After activation, the browser prepares its local WebRTC offer while armed and
+reuses it at wake time. Both clients stop waiting for complete ICE gathering
+once the first usable candidate appears, with a 750 ms ceiling. The backend
+holds the first response briefly for transcript verification, rejects only
+clear incidental mentions, and otherwise releases the response after a 650 ms
+grace period. This keeps the second stage permissive when transcription omits
+the wake word.
 
 At the locked threshold, the personal candidate changed the measurements as
 follows:

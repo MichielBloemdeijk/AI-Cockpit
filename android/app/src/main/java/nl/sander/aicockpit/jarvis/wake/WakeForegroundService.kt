@@ -54,6 +54,7 @@ class WakeForegroundService : Service() {
             maxOf(minimum, OnnxWakeEngine.WINDOW_SAMPLES * 2),
         )
         val ring = FloatArray(OnnxWakeEngine.WINDOW_SAMPLES)
+        val gate = WakeCandidateGate()
         var ringOffset = 0
         var collected = 0
         val pcm = ShortArray(OnnxWakeEngine.STRIDE_SAMPLES)
@@ -77,10 +78,10 @@ class WakeForegroundService : Service() {
                     ring.copyInto(window, ring.size - ringOffset, 0, ringOffset)
                     val result = engine.analyze(window)
                     window.fill(0f)
+                    val acceptedWakeScore = gate.evaluate(result)
                     if (
-                        result.speechProbability >= 0.65f &&
-                        result.wakeProbability >= 0.5f &&
-                        JarvisVoiceInteractionService.invokeFromWake(result.wakeProbability)
+                        acceptedWakeScore != null &&
+                        JarvisVoiceInteractionService.invokeFromWake(acceptedWakeScore)
                     ) {
                         break
                     }

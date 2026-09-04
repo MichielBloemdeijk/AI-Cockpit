@@ -91,7 +91,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .patch(payload.toString().toRequestBody(json)).build()).close()
     }
 
-    suspend fun createRealtimeCall(offer: String): RealtimeCall {
+    suspend fun createRealtimeCall(offer: String, wakeScore: Float? = null): RealtimeCall {
         val observedAt = Instant.now()
         val timeZone = ZoneId.systemDefault()
         val clientContext = JSONObject()
@@ -104,6 +104,12 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .put("provider_adapter", "openai")
             .put("client_context", clientContext)
             .put("sdp_offer", offer)
+        wakeScore?.let {
+            payload.put(
+                "activation_context",
+                JSONObject().put("source", "wake_word").put("wake_score", it),
+            )
+        }
         val response = execute(authenticated("/api/jarvis/realtime/calls")
             .post(payload.toString().toRequestBody(json)).build())
         val body = JSONObject(response.body?.string().orEmpty())

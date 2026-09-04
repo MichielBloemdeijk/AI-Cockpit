@@ -49,6 +49,48 @@ describe("JarvisWakeEngine", () => {
     expect(wake.analyze).toHaveBeenCalledTimes(3);
   });
 
+  it("accepts a strong wake hit shortly after speech instead of requiring the same frame", async () => {
+    const wake = engine([
+      { speechProbability: 0.9, wakeProbability: 0.02 },
+      { speechProbability: 0.1, wakeProbability: 0.48 },
+    ]);
+
+    wake.value.push(new Float32Array([1, 2, 3, 4]));
+    await wake.value.idle();
+    wake.value.push(new Float32Array([5, 6]));
+    await wake.value.idle();
+
+    expect(wake.detected).toHaveBeenCalledWith(0.48);
+  });
+
+  it("accepts two low-confidence hits during recent speech", async () => {
+    const wake = engine([
+      { speechProbability: 0.9, wakeProbability: 0.19 },
+      { speechProbability: 0.2, wakeProbability: 0.22 },
+    ]);
+
+    wake.value.push(new Float32Array([1, 2, 3, 4]));
+    await wake.value.idle();
+    wake.value.push(new Float32Array([5, 6]));
+    await wake.value.idle();
+
+    expect(wake.detected).toHaveBeenCalledWith(0.22);
+  });
+
+  it("does not activate from one low-confidence hit", async () => {
+    const wake = engine([
+      { speechProbability: 0.9, wakeProbability: 0.19 },
+      { speechProbability: 0.2, wakeProbability: 0.05 },
+    ]);
+
+    wake.value.push(new Float32Array([1, 2, 3, 4]));
+    await wake.value.idle();
+    wake.value.push(new Float32Array([5, 6]));
+    await wake.value.idle();
+
+    expect(wake.detected).not.toHaveBeenCalled();
+  });
+
   it("drops queued audio and reports inference failure once", async () => {
     const errors = vi.fn();
     const value = new JarvisWakeEngine({

@@ -18,6 +18,13 @@ class FakeStream {
   getTracks() { return [this.track] as unknown as MediaStreamTrack[]; }
 }
 
+class FakeSender {
+  replacements: MediaStreamTrack[] = [];
+  async replaceTrack(track: MediaStreamTrack | null) {
+    if (track) this.replacements.push(track);
+  }
+}
+
 class FakeChannel {
   closed = false;
   readyState: RTCDataChannelState = "open";
@@ -36,10 +43,15 @@ class FakePeer {
   onconnectionstatechange: (() => void) | null = null;
   closed = false;
   addedTracks = 0;
+  offerCount = 0;
+  readonly sender = new FakeSender();
 
   createDataChannel() { return this.channel as unknown as RTCDataChannel; }
-  addTrack() { this.addedTracks += 1; return {} as RTCRtpSender; }
-  async createOffer() { return { type: "offer", sdp: "browser-offer" } as RTCSessionDescriptionInit; }
+  addTrack() { this.addedTracks += 1; return this.sender as unknown as RTCRtpSender; }
+  async createOffer() {
+    this.offerCount += 1;
+    return { type: "offer", sdp: "browser-offer" } as RTCSessionDescriptionInit;
+  }
   async setLocalDescription(description: RTCSessionDescriptionInit) {
     this.localDescription = description as RTCSessionDescription;
   }
@@ -154,6 +166,8 @@ describe("JarvisRealtimeController", () => {
       "controller",
       "openai",
       "browser-offer",
+      undefined,
+      undefined,
     );
     expect(deps.peers[0].addedTracks).toBe(1);
     expect(deps.peers[0].remoteDescription).toEqual({ type: "answer", sdp: "provider-answer-1" });
@@ -166,6 +180,32 @@ describe("JarvisRealtimeController", () => {
     expect(deps.detector.destroy).toHaveBeenCalledOnce();
     expect(deps.closeSession).toHaveBeenCalledWith("session-1", 1);
     expect(controller.current().status).toBe("idle");
+  });
+
+  it("prepares the local WebRTC offer while armed and reuses it after wake", async () => {
+    const deps = dependencies();
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.prepare(wakeStream as unknown as MediaStream);
+    expect(deps.peers).toHaveLength(1);
+    expect(deps.peers[0].offerCount).toBe(1);
+    expect(deps.createCall).not.toHaveBeenCalled();
+
+    await controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array([0.1, 0.2])),
+        sampleRate: 16_000,
+      },
+      activationContext: { source: "wake_word", wake_score: 0.22 },
+    });
+
+    expect(deps.peers).toHaveLength(1);
+    expect(deps.peers[0].offerCount).toBe(1);
+    expect(deps.peers[0].sender.replacements).toHaveLength(1);
+    expect(deps.createCall.mock.calls[0][5]).toEqual({ source: "wake_word", wake_score: 0.22 });
+    await controller.stop();
   });
 
   it("retries at 0.5, 1, and 2 seconds before entering typed fallback", async () => {

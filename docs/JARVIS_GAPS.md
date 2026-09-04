@@ -77,7 +77,7 @@ The 2026-09-02 production log provides the regression scenario:
 
 ## User input still required
 
-- Wake-word calibration recordings and held-out negative recordings.
+- Manual recall and false-positive measurements for the new recall-first wake gate.
 - Final Pixel-browser and Android acceptance for reminder timing, audible
   delivery, streaming, mobile layout, notifications, and subjective tone.
 

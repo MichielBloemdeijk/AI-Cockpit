@@ -28,20 +28,22 @@ class RealtimeController(context: Context, private val api: CockpitApi) : AutoCl
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
     private var call: RealtimeCall? = null
-    private var iceComplete = CompletableDeferred<Unit>()
+    private var iceReady = CompletableDeferred<Unit>()
 
-    suspend fun connect(onState: (String) -> Unit = {}): RealtimeCall = withContext(Dispatchers.Main) {
+    suspend fun connect(wakeScore: Float? = null, onState: (String) -> Unit = {}): RealtimeCall = withContext(Dispatchers.Main) {
         closePeerOnly()
-        iceComplete = CompletableDeferred()
+        iceReady = CompletableDeferred()
         val observer = object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState) = onState("signaling:${state.name}")
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = onState("ice:${state.name}")
             override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
                 onState("gathering:${state.name}")
-                if (state == PeerConnection.IceGatheringState.COMPLETE) iceComplete.complete(Unit)
+                if (state == PeerConnection.IceGatheringState.COMPLETE) iceReady.complete(Unit)
             }
-            override fun onIceCandidate(candidate: IceCandidate) = Unit
+            override fun onIceCandidate(candidate: IceCandidate) {
+                if (!iceReady.isCompleted) iceReady.complete(Unit)
+            }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
@@ -64,9 +66,9 @@ class RealtimeController(context: Context, private val api: CockpitApi) : AutoCl
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
         })
         connection.setLocalDescriptionAwait(offer)
-        runCatching { withTimeout(5_000) { iceComplete.await() } }
+        runCatching { withTimeout(750) { iceReady.await() } }
         val local = connection.localDescription ?: offer
-        val established = api.createRealtimeCall(local.description)
+        val established = api.createRealtimeCall(local.description, wakeScore)
         connection.setRemoteDescriptionAwait(
             SessionDescription(SessionDescription.Type.ANSWER, established.sdpAnswer)
         )

@@ -48,6 +48,7 @@ export interface JarvisWakeRuntimeDependencies {
 
 export interface JarvisWakeRuntimeOptions {
   onSnapshot?: (snapshot: JarvisWakeRuntimeSnapshot) => void;
+  onReady?: (stream: MediaStream) => void;
   onWake: (handoff: JarvisWakeHandoff) => void;
 }
 
@@ -132,6 +133,7 @@ export class JarvisWakeRuntime {
     this.worker.postMessage({ type: "resume" });
     await this.capture.resume();
     this.publish({ status: "ready", error: null });
+    this.options.onReady?.(this.stream);
   }
 
   manualHandoff(): JarvisWakeHandoff {
@@ -163,6 +165,7 @@ export class JarvisWakeRuntime {
     if (operation !== this.operation || worker !== this.worker) return;
     if (event.type === "ready") {
       this.publish({ status: "ready", error: null });
+      if (this.stream) this.options.onReady?.(this.stream);
       return;
     }
     if (event.type === "detected") {

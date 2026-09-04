@@ -114,6 +114,7 @@ class JarvisRealtimeCallRequest(BaseModel):
     provider_adapter: Literal["fake", "openai"] = "fake"
     sdp_offer: str | None = Field(default=None, min_length=1, max_length=1_000_000)
     client_context: "JarvisClientContext | None" = None
+    activation_context: "JarvisRealtimeActivationContext | None" = None
 
 
 class JarvisRealtimeCallResponse(BaseModel):
@@ -178,6 +179,11 @@ class JarvisClientContext(BaseModel):
     time_zone: str = Field(min_length=1, max_length=255)
     utc_offset_minutes: int = Field(ge=-840, le=840)
     observed_at: datetime
+
+
+class JarvisRealtimeActivationContext(BaseModel):
+    source: Literal["wake_word"]
+    wake_score: float = Field(ge=0.0, le=1.0)
 
 
 class ReminderAfterTiming(BaseModel):

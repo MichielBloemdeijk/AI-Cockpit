@@ -38,6 +38,12 @@ export interface JarvisRealtimeAudioHandoff {
 
 export interface JarvisRealtimeStartOptions {
   audioHandoff?: JarvisRealtimeAudioHandoff;
+  activationContext?: JarvisRealtimeActivationContext;
+}
+
+export interface JarvisRealtimeActivationContext {
+  source: "wake_word";
+  wake_score: number;
 }
 
 export interface JarvisRealtimeTraceEntry {
@@ -71,6 +77,15 @@ interface JarvisRealtimeConnectionInput {
   localStream: MediaStream;
   ownsLocalStream: boolean;
   audioHandoff?: JarvisRealtimeAudioHandoff;
+  activationContext?: JarvisRealtimeActivationContext;
+}
+
+interface BrowserPreparation {
+  peer: RTCPeerConnection;
+  channel: RTCDataChannel;
+  localStream: MediaStream;
+  sender: RTCRtpSender;
+  offer: Promise<RTCSessionDescriptionInit>;
 }
 
 export interface JarvisRealtimeDependencies {
@@ -93,6 +108,7 @@ export interface JarvisRealtimeDependencies {
 
 const RETRY_DELAYS_MS = [0, 500, 1_000, 2_000] as const;
 const DISCONNECT_GRACE_MS = 2_000;
+const ICE_CANDIDATE_WAIT_MS = 750;
 
 const browserDependencies: JarvisRealtimeDependencies = {
   createPeer: () => new RTCPeerConnection(),
@@ -111,6 +127,8 @@ export class JarvisRealtimeController {
   private readonly options: JarvisRealtimeControllerOptions;
   private readonly dependencies: JarvisRealtimeDependencies;
   private active: BrowserConnection | null = null;
+  private preparation: BrowserPreparation | null = null;
+  private preparationOperation = 0;
   private rotationTimer: number | null = null;
   private disconnectTimer: number | null = null;
   private operation = 0;
@@ -143,6 +161,46 @@ export class JarvisRealtimeController {
     this.recordTrace(kind, { detail });
   }
 
+  async prepare(localStream: MediaStream): Promise<void> {
+    if (this.active || this.snapshot.status === "connecting" || this.snapshot.status === "reconnecting") return;
+    if (this.preparation?.localStream === localStream) {
+      await this.preparation.offer;
+      return;
+    }
+    const operation = ++this.preparationOperation;
+    const previous = this.preparation;
+    this.preparation = null;
+    if (previous) this.disposePreparation(previous);
+
+    const peer = this.dependencies.createPeer();
+    const channel = peer.createDataChannel("oai-events");
+    const track = localStream.getAudioTracks()[0];
+    if (!track) {
+      channel.close();
+      peer.close();
+      throw new Error("Wake stream has no audio track");
+    }
+    const sender = peer.addTrack(track, localStream);
+    const preparation: BrowserPreparation = {
+      peer,
+      channel,
+      localStream,
+      sender,
+      offer: this.createLocalOffer(peer),
+    };
+    this.preparation = preparation;
+    try {
+      await preparation.offer;
+      if (operation === this.preparationOperation && this.preparation === preparation) {
+        this.recordTrace("realtime_transport_prepared");
+      }
+    } catch (cause) {
+      if (this.preparation === preparation) this.preparation = null;
+      this.disposePreparation(preparation);
+      throw cause;
+    }
+  }
+
   async start(options: JarvisRealtimeStartOptions = {}): Promise<JarvisRealtimeSnapshot> {
     const operation = ++this.operation;
     this.cancelRotation();
@@ -152,6 +210,7 @@ export class JarvisRealtimeController {
           localStream: options.audioHandoff.localStream,
           ownsLocalStream: false,
           audioHandoff: options.audioHandoff,
+          activationContext: options.activationContext,
         }
       : undefined;
     return this.connectWithRetry(operation, false, input);
@@ -159,8 +218,12 @@ export class JarvisRealtimeController {
 
   async stop(): Promise<void> {
     ++this.operation;
+    ++this.preparationOperation;
     this.cancelRotation();
     this.cancelDisconnect();
+    const preparation = this.preparation;
+    this.preparation = null;
+    if (preparation) this.disposePreparation(preparation);
     const current = this.active;
     this.active = null;
     if (current) await this.disposeConnection(current, true);
@@ -250,8 +313,9 @@ export class JarvisRealtimeController {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
     const ownsLocalStream = input?.ownsLocalStream ?? true;
-    const peer = this.dependencies.createPeer();
-    const channel = peer.createDataChannel("oai-events");
+    const prepared = this.takePreparation(localStream);
+    const peer = prepared?.peer ?? this.dependencies.createPeer();
+    const channel = prepared?.channel ?? peer.createDataChannel("oai-events");
     let providerSession: JarvisSession | null = null;
     let connection: BrowserConnection | null = null;
     let handoffOutput: JarvisRealtimeHandoffOutput | null = null;
@@ -259,7 +323,15 @@ export class JarvisRealtimeController {
       const outgoingStream = input?.audioHandoff
         ? (handoffOutput = await this.dependencies.createHandoffOutput(input.audioHandoff)).stream
         : localStream;
-      for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
+      if (prepared) {
+        const outgoingTrack = outgoingStream.getAudioTracks()[0];
+        if (!outgoingTrack) throw new Error("Realtime stream has no audio track");
+        if (outgoingTrack !== localStream.getAudioTracks()[0]) {
+          await prepared.sender.replaceTrack(outgoingTrack);
+        }
+      } else {
+        for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
+      }
       peer.ontrack = (event) => {
         if (operation !== this.operation) return;
         this.recordTrace("remote_track_received");
@@ -296,9 +368,7 @@ export class JarvisRealtimeController {
         }
       };
 
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      await this.waitForIceGathering(peer);
+      const offer = prepared ? await prepared.offer : await this.createLocalOffer(peer);
       const sdpOffer = peer.localDescription?.sdp || offer.sdp;
       if (!sdpOffer) throw new Error("Browser did not produce an SDP offer");
       const response = await this.dependencies.createCall(
@@ -306,6 +376,8 @@ export class JarvisRealtimeController {
         "controller",
         "openai",
         sdpOffer,
+        undefined,
+        input?.activationContext,
       );
       providerSession = response.session;
       if (!providerSession || !response.sdp_answer) {
@@ -363,9 +435,17 @@ export class JarvisRealtimeController {
     );
   }
 
-  private async waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
+  private async createLocalOffer(peer: RTCPeerConnection): Promise<RTCSessionDescriptionInit> {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await this.waitForUsableIce(peer);
+    return peer.localDescription ?? offer;
+  }
+
+  private async waitForUsableIce(peer: RTCPeerConnection): Promise<void> {
     if (
       peer.iceGatheringState === "complete"
+      || peer.localDescription?.sdp?.includes("a=candidate:")
       || typeof peer.addEventListener !== "function"
       || typeof peer.removeEventListener !== "function"
     ) return;
@@ -373,15 +453,35 @@ export class JarvisRealtimeController {
       let timer = 0;
       const done = () => {
         peer.removeEventListener("icegatheringstatechange", onChange);
+        peer.removeEventListener("icecandidate", onCandidate);
         if (timer) this.dependencies.clearTimer(timer);
         resolve();
       };
       const onChange = () => {
         if (peer.iceGatheringState === "complete") done();
       };
+      const onCandidate = (event: RTCPeerConnectionIceEvent) => {
+        if (event.candidate) done();
+      };
       peer.addEventListener("icegatheringstatechange", onChange);
-      timer = this.dependencies.setTimer(done, 3_000);
+      peer.addEventListener("icecandidate", onCandidate);
+      timer = this.dependencies.setTimer(done, ICE_CANDIDATE_WAIT_MS);
     });
+  }
+
+  private takePreparation(localStream: MediaStream): BrowserPreparation | null {
+    const preparation = this.preparation;
+    if (!preparation) return null;
+    this.preparation = null;
+    ++this.preparationOperation;
+    if (preparation.localStream === localStream) return preparation;
+    this.disposePreparation(preparation);
+    return null;
+  }
+
+  private disposePreparation(preparation: BrowserPreparation): void {
+    preparation.channel.close();
+    preparation.peer.close();
   }
 
   private cancelRotation(): void {

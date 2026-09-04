@@ -109,7 +109,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         status = if (isLocked()) "Listening while locked (read-only)" else "Connecting…"
         scope.launch {
             runCatching { api.updateDevice(if (isLocked()) "locked" else "unlocked", store.eventCursor) }
-            runCatching { realtime.connect { status = friendlyState(it) } }
+            runCatching { realtime.connect(pendingWakeScore) { status = friendlyState(it) } }
                 .onFailure { status = it.message ?: "Unable to connect" }
         }
     }

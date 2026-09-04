@@ -24,6 +24,124 @@ from app.services.voice_session_adapter import VoiceProviderEvent
 
 
 @pytest.mark.asyncio
+async def test_wake_response_waits_for_permissive_verification() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Wake setup", idempotency_key="wake-setup")
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-browser",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.2},
+    )
+    realtime = bootstrap.session
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="wake-speaking", kind="user_speaking"),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="wake-stopped", kind="user_stopped"),
+    )
+    _, before = await jarvis_coordinator.replay_session_events(realtime.id)
+    assert not any(
+        event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+        for event in before
+    )
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="wake-transcript",
+            kind="user_transcript",
+            payload={"item_id": "wake-item", "transcript": "remind me in ten minutes"},
+        ),
+    )
+    _, after = await jarvis_coordinator.replay_session_events(realtime.id)
+    assert any(event.event_type == "wake.verification.accepted" for event in after)
+    assert any(
+        event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+        for event in after
+    )
+
+
+@pytest.mark.asyncio
+async def test_wake_verification_rejects_clear_incidental_mention() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Wake setup", idempotency_key="wake-incidental")
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-browser",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.95},
+    )
+    realtime = bootstrap.session
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="incidental-stopped", kind="user_stopped"),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="incidental-transcript",
+            kind="user_transcript",
+            payload={"item_id": "incidental-item", "transcript": "I was talking about Jarvis"},
+        ),
+    )
+    await asyncio.sleep(0.7)
+    _, events = await jarvis_coordinator.replay_session_events(realtime.id)
+    assert any(event.event_type == "wake.verification.rejected" for event in events)
+    assert not any(
+        event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_wake_verification_grace_favors_activation_when_transcript_is_late() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn("Wake setup", idempotency_key="wake-grace")
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-browser",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.19},
+    )
+    realtime = bootstrap.session
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="late-transcript-stop", kind="user_stopped"),
+    )
+    events = ()
+    for _ in range(30):
+        await asyncio.sleep(0.05)
+        _, events = await jarvis_coordinator.replay_session_events(realtime.id)
+        if any(
+            event.event_type == "response.arbiter.started"
+            and (event.payload_json or {}).get("reason") == "user_turn"
+            for event in events
+        ):
+            break
+    accepted_event = next(
+        event for event in events if event.event_type == "wake.verification.accepted"
+    )
+    assert (accepted_event.payload_json or {}).get("reason") == "transcript_grace_elapsed"
+    assert any(
+        event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_fake_provider_direct_response_and_delegation_acknowledgement() -> None:
     first = await jarvis_coordinator.accept_text_turn("Status check", idempotency_key="direct")
     session = await jarvis_coordinator.get_active_session()

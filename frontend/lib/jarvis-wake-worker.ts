@@ -52,6 +52,10 @@ scope.onmessage = (event) => {
     engine = new JarvisWakeEngine({
       inference,
       wakeThreshold: command.configuration.wakeThreshold,
+      candidateWakeThreshold: command.configuration.candidateWakeThreshold,
+      candidateWakeHits: command.configuration.candidateWakeHits,
+      speechLookbackMs: command.configuration.speechLookbackMs,
+      candidateLookbackMs: command.configuration.candidateLookbackMs,
       positiveVadThreshold: command.configuration.positiveVadThreshold,
       negativeVadThreshold: command.configuration.negativeVadThreshold,
       negativeVadCount: command.configuration.negativeVadCount,
