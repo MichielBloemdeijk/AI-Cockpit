@@ -97,6 +97,7 @@ class FakeSideband:
     async def feed(self, event: dict[str, Any]) -> None:
         await self.incoming.put(json.dumps(event))
         await asyncio.sleep(0)
+        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -170,9 +171,9 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert session_config["audio"]["input"]["noise_reduction"]["type"] == "near_field"
     assert session_config["audio"]["input"]["turn_detection"] == {
         "type": "semantic_vad",
-        "eagerness": "low",
+        "eagerness": "medium",
         "create_response": False,
-        "interrupt_response": True,
+        "interrupt_response": False,
     }
     assert session_config["audio"]["input"]["transcription"] == {
         "model": "gpt-live-transcribe",
@@ -391,6 +392,74 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_response_without_transcript_emits_terminal_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-secret-key")
+
+    async def create_call(**kwargs: Any) -> httpx.Response:
+        return httpx.Response(
+            201,
+            text="answer",
+            headers={"Location": "/v1/realtime/calls/rtc_cancelled"},
+        )
+
+    socket = FakeSideband()
+
+    async def connect_socket(url: str, **kwargs: Any) -> FakeSideband:
+        return socket
+
+    adapter = OpenAIRealtimeAdapter(
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200))
+        ),
+        websocket_connector=connect_socket,
+        realtime_call_creator=create_call,
+    )
+    events = []
+
+    async def on_event(session_id, generation, event):
+        events.append(event)
+
+    await adapter.connect(
+        session_id="session-cancelled",
+        generation=1,
+        context={},
+        on_event=on_event,
+        sdp_offer="offer",
+    )
+    metadata = {
+        "jarvis_request_id": "request-cancelled",
+        "jarvis_purpose": "user_turn",
+    }
+    await socket.feed(
+        {
+            "type": "response.created",
+            "event_id": "cancelled-created",
+            "response": {"id": "response-cancelled", "metadata": metadata},
+        }
+    )
+    await socket.feed(
+        {
+            "type": "response.done",
+            "event_id": "cancelled-done",
+            "response": {
+                "id": "response-cancelled",
+                "status": "cancelled",
+                "metadata": metadata,
+                "output": [],
+            },
+        }
+    )
+
+    terminal = next(event for event in events if event.kind == "assistant_interrupted")
+    assert terminal.payload["transcript"] == ""
+    assert terminal.payload["request_id"] == "request-cancelled"
+    assert terminal.payload["response_status"] == "cancelled"
+    await adapter.close(session_id="session-cancelled", generation=1, reason="done")
+
+
+@pytest.mark.asyncio
 async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -437,6 +506,7 @@ async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
     await adapter.create_response(
         session_id="session-presentations",
         generation=1,
+        request_id="request-presentations",
         response_kind="user_turn",
         presentation_ids=("presentation-1",),
         facts=facts,
@@ -496,6 +566,7 @@ async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
     await adapter.create_response(
         session_id="session-presentations",
         generation=1,
+        request_id="request-reminder",
         response_kind="task_update",
         presentation_ids=("reminder-presentation",),
         facts=reminder_facts,
@@ -758,7 +829,13 @@ async def test_openai_call_api_returns_only_internal_session_and_sdp(
         serialized = json.dumps(body)
         assert "test-secret-key" not in serialized
         assert "rtc_private_provider_id" not in serialized
-        assert set(body) == {"role", "session", "sdp_answer", "rotate_after_seconds"}
+        assert set(body) == {
+            "role",
+            "session",
+            "sdp_answer",
+            "rotate_after_seconds",
+            "request_id",
+        }
 
         closed = await client.delete(
             f"/api/jarvis/realtime/sessions/{body['session']['id']}",

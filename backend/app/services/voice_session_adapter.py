@@ -64,10 +64,19 @@ class VoiceSessionAdapter(Protocol):
         *,
         session_id: str,
         generation: int,
+        request_id: str,
         response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
         context: dict[str, Any],
+    ) -> None: ...
+
+    async def cancel_response(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        response_id: str | None = None,
     ) -> None: ...
 
     def is_connected(self, *, session_id: str, generation: int) -> bool: ...
@@ -136,6 +145,7 @@ class FakeVoiceSessionAdapter:
         *,
         session_id: str,
         generation: int,
+        request_id: str,
         response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
@@ -153,7 +163,11 @@ class FakeVoiceSessionAdapter:
             event=VoiceProviderEvent(
                 event_id=f"{response_id}:generating",
                 kind="assistant_generating",
-                payload={"response_id": response_id, "response_kind": response_kind},
+                payload={
+                    "response_id": response_id,
+                    "response_kind": response_kind,
+                    "request_id": request_id,
+                },
             ),
         )
         normalized = "" if pending_text is None else pending_text[1].strip()
@@ -201,6 +215,33 @@ class FakeVoiceSessionAdapter:
                     "transcript": transcript,
                     "presentation_ids": list(presentation_ids),
                     "response_kind": response_kind,
+                    "request_id": request_id,
+                },
+            ),
+        )
+
+    async def cancel_response(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        response_id: str | None = None,
+    ) -> None:
+        key = (session_id, generation)
+        if key not in self._handlers:
+            return
+        await self.inject(
+            session_id=session_id,
+            generation=generation,
+            event=VoiceProviderEvent(
+                event_id=f"fake-cancelled:{response_id or uuid4()}",
+                kind="assistant_interrupted",
+                payload={
+                    "response_id": response_id or "",
+                    "transcript": "",
+                    "heard_transcript": "",
+                    "interrupted": True,
+                    "response_status": "cancelled",
                 },
             ),
         )

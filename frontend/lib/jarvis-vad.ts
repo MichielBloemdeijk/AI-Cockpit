@@ -29,7 +29,7 @@ export async function createJarvisBargeInDetector(
     resumeStream: async () => stream,
     positiveSpeechThreshold: 0.7,
     negativeSpeechThreshold: 0.4,
-    minSpeechMs: 96,
+    minSpeechMs: 120,
     preSpeechPadMs: 0,
     redemptionMs: 300,
     onSpeechStart,

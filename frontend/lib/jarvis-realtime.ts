@@ -105,6 +105,8 @@ interface BrowserConnection {
   rotateAfterSeconds: number;
   bargeInDetector: JarvisBargeInDetector | null;
   activeResponseId: string | null;
+  cancellingResponseId: string | null;
+  bargeInTimer: number | null;
   mutedResponseId: string | null;
   tracedAudioDeltaResponses: Set<string>;
   tracedTranscriptDeltaItems: Set<string>;
@@ -522,6 +524,8 @@ export class JarvisRealtimeController {
         rotateAfterSeconds: response.rotate_after_seconds ?? 55 * 60,
         bargeInDetector: null,
         activeResponseId: null,
+        cancellingResponseId: null,
+        bargeInTimer: null,
         mutedResponseId: null,
         tracedAudioDeltaResponses: new Set(),
         tracedTranscriptDeltaItems: new Set(),
@@ -633,6 +637,7 @@ export class JarvisRealtimeController {
   }
 
   private async disposeConnection(connection: BrowserConnection, notifyBackend: boolean): Promise<void> {
+    if (connection.bargeInTimer !== null) this.dependencies.clearTimer(connection.bargeInTimer);
     connection.bargeInDetector?.destroy();
     connection.channel.close();
     connection.peer.ontrack = null;
@@ -677,6 +682,12 @@ export class JarvisRealtimeController {
     }
     if (!connection) return;
 
+    if (type === "response.created") {
+      connection.activeResponseId = responseId ?? connection.activeResponseId;
+      connection.cancellingResponseId = null;
+      return;
+    }
+
     if (
       type === "output_audio_buffer.started"
       || type === "response.output_audio.delta"
@@ -690,6 +701,13 @@ export class JarvisRealtimeController {
     }
     if (type === "input_audio_buffer.speech_started" && connection.activeResponseId) {
       this.setPlaybackMuted(connection, true);
+      this.cancelActiveResponse(connection, "provider_speech_started");
+      return;
+    }
+    if (type === "response.done" && (!responseId || responseId === connection.activeResponseId)) {
+      connection.activeResponseId = null;
+      connection.cancellingResponseId = null;
+      this.setPlaybackMuted(connection, false);
       return;
     }
     if (
@@ -697,6 +715,7 @@ export class JarvisRealtimeController {
       || type === "output_audio_buffer.stopped"
     ) {
       connection.activeResponseId = null;
+      connection.cancellingResponseId = null;
       void this.captureReceiverStats(connection, type);
       this.setPlaybackMuted(connection, false);
     }
@@ -713,14 +732,11 @@ export class JarvisRealtimeController {
     if (!connection.activeResponseId) return;
     this.setPlaybackMuted(connection, true);
     void this.captureReceiverStats(connection, "local_speech_started");
-    if (connection.channel.readyState !== "open") return;
-    connection.channel.send(JSON.stringify({
-      type: "output_audio_buffer.clear",
-      event_id: `jarvis-barge-in-${crypto.randomUUID()}`,
-    }));
-    this.recordTrace("output_audio_buffer.clear.sent", {
-      response_id: connection.activeResponseId,
-    });
+    if (connection.bargeInTimer !== null) return;
+    connection.bargeInTimer = this.dependencies.setTimer(() => {
+      connection.bargeInTimer = null;
+      this.cancelActiveResponse(connection, "local_speech_confirmed");
+    }, 120);
   }
 
   private handleLocalSpeechEnd(
@@ -728,9 +744,34 @@ export class JarvisRealtimeController {
     operation: number,
   ): void {
     if (!connection || operation !== this.operation || this.active?.peer !== connection.peer) return;
+    if (connection.bargeInTimer !== null) {
+      this.dependencies.clearTimer(connection.bargeInTimer);
+      connection.bargeInTimer = null;
+    }
     this.recordTrace("local_speech_stopped", {
       response_id: connection.activeResponseId ?? undefined,
     });
+  }
+
+  private cancelActiveResponse(connection: BrowserConnection, reason: string): void {
+    const responseId = connection.activeResponseId;
+    if (
+      !responseId
+      || connection.cancellingResponseId === responseId
+      || connection.channel.readyState !== "open"
+    ) return;
+    connection.cancellingResponseId = responseId;
+    connection.channel.send(JSON.stringify({
+      type: "response.cancel",
+      event_id: `jarvis-response-cancel-${crypto.randomUUID()}`,
+      response_id: responseId,
+    }));
+    connection.channel.send(JSON.stringify({
+      type: "output_audio_buffer.clear",
+      event_id: `jarvis-output-clear-${crypto.randomUUID()}`,
+    }));
+    this.recordTrace("response.cancel.sent", { response_id: responseId, detail: reason });
+    this.recordTrace("output_audio_buffer.clear.sent", { response_id: responseId, detail: reason });
   }
 
   private setPlaybackMuted(connection: BrowserConnection, muted: boolean): void {

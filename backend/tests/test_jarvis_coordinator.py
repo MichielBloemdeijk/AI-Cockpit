@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import time
 from uuid import uuid4
 
 import pytest
@@ -14,7 +15,11 @@ from app.db.tables import JarvisLiveEvent, NotificationOutbox, SpeechDelivery, V
 from app.main import app
 from app.services import task_notifications
 from app.services.conversation_store import conversation_store
-from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
+from app.services.jarvis_coordinator import (
+    StaleSessionError,
+    _ResponseAttempt,
+    jarvis_coordinator,
+)
 from app.services.reminder_scheduler import reminder_scheduler
 from app.services.task_notifications import route_pending_task_notifications
 from app.services.task_presentations import task_presentation_service
@@ -463,7 +468,16 @@ async def test_update_arriving_after_response_start_waits_for_completion() -> No
     session = await jarvis_coordinator.get_active_session()
     assert session is not None
     gate = jarvis_coordinator._response_gates[(session.id, session.generation)]
-    gate.inflight = True
+    now = time.monotonic()
+    gate.attempt = _ResponseAttempt(
+        request_id="late-active-request",
+        reason="user_turn",
+        presentation_ids=(),
+        state="speaking",
+        started_monotonic=now,
+        last_activity_monotonic=now,
+        provider_response_id="late-current-response",
+    )
     task = await task_service.dispatch(
         goal="Late update",
         origin_surface="jarvis",

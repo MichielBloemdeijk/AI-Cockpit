@@ -322,7 +322,7 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
-  it("mutes and clears provider output immediately when local VAD detects barge-in", async () => {
+  it("mutes immediately and explicitly cancels after confirmed local barge-in", async () => {
     const deps = dependencies();
     const muted: boolean[] = [];
     const controller = new JarvisRealtimeController(
@@ -337,8 +337,14 @@ describe("JarvisRealtimeController", () => {
     deps.triggerSpeechStart();
 
     expect(muted).toEqual([true]);
-    expect(deps.peers[0].channel.sent).toHaveLength(1);
+    expect(deps.peers[0].channel.sent).toEqual([]);
+    deps.timers.at(-1)?.();
+    expect(deps.peers[0].channel.sent).toHaveLength(2);
     expect(JSON.parse(deps.peers[0].channel.sent[0])).toMatchObject({
+      type: "response.cancel",
+      response_id: "resp-1",
+    });
+    expect(JSON.parse(deps.peers[0].channel.sent[1])).toMatchObject({
       type: "output_audio_buffer.clear",
     });
     expect(controller.traceSnapshot().map((entry) => entry.kind)).toContain(
@@ -352,7 +358,7 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
-  it("uses provider speech-start as the mute fallback when local VAD has not fired", async () => {
+  it("uses provider speech-start as the explicit cancellation fallback", async () => {
     const deps = dependencies();
     const muted: boolean[] = [];
     const controller = new JarvisRealtimeController(
@@ -369,7 +375,28 @@ describe("JarvisRealtimeController", () => {
     } as MessageEvent);
 
     expect(muted).toEqual([true]);
-    expect(deps.peers[0].channel.sent).toEqual([]);
+    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "response.cancel",
+      "output_audio_buffer.clear",
+    ]);
+    await controller.stop();
+  });
+
+  it("can cancel a response that is generating before audio starts", async () => {
+    const deps = dependencies();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.start();
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "response.created", response: { id: "resp-early" } }),
+    } as MessageEvent);
+
+    deps.triggerSpeechStart();
+    deps.timers.at(-1)?.();
+
+    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "response.cancel",
+      "output_audio_buffer.clear",
+    ]);
     await controller.stop();
   });
 

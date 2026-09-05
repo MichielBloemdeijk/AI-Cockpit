@@ -113,10 +113,24 @@ class ControllerBootstrap:
 
 
 @dataclass(slots=True)
+class _ResponseAttempt:
+    request_id: str
+    reason: str
+    presentation_ids: tuple[str, ...]
+    state: str
+    started_monotonic: float
+    last_activity_monotonic: float
+    provider_response_id: str | None = None
+    cancel_requested_monotonic: float | None = None
+    watchdog_task: asyncio.Task[None] | None = None
+
+
+@dataclass(slots=True)
 class _ResponseGate:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending: set[str] = field(default_factory=set)
-    inflight: bool = False
+    attempt: _ResponseAttempt | None = None
+    barge_in_task: asyncio.Task[None] | None = None
 
 
 @dataclass(slots=True)
@@ -168,6 +182,20 @@ class JarvisCoordinator:
             await asyncio.gather(*verification_tasks, return_exceptions=True)
         self._wake_verification_tasks.clear()
         self._wake_activations.clear()
+        response_tasks: list[asyncio.Task[None]] = []
+        for gate in self._response_gates.values():
+            if gate.barge_in_task is not None and not gate.barge_in_task.done():
+                response_tasks.append(gate.barge_in_task)
+            if (
+                gate.attempt is not None
+                and gate.attempt.watchdog_task is not None
+                and not gate.attempt.watchdog_task.done()
+            ):
+                response_tasks.append(gate.attempt.watchdog_task)
+        for task in response_tasks:
+            task.cancel()
+        if response_tasks:
+            await asyncio.gather(*response_tasks, return_exceptions=True)
         self._response_gates.clear()
         await runtime_health_service.offline("response_arbiter", detail="Response arbiter stopped.")
         await runtime_health_service.offline("notification_router", detail="Notification router stopped.")
@@ -377,7 +405,7 @@ class JarvisCoordinator:
         async with gate.lock:
             gate_acquired = time.monotonic()
             gate.pending.add(reason)
-            if gate.inflight:
+            if gate.attempt is not None:
                 return
             selected_reason = min(
                 gate.pending,
@@ -422,7 +450,18 @@ class JarvisCoordinator:
                 if reservation is not None:
                     context["pending_update_count"] = reservation.total_pending
                 gate.pending.discard(selected_reason)
-                gate.inflight = True
+                request_id = str(uuid4())
+                now_monotonic = time.monotonic()
+                gate.attempt = _ResponseAttempt(
+                    request_id=request_id,
+                    reason=selected_reason,
+                    presentation_ids=(
+                        () if reservation is None else reservation.presentation_ids
+                    ),
+                    state="submitting",
+                    started_monotonic=now_monotonic,
+                    last_activity_monotonic=now_monotonic,
+                )
             snapshot_finished = time.monotonic()
 
         presentation_ids = () if reservation is None else reservation.presentation_ids
@@ -433,6 +472,7 @@ class JarvisCoordinator:
             await adapter.create_response(
                 session_id=session_id,
                 generation=generation,
+                request_id=request_id,
                 response_kind=selected_reason,
                 presentation_ids=presentation_ids,
                 facts=facts,
@@ -446,6 +486,7 @@ class JarvisCoordinator:
                     event_type="response.arbiter.started",
                     payload_json={
                         "reason": selected_reason,
+                        "request_id": request_id,
                         "presentation_ids": list(presentation_ids),
                         "timing_ms": {
                             "gate_wait": round((gate_acquired - request_started) * 1_000, 3),
@@ -467,8 +508,9 @@ class JarvisCoordinator:
                 )
         except Exception:
             async with gate.lock:
-                gate.inflight = False
-                gate.pending.add(selected_reason)
+                if gate.attempt is not None and gate.attempt.request_id == request_id:
+                    gate.attempt = None
+                    gate.pending.add(selected_reason)
             if reservation is not None:
                 await task_presentation_service.requeue(
                     presentation_ids=reservation.presentation_ids,
@@ -478,19 +520,131 @@ class JarvisCoordinator:
                 )
             raise
 
-    async def _finish_controlled_response(self, session_id: str, generation: int) -> None:
+        await self._ensure_response_watchdog(session_id, generation, request_id)
+
+    async def _finish_controlled_response(
+        self,
+        session_id: str,
+        generation: int,
+        *,
+        request_id: str | None = None,
+        response_id: str | None = None,
+    ) -> None:
         gate = self._response_gates.get((session_id, generation))
         if gate is None:
             return
+        watchdog: asyncio.Task[None] | None = None
         async with gate.lock:
-            gate.inflight = False
+            attempt = gate.attempt
+            if attempt is None:
+                return
+            if request_id and attempt.request_id != request_id:
+                return
+            if (
+                response_id
+                and attempt.provider_response_id
+                and attempt.provider_response_id != response_id
+            ):
+                return
+            watchdog = attempt.watchdog_task
+            gate.attempt = None
             has_pending = bool(gate.pending)
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
         if has_pending:
             pending_reason = min(
                 gate.pending,
                 key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
             )
             await self._queue_controlled_response(session_id, generation, pending_reason)
+
+    async def _observe_controlled_response(
+        self,
+        session_id: str,
+        generation: int,
+        event: VoiceProviderEvent,
+    ) -> None:
+        gate = self._response_gates.get((session_id, generation))
+        if gate is None:
+            return
+        request_id = str(event.payload.get("request_id") or "")
+        response_id = str(event.payload.get("response_id") or "")
+        async with gate.lock:
+            attempt = gate.attempt
+            if attempt is None or (request_id and request_id != attempt.request_id):
+                return
+            if response_id:
+                if attempt.provider_response_id and attempt.provider_response_id != response_id:
+                    return
+                attempt.provider_response_id = response_id
+            attempt.last_activity_monotonic = time.monotonic()
+            if event.kind == "assistant_generating":
+                attempt.state = "generating"
+            elif event.kind in {"assistant_speaking", "assistant_transcript_delta"}:
+                attempt.state = "speaking"
+
+    async def _ensure_response_watchdog(
+        self,
+        session_id: str,
+        generation: int,
+        request_id: str,
+    ) -> None:
+        gate = self._response_gates.get((session_id, generation))
+        if gate is None:
+            return
+        async with gate.lock:
+            attempt = gate.attempt
+            if attempt is None or attempt.request_id != request_id or attempt.watchdog_task is not None:
+                return
+            attempt.watchdog_task = asyncio.create_task(
+                self._watch_response(session_id, generation, request_id),
+                name=f"jarvis-response-watchdog:{session_id}:{generation}:{request_id}",
+            )
+
+    async def _watch_response(self, session_id: str, generation: int, request_id: str) -> None:
+        while True:
+            await asyncio.sleep(0.5)
+            gate = self._response_gates.get((session_id, generation))
+            if gate is None:
+                return
+            should_cancel = False
+            should_close = False
+            response_id: str | None = None
+            async with gate.lock:
+                attempt = gate.attempt
+                if attempt is None or attempt.request_id != request_id:
+                    return
+                now = time.monotonic()
+                response_id = attempt.provider_response_id
+                if attempt.cancel_requested_monotonic is not None:
+                    should_close = now - attempt.cancel_requested_monotonic >= 2.0
+                else:
+                    timeout = 5.0 if attempt.state == "submitting" else 15.0
+                    if now - attempt.last_activity_monotonic >= timeout:
+                        attempt.state = "cancelling"
+                        attempt.cancel_requested_monotonic = now
+                        should_cancel = True
+            session = await self.get_session(session_id)
+            if session is None:
+                return
+            adapter = get_voice_session_adapter(session.provider_adapter)
+            if should_cancel:
+                try:
+                    await adapter.cancel_response(
+                        session_id=session_id,
+                        generation=generation,
+                        response_id=response_id,
+                    )
+                except Exception:
+                    should_close = True
+            if should_close:
+                await adapter.close(
+                    session_id=session_id,
+                    generation=generation,
+                    reason="response_watchdog_timeout",
+                    emit_event=True,
+                )
+                return
 
     async def start_fresh_log(self, *, idempotency_key: str):
         current = await self.get_active_session()
@@ -710,6 +864,10 @@ class JarvisCoordinator:
         generation: int,
         event: VoiceProviderEvent,
     ) -> None:
+        if event.kind.startswith("assistant_"):
+            await self._observe_controlled_response(session_id, generation, event)
+        if event.kind == "user_speaking":
+            self._schedule_barge_in_cancel(session_id, generation)
         shell_call: tuple[str, dict[str, Any], str] | None = None
         presentation_action: tuple[tuple[str, ...], DeliveryRecord, str, str] | None = None
         requeue_presentations: tuple[str, ...] = ()
@@ -849,7 +1007,12 @@ class JarvisCoordinator:
             )
 
         if response_finished:
-            await self._finish_controlled_response(session_id, generation)
+            await self._finish_controlled_response(
+                session_id,
+                generation,
+                request_id=str(event.payload.get("request_id") or "") or None,
+                response_id=str(event.payload.get("response_id") or "") or None,
+            )
 
         if queue_user_response:
             await self._queue_controlled_response(session_id, generation, "user_turn")
@@ -866,6 +1029,42 @@ class JarvisCoordinator:
                 arguments=arguments,
                 call_id=call_id,
             )
+
+    def _schedule_barge_in_cancel(self, session_id: str, generation: int) -> None:
+        gate = self._response_gates.get((session_id, generation))
+        if gate is None or (gate.barge_in_task is not None and not gate.barge_in_task.done()):
+            return
+
+        async def cancel_after_client_grace() -> None:
+            try:
+                await asyncio.sleep(0.3)
+                response_id: str | None = None
+                async with gate.lock:
+                    attempt = gate.attempt
+                    if attempt is None or attempt.cancel_requested_monotonic is not None:
+                        return
+                    attempt.state = "cancelling"
+                    attempt.cancel_requested_monotonic = time.monotonic()
+                    response_id = attempt.provider_response_id
+                session = await self.get_session(session_id)
+                if session is None:
+                    return
+                adapter = get_voice_session_adapter(session.provider_adapter)
+                await adapter.cancel_response(
+                    session_id=session_id,
+                    generation=generation,
+                    response_id=response_id,
+                )
+            except (StaleSessionError, ValueError):
+                return
+            finally:
+                if gate.barge_in_task is asyncio.current_task():
+                    gate.barge_in_task = None
+
+        gate.barge_in_task = asyncio.create_task(
+            cancel_after_client_grace(),
+            name=f"jarvis-barge-in-fallback:{session_id}:{generation}",
+        )
 
     async def inject_fake_event(
         self,
@@ -901,7 +1100,7 @@ class JarvisCoordinator:
             generation=generation,
             error=f"session_superseded:{reason}",
         )
-        self._response_gates.pop((session_id, generation), None)
+        await self._drop_response_gate(session_id, generation)
         self._clear_wake_activation(session_id, generation)
         if realtime.provider_adapter == "fake":
             fake_voice_session_adapter.detach(session_id=session_id, generation=generation)
@@ -928,8 +1127,24 @@ class JarvisCoordinator:
             reason=reason,
             emit_event=True,
         )
-        self._response_gates.pop((session_id, generation), None)
+        await self._drop_response_gate(session_id, generation)
         self._clear_wake_activation(session_id, generation)
+
+    async def _drop_response_gate(self, session_id: str, generation: int) -> None:
+        gate = self._response_gates.pop((session_id, generation), None)
+        if gate is None:
+            return
+        tasks = [
+            task for task in (
+                gate.barge_in_task,
+                None if gate.attempt is None else gate.attempt.watchdog_task,
+            )
+            if task is not None and not task.done() and task is not asyncio.current_task()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def replay_session_events(
         self,

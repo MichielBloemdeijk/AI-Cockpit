@@ -6,6 +6,7 @@ import base64
 import binascii
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import ssl
 import time
@@ -23,6 +24,7 @@ from app.services.heard_prefix import (
     modeled_transcript_duration_ms,
 )
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS
+from app.services.jarvis_realtime_telemetry import jarvis_realtime_telemetry
 from app.services.voice_session_adapter import (
     ProviderEventHandler,
     VoiceProviderEvent,
@@ -52,6 +54,7 @@ class _ResponseTimeline:
     response_id: str
     created_monotonic: float
     response_kind: str = ""
+    request_id: str = ""
     item_id: str = ""
     transcript: str = ""
     transcript_boundaries: list[TranscriptBoundary] = field(default_factory=list)
@@ -74,6 +77,14 @@ class _OpenAISession:
     on_event: ProviderEventHandler
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     receiver_task: asyncio.Task[None] | None = None
+    consumer_task: asyncio.Task[None] | None = None
+    event_queue: asyncio.Queue[tuple[VoiceProviderEvent, float]] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=2_048)
+    )
+    coalesced_deltas: dict[str, tuple[VoiceProviderEvent, float]] = field(default_factory=dict)
+    last_delta_flush_monotonic: float = 0.0
+    delta_flush_task: asyncio.Task[None] | None = None
+    ready_delivered: asyncio.Event = field(default_factory=asyncio.Event)
     closing: bool = False
     speaking_responses: set[str] = field(default_factory=set)
     completed_responses: set[str] = field(default_factory=set)
@@ -289,14 +300,17 @@ class OpenAIRealtimeAdapter:
             )
             key = (session_id, generation)
             self._sessions[key] = provider_session
+            provider_session.consumer_task = asyncio.create_task(
+                self._consume_events(provider_session),
+                name=f"jarvis-openai-events-{session_id}-{generation}",
+            )
             provider_session.receiver_task = asyncio.create_task(
                 self._receive(provider_session),
                 name=f"jarvis-openai-sideband-{session_id}-{generation}",
             )
             provider_session.ready.set()
-            await provider_session.on_event(
-                session_id,
-                generation,
+            await self._queue_normalized(
+                provider_session,
                 VoiceProviderEvent(
                     event_id=f"openai-sideband-ready:{session_id}:{generation}",
                     kind="ready",
@@ -318,6 +332,7 @@ class OpenAIRealtimeAdapter:
                     },
                 ),
             )
+            await asyncio.wait_for(provider_session.ready_delivered.wait(), timeout=2.0)
             await self._hydrate_dialogue(provider_session, context)
             return VoiceSessionConnection(sdp_answer=response.text)
         except Exception:
@@ -378,6 +393,7 @@ class OpenAIRealtimeAdapter:
         *,
         session_id: str,
         generation: int,
+        request_id: str,
         response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
@@ -391,6 +407,7 @@ class OpenAIRealtimeAdapter:
         )
         response: dict[str, Any] = {
             "metadata": {
+                "jarvis_request_id": request_id,
                 "jarvis_purpose": response_kind,
                 "jarvis_presentation_ids": json.dumps(presentation_ids),
             },
@@ -423,6 +440,45 @@ class OpenAIRealtimeAdapter:
                 "type": "response.create",
                 "event_id": f"jarvis-controlled-response:{uuid4()}",
                 "response": response,
+            },
+        )
+
+        jarvis_realtime_telemetry.record({
+            "trace_id": session_id,
+            "activation_id": None,
+            "session_id": session_id,
+            "generation": generation,
+            "request_id": request_id,
+            "provider_response_id": None,
+            "source": "backend",
+            "event_type": "response.create_sent",
+            "observed_at": datetime.now(timezone.utc),
+            "monotonic_ms": None,
+            "duration_ms": None,
+            "detail_json": {"response_kind": response_kind},
+        })
+
+    async def cancel_response(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        response_id: str | None = None,
+    ) -> None:
+        provider_session = self._require_session(session_id, generation)
+        await self._send(
+            provider_session,
+            {
+                "type": "response.cancel",
+                "event_id": f"jarvis-response-cancel:{uuid4()}",
+                **({"response_id": response_id} if response_id else {}),
+            },
+        )
+        await self._send(
+            provider_session,
+            {
+                "type": "output_audio_buffer.clear",
+                "event_id": f"jarvis-output-clear:{uuid4()}",
             },
         )
 
@@ -528,14 +584,13 @@ class OpenAIRealtimeAdapter:
                 event = json.loads(raw)
                 if not isinstance(event, dict):
                     continue
+                received_monotonic = time.monotonic()
                 for normalized in self._normalize(provider_session, event):
-                    await provider_session.on_event(
-                        provider_session.session_id,
-                        provider_session.generation,
+                    await self._queue_normalized(
+                        provider_session,
                         normalized,
+                        received_monotonic=received_monotonic,
                     )
-                    if normalized.kind == "ready":
-                        provider_session.ready.set()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -550,6 +605,11 @@ class OpenAIRealtimeAdapter:
                     ),
                 )
         finally:
+            self._flush_coalesced_deltas(provider_session)
+            try:
+                await asyncio.wait_for(provider_session.event_queue.join(), timeout=2.0)
+            except TimeoutError:
+                pass
             await self._cancel_fallback_tasks(provider_session)
             current = self._sessions.get(key)
             if current is provider_session and not provider_session.closing:
@@ -562,6 +622,105 @@ class OpenAIRealtimeAdapter:
                         payload={"reason": "sideband_closed"},
                     ),
                 )
+            consumer = provider_session.consumer_task
+            if consumer is not None and not consumer.done():
+                consumer.cancel()
+                await asyncio.gather(consumer, return_exceptions=True)
+
+    async def _queue_normalized(
+        self,
+        provider_session: _OpenAISession,
+        event: VoiceProviderEvent,
+        *,
+        received_monotonic: float | None = None,
+    ) -> None:
+        received = received_monotonic or time.monotonic()
+        if event.kind in {
+            "user_transcript_delta",
+            "assistant_transcript_delta",
+        }:
+            item_id = str(event.payload.get("item_id") or event.payload.get("response_id") or event.kind)
+            provider_session.coalesced_deltas[f"{event.kind}:{item_id}"] = (event, received)
+            if received - provider_session.last_delta_flush_monotonic < 0.1:
+                self._schedule_delta_flush(provider_session)
+                return
+            self._flush_coalesced_deltas(provider_session)
+            provider_session.last_delta_flush_monotonic = received
+            return
+        self._flush_coalesced_deltas(provider_session)
+        try:
+            provider_session.event_queue.put_nowait((event, received))
+        except asyncio.QueueFull as exc:
+            raise RuntimeError("Realtime provider control-event queue overflow") from exc
+
+    def _schedule_delta_flush(self, provider_session: _OpenAISession) -> None:
+        task = provider_session.delta_flush_task
+        if task is not None and not task.done():
+            return
+
+        async def flush_after_interval() -> None:
+            try:
+                await asyncio.sleep(0.1)
+                self._flush_coalesced_deltas(provider_session)
+                provider_session.last_delta_flush_monotonic = time.monotonic()
+            finally:
+                if provider_session.delta_flush_task is asyncio.current_task():
+                    provider_session.delta_flush_task = None
+
+        provider_session.delta_flush_task = asyncio.create_task(
+            flush_after_interval(),
+            name=(
+                f"jarvis-openai-delta-flush-"
+                f"{provider_session.session_id}-{provider_session.generation}"
+            ),
+        )
+
+    @staticmethod
+    def _flush_coalesced_deltas(provider_session: _OpenAISession) -> None:
+        pending = tuple(provider_session.coalesced_deltas.values())
+        provider_session.coalesced_deltas.clear()
+        for queued in pending:
+            try:
+                provider_session.event_queue.put_nowait(queued)
+            except asyncio.QueueFull:
+                # The next/final transcript event carries the accumulated text.
+                continue
+
+    async def _consume_events(self, provider_session: _OpenAISession) -> None:
+        try:
+            while True:
+                event, received_monotonic = await provider_session.event_queue.get()
+                queue_ms = max(0.0, (time.monotonic() - received_monotonic) * 1_000)
+                try:
+                    await provider_session.on_event(
+                        provider_session.session_id,
+                        provider_session.generation,
+                        event,
+                    )
+                    if event.kind == "ready":
+                        provider_session.ready_delivered.set()
+                    jarvis_realtime_telemetry.record({
+                        "trace_id": provider_session.session_id,
+                        "activation_id": None,
+                        "session_id": provider_session.session_id,
+                        "generation": provider_session.generation,
+                        "request_id": str(event.payload.get("request_id") or "") or None,
+                        "provider_response_id": str(event.payload.get("response_id") or "") or None,
+                        "source": "provider",
+                        "event_type": event.kind,
+                        "observed_at": datetime.now(timezone.utc),
+                        "monotonic_ms": None,
+                        "duration_ms": round(queue_ms, 3),
+                        "detail_json": {"queue_ms": round(queue_ms, 3)},
+                    })
+                finally:
+                    provider_session.event_queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            receiver = provider_session.receiver_task
+            if receiver is not None and not receiver.done():
+                receiver.cancel()
 
     def _normalize(
         self,
@@ -627,6 +786,7 @@ class OpenAIRealtimeAdapter:
                 )
                 timeline.presentation_ids = self._presentation_ids(metadata)
                 timeline.response_kind = str(metadata.get("jarvis_purpose") or "")
+                timeline.request_id = str(metadata.get("jarvis_request_id") or "")
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
@@ -634,6 +794,7 @@ class OpenAIRealtimeAdapter:
                     payload={
                         "response_id": response_id,
                         "response_kind": "" if not response_id else timeline.response_kind,
+                        "request_id": "" if not response_id else timeline.request_id,
                     },
                 )
             ]
@@ -666,6 +827,7 @@ class OpenAIRealtimeAdapter:
                     payload={
                         "response_id": response_id,
                         "response_kind": timeline.response_kind,
+                        "request_id": timeline.request_id,
                     },
                 )
             ]
@@ -698,6 +860,7 @@ class OpenAIRealtimeAdapter:
                         "transcript": timeline.transcript,
                         "provisional": True,
                         "response_kind": timeline.response_kind,
+                        "request_id": timeline.request_id,
                     },
                 )
             ]
@@ -732,6 +895,7 @@ class OpenAIRealtimeAdapter:
                     payload={
                         "response_id": response_id,
                         "response_kind": timeline.response_kind,
+                        "request_id": timeline.request_id,
                     },
                 )
             ]
@@ -787,6 +951,7 @@ class OpenAIRealtimeAdapter:
             )
             if not timeline.presentation_ids:
                 timeline.presentation_ids = self._presentation_ids(metadata)
+            timeline.request_id = timeline.request_id or str(metadata.get("jarvis_request_id") or "")
         normalized: list[VoiceProviderEvent] = []
         for index, item in enumerate(output):
             if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -810,6 +975,7 @@ class OpenAIRealtimeAdapter:
                             list(timeline.presentation_ids) if timeline is not None else []
                         ),
                         "response_kind": "" if timeline is None else timeline.response_kind,
+                        "request_id": "" if timeline is None else timeline.request_id,
                     },
                 )
             )
@@ -827,9 +993,10 @@ class OpenAIRealtimeAdapter:
             provider_session.response_by_item[item_id] = response_id
         status = str(response.get("status") or "completed")
         timeline.response_status = status
-        if status == "cancelled":
+        normalized = self._finalize_if_ready(provider_session, event_id, response_id)
+        if status in {"cancelled", "failed", "incomplete"} and not normalized:
             self._schedule_interruption_fallback(provider_session, response_id)
-        return self._finalize_if_ready(provider_session, event_id, response_id)
+        return normalized
 
     @staticmethod
     def _timeline(provider_session: _OpenAISession, response_id: str) -> _ResponseTimeline:
@@ -851,15 +1018,16 @@ class OpenAIRealtimeAdapter:
             return []
         timeline = self._timeline(provider_session, response_id)
         transcript = timeline.transcript.strip()
-        if not transcript:
+        terminal_status = timeline.response_status in {"completed", "cancelled", "failed", "incomplete"}
+        if not transcript and not terminal_status:
             return []
 
         interrupted = (
             force_interruption
             or timeline.truncated_audio_end_ms is not None
-            or timeline.response_status == "cancelled"
+            or timeline.response_status in {"cancelled", "failed", "incomplete"}
         )
-        if interrupted and timeline.truncated_audio_end_ms is None and not force_interruption:
+        if interrupted and transcript and timeline.truncated_audio_end_ms is None and not force_interruption:
             return []
         if not interrupted:
             if timeline.response_status not in {"completed", "incomplete"}:
@@ -936,6 +1104,8 @@ class OpenAIRealtimeAdapter:
                     "timing_summary": timing_summary,
                     "presentation_ids": list(timeline.presentation_ids),
                     "response_kind": timeline.response_kind,
+                    "request_id": timeline.request_id,
+                    "response_status": timeline.response_status,
                 },
             )
         ]
@@ -969,11 +1139,7 @@ class OpenAIRealtimeAdapter:
                 force_interruption=True,
             )
             for event in events:
-                await provider_session.on_event(
-                    provider_session.session_id,
-                    provider_session.generation,
-                    event,
-                )
+                await self._queue_normalized(provider_session, event)
         except asyncio.CancelledError:
             raise
         finally:
@@ -1214,7 +1380,7 @@ class OpenAIRealtimeAdapter:
                         "type": "semantic_vad",
                         "eagerness": settings.openai_realtime_vad_eagerness,
                         "create_response": False,
-                        "interrupt_response": True,
+                        "interrupt_response": False,
                     },
                 },
                 "output": {"voice": voice},
@@ -1294,11 +1460,18 @@ class OpenAIRealtimeAdapter:
 
     @staticmethod
     async def _stop_receiver(provider_session: _OpenAISession) -> None:
+        delta_flush = provider_session.delta_flush_task
+        if delta_flush is not None and not delta_flush.done():
+            delta_flush.cancel()
+            await asyncio.gather(delta_flush, return_exceptions=True)
         task = provider_session.receiver_task
-        if task is None or task.done() or task is asyncio.current_task():
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        consumer = provider_session.consumer_task
+        if consumer is not None and not consumer.done() and consumer is not asyncio.current_task():
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
 
     @staticmethod
     async def _cancel_fallback_tasks(provider_session: _OpenAISession) -> None:

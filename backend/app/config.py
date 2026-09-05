@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     openai_realtime_voice: str = "marin"
     openai_realtime_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
     openai_realtime_noise_reduction: Literal["near_field", "far_field"] = "near_field"
-    openai_realtime_vad_eagerness: Literal["low", "medium", "high", "auto"] = "low"
+    openai_realtime_vad_eagerness: Literal["low", "medium", "high", "auto"] = "medium"
     openai_realtime_transcription_model: str = "gpt-live-transcribe"
     openai_realtime_connect_timeout_seconds: float = 12.0
     openai_realtime_rotation_minutes: int = 55
