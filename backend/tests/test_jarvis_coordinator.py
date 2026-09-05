@@ -11,7 +11,13 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import JarvisLiveEvent, NotificationOutbox, SpeechDelivery, VoiceSessionEvent
+from app.db.tables import (
+    JarvisLiveEvent,
+    NotificationOutbox,
+    RealtimeSession,
+    SpeechDelivery,
+    VoiceSessionEvent,
+)
 from app.main import app
 from app.services import task_notifications
 from app.services.conversation_store import conversation_store
@@ -66,6 +72,58 @@ async def test_provider_connection_failure_is_recorded_without_secrets(
         "failure_type": "RuntimeError",
         "detail": "provider rejected [redacted] with HTTP 429",
     }
+
+
+@pytest.mark.asyncio
+async def test_superseded_provider_cleanup_does_not_block_replacement_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Connection setup",
+        idempotency_key="nonblocking-cleanup-setup",
+    )
+    current = await jarvis_coordinator.get_active_session()
+    assert current is not None
+    async with session_scope() as session:
+        realtime = await session.get(RealtimeSession, current.id)
+        assert realtime is not None
+        realtime.provider_adapter = "slow-test-adapter"
+
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class SlowCleanupAdapter:
+        async def close(self, **_kwargs) -> None:
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    slow_adapter = SlowCleanupAdapter()
+
+    def resolve_adapter(name: str):
+        return slow_adapter if name == "slow-test-adapter" else fake_voice_session_adapter
+
+    monkeypatch.setattr(
+        "app.services.jarvis_coordinator.get_voice_session_adapter",
+        resolve_adapter,
+    )
+    try:
+        replacement = await asyncio.wait_for(
+            jarvis_coordinator.bootstrap_controller(
+                conversation_id=accepted.conversation.id,
+                controller_id="replacement-browser",
+                adapter_name="fake",
+            ),
+            timeout=2.0,
+        )
+        assert replacement.session.lifecycle_state == "ready"
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+        assert jarvis_coordinator._provider_cleanup_tasks
+    finally:
+        release_cleanup.set()
+        for _ in range(20):
+            if not jarvis_coordinator._provider_cleanup_tasks:
+                break
+            await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

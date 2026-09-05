@@ -153,6 +153,8 @@ class JarvisCoordinator:
         self._response_gates: dict[tuple[str, int], _ResponseGate] = {}
         self._wake_activations: dict[tuple[str, int], _WakeActivation] = {}
         self._wake_verification_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
+        self._provider_cleanup_tasks: set[asyncio.Task[None]] = set()
+        self._background_response_tasks: set[asyncio.Task[None]] = set()
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
 
@@ -197,6 +199,18 @@ class JarvisCoordinator:
         if response_tasks:
             await asyncio.gather(*response_tasks, return_exceptions=True)
         self._response_gates.clear()
+        provider_cleanup_tasks = tuple(self._provider_cleanup_tasks)
+        for task in provider_cleanup_tasks:
+            task.cancel()
+        if provider_cleanup_tasks:
+            await asyncio.gather(*provider_cleanup_tasks, return_exceptions=True)
+        self._provider_cleanup_tasks.clear()
+        background_response_tasks = tuple(self._background_response_tasks)
+        for task in background_response_tasks:
+            task.cancel()
+        if background_response_tasks:
+            await asyncio.gather(*background_response_tasks, return_exceptions=True)
+        self._background_response_tasks.clear()
         await runtime_health_service.offline("response_arbiter", detail="Response arbiter stopped.")
         await runtime_health_service.offline("notification_router", detail="Notification router stopped.")
 
@@ -749,12 +763,12 @@ class JarvisCoordinator:
                 },
                 idempotency_key=f"connecting:{realtime.id}",
             )
-            snapshot = await repo.read_snapshot(
+            record = self._record(realtime, floor_state="connecting")
+            context = await self._context_in_session(
+                session,
                 conversation_id=conversation_id,
                 session_id=realtime.id,
             )
-            record = self._record(realtime, floor_state="connecting")
-            context = await self._context_in_session(session, snapshot)
 
         if wake_activation is not None:
             self._wake_activations[(record.id, record.generation)] = wake_activation
@@ -772,17 +786,11 @@ class JarvisCoordinator:
                     generation=old_generation,
                 )
             else:
-                try:
-                    await get_voice_session_adapter(old_adapter).close(
-                        session_id=old_session_id,
-                        generation=old_generation,
-                        reason="superseded",
-                        emit_event=False,
-                    )
-                except Exception:
-                    # The durable generation is already superseded. Provider
-                    # cleanup is best-effort and cannot restore its authority.
-                    pass
+                self._schedule_provider_cleanup(
+                    session_id=old_session_id,
+                    generation=old_generation,
+                    adapter_name=old_adapter,
+                )
 
         try:
             connection = await adapter.connect(
@@ -822,6 +830,33 @@ class JarvisCoordinator:
         if refreshed is None:
             raise RuntimeError("Realtime session disappeared after connection")
         return ControllerBootstrap(session=refreshed, sdp_answer=connection.sdp_answer)
+
+    def _schedule_provider_cleanup(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        adapter_name: str,
+    ) -> None:
+        async def close_superseded_provider() -> None:
+            try:
+                await get_voice_session_adapter(adapter_name).close(
+                    session_id=session_id,
+                    generation=generation,
+                    reason="superseded",
+                    emit_event=False,
+                )
+            except Exception:
+                # Durable authority already belongs to the new generation.
+                # Provider cleanup cannot affect the replacement connection.
+                pass
+
+        task = asyncio.create_task(
+            close_superseded_provider(),
+            name=f"jarvis-provider-cleanup:{session_id}:{generation}",
+        )
+        self._provider_cleanup_tasks.add(task)
+        task.add_done_callback(self._provider_cleanup_tasks.discard)
 
     async def observe(self) -> SessionRecord | None:
         """Return the active controller projection without taking ownership."""
@@ -1018,7 +1053,10 @@ class JarvisCoordinator:
             await self._queue_controlled_response(session_id, generation, "user_turn")
 
         if queue_task_updates:
-            await self._queue_controlled_response(session_id, generation, "task_update")
+            if bool(event.payload.get("defer_initial_updates")):
+                self._schedule_background_response(session_id, generation, "task_update")
+            else:
+                await self._queue_controlled_response(session_id, generation, "task_update")
 
         if shell_call is not None:
             tool_name, arguments, call_id = shell_call
@@ -1029,6 +1067,31 @@ class JarvisCoordinator:
                 arguments=arguments,
                 call_id=call_id,
             )
+
+    def _schedule_background_response(
+        self,
+        session_id: str,
+        generation: int,
+        reason: str,
+    ) -> None:
+        async def queue_response() -> None:
+            try:
+                await self._queue_controlled_response(session_id, generation, reason)
+            except (StaleSessionError, ValueError):
+                return
+            except Exception:
+                logger.exception(
+                    "Unable to queue background Jarvis response for session %s generation %s",
+                    session_id,
+                    generation,
+                )
+
+        task = asyncio.create_task(
+            queue_response(),
+            name=f"jarvis-background-response:{session_id}:{generation}:{reason}",
+        )
+        self._background_response_tasks.add(task)
+        task.add_done_callback(self._background_response_tasks.discard)
 
     def _schedule_barge_in_cancel(self, session_id: str, generation: int) -> None:
         gate = self._response_gates.get((session_id, generation))
@@ -1191,11 +1254,11 @@ class JarvisCoordinator:
         if state.current_log is None:
             return None
         async with session_scope() as session:
-            snapshot = await JarvisDomainRepository(session).read_snapshot(
+            return await self._context_in_session(
+                session,
                 conversation_id=state.current_log.id,
                 session_id=session_id,
             )
-            return await self._context_in_session(session, snapshot)
 
     async def _execute_shell_call(
         self,
@@ -1501,11 +1564,16 @@ class JarvisCoordinator:
         return existing is not None
 
     @staticmethod
-    async def _context_in_session(session, snapshot) -> dict[str, Any]:
+    async def _context_in_session(
+        session,
+        *,
+        conversation_id: str,
+        session_id: str | None,
+    ) -> dict[str, Any]:
         projected = await jarvis_situation_projector.project_in_session(
             session,
-            conversation_id=snapshot.conversation.id,
-            session_id=None if snapshot.realtime_session is None else snapshot.realtime_session.id,
+            conversation_id=conversation_id,
+            session_id=session_id,
         )
         return projected.payload
 

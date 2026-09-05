@@ -145,6 +145,12 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
         generation=3,
         context={
             "dialogue": [
+                {"role": "user", "content": "Old question one"},
+                {"role": "assistant", "content": "Old answer one"},
+                {"role": "user", "content": "Old question two"},
+                {"role": "assistant", "content": "Old answer two"},
+                {"role": "user", "content": "Recent question"},
+                {"role": "assistant", "content": "Recent answer"},
                 {"role": "user", "content": "Earlier question"},
                 {"role": "assistant", "content": "Earlier answer"},
             ],
@@ -194,6 +200,7 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert "collected, even pace and low emotional intensity" in session_config["instructions"]
     assert "include_diagnostics=true" in session_config["instructions"]
     assert "Never read SQL" in session_config["instructions"]
+    assert "task-1" not in session_config["instructions"]
     assert {tool["name"] for tool in session_config["tools"]} == {
         "dispatch_task",
         "list_tasks",
@@ -209,7 +216,15 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
         "start_new_jarvis_log",
         "end_voice_session",
     }
-    assert [message["item"]["role"] for message in socket.sent[:2]] == ["user", "assistant"]
+    assert [message["item"]["role"] for message in socket.sent] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert socket.sent[0]["item"]["content"][0]["text"] == "Old question two"
 
     await adapter.send_user_text(
         session_id="internal-session",
@@ -236,6 +251,55 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert requests[-1].url.path == "/v1/realtime/calls/rtc_test_call/hangup"
     assert events[-1][2].kind == "disconnected"
     assert not hasattr(connection, "call_id")
+
+
+def test_response_context_is_bounded_and_dynamic_state_is_not_in_session_prompt() -> None:
+    long_text = "Detailed context " * 100
+    context = {
+        "situation_revision": 123,
+        "temporal": {
+            "utc": "2026-09-05T10:00:00+00:00",
+            "local": "2026-09-05T12:00:00+02:00",
+            "time_zone": "Europe/Amsterdam",
+        },
+        "conversation_summary": long_text,
+        "tasks": [
+            {
+                "task_id": f"active-{index}",
+                "goal": long_text,
+                "status": "running",
+                "status_reason": long_text,
+                "summary": long_text,
+            }
+            for index in range(50)
+        ],
+        "recent_terminal_tasks": [
+            {
+                "task_id": f"terminal-{index}",
+                "goal": long_text,
+                "status": "completed",
+                "summary": long_text,
+            }
+            for index in range(50)
+        ],
+        "questions": [],
+        "reminders": {"upcoming": [], "overdue": [], "recently_completed": []},
+        "component_health": {
+            "worker": {"status": "degraded", "detail": long_text},
+        },
+        "preferences": {"concision": "concise"},
+    }
+
+    compact = OpenAIRealtimeAdapter._compact_situation(context)
+    serialized = json.dumps(compact, separators=(",", ":"), ensure_ascii=False)
+    session_prompt = OpenAIRealtimeAdapter._session_config(context)["instructions"]
+    response_prompt = OpenAIRealtimeAdapter._response_instructions(context, ())
+
+    assert len(serialized) <= 7_800
+    assert "active-0" not in session_prompt
+    assert "active-0" in response_prompt
+    assert "active-49" not in response_prompt
+    assert compact["counts"]["active_tasks"] == 50
 
 
 @pytest.mark.asyncio

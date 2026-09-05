@@ -103,13 +103,13 @@ class JarvisSituationProjector:
             select(Task)
             .where(Task.status.in_(["completed", "failed", "interrupted", "cancelled"]))
             .order_by(Task.finished_at.desc(), Task.creation_order.desc())
-            .limit(20)
+            .limit(12)
         )).scalars().all())
         reminder_rows = list((await session.execute(
             select(Task)
             .where(Task.scheduled_delivery_json.is_not(None))
             .order_by(Task.creation_order.desc())
-            .limit(100)
+            .limit(30)
         )).scalars().all())
         reminders = [
             task for task in reminder_rows
@@ -135,17 +135,17 @@ class JarvisSituationProjector:
             select(TaskPresentation)
             .where(TaskPresentation.state.in_(["presented", "acknowledged"]))
             .order_by(TaskPresentation.presented_at.desc(), TaskPresentation.created_at.desc())
-            .limit(20)
+            .limit(10)
         )).scalars().all())
         deliveries = list((await session.execute(
             select(SpeechDelivery)
             .order_by(SpeechDelivery.created_at.desc())
-            .limit(30)
+            .limit(12)
         )).scalars().all())
         notifications = list((await session.execute(
             select(NotificationOutbox)
             .order_by(NotificationOutbox.created_at.desc())
-            .limit(50)
+            .limit(12)
         )).scalars().all())
 
         messages = list((await session.execute(
@@ -153,22 +153,13 @@ class JarvisSituationProjector:
             .where(ConversationMessage.conversation_id == conversation_id)
             .where(ConversationMessage.communication_state.in_(["completed", "interrupted"]))
             .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
-            .limit(60)
+            .limit(48)
         )).scalars().all())
         messages.reverse()
-        historical_messages = list((await session.execute(
-            select(ConversationMessage)
-            .join(Conversation, ConversationMessage.conversation_id == Conversation.id)
-            .where(Conversation.conversation_kind == "jarvis_daily")
-            .where(ConversationMessage.communication_state.in_(["completed", "interrupted"]))
-            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
-            .limit(200)
-        )).scalars().all())
-        historical_messages.reverse()
         dialogue: list[dict[str, str]] = []
-        remaining = 30_000
-        for message in reversed(messages):
-            content = message.content[-remaining:]
+        remaining = 6_000
+        for message in reversed(messages[-6:]):
+            content = message.content[-min(len(message.content), remaining, 1_500):]
             dialogue.append({
                 "role": message.role,
                 "content": content,
@@ -181,7 +172,7 @@ class JarvisSituationProjector:
         summary_lines = [
             f"{'User' if message.role == 'user' else 'Jarvis'}: "
             f"{' '.join(message.content.split())[:240]}"
-            for message in historical_messages[:-40]
+            for message in messages[:-6]
             if message.role in {"user", "assistant"} and message.content.strip()
         ]
         if summary_lines and advance_revision:
