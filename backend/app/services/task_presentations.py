@@ -55,6 +55,7 @@ class TaskPresentationService:
 
     def __init__(self) -> None:
         self._projection_lock = asyncio.Lock()
+        self._projection_detail = "Awaiting the first projection pass."
 
     async def recover_reservations(self) -> int:
         recovered = 0
@@ -76,7 +77,10 @@ class TaskPresentationService:
     async def sync_candidates(self) -> int:
         try:
             created = await self._sync_candidates()
-            await runtime_health_service.healthy("task_projector")
+            await runtime_health_service.healthy(
+                "task_projector",
+                detail=self._projection_detail,
+            )
             return created
         except Exception as exc:
             await runtime_health_service.failed("task_projector", exc)
@@ -101,6 +105,9 @@ class TaskPresentationService:
                             select(func.max(TaskEvent.sequence))
                         )).scalar_one_or_none() or 0)
                     if checkpoint.last_sequence >= target_sequence:
+                        self._projection_detail = (
+                            f"Caught up through task event {checkpoint.last_sequence}."
+                        )
                         return created
                     events = list((await session.execute(
                         select(TaskEvent)
@@ -112,6 +119,9 @@ class TaskPresentationService:
                     if not events:
                         checkpoint.last_sequence = target_sequence
                         checkpoint.updated_at = utc_now()
+                        self._projection_detail = (
+                            f"Caught up through task event {target_sequence}."
+                        )
                         return created
                     created += await self._project_batch(session, events)
                     checkpoint.last_sequence = events[-1].sequence

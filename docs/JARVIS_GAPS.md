@@ -1,7 +1,7 @@
 # Jarvis Product Gaps
 
 Status: Active recovery backlog
-Last updated: 2026-09-03
+Last updated: 2026-09-05
 
 This document is the acceptance record for user-visible Jarvis shortcomings. A
 feature is not considered complete merely because its code path or automated
@@ -30,6 +30,19 @@ tests exist; it remains open until the real interaction behaves correctly.
 - Prompt and regression-corpus changes are implemented, but subjective vocal
   delivery and concision still require repeated real-session evaluation.
 
+### Realtime latency and connection reliability
+
+- Recent browser sessions sometimes took up to ten seconds to connect after the
+  wake word, missed turns, or remained stuck on speaking/thinking after the
+  floor had changed.
+- The remediation is implemented and covered by automated tests: correlated
+  browser/backend/provider timing traces, incremental task projection, a
+  terminal-state response gate with watchdog recovery, explicit barge-in,
+  non-blocking provider event ingestion, medium semantic VAD, bounded dynamic
+  context, six-turn hydration, and background cleanup of superseded sessions.
+- Real Pixel-browser measurements are still required to confirm the improvement
+  under microphone, network, certificate, and playback conditions.
+
 ## Latest reminder incident
 
 The 2026-09-02 production log provides the regression scenario:
@@ -49,6 +62,21 @@ The 2026-09-02 production log provides the regression scenario:
    given that health state and promised an update anyway.
 
 ## Implemented, awaiting device acceptance
+
+- Realtime timing metadata is retained for seven days and correlates wake
+  detection, call creation, provider responses, transcript/audio events, and
+  response-gate timings without storing raw audio.
+- A cancelled or failed response now emits a terminal event even when no text
+  was generated. Late terminal events cannot release a newer response gate, and
+  a watchdog cancels or closes genuinely stalled generations.
+- Transcript deltas are coalesced to at most ten updates per second without
+  delaying a lone delta, keeping streaming responsive while preventing database
+  work from blocking the provider socket reader.
+- New connections no longer wait for the previous provider call to hang up.
+  Realtime receives stable session instructions once and a bounded, fresh
+  situation only at response creation.
+- Web and Android health views now identify each degraded runtime component and
+  show its concise recorded reason instead of only showing a count.
 
 - Technical task errors remain available in durable history and explicit
   diagnostic task lookups, while unsolicited speech, situation context, and

@@ -330,7 +330,23 @@ class JarvisCoordinator:
                                 active.generation,
                                 "task_update",
                             )
-                await runtime_health_service.healthy("response_arbiter")
+                attempts = [
+                    gate.attempt
+                    for gate in self._response_gates.values()
+                    if gate.attempt is not None
+                ]
+                arbiter_detail = "Idle; no response is in flight."
+                if attempts:
+                    oldest = min(attempts, key=lambda item: item.started_monotonic)
+                    age_seconds = max(0.0, time.monotonic() - oldest.started_monotonic)
+                    arbiter_detail = (
+                        f"{len(attempts)} response in flight; oldest is "
+                        f"{oldest.state} for {age_seconds:.1f} seconds."
+                    )
+                await runtime_health_service.healthy(
+                    "response_arbiter",
+                    detail=arbiter_detail,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -341,7 +357,10 @@ class JarvisCoordinator:
                     voice_connected=voice_connected and not stale_voice_floor,
                     voice_floor_held=voice_floor_held,
                 )
-                await runtime_health_service.healthy("notification_router")
+                await runtime_health_service.healthy(
+                    "notification_router",
+                    detail="Notification fallback routing is available.",
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

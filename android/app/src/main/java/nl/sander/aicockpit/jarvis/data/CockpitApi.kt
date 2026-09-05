@@ -20,11 +20,12 @@ import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
 data class RealtimeCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
+data class JarvisComponentIssue(val name: String, val status: String, val detail: String?)
 data class JarvisAssistantStatus(
     val workerStatus: String,
     val waitingForWorkerCount: Int,
     val overdueReminderCount: Int,
-    val degradedComponents: List<String>,
+    val componentIssues: List<JarvisComponentIssue>,
 )
 
 internal fun parseJarvisAssistantStatus(
@@ -51,20 +52,29 @@ internal fun parseJarvisAssistantStatus(
         }
     }
     val components = body.optJSONObject("component_health") ?: JSONObject()
-    val degraded = buildList {
+    val issues = buildList {
         val names = components.keys()
         while (names.hasNext()) {
             val name = names.next()
             if (name == "worker") continue
-            val status = components.optJSONObject(name)?.optString("status").orEmpty()
-            if (status !in setOf("healthy", "online")) add(name)
+            val component = components.optJSONObject(name) ?: continue
+            val status = component.optString("status")
+            if (status !in setOf("healthy", "online")) {
+                add(
+                    JarvisComponentIssue(
+                        name = name,
+                        status = status,
+                        detail = component.optString("detail").takeIf { it.isNotBlank() },
+                    ),
+                )
+            }
         }
-    }.sorted()
+    }.sortedBy { it.name }
     return JarvisAssistantStatus(
         workerStatus = body.optJSONObject("worker_health")?.optString("status", "offline") ?: "offline",
         waitingForWorkerCount = waitingForWorker,
         overdueReminderCount = overdueReminders,
-        degradedComponents = degraded,
+        componentIssues = issues,
     )
 }
 

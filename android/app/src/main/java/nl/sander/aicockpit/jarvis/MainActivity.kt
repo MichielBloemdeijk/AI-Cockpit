@@ -166,8 +166,13 @@ class MainActivity : ComponentActivity() {
                         if (health.overdueReminderCount > 0) {
                             Text("${health.overdueReminderCount} overdue reminder${if (health.overdueReminderCount == 1) "" else "s"}", color = MaterialTheme.colorScheme.error)
                         }
-                        if (health.degradedComponents.isNotEmpty()) {
-                            Text("Degraded: ${health.degradedComponents.joinToString { it.replace('_', ' ') }}", color = MaterialTheme.colorScheme.error)
+                        if (health.componentIssues.isNotEmpty()) {
+                            health.componentIssues.forEach { issue ->
+                                Text(
+                                    "${issue.name.replace('_', ' ')}: ${issue.detail ?: issue.status}",
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
                         } else {
                             Text("Runtime components healthy", style = MaterialTheme.typography.bodySmall)
                         }

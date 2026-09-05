@@ -557,6 +557,11 @@ export default function JarvisPage() {
   const degradedComponents = Object.entries(state?.component_health ?? {}).filter(
     ([name, component]) => name !== "worker" && !["healthy", "online"].includes(component.status),
   );
+  const componentName = (name: string) => name.replaceAll("_", " ");
+  const degradedNames = degradedComponents
+    .slice(0, 2)
+    .map(([name]) => componentName(name))
+    .join(", ");
 
   const armVoice = async () => {
     if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
@@ -635,7 +640,7 @@ export default function JarvisPage() {
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold">Jarvis</span>
                 <span className="block truncate text-xs capitalize text-zinc-400">
-                  {floorLabel(state)}{degradedComponents.length ? ` · ${degradedComponents.length} system issue${degradedComponents.length === 1 ? "" : "s"}` : ""}
+                  {floorLabel(state)}{degradedComponents.length ? ` · ${degradedNames}` : ""}
                 </span>
               </span>
             </span>
@@ -647,6 +652,15 @@ export default function JarvisPage() {
               <div><span className="text-zinc-500">Wake</span><p className="mt-1 capitalize text-zinc-200">{wake.status.replaceAll("_", " ")}</p></div>
               <div><span className="text-zinc-500">Worker</span><p className={`mt-1 capitalize ${state?.worker_health.status === "online" ? "text-emerald-300" : "text-amber-200"}`}>{state?.worker_health.status ?? "offline"}</p></div>
               <div><span className="text-zinc-500">Systems</span><p className={`mt-1 ${degradedComponents.length ? "text-amber-200" : "text-emerald-300"}`}>{degradedComponents.length ? `${degradedComponents.length} degraded` : "Healthy"}</p></div>
+              {!!degradedComponents.length && (
+                <div className="col-span-2 space-y-1 border-t border-zinc-800 pt-2">
+                  {degradedComponents.map(([name, component]) => (
+                    <p key={name} className="text-amber-200">
+                      <span className="capitalize">{componentName(name)}</span>: {component.detail || component.status}
+                    </p>
+                  ))}
+                </div>
+              )}
               <button
                 type="button"
                 disabled={!preferences || submitting}
@@ -675,7 +689,7 @@ export default function JarvisPage() {
               </span>
               {!!degradedComponents.length && (
                 <span className="text-xs text-amber-300" title={degradedComponents.map(([name, value]) => `${name}: ${value.detail || value.status}`).join("\n")}>
-                  systems degraded · {degradedComponents.length}
+                  {degradedNames}{degradedComponents.length > 2 ? ` +${degradedComponents.length - 2}` : ""}
                 </span>
               )}
               {realtime.status !== "idle" && (

@@ -23,7 +23,9 @@ class CockpitApiStatusTest {
                     .put("scheduled_delivery", JSONObject().put("kind", "reminder"))))
             .put("component_health", JSONObject()
                 .put("worker", JSONObject().put("status", "offline"))
-                .put("reminder_scheduler", JSONObject().put("status", "degraded"))
+                .put("reminder_scheduler", JSONObject()
+                    .put("status", "degraded")
+                    .put("detail", "Scheduler loop stopped"))
                 .put("notification_router", JSONObject().put("status", "healthy")))
 
         val status = parseJarvisAssistantStatus(body, Instant.parse("2026-09-03T09:00:00Z"))
@@ -31,6 +33,9 @@ class CockpitApiStatusTest {
         assertEquals("offline", status.workerStatus)
         assertEquals(1, status.waitingForWorkerCount)
         assertEquals(1, status.overdueReminderCount)
-        assertEquals(listOf("reminder_scheduler"), status.degradedComponents)
+        assertEquals(
+            listOf(JarvisComponentIssue("reminder_scheduler", "degraded", "Scheduler loop stopped")),
+            status.componentIssues,
+        )
     }
 }
