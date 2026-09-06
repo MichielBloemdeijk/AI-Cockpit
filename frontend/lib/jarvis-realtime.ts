@@ -134,6 +134,12 @@ interface WakeCommitWaiter {
   reject: (cause: Error) => void;
 }
 
+interface BackendReadyWaiter {
+  timer: number;
+  resolve: () => void;
+  reject: (cause: Error) => void;
+}
+
 interface JarvisRealtimeConnectionInput {
   localStream: MediaStream;
   ownsLocalStream: boolean;
@@ -208,6 +214,8 @@ export class JarvisRealtimeController {
   private activationId: string | null = null;
   private telemetryPending: JarvisRealtimeTelemetryEvent[] = [];
   private telemetrySending = false;
+  private readonly backendReadiness = new Map<string, { ready: boolean; error?: string }>();
+  private readonly backendReadyWaiters = new Map<string, BackendReadyWaiter>();
   private snapshot: JarvisRealtimeSnapshot = {
     status: "idle",
     attempt: 0,
@@ -267,6 +275,18 @@ export class JarvisRealtimeController {
       timing_ms: timingMs,
       detail: reason,
     });
+    const sessionId = typeof payload.session_id === "string" ? payload.session_id : null;
+    const generation = typeof payload.generation === "number" ? payload.generation : null;
+    if (!sessionId || generation === null) return;
+    const key = this.sessionKey(sessionId, generation);
+    if (event.event_type === "provider.ready") {
+      this.setBackendReadiness(key, { ready: true });
+    } else if (["provider.provider_error", "provider.disconnected"].includes(event.event_type)) {
+      this.setBackendReadiness(key, {
+        ready: false,
+        error: reason || "Realtime backend control connection failed",
+      });
+    }
   }
 
   async prepare(localStream: MediaStream): Promise<void> {
@@ -346,6 +366,7 @@ export class JarvisRealtimeController {
     ++this.preparationOperation;
     this.cancelRotation();
     this.cancelDisconnect();
+    this.cancelBackendReadyWaiters();
     const preparation = this.preparation;
     this.preparation = null;
     if (preparation) this.disposePreparation(preparation);
@@ -460,13 +481,10 @@ export class JarvisRealtimeController {
     let connection: BrowserConnection | null = null;
     let handoffTransport: JarvisRealtimeHandoffTransport | null = null;
     try {
-      let outgoingStream = localStream;
-      if (input?.wakeAudio) {
-        this.recordTrace("wake_handoff_transport_started", { attempt });
-        handoffTransport = await this.dependencies.createHandoffTransport(localStream);
-        outgoingStream = handoffTransport.stream;
-        this.recordTrace("wake_handoff_transport_ready", { attempt });
-      }
+      this.recordTrace("wake_handoff_transport_started", { attempt });
+      handoffTransport = await this.dependencies.createHandoffTransport(localStream);
+      const outgoingStream = handoffTransport.stream;
+      this.recordTrace("wake_handoff_transport_ready", { attempt });
       if (prepared) {
         const outgoingTrack = outgoingStream.getAudioTracks()[0];
         if (!outgoingTrack) throw new Error("Realtime stream has no audio track");
@@ -551,10 +569,14 @@ export class JarvisRealtimeController {
         tracedTranscriptDeltaItems: new Set(),
         wakeCommitWaiter: null,
       };
-      if (handoffTransport && input?.wakeAudio) {
+      await this.waitForBackendControl(providerSession, operation, attempt);
+      if (input?.wakeAudio) {
         await this.waitForDataChannelOpen(channel, operation, attempt);
         const wakeAudio = await input.wakeAudio;
         await this.submitWakeAudio(connection, handoffTransport, wakeAudio, attempt);
+      } else {
+        await handoffTransport.connectLive();
+        this.recordTrace("realtime_live_mic_activated", { attempt });
       }
       try {
         connection.bargeInDetector = await this.dependencies.createBargeInDetector(
@@ -618,6 +640,67 @@ export class JarvisRealtimeController {
         samples.fill(0);
       }
     });
+  }
+
+  private async waitForBackendControl(
+    session: JarvisSession,
+    operation: number,
+    attempt: number,
+  ): Promise<void> {
+    if (session.lifecycle_state === "ready") {
+      this.recordTrace("realtime_backend_control_ready", { attempt, detail: "call_response" });
+      return;
+    }
+    if (["disconnected", "superseded"].includes(session.lifecycle_state)) {
+      throw new Error("Realtime backend control connection failed");
+    }
+    const key = this.sessionKey(session.id, session.generation);
+    const observed = this.backendReadiness.get(key);
+    if (observed?.ready) {
+      this.recordTrace("realtime_backend_control_ready", { attempt, detail: "cached_event" });
+      return;
+    }
+    if (observed?.error) throw new Error(observed.error);
+    await new Promise<void>((resolve, reject) => {
+      const waiter: BackendReadyWaiter = { timer: 0, resolve, reject };
+      waiter.timer = this.dependencies.setTimer(() => {
+        if (this.backendReadyWaiters.get(key) === waiter) this.backendReadyWaiters.delete(key);
+        reject(new Error("Realtime backend control did not become ready in time"));
+      }, DATA_CHANNEL_OPEN_TIMEOUT_MS);
+      this.backendReadyWaiters.set(key, waiter);
+    });
+    if (operation !== this.operation) throw new Error("Realtime connection was cancelled");
+    this.recordTrace("realtime_backend_control_ready", { attempt, detail: "live_event" });
+  }
+
+  private setBackendReadiness(
+    key: string,
+    state: { ready: boolean; error?: string },
+  ): void {
+    this.backendReadiness.set(key, state);
+    while (this.backendReadiness.size > 32) {
+      const oldest = this.backendReadiness.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.backendReadiness.delete(oldest);
+    }
+    const waiter = this.backendReadyWaiters.get(key);
+    if (!waiter) return;
+    this.backendReadyWaiters.delete(key);
+    this.dependencies.clearTimer(waiter.timer);
+    if (state.ready) waiter.resolve();
+    else waiter.reject(new Error(state.error || "Realtime backend control connection failed"));
+  }
+
+  private cancelBackendReadyWaiters(): void {
+    for (const waiter of this.backendReadyWaiters.values()) {
+      this.dependencies.clearTimer(waiter.timer);
+      waiter.reject(new Error("Realtime connection was cancelled"));
+    }
+    this.backendReadyWaiters.clear();
+  }
+
+  private sessionKey(sessionId: string, generation: number): string {
+    return `${sessionId}:${generation}`;
   }
 
   private async waitForDataChannelOpen(

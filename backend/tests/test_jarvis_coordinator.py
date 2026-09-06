@@ -136,6 +136,10 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
         activation_context={"source": "wake_word", "wake_score": 0.2},
     )
     realtime = bootstrap.session
+    _, initial_events = await jarvis_coordinator.replay_session_events(realtime.id)
+    ready_event = next(event for event in initial_events if event.event_type == "provider.ready")
+    assert ready_event.payload_json["session_id"] == realtime.id
+    assert ready_event.payload_json["generation"] == realtime.generation
 
     await jarvis_coordinator.handle_provider_event(
         realtime.id,

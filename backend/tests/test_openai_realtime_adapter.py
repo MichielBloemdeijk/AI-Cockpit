@@ -17,17 +17,29 @@ from app.services.openai_realtime_adapter import (
 )
 
 
+async def wait_until(predicate, *, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError("Condition was not met in time")
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_default_call_creator_uses_shared_http_client_and_multipart() -> None:
     requests: list[httpx.Request] = []
+    clients_created = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(201, text="answer", headers={"Location": "/v1/realtime/calls/test"})
 
-    adapter = OpenAIRealtimeAdapter(
-        http_client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
+    def create_client() -> httpx.AsyncClient:
+        nonlocal clients_created
+        clients_created += 1
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    adapter = OpenAIRealtimeAdapter(http_client_factory=create_client)
 
     response = await adapter._default_realtime_call_creator(
         api_key="test-key",
@@ -42,6 +54,9 @@ async def test_default_call_creator_uses_shared_http_client_and_multipart() -> N
     body = request.content.decode()
     assert 'name="sdp"' in body and "test-sdp" in body
     assert 'name="session"' in body and '"model":"test-model"' in body
+    await adapter._hangup(api_key="test-key", call_id="rtc_test")
+    assert clients_created == 1
+    await adapter.shutdown()
 
 
 @pytest.mark.asyncio
@@ -162,6 +177,7 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     )
 
     assert connection.sdp_answer == "v=0\r\na=answer"
+    await wait_until(lambda: bool(events))
     assert events[0][2].kind == "ready"
     assert events[0][2].payload["timing_ms"]["provider_call"] >= 0
     assert events[0][2].payload["timing_ms"]["sideband_connect"] >= 0
@@ -254,6 +270,52 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert not hasattr(connection, "call_id")
 
 
+@pytest.mark.asyncio
+async def test_openai_adapter_returns_sdp_while_sideband_connects() -> None:
+    release_sideband = asyncio.Event()
+    socket = FakeSideband()
+
+    async def create_call(**kwargs: Any) -> httpx.Response:
+        return httpx.Response(
+            201,
+            text="early-answer",
+            headers={"Location": "/v1/realtime/calls/rtc_parallel"},
+        )
+
+    async def connect_socket(url: str, **kwargs: Any) -> FakeSideband:
+        await release_sideband.wait()
+        return socket
+
+    adapter = OpenAIRealtimeAdapter(
+        http_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200))
+        ),
+        websocket_connector=connect_socket,
+        realtime_call_creator=create_call,
+    )
+    events = []
+
+    async def on_event(session_id, generation, event):
+        events.append(event)
+
+    connection = await asyncio.wait_for(adapter.connect(
+        session_id="parallel-session",
+        generation=1,
+        context={},
+        on_event=on_event,
+        sdp_offer="offer",
+    ), timeout=0.1)
+
+    assert connection.sdp_answer == "early-answer"
+    assert not adapter.is_connected(session_id="parallel-session", generation=1)
+    assert events == []
+    release_sideband.set()
+    await wait_until(lambda: bool(events))
+    assert events[-1].kind == "ready"
+    assert adapter.is_connected(session_id="parallel-session", generation=1)
+    await adapter.shutdown()
+
+
 def test_response_context_is_bounded_and_dynamic_state_is_not_in_session_prompt() -> None:
     long_text = "Detailed context " * 100
     context = {
@@ -337,6 +399,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         on_event=on_event,
         sdp_offer="offer",
     )
+    await wait_until(lambda: adapter.is_connected(session_id="session-events", generation=1))
     await socket.feed({"type": "input_audio_buffer.speech_started", "event_id": "evt-1"})
     await socket.feed({"type": "input_audio_buffer.speech_stopped", "event_id": "evt-2"})
     await socket.feed(
@@ -574,6 +637,7 @@ async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
         on_event=on_event,
         sdp_offer="offer",
     )
+    await wait_until(lambda: adapter.is_connected(session_id="session-presentations", generation=1))
     facts = (
         {
             "schema": "jarvis.task_update.v1",
@@ -810,8 +874,10 @@ async def test_sideband_failure_hangs_up_partial_call_and_key_is_required(
     monkeypatch.setattr(settings, "openai_api_key", "")
     adapter = OpenAIRealtimeAdapter()
 
+    events = []
+
     async def on_event(session_id, generation, event):
-        raise AssertionError("No event expected")
+        events.append(event)
 
     with pytest.raises(OpenAIRealtimeConfigurationError, match="OPENAI_API_KEY"):
         await adapter.connect(
@@ -840,15 +906,19 @@ async def test_sideband_failure_hangs_up_partial_call_and_key_is_required(
         websocket_connector=fail_socket,
         realtime_call_creator=create_call,
     )
-    with pytest.raises(OSError, match="sideband unavailable"):
-        await failing.connect(
-            session_id="partial",
-            generation=1,
-            context={},
-            on_event=on_event,
-            sdp_offer="offer",
-        )
+    connection = await failing.connect(
+        session_id="partial",
+        generation=1,
+        context={},
+        on_event=on_event,
+        sdp_offer="offer",
+    )
+    assert connection.sdp_answer == "answer"
+    await wait_until(lambda: bool(events))
+    assert events[-1].kind == "provider_error"
+    assert events[-1].payload == {"reason": "OSError", "stage": "sideband_setup"}
     assert [request.url.path for request in requests] == ["/v1/realtime/calls/rtc_partial/hangup"]
+    await failing.shutdown()
 
 
 @pytest.mark.asyncio

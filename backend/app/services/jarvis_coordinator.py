@@ -937,6 +937,8 @@ class JarvisCoordinator:
             repo = JarvisDomainRepository(session)
             event_type = f"provider.{event.kind}"
             payload = dict(event.payload)
+            if event.kind in {"ready", "provider_error", "disconnected"}:
+                payload.update({"session_id": session_id, "generation": generation})
             if await self._is_late_delivery_state(session, realtime, event):
                 event_type = "provider.event.ignored"
                 payload = {**payload, "kind": event.kind, "reason": "delivery_already_terminal"}

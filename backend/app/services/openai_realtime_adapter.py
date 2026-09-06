@@ -95,6 +95,22 @@ class _OpenAISession:
     speech_duration_scale: float = 1.0
 
 
+@dataclass(slots=True)
+class _PendingOpenAIConnection:
+    session_id: str
+    generation: int
+    call_id: str
+    api_key: str
+    context: dict[str, Any]
+    on_event: ProviderEventHandler
+    connect_started: float
+    provider_call_started: float
+    provider_call_finished: float
+    task: asyncio.Task[None] | None = None
+    socket: SidebandSocket | None = None
+    closing: bool = False
+
+
 def _shell_tools() -> list[dict[str, Any]]:
     object_schema = {"type": "object", "properties": {}, "additionalProperties": False}
     task_reference = {
@@ -258,6 +274,9 @@ class OpenAIRealtimeAdapter:
         self._websocket_connector = websocket_connector or self._default_websocket_connector
         self._realtime_call_creator = realtime_call_creator or self._default_realtime_call_creator
         self._sessions: dict[tuple[str, int], _OpenAISession] = {}
+        self._pending_connections: dict[tuple[str, int], _PendingOpenAIConnection] = {}
+        self._http_client: httpx.AsyncClient | None = None
+        self._http_client_lock = asyncio.Lock()
 
     async def connect(
         self,
@@ -281,44 +300,67 @@ class OpenAIRealtimeAdapter:
         provider_call_finished = time.monotonic()
         location = response.headers.get("Location") or response.headers.get("location")
         call_id = self._call_id_from_location(location)
-        socket: SidebandSocket | None = None
+        key = (session_id, generation)
+        pending = _PendingOpenAIConnection(
+            session_id=session_id,
+            generation=generation,
+            call_id=call_id,
+            api_key=api_key,
+            context=context,
+            on_event=on_event,
+            connect_started=connect_started,
+            provider_call_started=provider_call_started,
+            provider_call_finished=provider_call_finished,
+        )
+        self._pending_connections[key] = pending
+        pending.task = asyncio.create_task(
+            self._establish_sideband(pending),
+            name=f"jarvis-openai-setup-{session_id}-{generation}",
+        )
+        return VoiceSessionConnection(sdp_answer=response.text)
+
+    async def _establish_sideband(self, pending: _PendingOpenAIConnection) -> None:
+        key = (pending.session_id, pending.generation)
         provider_session: _OpenAISession | None = None
         try:
             sideband_started = time.monotonic()
             socket = await self._websocket_connector(
-                f"{settings.openai_realtime_websocket_url}?call_id={quote(call_id, safe='')}",
-                additional_headers={"Authorization": f"Bearer {api_key}"},
+                f"{settings.openai_realtime_websocket_url}?call_id={quote(pending.call_id, safe='')}",
+                additional_headers={"Authorization": f"Bearer {pending.api_key}"},
                 open_timeout=settings.openai_realtime_connect_timeout_seconds,
             )
+            pending.socket = socket
             sideband_finished = time.monotonic()
+            if pending.closing or self._pending_connections.get(key) is not pending:
+                await socket.close(code=1000, reason="connection_cancelled")
+                return
             provider_session = _OpenAISession(
-                session_id=session_id,
-                generation=generation,
-                call_id=call_id,
+                session_id=pending.session_id,
+                generation=pending.generation,
+                call_id=pending.call_id,
                 socket=socket,
-                on_event=on_event,
+                on_event=pending.on_event,
             )
-            key = (session_id, generation)
+            provider_session.ready.set()
             self._sessions[key] = provider_session
             provider_session.consumer_task = asyncio.create_task(
                 self._consume_events(provider_session),
-                name=f"jarvis-openai-events-{session_id}-{generation}",
+                name=f"jarvis-openai-events-{pending.session_id}-{pending.generation}",
             )
             provider_session.receiver_task = asyncio.create_task(
                 self._receive(provider_session),
-                name=f"jarvis-openai-sideband-{session_id}-{generation}",
+                name=f"jarvis-openai-sideband-{pending.session_id}-{pending.generation}",
             )
-            provider_session.ready.set()
-            await self._hydrate_dialogue(provider_session, context)
+            await self._hydrate_dialogue(provider_session, pending.context)
             await self._queue_normalized(
                 provider_session,
                 VoiceProviderEvent(
-                    event_id=f"openai-sideband-ready:{session_id}:{generation}",
+                    event_id=f"openai-sideband-ready:{pending.session_id}:{pending.generation}",
                     kind="ready",
                     payload={
                         "timing_ms": {
                             "provider_call": round(
-                                (provider_call_finished - provider_call_started) * 1_000,
+                                (pending.provider_call_finished - pending.provider_call_started) * 1_000,
                                 3,
                             ),
                             "sideband_connect": round(
@@ -326,7 +368,7 @@ class OpenAIRealtimeAdapter:
                                 3,
                             ),
                             "total_to_sideband_ready": round(
-                                (sideband_finished - connect_started) * 1_000,
+                                (sideband_finished - pending.connect_started) * 1_000,
                                 3,
                             ),
                         },
@@ -335,16 +377,34 @@ class OpenAIRealtimeAdapter:
                 ),
             )
             await asyncio.wait_for(provider_session.ready_delivered.wait(), timeout=2.0)
-            return VoiceSessionConnection(sdp_answer=response.text)
-        except Exception:
-            self._sessions.pop((session_id, generation), None)
+            if self._pending_connections.get(key) is pending:
+                self._pending_connections.pop(key, None)
+        except asyncio.CancelledError:
+            if provider_session is not None:
+                provider_session.closing = True
+                self._sessions.pop(key, None)
+                await self._stop_receiver(provider_session)
+            if pending.socket is not None:
+                await pending.socket.close(code=1000, reason="connection_cancelled")
+            raise
+        except Exception as exc:
+            self._pending_connections.pop(key, None)
+            self._sessions.pop(key, None)
             if provider_session is not None:
                 provider_session.closing = True
                 await self._stop_receiver(provider_session)
-            elif socket is not None:
-                await socket.close(code=1011, reason="sideband_setup_failed")
-            await self._hangup(api_key=api_key, call_id=call_id)
-            raise
+            if pending.socket is not None:
+                await pending.socket.close(code=1011, reason="sideband_setup_failed")
+            await self._hangup(api_key=pending.api_key, call_id=pending.call_id)
+            if not pending.closing:
+                await self._notify_handler_best_effort(
+                    pending,
+                    VoiceProviderEvent(
+                        event_id=f"openai-sideband-setup-error:{uuid4()}",
+                        kind="provider_error",
+                        payload={"reason": type(exc).__name__, "stage": "sideband_setup"},
+                    ),
+                )
 
     async def send_user_text(
         self,
@@ -495,16 +555,27 @@ class OpenAIRealtimeAdapter:
         reason: str,
         emit_event: bool = True,
     ) -> None:
-        provider_session = self._sessions.pop((session_id, generation), None)
-        if provider_session is None:
+        key = (session_id, generation)
+        pending = self._pending_connections.pop(key, None)
+        if pending is not None:
+            pending.closing = True
+            if pending.task is not None and pending.task is not asyncio.current_task():
+                pending.task.cancel()
+                await asyncio.gather(pending.task, return_exceptions=True)
+        provider_session = self._sessions.pop(key, None)
+        if provider_session is None and pending is None:
             return
-        provider_session.closing = True
-        await self._cancel_fallback_tasks(provider_session)
-        await self._stop_receiver(provider_session)
-        await provider_session.socket.close(code=1000, reason=reason[:120])
-        await self._hangup(api_key=settings.openai_api_key.strip(), call_id=provider_session.call_id)
+        if provider_session is not None:
+            provider_session.closing = True
+            await self._cancel_fallback_tasks(provider_session)
+            await self._stop_receiver(provider_session)
+            await provider_session.socket.close(code=1000, reason=reason[:120])
+        call_id = provider_session.call_id if provider_session is not None else pending.call_id
+        api_key = pending.api_key if pending is not None else settings.openai_api_key.strip()
+        await self._hangup(api_key=api_key, call_id=call_id)
         if emit_event:
-            await provider_session.on_event(
+            handler = provider_session.on_event if provider_session is not None else pending.on_event
+            await handler(
                 session_id,
                 generation,
                 VoiceProviderEvent(
@@ -513,6 +584,20 @@ class OpenAIRealtimeAdapter:
                     payload={"reason": reason},
                 ),
             )
+
+    async def shutdown(self) -> None:
+        keys = set(self._pending_connections) | set(self._sessions)
+        for session_id, generation in keys:
+            await self.close(
+                session_id=session_id,
+                generation=generation,
+                reason="backend_shutdown",
+                emit_event=False,
+            )
+        client = self._http_client
+        self._http_client = None
+        if client is not None and not client.is_closed:
+            await client.aclose()
 
     async def _create_call(
         self,
@@ -551,31 +636,42 @@ class OpenAIRealtimeAdapter:
         sdp_offer: str,
         session_config: dict[str, Any],
     ) -> httpx.Response:
-        async with self._http_client_factory() as client:
-            return await client.post(
-                f"{settings.openai_realtime_base_url.rstrip('/')}/realtime/calls",
-                headers={"Authorization": f"Bearer {api_key}"},
-                files={
-                    "sdp": (None, sdp_offer),
-                    "session": (
-                        None,
-                        json.dumps(session_config, separators=(",", ":"), ensure_ascii=False),
-                    ),
-                },
-            )
+        client = await self._shared_http_client()
+        return await client.post(
+            f"{settings.openai_realtime_base_url.rstrip('/')}/realtime/calls",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={
+                "sdp": (None, sdp_offer),
+                "session": (
+                    None,
+                    json.dumps(session_config, separators=(",", ":"), ensure_ascii=False),
+                ),
+            },
+        )
 
     async def _hangup(self, *, api_key: str, call_id: str) -> None:
         if not api_key or not call_id:
             return
         try:
-            async with self._http_client_factory() as client:
-                await client.post(
-                    f"{settings.openai_realtime_base_url.rstrip('/')}/realtime/calls/{quote(call_id, safe='')}/hangup",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
+            client = await self._shared_http_client()
+            await client.post(
+                f"{settings.openai_realtime_base_url.rstrip('/')}/realtime/calls/{quote(call_id, safe='')}/hangup",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
         except Exception:
             # Cleanup is best-effort; the peer/sideband sockets are already closed.
             return
+
+    async def _shared_http_client(self) -> httpx.AsyncClient:
+        client = self._http_client
+        if client is not None and not client.is_closed:
+            return client
+        async with self._http_client_lock:
+            client = self._http_client
+            if client is None or client.is_closed:
+                client = self._http_client_factory()
+                self._http_client = client
+            return client
 
     async def _receive(self, provider_session: _OpenAISession) -> None:
         key = (provider_session.session_id, provider_session.generation)
@@ -1643,6 +1739,16 @@ class OpenAIRealtimeAdapter:
             # A stale durable generation can reject a final provider event.
             # The receiver is already being removed, so there is no recovery
             # action left for this best-effort notification.
+            return
+
+    @staticmethod
+    async def _notify_handler_best_effort(
+        pending: _PendingOpenAIConnection,
+        event: VoiceProviderEvent,
+    ) -> None:
+        try:
+            await pending.on_event(pending.session_id, pending.generation, event)
+        except Exception:
             return
 
     @staticmethod

@@ -100,6 +100,35 @@ function response(generation: number, rotateAfterSeconds = 3_300): JarvisRealtim
   };
 }
 
+function connectingResponse(generation: number): JarvisRealtimeCallResponse {
+  return {
+    ...response(generation),
+    session: {
+      ...session(generation),
+      lifecycle_state: "connecting",
+      floor_state: "connecting",
+      ready_at: null,
+    },
+  };
+}
+
+function liveEvent(
+  eventType: string,
+  generation: number,
+  payload: Record<string, unknown> = {},
+) {
+  return {
+    id: `event-${eventType}-${generation}`,
+    sequence: generation,
+    event_type: eventType,
+    source_domain: "session" as const,
+    source_id: null,
+    source_sequence: generation,
+    payload: { session_id: `session-${generation}`, generation, ...payload },
+    created_at: "2026-08-28T00:00:01Z",
+  };
+}
+
 function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
   const peers: FakePeer[] = [];
   const streams: FakeStream[] = [];
@@ -225,6 +254,71 @@ describe("JarvisRealtimeController", () => {
       wake_detected_at: "2026-08-28T00:00:00.000Z",
     });
     expect(deps.createCall.mock.calls[0][5].activation_id).toBeTruthy();
+    await controller.stop();
+  });
+
+  it("keeps wake audio and the live mic gated until backend control is ready", async () => {
+    const createCall = vi.fn().mockResolvedValue(connectingResponse(1));
+    const deps = dependencies({ createCall });
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    const started = controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array([0.1, 0.2])),
+        sampleRate: 16_000,
+      },
+    });
+    await vi.waitFor(() => expect(deps.peers[0].remoteDescription).not.toBeNull());
+
+    expect(deps.peers[0].channel.sent).toEqual([]);
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    controller.recordBackendEvent(liveEvent("provider.ready", 1));
+    await started;
+
+    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "input_audio_buffer.append",
+      "input_audio_buffer.commit",
+    ]);
+    expect(deps.handoffTransports[0].connectLive).toHaveBeenCalledOnce();
+    await controller.stop();
+  });
+
+  it("uses a provider-ready event that arrives before the call response", async () => {
+    let resolveCall: ((value: JarvisRealtimeCallResponse) => void) | null = null;
+    const createCall = vi.fn(() => new Promise<JarvisRealtimeCallResponse>((resolve) => {
+      resolveCall = resolve;
+    }));
+    const deps = dependencies({ createCall });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    const started = controller.start();
+    await vi.waitFor(() => expect(createCall).toHaveBeenCalledOnce());
+    controller.recordBackendEvent(liveEvent("provider.ready", 1));
+    resolveCall?.(connectingResponse(1));
+    await started;
+
+    expect(deps.handoffTransports[0].connectLive).toHaveBeenCalledOnce();
+    await controller.stop();
+  });
+
+  it("retries without opening the mic when sideband control fails after SDP", async () => {
+    const createCall = vi.fn()
+      .mockResolvedValueOnce(connectingResponse(1))
+      .mockResolvedValueOnce(response(2));
+    const deps = dependencies({ createCall });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    const started = controller.start();
+    await vi.waitFor(() => expect(deps.peers[0].remoteDescription).not.toBeNull());
+    controller.recordBackendEvent(liveEvent("provider.provider_error", 1, { reason: "sideband unavailable" }));
+    await started;
+
+    expect(createCall).toHaveBeenCalledTimes(2);
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    expect(deps.handoffTransports[0].destroy).toHaveBeenCalledOnce();
+    expect(deps.handoffTransports[1].connectLive).toHaveBeenCalledOnce();
     await controller.stop();
   });
 
