@@ -114,6 +114,34 @@ describe("JarvisWakeEngine", () => {
     expect(errors).toHaveBeenCalledOnce();
   });
 
+  it("ends a wake utterance after 600 ms of trailing silence by default", async () => {
+    const utterances: Float32Array[] = [];
+    const results: JarvisWakeInferenceResult[] = [
+      { speechProbability: 0.9, wakeProbability: 0.9 },
+      ...Array.from({ length: 5 }, () => ({ speechProbability: 0.1, wakeProbability: 0 })),
+    ];
+    const value = new JarvisWakeEngine({
+      inference: { analyze: async () => results.shift() ?? { speechProbability: 0, wakeProbability: 0 } },
+      onDetected: vi.fn(),
+      onUtterance: (samples) => utterances.push(samples),
+      onError: vi.fn(),
+      batchSamples: 1_920,
+      batchIntervalSamples: 1_920,
+      maximumUtteranceSamples: 20_000,
+    });
+
+    value.push(new Float32Array(1_920));
+    await value.idle();
+    for (let index = 0; index < 4; index += 1) {
+      value.push(new Float32Array(1_920));
+      await value.idle();
+    }
+    expect(utterances).toEqual([]);
+    value.push(new Float32Array(1_920));
+    await value.idle();
+    expect(utterances).toHaveLength(1);
+  });
+
   it("zeroes state and destroys inference exactly once", async () => {
     const destroy = vi.fn();
     const wake = engine([]);

@@ -194,6 +194,7 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert "It hasn't started; the worker is offline." in session_config["instructions"]
     assert "Never add a preamble" in session_config["instructions"]
     assert "Begin the requested content immediately" in session_config["instructions"]
+    assert "likely continuation" in session_config["instructions"]
     assert "continue until it is naturally complete" in session_config["instructions"]
     assert "not a customer-service chatbot" in session_config["instructions"]
     assert "taking as little of their time and attention as possible" in session_config["instructions"]

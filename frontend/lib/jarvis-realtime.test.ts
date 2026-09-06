@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { JarvisRealtimeCallResponse, JarvisSession } from "./api";
 import {
   JarvisRealtimeController,
+  encodeJarvisWakeAudio,
   summarizeJarvisRealtimeTrace,
   type JarvisRealtimeDependencies,
   type JarvisRealtimeSnapshot,
@@ -32,7 +33,15 @@ class FakeChannel {
   readyState: RTCDataChannelState = "open";
   sent: string[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
-  send(message: string) { this.sent.push(message); }
+  send(message: string) {
+    this.sent.push(message);
+    const event = JSON.parse(message) as { type?: string };
+    if (event.type === "input_audio_buffer.commit") {
+      queueMicrotask(() => this.onmessage?.({
+        data: JSON.stringify({ type: "input_audio_buffer.committed", item_id: "wake-item" }),
+      } as MessageEvent));
+    }
+  }
   close() { this.closed = true; }
 }
 
@@ -76,6 +85,9 @@ function session(generation: number): JarvisSession {
     created_at: "2026-08-28T00:00:00Z",
     ready_at: "2026-08-28T00:00:01Z",
     disconnected_at: null,
+    client_time_zone: "Europe/Amsterdam",
+    client_utc_offset_minutes: 120,
+    client_observed_at: "2026-08-28T00:00:00Z",
   };
 }
 
@@ -96,9 +108,9 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
   const closeSession = vi.fn().mockResolvedValue(undefined);
   const wait = vi.fn().mockResolvedValue(undefined);
   const detector = { destroy: vi.fn() };
-  const handoffOutputs: Array<{
+  const handoffTransports: Array<{
     stream: FakeStream;
-    start: ReturnType<typeof vi.fn>;
+    connectLive: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
   }> = [];
   let speechStart: (() => void) | null = null;
@@ -127,14 +139,14 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
       speechStart = onSpeechStart;
       return detector;
     }),
-    createHandoffOutput: vi.fn(async () => {
+    createHandoffTransport: vi.fn(async () => {
       const output = {
         stream: new FakeStream(),
-        start: vi.fn().mockResolvedValue(undefined),
+        connectLive: vi.fn().mockResolvedValue(undefined),
         destroy: vi.fn().mockResolvedValue(undefined),
       };
-      handoffOutputs.push(output);
-      return output as unknown as Awaited<ReturnType<JarvisRealtimeDependencies["createHandoffOutput"]>>;
+      handoffTransports.push(output);
+      return output as unknown as Awaited<ReturnType<JarvisRealtimeDependencies["createHandoffTransport"]>>;
     }),
     ...overrides,
   };
@@ -147,7 +159,7 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
     closeSession,
     wait,
     detector,
-    handoffOutputs,
+    handoffTransports,
     triggerSpeechStart: () => speechStart?.(),
   };
 }
@@ -400,7 +412,53 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
-  it("replays a wake utterance before live audio without taking ownership of the wake mic", async () => {
+  it("bulk-uploads a wake utterance before enabling live audio without taking ownership of the wake mic", async () => {
+    const deps = dependencies();
+    const wakeStream = new FakeStream();
+    const samples = new Float32Array([0.1, 0.2]);
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(samples),
+        sampleRate: 16_000,
+      },
+    });
+
+    expect(deps.streams).toHaveLength(0);
+    expect(deps.handoffTransports).toHaveLength(1);
+    expect(deps.handoffTransports[0].connectLive).toHaveBeenCalledOnce();
+    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "input_audio_buffer.append",
+      "input_audio_buffer.commit",
+    ]);
+    expect([...samples]).toEqual([0, 0]);
+    expect(deps.peers[0].addedTracks).toBe(1);
+    await controller.stop();
+    expect(wakeStream.track.stopped).toBe(false);
+    expect(deps.handoffTransports[0].destroy).toHaveBeenCalledOnce();
+  });
+
+  it("encodes wake audio as bounded 24 kHz PCM16 chunks", () => {
+    const samples = new Float32Array(16_000 * 10);
+    samples[0] = -1;
+    samples[1] = 1;
+
+    const encoded = encodeJarvisWakeAudio(samples, 16_000);
+
+    expect(encoded.targetSampleRate).toBe(24_000);
+    expect(encoded.byteLength).toBe(24_000 * 10 * 2);
+    expect(encoded.durationMs).toBe(10_000);
+    expect(encoded.chunks).toHaveLength(20);
+    expect(encoded.chunks.every((chunk) => globalThis.atob(chunk).length <= 24_000)).toBe(true);
+    const first = Uint8Array.from(globalThis.atob(encoded.chunks[0]), (value) => value.charCodeAt(0));
+    const pcm = new DataView(first.buffer);
+    expect(pcm.getInt16(0, true)).toBe(-32_768);
+    expect(pcm.getInt16(2, true)).toBeLessThan(32_767);
+  });
+
+  it("connects the live mic directly when the captured wake utterance is empty", async () => {
     const deps = dependencies();
     const wakeStream = new FakeStream();
     const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
@@ -408,18 +466,39 @@ describe("JarvisRealtimeController", () => {
     await controller.start({
       audioHandoff: {
         localStream: wakeStream as unknown as MediaStream,
-        utterance: Promise.resolve(new Float32Array([0.1, 0.2])),
+        utterance: Promise.resolve(new Float32Array()),
         sampleRate: 16_000,
       },
     });
 
-    expect(deps.streams).toHaveLength(0);
-    expect(deps.handoffOutputs).toHaveLength(1);
-    expect(deps.handoffOutputs[0].start).toHaveBeenCalledOnce();
-    expect(deps.peers[0].addedTracks).toBe(1);
+    expect(deps.peers[0].channel.sent).toEqual([]);
+    expect(deps.handoffTransports[0].connectLive).toHaveBeenCalledOnce();
     await controller.stop();
-    expect(wakeStream.track.stopped).toBe(false);
-    expect(deps.handoffOutputs[0].destroy).toHaveBeenCalledOnce();
+  });
+
+  it("retains encoded wake audio across a failed connection attempt", async () => {
+    const createCall = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary provider failure"))
+      .mockResolvedValueOnce(response(2));
+    const deps = dependencies({ createCall });
+    const wakeStream = new FakeStream();
+    const samples = new Float32Array([0.1, 0.2, 0.3]);
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(samples),
+        sampleRate: 16_000,
+      },
+    });
+
+    expect(createCall).toHaveBeenCalledTimes(2);
+    expect(deps.peers.flatMap((peer) => peer.channel.sent).filter(
+      (message) => JSON.parse(message).type === "input_audio_buffer.append",
+    )).toHaveLength(1);
+    expect([...samples]).toEqual([0, 0, 0]);
+    await controller.stop();
   });
 
   it("summarizes connection and turn latency without discarding the raw trace", () => {

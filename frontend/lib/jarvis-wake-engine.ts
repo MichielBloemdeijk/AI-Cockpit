@@ -81,7 +81,7 @@ export class JarvisWakeEngine {
       candidateLookbackMs: options.candidateLookbackMs ?? 960,
       positiveVadThreshold: options.positiveVadThreshold ?? 0.65,
       negativeVadThreshold: options.negativeVadThreshold ?? 0.4,
-      negativeVadCount: options.negativeVadCount ?? 8,
+      negativeVadCount: options.negativeVadCount ?? 4,
       batchSamples: options.batchSamples ?? 17_280,
       batchIntervalSamples: options.batchIntervalSamples ?? 1_920,
       maximumUtteranceSamples: options.maximumUtteranceSamples ?? JARVIS_WAKE_SAMPLE_RATE * 30,

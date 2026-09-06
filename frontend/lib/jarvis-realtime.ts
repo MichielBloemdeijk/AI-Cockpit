@@ -100,7 +100,7 @@ interface BrowserConnection {
   channel: RTCDataChannel;
   localStream: MediaStream;
   ownsLocalStream: boolean;
-  handoffOutput: JarvisRealtimeHandoffOutput | null;
+  handoffTransport: JarvisRealtimeHandoffTransport | null;
   session: JarvisSession;
   rotateAfterSeconds: number;
   bargeInDetector: JarvisBargeInDetector | null;
@@ -110,18 +110,34 @@ interface BrowserConnection {
   mutedResponseId: string | null;
   tracedAudioDeltaResponses: Set<string>;
   tracedTranscriptDeltaItems: Set<string>;
+  wakeCommitWaiter: WakeCommitWaiter | null;
 }
 
-interface JarvisRealtimeHandoffOutput {
+interface JarvisRealtimeHandoffTransport {
   stream: MediaStream;
-  start: () => Promise<void>;
+  connectLive: () => Promise<void>;
   destroy: () => Promise<void>;
+}
+
+export interface JarvisRealtimeWakeAudioEnvelope {
+  chunks: readonly string[];
+  byteLength: number;
+  durationMs: number;
+  sourceSampleRate: number;
+  targetSampleRate: 24_000;
+}
+
+interface WakeCommitWaiter {
+  eventId: string;
+  timer: number;
+  resolve: (itemId?: string) => void;
+  reject: (cause: Error) => void;
 }
 
 interface JarvisRealtimeConnectionInput {
   localStream: MediaStream;
   ownsLocalStream: boolean;
-  audioHandoff?: JarvisRealtimeAudioHandoff;
+  wakeAudio?: Promise<JarvisRealtimeWakeAudioEnvelope>;
   activationContext?: JarvisRealtimeActivationContext;
 }
 
@@ -149,14 +165,18 @@ export interface JarvisRealtimeDependencies {
     onSpeechStart: () => void,
     onSpeechEnd: () => void,
   ) => Promise<JarvisBargeInDetector>;
-  createHandoffOutput: (
-    handoff: JarvisRealtimeAudioHandoff,
-  ) => Promise<JarvisRealtimeHandoffOutput>;
+  createHandoffTransport: (
+    localStream: MediaStream,
+  ) => Promise<JarvisRealtimeHandoffTransport>;
 }
 
 const RETRY_DELAYS_MS = [0, 500, 1_000, 2_000] as const;
 const DISCONNECT_GRACE_MS = 2_000;
 const ICE_CANDIDATE_WAIT_MS = 750;
+const DATA_CHANNEL_OPEN_TIMEOUT_MS = 10_000;
+const WAKE_COMMIT_TIMEOUT_MS = 3_000;
+const WAKE_PCM_SAMPLE_RATE = 24_000 as const;
+const WAKE_PCM_CHUNK_BYTES = 24_000;
 
 const browserDependencies: JarvisRealtimeDependencies = {
   createPeer: () => new RTCPeerConnection(),
@@ -170,7 +190,7 @@ const browserDependencies: JarvisRealtimeDependencies = {
   now: () => performance.now(),
   wallNow: () => new Date().toISOString(),
   createBargeInDetector: createJarvisBargeInDetector,
-  createHandoffOutput: createBrowserHandoffOutput,
+  createHandoffTransport: createBrowserHandoffTransport,
 };
 
 export class JarvisRealtimeController {
@@ -314,7 +334,7 @@ export class JarvisRealtimeController {
       ? {
           localStream: options.audioHandoff.localStream,
           ownsLocalStream: false,
-          audioHandoff: options.audioHandoff,
+          wakeAudio: this.prepareWakeAudio(options.audioHandoff),
           activationContext,
         }
       : undefined;
@@ -438,14 +458,14 @@ export class JarvisRealtimeController {
     const channel = prepared?.channel ?? peer.createDataChannel("oai-events");
     let providerSession: JarvisSession | null = null;
     let connection: BrowserConnection | null = null;
-    let handoffOutput: JarvisRealtimeHandoffOutput | null = null;
+    let handoffTransport: JarvisRealtimeHandoffTransport | null = null;
     try {
       let outgoingStream = localStream;
-      if (input?.audioHandoff) {
-        this.recordTrace("wake_handoff_output_started", { attempt });
-        handoffOutput = await this.dependencies.createHandoffOutput(input.audioHandoff);
-        outgoingStream = handoffOutput.stream;
-        this.recordTrace("wake_handoff_output_ready", { attempt });
+      if (input?.wakeAudio) {
+        this.recordTrace("wake_handoff_transport_started", { attempt });
+        handoffTransport = await this.dependencies.createHandoffTransport(localStream);
+        outgoingStream = handoffTransport.stream;
+        this.recordTrace("wake_handoff_transport_ready", { attempt });
       }
       if (prepared) {
         const outgoingTrack = outgoingStream.getAudioTracks()[0];
@@ -519,7 +539,7 @@ export class JarvisRealtimeController {
         channel,
         localStream,
         ownsLocalStream,
-        handoffOutput,
+        handoffTransport,
         session: providerSession,
         rotateAfterSeconds: response.rotate_after_seconds ?? 55 * 60,
         bargeInDetector: null,
@@ -529,14 +549,12 @@ export class JarvisRealtimeController {
         mutedResponseId: null,
         tracedAudioDeltaResponses: new Set(),
         tracedTranscriptDeltaItems: new Set(),
+        wakeCommitWaiter: null,
       };
-      if (handoffOutput) {
-        this.recordTrace("wake_utterance_handoff_requested", { attempt });
-        void handoffOutput.start()
-          .then(() => this.recordTrace("wake_utterance_handoff_started"))
-          .catch((cause) => this.recordTrace("wake_utterance_handoff_failed", {
-            detail: cause instanceof Error ? cause.message : "unknown",
-          }));
+      if (handoffTransport && input?.wakeAudio) {
+        await this.waitForDataChannelOpen(channel, operation, attempt);
+        const wakeAudio = await input.wakeAudio;
+        await this.submitWakeAudio(connection, handoffTransport, wakeAudio, attempt);
       }
       try {
         connection.bargeInDetector = await this.dependencies.createBargeInDetector(
@@ -554,7 +572,7 @@ export class JarvisRealtimeController {
       });
       return connection;
     } catch (cause) {
-      await handoffOutput?.destroy().catch(() => undefined);
+      await handoffTransport?.destroy().catch(() => undefined);
       channel.close();
       peer.close();
       if (ownsLocalStream) {
@@ -580,6 +598,119 @@ export class JarvisRealtimeController {
     await peer.setLocalDescription(offer);
     await this.waitForUsableIce(peer);
     return peer.localDescription ?? offer;
+  }
+
+  private prepareWakeAudio(
+    handoff: JarvisRealtimeAudioHandoff,
+  ): Promise<JarvisRealtimeWakeAudioEnvelope> {
+    this.recordTrace("wake_audio_encode_waiting");
+    return handoff.utterance.then((samples) => {
+      this.recordTrace("wake_audio_encode_started", {
+        detail: `samples:${samples.length}:rate:${handoff.sampleRate}`,
+      });
+      try {
+        const envelope = encodeJarvisWakeAudio(samples, handoff.sampleRate);
+        this.recordTrace("wake_audio_encode_completed", {
+          detail: `bytes:${envelope.byteLength}:chunks:${envelope.chunks.length}:duration_ms:${Math.round(envelope.durationMs)}`,
+        });
+        return envelope;
+      } finally {
+        samples.fill(0);
+      }
+    });
+  }
+
+  private async waitForDataChannelOpen(
+    channel: RTCDataChannel,
+    operation: number,
+    attempt: number,
+  ): Promise<void> {
+    if (channel.readyState === "open") {
+      this.recordTrace("realtime_data_channel_open", { attempt });
+      return;
+    }
+    if (channel.readyState !== "connecting") throw new Error("Realtime data channel is unavailable");
+    await new Promise<void>((resolve, reject) => {
+      let timer = 0;
+      const cleanup = () => {
+        channel.removeEventListener("open", onOpen);
+        channel.removeEventListener("close", onClose);
+        channel.removeEventListener("error", onError);
+        if (timer) this.dependencies.clearTimer(timer);
+      };
+      const onOpen = () => {
+        cleanup();
+        if (operation !== this.operation) reject(new Error("Realtime connection was cancelled"));
+        else resolve();
+      };
+      const onClose = () => {
+        cleanup();
+        reject(new Error("Realtime data channel closed before wake audio was sent"));
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error("Realtime data channel failed before wake audio was sent"));
+      };
+      channel.addEventListener("open", onOpen);
+      channel.addEventListener("close", onClose);
+      channel.addEventListener("error", onError);
+      timer = this.dependencies.setTimer(() => {
+        cleanup();
+        reject(new Error("Realtime data channel did not open in time"));
+      }, DATA_CHANNEL_OPEN_TIMEOUT_MS);
+    });
+    this.recordTrace("realtime_data_channel_open", { attempt });
+  }
+
+  private async submitWakeAudio(
+    connection: BrowserConnection,
+    handoffTransport: JarvisRealtimeHandoffTransport,
+    envelope: JarvisRealtimeWakeAudioEnvelope,
+    attempt: number,
+  ): Promise<void> {
+    if (!envelope.chunks.length) {
+      await handoffTransport.connectLive();
+      this.recordTrace("wake_live_mic_activated", { attempt, detail: "empty_handoff" });
+      return;
+    }
+    if (connection.channel.readyState !== "open") throw new Error("Realtime data channel is not open");
+    const activationId = this.activationId ?? crypto.randomUUID();
+    const commitEventId = `jarvis-wake-commit-${activationId}-${attempt}`;
+    const acknowledgement = new Promise<string | undefined>((resolve, reject) => {
+      const timer = this.dependencies.setTimer(
+        () => reject(new Error("OpenAI did not acknowledge the wake audio in time")),
+        WAKE_COMMIT_TIMEOUT_MS,
+      );
+      connection.wakeCommitWaiter = { eventId: commitEventId, timer, resolve, reject };
+    });
+    this.recordTrace("wake_audio_upload_started", {
+      attempt,
+      detail: `bytes:${envelope.byteLength}:chunks:${envelope.chunks.length}`,
+    });
+    try {
+      envelope.chunks.forEach((audio, index) => {
+        connection.channel.send(JSON.stringify({
+          type: "input_audio_buffer.append",
+          event_id: `jarvis-wake-append-${activationId}-${attempt}-${index}`,
+          audio,
+        }));
+      });
+      this.recordTrace("wake_audio_upload_completed", { attempt, detail: `bytes:${envelope.byteLength}` });
+      connection.channel.send(JSON.stringify({
+        type: "input_audio_buffer.commit",
+        event_id: commitEventId,
+      }));
+      this.recordTrace("wake_audio_commit_sent", { attempt });
+      await handoffTransport.connectLive();
+      this.recordTrace("wake_live_mic_activated", { attempt });
+      const itemId = await acknowledgement;
+      this.recordTrace("wake_audio_commit_acknowledged", { attempt, item_id: itemId });
+    } finally {
+      if (connection.wakeCommitWaiter?.eventId === commitEventId) {
+        this.dependencies.clearTimer(connection.wakeCommitWaiter.timer);
+        connection.wakeCommitWaiter = null;
+      }
+    }
   }
 
   private async waitForUsableIce(peer: RTCPeerConnection): Promise<void> {
@@ -643,7 +774,12 @@ export class JarvisRealtimeController {
     connection.peer.ontrack = null;
     connection.peer.onconnectionstatechange = null;
     connection.peer.close();
-    await connection.handoffOutput?.destroy().catch(() => undefined);
+    if (connection.wakeCommitWaiter) {
+      this.dependencies.clearTimer(connection.wakeCommitWaiter.timer);
+      connection.wakeCommitWaiter.reject(new Error("Realtime connection closed during wake handoff"));
+      connection.wakeCommitWaiter = null;
+    }
+    await connection.handoffTransport?.destroy().catch(() => undefined);
     if (connection.ownsLocalStream) {
       for (const track of connection.localStream.getTracks()) track.stop();
     }
@@ -681,6 +817,20 @@ export class JarvisRealtimeController {
       this.recordTrace(type, { response_id: responseId, item_id: itemId, detail: traceDetail });
     }
     if (!connection) return;
+
+    if (type === "input_audio_buffer.committed" && connection.wakeCommitWaiter) {
+      connection.wakeCommitWaiter.resolve(itemId);
+      return;
+    }
+    if (type === "error" && connection.wakeCommitWaiter) {
+      const error = event.error && typeof event.error === "object"
+        ? event.error as Record<string, unknown>
+        : {};
+      if (error.event_id === connection.wakeCommitWaiter.eventId) {
+        connection.wakeCommitWaiter.reject(new Error(String(error.message || "Wake audio commit failed")));
+        return;
+      }
+    }
 
     if (type === "response.created") {
       connection.activeResponseId = responseId ?? connection.activeResponseId;
@@ -1021,56 +1171,72 @@ export function summarizeJarvisRealtimeTrace(
   };
 }
 
-async function createBrowserHandoffOutput(
-  handoff: JarvisRealtimeAudioHandoff,
-): Promise<JarvisRealtimeHandoffOutput> {
-  const context = new AudioContext();
-  const liveSource = context.createMediaStreamSource(handoff.localStream);
-  const destination = context.createMediaStreamDestination();
-  let replaySource: AudioBufferSourceNode | null = null;
-  let destroyed = false;
-  let started = false;
-  const connectLive = () => {
-    if (!destroyed) liveSource.connect(destination);
+export function encodeJarvisWakeAudio(
+  samples: Float32Array,
+  sourceSampleRate: number,
+): JarvisRealtimeWakeAudioEnvelope {
+  if (!Number.isFinite(sourceSampleRate) || sourceSampleRate <= 0) {
+    throw new Error("Wake audio sample rate must be positive");
+  }
+  if (!samples.length) {
+    return {
+      chunks: [],
+      byteLength: 0,
+      durationMs: 0,
+      sourceSampleRate,
+      targetSampleRate: WAKE_PCM_SAMPLE_RATE,
+    };
+  }
+  const outputLength = Math.max(1, Math.round(samples.length * WAKE_PCM_SAMPLE_RATE / sourceSampleRate));
+  const pcmBytes = new Uint8Array(outputLength * 2);
+  const view = new DataView(pcmBytes.buffer);
+  for (let index = 0; index < outputLength; index += 1) {
+    const sourcePosition = index * sourceSampleRate / WAKE_PCM_SAMPLE_RATE;
+    const lower = Math.min(samples.length - 1, Math.floor(sourcePosition));
+    const upper = Math.min(samples.length - 1, lower + 1);
+    const fraction = sourcePosition - lower;
+    const sample = Math.max(
+      -1,
+      Math.min(1, samples[lower] + (samples[upper] - samples[lower]) * fraction),
+    );
+    const integer = sample < 0 ? Math.round(sample * 32_768) : Math.round(sample * 32_767);
+    view.setInt16(index * 2, integer, true);
+  }
+  const chunks: string[] = [];
+  for (let offset = 0; offset < pcmBytes.length; offset += WAKE_PCM_CHUNK_BYTES) {
+    const chunk = pcmBytes.subarray(offset, Math.min(offset + WAKE_PCM_CHUNK_BYTES, pcmBytes.length));
+    let binary = "";
+    for (let index = 0; index < chunk.length; index += 1) binary += String.fromCharCode(chunk[index]);
+    chunks.push(globalThis.btoa(binary));
+  }
+  return {
+    chunks,
+    byteLength: pcmBytes.length,
+    durationMs: samples.length / sourceSampleRate * 1_000,
+    sourceSampleRate,
+    targetSampleRate: WAKE_PCM_SAMPLE_RATE,
   };
+}
+
+async function createBrowserHandoffTransport(
+  localStream: MediaStream,
+): Promise<JarvisRealtimeHandoffTransport> {
+  const context = new AudioContext();
+  const liveSource = context.createMediaStreamSource(localStream);
+  const destination = context.createMediaStreamDestination();
+  let destroyed = false;
+  let connected = false;
   return {
     stream: destination.stream,
-    start: async () => {
-      if (started) return;
-      started = true;
+    connectLive: async () => {
+      if (destroyed || connected) return;
+      connected = true;
       if (context.state === "suspended") await context.resume();
-      try {
-        const samples = await handoff.utterance;
-        if (destroyed) {
-          samples.fill(0);
-          return;
-        }
-        if (!samples.length) {
-          connectLive();
-          return;
-        }
-        const buffer = context.createBuffer(1, samples.length, handoff.sampleRate);
-        buffer.getChannelData(0).set(samples);
-        samples.fill(0);
-        replaySource = context.createBufferSource();
-        replaySource.buffer = buffer;
-        replaySource.connect(destination);
-        replaySource.onended = () => {
-          replaySource?.disconnect();
-          replaySource = null;
-          connectLive();
-        };
-        replaySource.start();
-      } catch (cause) {
-        connectLive();
-        throw cause;
-      }
+      liveSource.connect(destination);
     },
     destroy: async () => {
       if (destroyed) return;
       destroyed = true;
-      replaySource?.stop();
-      replaySource?.disconnect();
       liveSource.disconnect();
       for (const track of destination.stream.getTracks()) track.stop();
       await context.close();
