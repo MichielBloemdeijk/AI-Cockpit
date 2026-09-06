@@ -1152,6 +1152,8 @@ export interface JarvisRealtimeCallResponse {
   session: JarvisSession | null;
   sdp_answer: string | null;
   rotate_after_seconds: number | null;
+  server_received_at: string;
+  server_responded_at: string;
 }
 
 export interface JarvisFakeProviderEventRequest {

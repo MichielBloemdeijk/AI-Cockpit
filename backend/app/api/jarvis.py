@@ -363,6 +363,7 @@ async def replay_jarvis_log_events(
 async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisRealtimeCallResponse:
     request_id = str(uuid4())
     request_started = time.monotonic()
+    server_received_at = datetime.now(timezone.utc)
     activation_id = None if request.activation_context is None else request.activation_context.activation_id
     trace_id = activation_id or request_id
     jarvis_realtime_telemetry.record({
@@ -380,10 +381,13 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         "detail_json": {"controller_id": request.controller_id, "role": request.role},
     })
     if request.role == "observer":
+        observed_session = _session_view(await jarvis_coordinator.observe())
         return JarvisRealtimeCallResponse(
             role="observer",
             request_id=request_id,
-            session=_session_view(await jarvis_coordinator.observe()),
+            session=observed_session,
+            server_received_at=server_received_at,
+            server_responded_at=datetime.now(timezone.utc),
         )
     state = await jarvis_daily_service.get_state()
     if state.current_log is None:
@@ -409,6 +413,7 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Realtime provider connection failed",
         ) from exc
+    server_responded_at = datetime.now(timezone.utc)
     result = JarvisRealtimeCallResponse(
         role="controller",
         request_id=request_id,
@@ -419,6 +424,8 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
             if request.provider_adapter == "openai"
             else None
         ),
+        server_received_at=server_received_at,
+        server_responded_at=server_responded_at,
     )
     jarvis_realtime_telemetry.record({
         "trace_id": trace_id,

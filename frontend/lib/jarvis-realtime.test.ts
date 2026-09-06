@@ -4,6 +4,7 @@ import type { JarvisRealtimeCallResponse, JarvisSession } from "./api";
 import {
   JarvisRealtimeController,
   encodeJarvisWakeAudio,
+  estimateRealtimeClockAlignment,
   summarizeJarvisRealtimeTrace,
   type JarvisRealtimeDependencies,
   type JarvisRealtimeSnapshot,
@@ -62,6 +63,8 @@ class FakePeer {
   closed = false;
   addedTracks = 0;
   offerCount = 0;
+  inboundBytesReceived = 0;
+  inboundPacketsReceived = 0;
   readonly sender = new FakeSender();
 
   createDataChannel() { return this.channel as unknown as RTCDataChannel; }
@@ -94,6 +97,20 @@ class FakePeer {
       ["remote", { id: "remote", type: "remote-candidate", candidateType: "relay" }],
     ]) as unknown as RTCStatsReport;
   }
+  getReceivers() {
+    return [{
+      track: { kind: "audio" },
+      getStats: async () => new Map([["inbound", {
+        id: "inbound",
+        type: "inbound-rtp",
+        kind: "audio",
+        timestamp: 1_000,
+        bytesReceived: this.inboundBytesReceived,
+        packetsReceived: this.inboundPacketsReceived,
+        totalSamplesReceived: this.inboundBytesReceived / 2,
+      }]]) as unknown as RTCStatsReport,
+    }] as unknown as RTCRtpReceiver[];
+  }
   close() { this.closed = true; }
 }
 
@@ -122,6 +139,8 @@ function response(generation: number, rotateAfterSeconds = 3_300): JarvisRealtim
     session: session(generation),
     sdp_answer: `provider-answer-${generation}`,
     rotate_after_seconds: rotateAfterSeconds,
+    server_received_at: "2026-08-28T00:00:00.100Z",
+    server_responded_at: "2026-08-28T00:00:00.200Z",
   };
 }
 
@@ -159,6 +178,7 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
   const streams: FakeStream[] = [];
   const timers: Array<() => void> = [];
   const telemetryTimers: Array<() => void> = [];
+  const telemetryTimerDelays: number[] = [];
   const createCall = vi.fn().mockResolvedValue(response(1));
   const closeSession = vi.fn().mockResolvedValue(undefined);
   const wait = vi.fn().mockResolvedValue(undefined);
@@ -188,8 +208,9 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
       return timers.length;
     },
     clearTimer: vi.fn(),
-    setTelemetryTimer: (callback) => {
+    setTelemetryTimer: (callback, milliseconds) => {
       telemetryTimers.push(callback);
+      telemetryTimerDelays.push(milliseconds);
       return telemetryTimers.length;
     },
     clearTelemetryTimer: vi.fn(),
@@ -216,6 +237,7 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
     streams,
     timers,
     telemetryTimers,
+    telemetryTimerDelays,
     createCall,
     closeSession,
     wait,
@@ -706,6 +728,87 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
+  it("records first playable media from bounded receiver samples and one turn result", async () => {
+    let now = 1_000;
+    const deps = dependencies({ now: () => now });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.start();
+    controller.recordPlaybackSignal("audio_element_playing");
+
+    now = 1_050;
+    controller.recordClientSignal("local_speech_stopped");
+    now = 1_100;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "input_audio_buffer.speech_stopped", item_id: "user-1" }),
+    } as MessageEvent);
+    now = 1_200;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        item_id: "user-1",
+      }),
+    } as MessageEvent);
+    controller.recordBackendEvent(liveEvent("provider.user_transcript", 1, {
+      timing_ms: { provider_boundary_to_transcript: 100 },
+    }));
+    now = 1_250;
+    controller.recordBackendEvent(liveEvent("response.arbiter.started", 1, {
+      timing_ms: { total_to_provider_submit: 25 },
+    }));
+    now = 1_300;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "response.created", response: { id: "response-media" } }),
+    } as MessageEvent);
+    await vi.waitFor(() => expect(controller.traceSnapshot().filter(
+      (event) => event.kind === "webrtc.receiver_sample",
+    )).toHaveLength(1));
+
+    now = 1_450;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "response.output_audio.delta", response_id: "response-media" }),
+    } as MessageEvent);
+    deps.peers[0].inboundBytesReceived = 512;
+    deps.peers[0].inboundPacketsReceived = 2;
+    now = 1_500;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "output_audio_buffer.started", response_id: "response-media" }),
+    } as MessageEvent);
+    await vi.waitFor(() => expect(controller.traceSnapshot().some(
+      (event) => event.kind === "first_playable_media" && event.response_id === "response-media",
+    )).toBe(true));
+
+    now = 1_600;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "response.done", response: { id: "response-media" } }),
+    } as MessageEvent);
+    const settleIndex = deps.telemetryTimerDelays.lastIndexOf(150);
+    expect(settleIndex).toBeGreaterThanOrEqual(0);
+    deps.telemetryTimers[settleIndex]();
+
+    const results = controller.traceSnapshot().filter((event) => event.kind === "turn.result");
+    expect(results).toHaveLength(1);
+    expect(results[0].response_id).toBe("response-media");
+    expect(results[0].timing_ms).toMatchObject({
+      transcription: 100,
+      arbitration: 50,
+      generation: 200,
+      media_arrival: 200,
+      overall: 450,
+    });
+    expect(JSON.parse(results[0].detail ?? "{}")).toMatchObject({
+      turn: 1,
+      outcome: "complete",
+    });
+
+    const followUpStatsIndex = deps.telemetryTimerDelays.lastIndexOf(100);
+    deps.telemetryTimers[followUpStatsIndex]();
+    await vi.waitFor(() => expect(controller.traceSnapshot().filter(
+      (event) => event.kind === "webrtc.receiver_sample",
+    )).toHaveLength(3));
+    expect(controller.traceSnapshot().filter((event) => event.kind === "turn.result")).toHaveLength(1);
+    await controller.stop();
+  });
+
   it("bulk-uploads a wake utterance before enabling live audio without taking ownership of the wake mic", async () => {
     const deps = dependencies();
     const wakeStream = new FakeStream();
@@ -844,7 +947,7 @@ describe("JarvisRealtimeController", () => {
         timing_ms: { response_created_to_first_audio: 180 },
       }),
       entry("response.output_audio.delta", 1_900, { response_id: "response-1" }),
-      entry("output_audio_buffer.started", 2_000, { response_id: "response-1" }),
+      entry("first_playable_media", 2_000, { response_id: "response-1" }),
     ];
 
     expect(summarizeJarvisRealtimeTrace(entries)).toEqual({
@@ -866,23 +969,30 @@ describe("JarvisRealtimeController", () => {
       turns: [{
         turn: 1,
         kind: "wake",
+        input_item_id: undefined,
+        boundary_monotonic_ms: 1_600,
         response_id: "response-1",
         local_speech_stop_to_provider_stop_ms: 1_200,
         wake_handoff_tail_ms: 1_050,
         provider_stop_to_response_created_ms: 100,
         response_created_to_first_audio_ms: 200,
-        provider_stop_to_playback_started_ms: 400,
-        local_speech_stop_to_playback_started_ms: 1_600,
+        provider_stop_to_first_playable_media_ms: 400,
+        local_speech_stop_to_first_playable_media_ms: 1_600,
         backend_arbiter_ms: 42,
         provider_boundary_to_transcript_ms: 35,
         transcript_to_arbiter_ms: 40,
         arbiter_to_response_created_ms: 20,
         response_create_sent_to_created_ms: 15,
         response_created_to_first_audio_provider_ms: 180,
-        first_audio_to_playback_started_ms: 100,
+        first_audio_to_first_playable_media_ms: 100,
+        response_created_to_first_playable_media_ms: 300,
         wake_audio_upload_ms: undefined,
         wake_commit_ack_ms: undefined,
         local_speech_stop_to_commit_ms: undefined,
+        provider_connection_ms: undefined,
+        transcription_ms: 40,
+        response_arbitration_ms: 40,
+        generation_ms: 220,
         outcome: "complete",
         bottleneck: "endpointing",
         bottleneck_ms: 1_050,
@@ -923,7 +1033,7 @@ describe("JarvisRealtimeController", () => {
       entry("backend.response.arbiter.started", 850, { timing_ms: { total_to_provider_submit: 20 } }),
       entry("response.created", 870, { response_id: "response-1" }),
       entry("response.output_audio.delta", 1_050, { response_id: "response-1" }),
-      entry("output_audio_buffer.started", 1_100, { response_id: "response-1" }),
+      entry("first_playable_media", 1_100, { response_id: "response-1" }),
       entry("realtime_connection_ready", 1_110),
     ]);
 
@@ -963,6 +1073,39 @@ describe("JarvisRealtimeController", () => {
       kind: "wake",
       outcome: "no_arbiter",
       provider_stop_to_response_created_ms: undefined,
+    });
+  });
+
+  it("reports audio that never became playable explicitly", () => {
+    const entry = (kind: string, monotonic_ms: number): JarvisRealtimeTraceEntry => ({
+      kind,
+      monotonic_ms,
+      wall_time: "2026-08-28T00:00:00.000Z",
+    });
+    const summary = summarizeJarvisRealtimeTrace([
+      entry("input_audio_buffer.speech_stopped", 100),
+      entry("backend.provider.user_transcript", 150),
+      entry("backend.response.arbiter.started", 180),
+      { ...entry("response.created", 200), response_id: "response-no-media" },
+      { ...entry("response.output_audio.delta", 250), response_id: "response-no-media" },
+    ]);
+
+    expect(summary.turns[0]).toMatchObject({
+      response_id: "response-no-media",
+      outcome: "no_playable_media",
+    });
+  });
+
+  it("estimates backend clock offset and bounds cross-source timing uncertainty", () => {
+    expect(estimateRealtimeClockAlignment(
+      Date.parse("2026-08-28T00:00:00.000Z"),
+      Date.parse("2026-08-28T00:05:00.040Z"),
+      Date.parse("2026-08-28T00:05:00.060Z"),
+      Date.parse("2026-08-28T00:00:00.120Z"),
+    )).toEqual({
+      offsetMs: 299_990,
+      uncertaintyMs: 50,
+      networkRttMs: 100,
     });
   });
 });

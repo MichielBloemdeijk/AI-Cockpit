@@ -1112,6 +1112,9 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         assert observer.status_code == 200
         assert observer.json()["session"]["id"] == body["session"]["id"]
         assert observer.json()["request_id"]
+        server_received_at = datetime.fromisoformat(observer.json()["server_received_at"])
+        server_responded_at = datetime.fromisoformat(observer.json()["server_responded_at"])
+        assert server_responded_at >= server_received_at
 
         telemetry = await client.post(
             "/api/jarvis/realtime/telemetry",

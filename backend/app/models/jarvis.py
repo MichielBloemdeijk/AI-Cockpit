@@ -124,6 +124,8 @@ class JarvisRealtimeCallResponse(BaseModel):
     session: JarvisSessionView | None = None
     sdp_answer: str | None = None
     rotate_after_seconds: int | None = None
+    server_received_at: datetime
+    server_responded_at: datetime
 
 
 class JarvisFakeProviderEventRequest(BaseModel):

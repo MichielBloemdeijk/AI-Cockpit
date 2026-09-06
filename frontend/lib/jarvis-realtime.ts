@@ -83,25 +83,32 @@ export interface JarvisRealtimeConnectionTiming {
 export interface JarvisRealtimeTurnTiming {
   turn: number;
   kind: "wake" | "follow_up";
+  input_item_id?: string;
+  boundary_monotonic_ms: number;
   response_id?: string;
   local_speech_stop_to_provider_stop_ms?: number;
   wake_handoff_tail_ms?: number;
   provider_stop_to_response_created_ms?: number;
   response_created_to_first_audio_ms?: number;
-  provider_stop_to_playback_started_ms?: number;
-  local_speech_stop_to_playback_started_ms?: number;
+  provider_stop_to_first_playable_media_ms?: number;
+  local_speech_stop_to_first_playable_media_ms?: number;
   backend_arbiter_ms?: number;
   provider_boundary_to_transcript_ms?: number;
   transcript_to_arbiter_ms?: number;
   arbiter_to_response_created_ms?: number;
   response_create_sent_to_created_ms?: number;
   response_created_to_first_audio_provider_ms?: number;
-  first_audio_to_playback_started_ms?: number;
+  first_audio_to_first_playable_media_ms?: number;
+  response_created_to_first_playable_media_ms?: number;
   wake_audio_upload_ms?: number;
   wake_commit_ack_ms?: number;
   local_speech_stop_to_commit_ms?: number;
-  outcome?: "complete" | "no_transcript" | "no_arbiter" | "no_response" | "no_audio" | "no_playback";
-  bottleneck?: "endpointing" | "provider_connection" | "audio_handoff" | "transcription" | "response_arbitration" | "generation" | "playback";
+  provider_connection_ms?: number;
+  transcription_ms?: number;
+  response_arbitration_ms?: number;
+  generation_ms?: number;
+  outcome?: "complete" | "no_transcript" | "no_arbiter" | "no_response" | "no_audio" | "no_playable_media";
+  bottleneck?: "endpointing" | "provider_connection" | "audio_handoff" | "transcription" | "response_arbitration" | "generation" | "media_arrival";
   bottleneck_ms?: number;
 }
 
@@ -126,6 +133,9 @@ interface BrowserConnection {
   mutedResponseId: string | null;
   tracedAudioDeltaResponses: Set<string>;
   wakeCommitWaiter: WakeCommitWaiter | null;
+  receiverStatsBaseline: ReceiverAudioSnapshot | null;
+  receiverStatsChain: Promise<void>;
+  receiverStatsTimer: number | null;
 }
 
 interface JarvisRealtimeHandoffTransport {
@@ -164,7 +174,22 @@ interface BackendReadinessObservation {
   sequence: number;
   serverCreatedAt: string;
   receivedMonotonic: number;
+  receivedWallTimeMs: number;
   uncalibratedDeliveryMs?: number;
+}
+
+interface RealtimeClockAlignment {
+  offsetMs: number;
+  uncertaintyMs: number;
+  networkRttMs: number;
+}
+
+interface ReceiverAudioSnapshot {
+  responseId: string;
+  bytesReceived: number;
+  packetsReceived?: number;
+  totalSamplesReceived?: number;
+  timestamp?: number;
 }
 
 interface JarvisRealtimeConnectionInput {
@@ -194,6 +219,7 @@ interface ConnectionAttemptTracker {
   timingMs: Partial<Record<ConnectionAttemptStage, number>>;
   session: JarvisSession | null;
   wakeAudioRetained: boolean;
+  clockAlignment: RealtimeClockAlignment | null;
 }
 
 interface ConnectionTransportSnapshot {
@@ -255,6 +281,8 @@ const DATA_CHANNEL_OPEN_TIMEOUT_MS = 10_000;
 const WAKE_COMMIT_TIMEOUT_MS = 3_000;
 const TELEMETRY_AFTER_AUDIO_DELAY_MS = 1_000;
 const TELEMETRY_MISSING_RESPONSE_DELAY_MS = 8_000;
+const RECEIVER_STATS_FOLLOW_UP_MS = 100;
+const TURN_RESULT_SETTLE_MS = 150;
 const LIVE_STREAM_ERROR_COALESCE_MS = 30_000;
 const WAKE_PCM_SAMPLE_RATE = 24_000 as const;
 const WAKE_PCM_CHUNK_BYTES = 24_000;
@@ -325,11 +353,17 @@ export class JarvisRealtimeController {
   private telemetrySendPromise: Promise<void> | null = null;
   private telemetryFlushTimer: number | null = null;
   private readonly backendReadiness = new Map<string, BackendReadinessObservation>();
+  private readonly clockAlignments = new Map<string, RealtimeClockAlignment>();
   private readonly backendReadyWaiters = new Map<string, BackendReadyWaiter>();
   private lastBackendReadiness: BackendReadinessObservation | null = null;
   private liveStreamState: "idle" | "open" | "error" = "idle";
   private liveStreamErrorCount = 0;
   private lastLiveStreamErrorMonotonic = Number.NEGATIVE_INFINITY;
+  private playbackPlaying = false;
+  private playbackMuted = false;
+  private readonly reportedTurns = new Set<string>();
+  private readonly turnResultTimers = new Set<number>();
+  private lastTurnBoundaryMonotonic = Number.NEGATIVE_INFINITY;
   private snapshot: JarvisRealtimeSnapshot = {
     status: "idle",
     attempt: 0,
@@ -358,6 +392,15 @@ export class JarvisRealtimeController {
   }
 
   recordPlaybackSignal(kind: string, detail?: string): void {
+    if (kind === "audio_element_playing" || kind === "audio_play_resolved") {
+      this.playbackPlaying = true;
+    } else if (kind === "audio_element_paused") {
+      this.playbackPlaying = false;
+    } else if (kind === "audio_element_muted") {
+      this.playbackMuted = true;
+    } else if (kind === "audio_element_unmuted") {
+      this.playbackMuted = false;
+    }
     this.recordTrace(kind, { detail });
   }
 
@@ -381,6 +424,7 @@ export class JarvisRealtimeController {
         const reason = typeof payload.reason === "string" ? payload.reason : undefined;
         const receivedWall = Date.parse(this.dependencies.wallNow());
         const serverCreated = Date.parse(event.created_at);
+        const clockAlignment = this.clockAlignments.get(key);
         const observation: BackendReadinessObservation = {
           ready: event.event_type === "provider.ready",
           ...(event.event_type === "provider.ready"
@@ -392,6 +436,7 @@ export class JarvisRealtimeController {
           sequence: event.sequence,
           serverCreatedAt: event.created_at,
           receivedMonotonic: this.dependencies.now(),
+          receivedWallTimeMs: receivedWall,
           ...(Number.isFinite(receivedWall) && Number.isFinite(serverCreated)
             ? { uncalibratedDeliveryMs: Math.max(0, receivedWall - serverCreated) }
             : {}),
@@ -404,7 +449,12 @@ export class JarvisRealtimeController {
           server_time: event.created_at,
           timing_ms: observation.uncalibratedDeliveryMs === undefined
             ? undefined
-            : { uncalibrated_delivery: observation.uncalibratedDeliveryMs },
+            : {
+                uncalibrated_delivery: observation.uncalibratedDeliveryMs,
+                ...(clockAlignment
+                  ? this.backendEventDeliveryTiming(observation, clockAlignment)
+                  : {}),
+              },
           detail: JSON.stringify({
             event_type: event.event_type,
             observed_session_id: sessionId,
@@ -575,6 +625,7 @@ export class JarvisRealtimeController {
     this.cancelDisconnect();
     this.cancelBackendReadyWaiters();
     this.cancelTelemetryFlush();
+    this.cancelTurnResultTimers();
     const preparation = this.preparation;
     this.preparation = null;
     if (preparation) this.disposePreparation(preparation);
@@ -582,9 +633,12 @@ export class JarvisRealtimeController {
     this.active = null;
     this.connectingSession = null;
     if (current) await this.disposeConnection(current, true);
+    this.recordUnreportedTurnResults();
     await this.flushTelemetry(true);
     this.options.onRemoteStream?.(null);
     this.options.onPlaybackMuted?.(false);
+    this.playbackPlaying = false;
+    this.playbackMuted = false;
     this.publish({ status: "idle", attempt: 0, session: null, error: null });
   }
 
@@ -684,6 +738,7 @@ export class JarvisRealtimeController {
       timingMs: {},
       session: null,
       wakeAudioRetained: Boolean(input?.wakeAudio),
+      clockAlignment: null,
     };
     let localStream: MediaStream | null = null;
     let ownsLocalStream = false;
@@ -764,6 +819,7 @@ export class JarvisRealtimeController {
       if (!sdpOffer) throw new Error("Browser did not produce an SDP offer");
       this.enterConnectionStage(tracker, "backend_call");
       this.recordTrace("realtime_backend_call_started", { attempt });
+      const clientSentAtMs = Date.parse(this.dependencies.wallNow());
       const response = await this.dependencies.createCall(
         this.options.controllerId,
         "controller",
@@ -772,9 +828,22 @@ export class JarvisRealtimeController {
         undefined,
         input?.activationContext,
       );
+      const clientReceivedAtMs = Date.parse(this.dependencies.wallNow());
       this.recordTrace("realtime_backend_call_completed", { attempt });
       providerSession = response.session;
       tracker.session = providerSession;
+      tracker.clockAlignment = estimateRealtimeClockAlignment(
+        clientSentAtMs,
+        Date.parse(response.server_received_at),
+        Date.parse(response.server_responded_at),
+        clientReceivedAtMs,
+      );
+      if (providerSession && tracker.clockAlignment) {
+        this.setClockAlignment(
+          this.sessionKey(providerSession.id, providerSession.generation),
+          tracker.clockAlignment,
+        );
+      }
       this.connectingSession = providerSession;
       if (!providerSession || !response.sdp_answer) {
         throw new Error("Backend did not return a complete Realtime answer");
@@ -797,6 +866,9 @@ export class JarvisRealtimeController {
         mutedResponseId: null,
         tracedAudioDeltaResponses: new Set(),
         wakeCommitWaiter: null,
+        receiverStatsBaseline: null,
+        receiverStatsChain: Promise.resolve(),
+        receiverStatsTimer: null,
       };
       this.enterConnectionStage(tracker, "backend_control");
       await this.waitForBackendControl(providerSession, operation, attempt);
@@ -847,6 +919,11 @@ export class JarvisRealtimeController {
           session_id: providerSession?.id ?? null,
           generation: providerSession?.generation ?? null,
           transport: this.connectionTransportSnapshot(peer, channel, localStream, tracker),
+          clock: tracker.clockAlignment === null ? null : {
+            offset_ms: Math.round(tracker.clockAlignment.offsetMs * 10) / 10,
+            uncertainty_ms: Math.round(tracker.clockAlignment.uncertaintyMs * 10) / 10,
+            network_rtt_ms: Math.round(tracker.clockAlignment.networkRttMs * 10) / 10,
+          },
         }),
       });
       this.enterConnectionStage(tracker, "cleanup");
@@ -997,6 +1074,7 @@ export class JarvisRealtimeController {
     source: "response" | "cached_event" | "live_event",
     observation?: BackendReadinessObservation,
   ): void {
+    const alignment = this.clockAlignments.get(this.sessionKey(session.id, session.generation));
     this.recordTrace("realtime_backend_control_ready", {
       attempt,
       sequence: observation?.sequence,
@@ -1006,6 +1084,9 @@ export class JarvisRealtimeController {
         ...(observation?.uncalibratedDeliveryMs === undefined
           ? {}
           : { uncalibrated_delivery: observation.uncalibratedDeliveryMs }),
+        ...(observation && alignment
+          ? this.backendEventDeliveryTiming(observation, alignment)
+          : {}),
       },
       detail: JSON.stringify({
         source,
@@ -1044,6 +1125,32 @@ export class JarvisRealtimeController {
 
   private sessionKey(sessionId: string, generation: number): string {
     return `${sessionId}:${generation}`;
+  }
+
+  private setClockAlignment(key: string, alignment: RealtimeClockAlignment): void {
+    this.clockAlignments.set(key, alignment);
+    while (this.clockAlignments.size > 32) {
+      const oldest = this.clockAlignments.keys().next().value;
+      if (typeof oldest !== "string") break;
+      this.clockAlignments.delete(oldest);
+    }
+  }
+
+  private backendEventDeliveryTiming(
+    observation: BackendReadinessObservation,
+    alignment: RealtimeClockAlignment,
+  ): Record<string, number> {
+    const serverCreatedAtMs = Date.parse(observation.serverCreatedAt);
+    if (!Number.isFinite(serverCreatedAtMs) || !Number.isFinite(observation.receivedWallTimeMs)) {
+      return { clock_uncertainty: alignment.uncertaintyMs };
+    }
+    return {
+      calibrated_delivery: Math.max(
+        0,
+        observation.receivedWallTimeMs - (serverCreatedAtMs - alignment.offsetMs),
+      ),
+      clock_uncertainty: alignment.uncertaintyMs,
+    };
   }
 
   private async waitForDataChannelOpen(
@@ -1200,6 +1307,10 @@ export class JarvisRealtimeController {
 
   private async disposeConnection(connection: BrowserConnection, notifyBackend: boolean): Promise<void> {
     if (connection.bargeInTimer !== null) this.dependencies.clearTimer(connection.bargeInTimer);
+    if (connection.receiverStatsTimer !== null) {
+      this.dependencies.clearTelemetryTimer(connection.receiverStatsTimer);
+      connection.receiverStatsTimer = null;
+    }
     connection.bargeInDetector?.destroy();
     connection.channel.close();
     connection.peer.ontrack = null;
@@ -1247,6 +1358,10 @@ export class JarvisRealtimeController {
     }
     if (!connection) return;
 
+    if (type === "input_audio_buffer.speech_stopped" || type === "input_audio_buffer.committed") {
+      this.scheduleTurnResult(TELEMETRY_MISSING_RESPONSE_DELAY_MS, true);
+    }
+
     if (type === "input_audio_buffer.committed" && connection.wakeCommitWaiter) {
       connection.wakeCommitWaiter.resolve(itemId);
       return;
@@ -1264,6 +1379,14 @@ export class JarvisRealtimeController {
     if (type === "response.created") {
       connection.activeResponseId = responseId ?? connection.activeResponseId;
       connection.cancellingResponseId = null;
+      if (connection.activeResponseId) {
+        this.queueReceiverStatsSample(
+          connection,
+          connection.activeResponseId,
+          "response_created",
+          true,
+        );
+      }
       return;
     }
 
@@ -1275,7 +1398,17 @@ export class JarvisRealtimeController {
         this.setPlaybackMuted(connection, false);
       }
       connection.activeResponseId = responseId ?? connection.activeResponseId;
-      void this.captureReceiverStats(connection, "output_started");
+      if (type === "output_audio_buffer.started" && connection.activeResponseId) {
+        const activeResponseId = connection.activeResponseId;
+        this.queueReceiverStatsSample(connection, activeResponseId, "output_started");
+        if (connection.receiverStatsTimer !== null) {
+          this.dependencies.clearTelemetryTimer(connection.receiverStatsTimer);
+        }
+        connection.receiverStatsTimer = this.dependencies.setTelemetryTimer(() => {
+          connection.receiverStatsTimer = null;
+          this.queueReceiverStatsSample(connection, activeResponseId, "output_started_plus_100ms");
+        }, RECEIVER_STATS_FOLLOW_UP_MS);
+      }
       return;
     }
     if (type === "input_audio_buffer.speech_started" && connection.activeResponseId) {
@@ -1284,6 +1417,7 @@ export class JarvisRealtimeController {
       return;
     }
     if (type === "response.done" && (!responseId || responseId === connection.activeResponseId)) {
+      this.scheduleTurnResult(TURN_RESULT_SETTLE_MS);
       connection.activeResponseId = null;
       connection.cancellingResponseId = null;
       this.setPlaybackMuted(connection, false);
@@ -1295,7 +1429,6 @@ export class JarvisRealtimeController {
     ) {
       connection.activeResponseId = null;
       connection.cancellingResponseId = null;
-      void this.captureReceiverStats(connection, type);
       this.setPlaybackMuted(connection, false);
     }
   }
@@ -1310,7 +1443,6 @@ export class JarvisRealtimeController {
     });
     if (!connection.activeResponseId) return;
     this.setPlaybackMuted(connection, true);
-    void this.captureReceiverStats(connection, "local_speech_started");
     if (connection.bargeInTimer !== null) return;
     connection.bargeInTimer = this.dependencies.setTimer(() => {
       connection.bargeInTimer = null;
@@ -1364,6 +1496,7 @@ export class JarvisRealtimeController {
     this.recordTrace(muted ? "local_output_muted" : "local_output_unmuted", {
       response_id: connection.activeResponseId ?? undefined,
     });
+    this.playbackMuted = muted;
     this.options.onPlaybackMuted?.(muted);
   }
 
@@ -1455,31 +1588,134 @@ export class JarvisRealtimeController {
     this.scheduleTelemetryFlush(TELEMETRY_AFTER_AUDIO_DELAY_MS);
   }
 
-  private async captureReceiverStats(connection: BrowserConnection, reason: string): Promise<void> {
+  private scheduleTurnResult(milliseconds: number, boundary = false): void {
+    if (boundary) {
+      const now = this.dependencies.now();
+      if (now - this.lastTurnBoundaryMonotonic <= 250) return;
+      this.lastTurnBoundaryMonotonic = now;
+    }
+    let timer = 0;
+    timer = this.dependencies.setTelemetryTimer(() => {
+      this.turnResultTimers.delete(timer);
+      this.recordUnreportedTurnResults();
+      this.scheduleTelemetryFlush(0);
+    }, Math.max(0, milliseconds));
+    this.turnResultTimers.add(timer);
+  }
+
+  private cancelTurnResultTimers(): void {
+    for (const timer of this.turnResultTimers) this.dependencies.clearTelemetryTimer(timer);
+    this.turnResultTimers.clear();
+  }
+
+  private recordUnreportedTurnResults(): void {
+    const turns = summarizeJarvisRealtimeTrace(this.trace).turns;
+    for (const turn of turns) {
+      const key = turn.input_item_id
+        ? `item:${turn.input_item_id}`
+        : `boundary:${turn.boundary_monotonic_ms}`;
+      if (this.reportedTurns.has(key)) continue;
+      this.reportedTurns.add(key);
+      const timingMs = Object.fromEntries(
+        Object.entries({
+          endpointing: turn.wake_handoff_tail_ms ?? turn.local_speech_stop_to_provider_stop_ms,
+          connection: turn.provider_connection_ms,
+          upload: turn.wake_audio_upload_ms,
+          transcription: turn.transcription_ms,
+          arbitration: turn.response_arbitration_ms,
+          generation: turn.generation_ms,
+          media_arrival: turn.response_created_to_first_playable_media_ms,
+          overall: turn.local_speech_stop_to_first_playable_media_ms,
+        }).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
+      );
+      this.recordTrace("turn.result", {
+        response_id: turn.response_id,
+        timing_ms: timingMs,
+        detail: JSON.stringify({
+          turn: turn.turn,
+          kind: turn.kind,
+          input_item_id: turn.input_item_id ?? null,
+          outcome: turn.outcome,
+          bottleneck: turn.bottleneck ?? null,
+          bottleneck_ms: turn.bottleneck_ms ?? null,
+        }),
+      });
+    }
+  }
+
+  private queueReceiverStatsSample(
+    connection: BrowserConnection,
+    responseId: string,
+    reason: string,
+    baseline = false,
+  ): void {
+    connection.receiverStatsChain = connection.receiverStatsChain
+      .then(() => this.captureReceiverStats(connection, responseId, reason, baseline))
+      .catch(() => undefined);
+  }
+
+  private async captureReceiverStats(
+    connection: BrowserConnection,
+    responseId: string,
+    reason: string,
+    baseline: boolean,
+  ): Promise<void> {
     if (typeof connection.peer.getReceivers !== "function") return;
     const receiver = connection.peer.getReceivers().find((item) => item.track?.kind === "audio");
     if (!receiver || typeof receiver.getStats !== "function") return;
     try {
       const reports = await receiver.getStats();
+      const snapshots: ReceiverAudioSnapshot[] = [];
       reports.forEach((report) => {
         if (report.type !== "inbound-rtp" || report.kind !== "audio") return;
         const values = report as RTCInboundRtpStreamStats & {
-          totalSamplesDuration?: number;
-          jitterBufferEmittedCount?: number;
+          totalSamplesReceived?: number;
         };
-        this.recordTrace("webrtc_inbound_audio", {
-          response_id: connection.activeResponseId ?? undefined,
-          detail: JSON.stringify({
-            reason,
-            timestamp: values.timestamp,
-            jitter: values.jitter,
-            jitter_buffer_delay: values.jitterBufferDelay,
-            jitter_buffer_emitted_count: values.jitterBufferEmittedCount,
-            total_samples_duration: values.totalSamplesDuration,
-            concealed_samples: values.concealedSamples,
-          }),
+        snapshots.push({
+          responseId,
+          bytesReceived: values.bytesReceived ?? 0,
+          ...(typeof values.packetsReceived === "number"
+            ? { packetsReceived: values.packetsReceived }
+            : {}),
+          ...(typeof values.totalSamplesReceived === "number"
+            ? { totalSamplesReceived: values.totalSamplesReceived }
+            : {}),
+          ...(typeof values.timestamp === "number" ? { timestamp: values.timestamp } : {}),
         });
       });
+      const snapshot = snapshots[0];
+      if (!snapshot) return;
+      const previous = connection.receiverStatsBaseline;
+      this.recordTrace("webrtc.receiver_sample", {
+        response_id: responseId,
+        detail: JSON.stringify({
+          reason,
+          bytes_received: snapshot.bytesReceived,
+          packets_received: snapshot.packetsReceived ?? null,
+          total_samples_received: snapshot.totalSamplesReceived ?? null,
+          playing: this.playbackPlaying,
+          muted: this.playbackMuted,
+        }),
+      });
+      if (
+        !baseline
+        && previous?.responseId === responseId
+        && snapshot.bytesReceived > previous.bytesReceived
+        && this.playbackPlaying
+        && !this.playbackMuted
+        && !this.trace.some((entry) => (
+          entry.kind === "first_playable_media" && entry.response_id === responseId
+        ))
+      ) {
+        this.recordTrace("first_playable_media", {
+          response_id: responseId,
+          detail: JSON.stringify({
+            proxy: "inbound_audio_bytes_increased_while_playing",
+            sample: reason,
+          }),
+        });
+      }
+      connection.receiverStatsBaseline = snapshot;
     } catch (cause) {
       this.recordTrace("webrtc_stats_unavailable", { detail: this.errorName(cause) });
     }
@@ -1548,6 +1784,11 @@ export class JarvisRealtimeController {
         generation: tracker.session?.generation ?? null,
         transport,
         network,
+        clock: tracker.clockAlignment === null ? null : {
+          offset_ms: Math.round(tracker.clockAlignment.offsetMs * 10) / 10,
+          uncertainty_ms: Math.round(tracker.clockAlignment.uncertaintyMs * 10) / 10,
+          network_rtt_ms: Math.round(tracker.clockAlignment.networkRttMs * 10) / 10,
+        },
       }),
     });
   }
@@ -1628,6 +1869,30 @@ export class JarvisRealtimeController {
       .toLowerCase();
     return `${stage}_${name || "error"}`;
   }
+}
+
+export function estimateRealtimeClockAlignment(
+  clientSentAtMs: number,
+  serverReceivedAtMs: number,
+  serverRespondedAtMs: number,
+  clientReceivedAtMs: number,
+): RealtimeClockAlignment | null {
+  if (![clientSentAtMs, serverReceivedAtMs, serverRespondedAtMs, clientReceivedAtMs].every(Number.isFinite)) {
+    return null;
+  }
+  if (clientReceivedAtMs < clientSentAtMs || serverRespondedAtMs < serverReceivedAtMs) return null;
+  const networkRttMs = Math.max(
+    0,
+    (clientReceivedAtMs - clientSentAtMs) - (serverRespondedAtMs - serverReceivedAtMs),
+  );
+  return {
+    offsetMs: (
+      (serverReceivedAtMs - clientSentAtMs)
+      + (serverRespondedAtMs - clientReceivedAtMs)
+    ) / 2,
+    uncertaintyMs: networkRttMs / 2,
+    networkRttMs,
+  };
 }
 
 function elapsedMilliseconds(
@@ -1774,9 +2039,9 @@ export function summarizeJarvisRealtimeTrace(
       responseCreated ? entries.indexOf(responseCreated) + 1 : stopIndex + 1,
       segmentEnd,
     );
-    const playbackStarted = firstTrace(
+    const firstPlayableMedia = firstTrace(
       entries,
-      ["output_audio_buffer.started"],
+      ["first_playable_media"],
       responseCreated ? entries.indexOf(responseCreated) + 1 : stopIndex + 1,
       segmentEnd,
     );
@@ -1804,7 +2069,7 @@ export function summarizeJarvisRealtimeTrace(
     const transcriptionMs = elapsedMilliseconds(providerStop, transcript);
     const responseArbitrationMs = elapsedMilliseconds(transcript, arbiter);
     const generationMs = elapsedMilliseconds(arbiter ?? responseCreated, firstAudio);
-    const playbackMs = elapsedMilliseconds(firstAudio, playbackStarted);
+    const mediaArrivalMs = elapsedMilliseconds(firstAudio ?? responseCreated, firstPlayableMedia);
     const bottleneck = [
       { label: "endpointing" as const, milliseconds: endpointMs },
       { label: "provider_connection" as const, milliseconds: providerConnectionMs },
@@ -1812,40 +2077,47 @@ export function summarizeJarvisRealtimeTrace(
       { label: "transcription" as const, milliseconds: transcriptionMs },
       { label: "response_arbitration" as const, milliseconds: responseArbitrationMs },
       { label: "generation" as const, milliseconds: generationMs },
-      { label: "playback" as const, milliseconds: playbackMs },
+      { label: "media_arrival" as const, milliseconds: mediaArrivalMs },
     ].filter((stage): stage is { label: JarvisRealtimeTurnTiming["bottleneck"] & string; milliseconds: number } => (
       stage.milliseconds !== undefined
     )).sort((left, right) => right.milliseconds - left.milliseconds)[0];
     return {
       turn: turnIndex + 1,
       kind: wakeDetected ? "wake" : "follow_up",
+      input_item_id: providerStop.item_id,
+      boundary_monotonic_ms: providerStop.monotonic_ms,
       response_id: responseId,
       local_speech_stop_to_provider_stop_ms: elapsedMilliseconds(localStop, providerStop),
       wake_handoff_tail_ms: elapsedMilliseconds(localStop, utteranceReady),
       provider_stop_to_response_created_ms: elapsedMilliseconds(providerStop, responseCreated),
       response_created_to_first_audio_ms: elapsedMilliseconds(responseCreated, firstAudio),
-      provider_stop_to_playback_started_ms: elapsedMilliseconds(providerStop, playbackStarted),
-      local_speech_stop_to_playback_started_ms: elapsedMilliseconds(localStop, playbackStarted),
+      provider_stop_to_first_playable_media_ms: elapsedMilliseconds(providerStop, firstPlayableMedia),
+      local_speech_stop_to_first_playable_media_ms: elapsedMilliseconds(localStop, firstPlayableMedia),
       backend_arbiter_ms: arbiter?.timing_ms?.total_to_provider_submit,
       provider_boundary_to_transcript_ms: backendTranscript?.timing_ms?.provider_boundary_to_transcript,
       transcript_to_arbiter_ms: elapsedMilliseconds(transcript, arbiter),
       arbiter_to_response_created_ms: elapsedMilliseconds(arbiter, responseCreated),
       response_create_sent_to_created_ms: providerGenerating?.timing_ms?.response_create_sent_to_created,
       response_created_to_first_audio_provider_ms: providerSpeaking?.timing_ms?.response_created_to_first_audio,
-      first_audio_to_playback_started_ms: elapsedMilliseconds(firstAudio, playbackStarted),
+      first_audio_to_first_playable_media_ms: elapsedMilliseconds(firstAudio, firstPlayableMedia),
+      response_created_to_first_playable_media_ms: elapsedMilliseconds(responseCreated, firstPlayableMedia),
       wake_audio_upload_ms: elapsedMilliseconds(uploadStarted, uploadCompleted),
       wake_commit_ack_ms: elapsedMilliseconds(commitSent, commitAcknowledged),
       local_speech_stop_to_commit_ms: elapsedMilliseconds(localStop, commitSent),
+      provider_connection_ms: providerConnectionMs,
+      transcription_ms: transcriptionMs,
+      response_arbitration_ms: responseArbitrationMs,
+      generation_ms: generationMs,
       outcome: !transcript
         ? "no_transcript"
         : !arbiter
           ? "no_arbiter"
           : !responseCreated
             ? "no_response"
-            : !firstAudio
+            : !firstAudio && !firstPlayableMedia
               ? "no_audio"
-              : !playbackStarted
-                ? "no_playback"
+              : !firstPlayableMedia
+                ? "no_playable_media"
                 : "complete",
       bottleneck: bottleneck?.label,
       bottleneck_ms: bottleneck?.milliseconds,
