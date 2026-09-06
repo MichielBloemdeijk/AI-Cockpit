@@ -12,6 +12,9 @@ import {
 
 class FakeTrack {
   stopped = false;
+  enabled = true;
+  muted = false;
+  readyState: MediaStreamTrackState = "live";
   stop() { this.stopped = true; }
 }
 
@@ -50,6 +53,10 @@ class FakePeer {
   localDescription: RTCSessionDescription | null = null;
   remoteDescription: RTCSessionDescriptionInit | null = null;
   connectionState: RTCPeerConnectionState = "new";
+  iceConnectionState: RTCIceConnectionState = "new";
+  iceGatheringState: RTCIceGatheringState = "complete";
+  signalingState: RTCSignalingState = "stable";
+  sctp = { state: "connected" };
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   closed = false;
@@ -68,6 +75,24 @@ class FakePeer {
   }
   async setRemoteDescription(description: RTCSessionDescriptionInit) {
     this.remoteDescription = description;
+  }
+  async getStats() {
+    return new Map([
+      ["transport", { id: "transport", type: "transport", selectedCandidatePairId: "pair" }],
+      ["pair", {
+        id: "pair",
+        type: "candidate-pair",
+        selected: true,
+        nominated: true,
+        localCandidateId: "local",
+        remoteCandidateId: "remote",
+        currentRoundTripTime: 0.012,
+        bytesSent: 120,
+        bytesReceived: 340,
+      }],
+      ["local", { id: "local", type: "local-candidate", candidateType: "host" }],
+      ["remote", { id: "remote", type: "remote-candidate", candidateType: "relay" }],
+    ]) as unknown as RTCStatsReport;
   }
   close() { this.closed = true; }
 }
@@ -231,6 +256,55 @@ describe("JarvisRealtimeController", () => {
     expect(deps.detector.destroy).toHaveBeenCalledOnce();
     expect(deps.closeSession).toHaveBeenCalledWith("session-1", 1);
     expect(controller.current().status).toBe("idle");
+  });
+
+  it("records one sanitized result with transport and selected-candidate statistics", async () => {
+    const deps = dependencies();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start();
+    await vi.waitFor(() => expect(controller.traceSnapshot().some(
+      (event) => event.kind === "connection.attempt.succeeded",
+    )).toBe(true));
+
+    const result = controller.traceSnapshot().find(
+      (event) => event.kind === "connection.attempt.succeeded",
+    );
+    expect(result?.attempt).toBe(1);
+    expect(result?.timing_ms).toMatchObject({
+      media: 0,
+      offer: 0,
+      backend_call: 0,
+      remote_description: 0,
+      backend_control: 0,
+      microphone_activation: 0,
+      total: 0,
+    });
+    expect(JSON.parse(result?.detail ?? "{}")).toMatchObject({
+      result: "succeeded",
+      session_id: "session-1",
+      generation: 1,
+      transport: {
+        peer: "new",
+        ice: "new",
+        ice_gathering: "complete",
+        signaling: "stable",
+        sctp: "connected",
+        data_channel: "open",
+        microphone_enabled: true,
+        microphone_muted: false,
+        microphone_ready_state: "live",
+        wake_audio_retained: false,
+      },
+      network: {
+        local_candidate_type: "host",
+        remote_candidate_type: "relay",
+        rtt_ms: 12,
+        bytes_sent: 120,
+        bytes_received: 340,
+      },
+    });
+    await controller.stop();
   });
 
   it("prepares the local WebRTC offer while armed and reuses it after wake", async () => {
@@ -398,6 +472,24 @@ describe("JarvisRealtimeController", () => {
     expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
     expect(deps.handoffTransports[0].destroy).toHaveBeenCalledOnce();
     expect(deps.handoffTransports[1].connectLive).toHaveBeenCalledOnce();
+    const failed = controller.traceSnapshot().filter(
+      (event) => event.kind === "connection.attempt.failed" && event.attempt === 1,
+    );
+    const cleanup = controller.traceSnapshot().filter(
+      (event) => event.kind === "connection.attempt.cleanup" && event.attempt === 1,
+    );
+    expect(failed).toHaveLength(1);
+    expect(cleanup).toHaveLength(1);
+    expect(failed[0].timing_ms).toHaveProperty("backend_control");
+    expect(JSON.parse(failed[0].detail ?? "{}")).toMatchObject({
+      failed_stage: "backend_control",
+      error_code: "backend_control_unavailable",
+      session_id: "session-1",
+      generation: 1,
+      transport: { wake_audio_retained: false },
+    });
+    expect(failed[0].detail).not.toContain("sideband unavailable");
+    expect(cleanup[0].timing_ms).toHaveProperty("cleanup");
     await controller.stop();
   });
 
@@ -700,6 +792,14 @@ describe("JarvisRealtimeController", () => {
       (message) => JSON.parse(message).type === "input_audio_buffer.append",
     )).toHaveLength(1);
     expect([...samples]).toEqual([0, 0, 0]);
+    const failure = controller.traceSnapshot().find(
+      (event) => event.kind === "connection.attempt.failed" && event.attempt === 1,
+    );
+    const success = controller.traceSnapshot().find(
+      (event) => event.kind === "connection.attempt.succeeded" && event.attempt === 2,
+    );
+    expect(JSON.parse(failure?.detail ?? "{}").transport.wake_audio_retained).toBe(true);
+    expect(JSON.parse(success?.detail ?? "{}").transport.wake_audio_retained).toBe(false);
     await controller.stop();
   });
 

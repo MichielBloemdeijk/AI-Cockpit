@@ -174,6 +174,49 @@ interface JarvisRealtimeConnectionInput {
   activationContext?: JarvisRealtimeActivationContext;
 }
 
+type ConnectionAttemptStage =
+  | "media"
+  | "offer"
+  | "backend_call"
+  | "remote_description"
+  | "backend_control"
+  | "data_channel"
+  | "wake_upload"
+  | "commit"
+  | "microphone_activation"
+  | "cleanup";
+
+interface ConnectionAttemptTracker {
+  attempt: number;
+  startedMonotonic: number;
+  stageStartedMonotonic: number;
+  stage: ConnectionAttemptStage;
+  timingMs: Partial<Record<ConnectionAttemptStage, number>>;
+  session: JarvisSession | null;
+  wakeAudioRetained: boolean;
+}
+
+interface ConnectionTransportSnapshot {
+  peer: string | null;
+  ice: string | null;
+  ice_gathering: string | null;
+  signaling: string | null;
+  sctp: string | null;
+  data_channel: string | null;
+  microphone_enabled: boolean | null;
+  microphone_muted: boolean | null;
+  microphone_ready_state: string | null;
+  wake_audio_retained: boolean;
+}
+
+interface ConnectionNetworkSnapshot {
+  local_candidate_type?: string;
+  remote_candidate_type?: string;
+  rtt_ms?: number;
+  bytes_sent?: number;
+  bytes_received?: number;
+}
+
 interface BrowserPreparation {
   peer: RTCPeerConnection;
   channel: RTCDataChannel;
@@ -632,22 +675,37 @@ export class JarvisRealtimeController {
     input?: JarvisRealtimeConnectionInput,
     attempt = 1,
   ): Promise<BrowserConnection> {
-    const mediaStarted = this.dependencies.now();
-    const localStream = input?.localStream ?? await this.dependencies.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-    this.recordTrace("realtime_local_stream_ready", {
+    const started = this.dependencies.now();
+    const tracker: ConnectionAttemptTracker = {
       attempt,
-      detail: `wait_ms:${Math.round(this.dependencies.now() - mediaStarted)}`,
-    });
-    const ownsLocalStream = input?.ownsLocalStream ?? true;
-    const prepared = this.takePreparation(localStream);
-    const peer = prepared?.peer ?? this.dependencies.createPeer();
-    const channel = prepared?.channel ?? peer.createDataChannel("oai-events");
+      startedMonotonic: started,
+      stageStartedMonotonic: started,
+      stage: "media",
+      timingMs: {},
+      session: null,
+      wakeAudioRetained: Boolean(input?.wakeAudio),
+    };
+    let localStream: MediaStream | null = null;
+    let ownsLocalStream = false;
+    let prepared: BrowserPreparation | null = null;
+    let peer: RTCPeerConnection | null = null;
+    let channel: RTCDataChannel | null = null;
     let providerSession: JarvisSession | null = null;
     let connection: BrowserConnection | null = null;
     let handoffTransport: JarvisRealtimeHandoffTransport | null = null;
     try {
+      const mediaStarted = this.dependencies.now();
+      localStream = input?.localStream ?? await this.dependencies.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      ownsLocalStream = input?.ownsLocalStream ?? true;
+      this.recordTrace("realtime_local_stream_ready", {
+        attempt,
+        detail: `wait_ms:${Math.round(this.dependencies.now() - mediaStarted)}`,
+      });
+      prepared = this.takePreparation(localStream);
+      peer = prepared?.peer ?? this.dependencies.createPeer();
+      channel = prepared?.channel ?? peer.createDataChannel("oai-events");
       this.recordTrace("wake_handoff_transport_started", { attempt });
       handoffTransport = await this.dependencies.createHandoffTransport(localStream);
       const outgoingStream = handoffTransport.stream;
@@ -697,12 +755,14 @@ export class JarvisRealtimeController {
         }
       };
 
+      this.enterConnectionStage(tracker, "offer");
       if (prepared) this.recordTrace("realtime_offer_reused", { attempt });
       else this.recordTrace("realtime_offer_started", { attempt });
       const offer = prepared ? await prepared.offer : await this.createLocalOffer(peer);
       if (!prepared) this.recordTrace("realtime_offer_ready", { attempt });
       const sdpOffer = peer.localDescription?.sdp || offer.sdp;
       if (!sdpOffer) throw new Error("Browser did not produce an SDP offer");
+      this.enterConnectionStage(tracker, "backend_call");
       this.recordTrace("realtime_backend_call_started", { attempt });
       const response = await this.dependencies.createCall(
         this.options.controllerId,
@@ -714,10 +774,12 @@ export class JarvisRealtimeController {
       );
       this.recordTrace("realtime_backend_call_completed", { attempt });
       providerSession = response.session;
+      tracker.session = providerSession;
       this.connectingSession = providerSession;
       if (!providerSession || !response.sdp_answer) {
         throw new Error("Backend did not return a complete Realtime answer");
       }
+      this.enterConnectionStage(tracker, "remote_description");
       await peer.setRemoteDescription({ type: "answer", sdp: response.sdp_answer });
       this.recordTrace("realtime_remote_description_set", { attempt });
       connection = {
@@ -736,12 +798,16 @@ export class JarvisRealtimeController {
         tracedAudioDeltaResponses: new Set(),
         wakeCommitWaiter: null,
       };
+      this.enterConnectionStage(tracker, "backend_control");
       await this.waitForBackendControl(providerSession, operation, attempt);
       if (input?.wakeAudio) {
+        this.enterConnectionStage(tracker, "data_channel");
         await this.waitForDataChannelOpen(channel, operation, attempt);
         const wakeAudio = await input.wakeAudio;
-        await this.submitWakeAudio(connection, handoffTransport, wakeAudio, attempt);
+        await this.submitWakeAudio(connection, handoffTransport, wakeAudio, attempt, tracker);
+        tracker.wakeAudioRetained = false;
       } else {
+        this.enterConnectionStage(tracker, "microphone_activation");
         await handoffTransport.connectLive();
         this.recordTrace("realtime_live_mic_activated", { attempt });
       }
@@ -759,18 +825,77 @@ export class JarvisRealtimeController {
         attempt,
         detail: `${providerSession.id}:${providerSession.generation}`,
       });
+      this.completeConnectionStage(tracker);
+      const successTiming = this.connectionTimingSnapshot(tracker);
+      const successTransport = this.connectionTransportSnapshot(peer, channel, localStream, tracker);
+      void this.recordConnectionAttemptSucceeded(
+        tracker,
+        peer,
+        successTiming,
+        successTransport,
+      );
       return connection;
     } catch (cause) {
-      if (this.connectingSession === providerSession) this.connectingSession = null;
-      await handoffTransport?.destroy().catch(() => undefined);
-      channel.close();
-      peer.close();
-      if (ownsLocalStream) {
-        for (const track of localStream.getTracks()) track.stop();
+      const failedStage = tracker.stage;
+      this.recordTrace("connection.attempt.failed", {
+        attempt,
+        timing_ms: this.connectionTimingSnapshot(tracker),
+        detail: JSON.stringify({
+          result: "failed",
+          failed_stage: failedStage,
+          error_code: this.connectionErrorCode(failedStage, cause),
+          session_id: providerSession?.id ?? null,
+          generation: providerSession?.generation ?? null,
+          transport: this.connectionTransportSnapshot(peer, channel, localStream, tracker),
+        }),
+      });
+      this.enterConnectionStage(tracker, "cleanup");
+      const cleanupErrors: string[] = [];
+      try {
+        await handoffTransport?.destroy();
+      } catch (cleanupCause) {
+        cleanupErrors.push(`handoff:${this.errorName(cleanupCause)}`);
+      }
+      try {
+        channel?.close();
+      } catch (cleanupCause) {
+        cleanupErrors.push(`channel:${this.errorName(cleanupCause)}`);
+      }
+      try {
+        peer?.close();
+      } catch (cleanupCause) {
+        cleanupErrors.push(`peer:${this.errorName(cleanupCause)}`);
+      }
+      if (ownsLocalStream && localStream) {
+        for (const track of localStream.getTracks()) {
+          try {
+            track.stop();
+          } catch (cleanupCause) {
+            cleanupErrors.push(`track:${this.errorName(cleanupCause)}`);
+          }
+        }
       }
       if (providerSession) {
-        await this.dependencies.closeSession(providerSession.id, providerSession.generation).catch(() => undefined);
+        try {
+          await this.dependencies.closeSession(providerSession.id, providerSession.generation);
+        } catch (cleanupCause) {
+          cleanupErrors.push(`backend:${this.errorName(cleanupCause)}`);
+        }
       }
+      this.completeConnectionStage(tracker);
+      this.recordTrace("connection.attempt.cleanup", {
+        attempt,
+        timing_ms: { cleanup: tracker.timingMs.cleanup ?? 0 },
+        detail: JSON.stringify({
+          result: cleanupErrors.length ? "partial" : "complete",
+          failed_stage: failedStage,
+          error_codes: cleanupErrors,
+          session_id: providerSession?.id ?? null,
+          generation: providerSession?.generation ?? null,
+        }),
+      });
+      this.scheduleTelemetryFlush(0);
+      if (this.connectingSession === providerSession) this.connectingSession = null;
       throw cause;
     }
   }
@@ -968,8 +1093,10 @@ export class JarvisRealtimeController {
     handoffTransport: JarvisRealtimeHandoffTransport,
     envelope: JarvisRealtimeWakeAudioEnvelope,
     attempt: number,
+    tracker: ConnectionAttemptTracker,
   ): Promise<void> {
     if (!envelope.chunks.length) {
+      this.enterConnectionStage(tracker, "microphone_activation");
       await handoffTransport.connectLive();
       this.recordTrace("wake_live_mic_activated", { attempt, detail: "empty_handoff" });
       return;
@@ -989,6 +1116,7 @@ export class JarvisRealtimeController {
       detail: `bytes:${envelope.byteLength}:chunks:${envelope.chunks.length}`,
     });
     try {
+      this.enterConnectionStage(tracker, "wake_upload");
       envelope.chunks.forEach((audio, index) => {
         connection.channel.send(JSON.stringify({
           type: "input_audio_buffer.append",
@@ -1002,8 +1130,10 @@ export class JarvisRealtimeController {
         event_id: commitEventId,
       }));
       this.recordTrace("wake_audio_commit_sent", { attempt });
+      this.enterConnectionStage(tracker, "microphone_activation");
       await handoffTransport.connectLive();
       this.recordTrace("wake_live_mic_activated", { attempt });
+      this.enterConnectionStage(tracker, "commit");
       const itemId = await acknowledgement;
       this.recordTrace("wake_audio_commit_acknowledged", { attempt, item_id: itemId });
     } finally {
@@ -1355,6 +1485,115 @@ export class JarvisRealtimeController {
     }
   }
 
+  private enterConnectionStage(
+    tracker: ConnectionAttemptTracker,
+    stage: ConnectionAttemptStage,
+  ): void {
+    this.completeConnectionStage(tracker);
+    tracker.stage = stage;
+    tracker.stageStartedMonotonic = this.dependencies.now();
+  }
+
+  private completeConnectionStage(tracker: ConnectionAttemptTracker): void {
+    const now = this.dependencies.now();
+    const elapsed = Math.max(0, now - tracker.stageStartedMonotonic);
+    tracker.timingMs[tracker.stage] = (tracker.timingMs[tracker.stage] ?? 0) + elapsed;
+    tracker.stageStartedMonotonic = now;
+  }
+
+  private connectionTimingSnapshot(tracker: ConnectionAttemptTracker): Record<string, number> {
+    const result: Record<string, number> = { ...tracker.timingMs };
+    result[tracker.stage] = (result[tracker.stage] ?? 0)
+      + Math.max(0, this.dependencies.now() - tracker.stageStartedMonotonic);
+    result.total = Math.max(0, this.dependencies.now() - tracker.startedMonotonic);
+    return Object.fromEntries(
+      Object.entries(result).map(([key, value]) => [key, Math.round(value * 10) / 10]),
+    );
+  }
+
+  private connectionTransportSnapshot(
+    peer: RTCPeerConnection | null,
+    channel: RTCDataChannel | null,
+    localStream: MediaStream | null,
+    tracker: ConnectionAttemptTracker,
+  ): ConnectionTransportSnapshot {
+    const microphone = localStream?.getAudioTracks()[0];
+    return {
+      peer: peer?.connectionState ?? null,
+      ice: peer?.iceConnectionState ?? null,
+      ice_gathering: peer?.iceGatheringState ?? null,
+      signaling: peer?.signalingState ?? null,
+      sctp: peer?.sctp?.state ?? null,
+      data_channel: channel?.readyState ?? null,
+      microphone_enabled: microphone?.enabled ?? null,
+      microphone_muted: microphone?.muted ?? null,
+      microphone_ready_state: microphone?.readyState ?? null,
+      wake_audio_retained: tracker.wakeAudioRetained,
+    };
+  }
+
+  private async recordConnectionAttemptSucceeded(
+    tracker: ConnectionAttemptTracker,
+    peer: RTCPeerConnection,
+    timingMs: Record<string, number>,
+    transport: ConnectionTransportSnapshot,
+  ): Promise<void> {
+    const network = await this.collectConnectionNetworkSnapshot(peer);
+    this.recordTrace("connection.attempt.succeeded", {
+      attempt: tracker.attempt,
+      timing_ms: timingMs,
+      detail: JSON.stringify({
+        result: "succeeded",
+        session_id: tracker.session?.id ?? null,
+        generation: tracker.session?.generation ?? null,
+        transport,
+        network,
+      }),
+    });
+  }
+
+  private async collectConnectionNetworkSnapshot(
+    peer: RTCPeerConnection,
+  ): Promise<ConnectionNetworkSnapshot> {
+    if (typeof peer.getStats !== "function") return {};
+    try {
+      const reports = await peer.getStats();
+      let selectedPair: RTCStats | undefined;
+      reports.forEach((report) => {
+        if (
+          report.type === "candidate-pair"
+          && ((report as RTCIceCandidatePairStats & { selected?: boolean }).selected || report.nominated)
+        ) selectedPair = report;
+        if (report.type === "transport" && report.selectedCandidatePairId) {
+          selectedPair = reports.get(report.selectedCandidatePairId) ?? selectedPair;
+        }
+      });
+      if (!selectedPair) return {};
+      const pair = selectedPair as RTCIceCandidatePairStats;
+      const local = pair.localCandidateId ? reports.get(pair.localCandidateId) : undefined;
+      const remote = pair.remoteCandidateId ? reports.get(pair.remoteCandidateId) : undefined;
+      const finite = (value: unknown): number | undefined => (
+        typeof value === "number" && Number.isFinite(value) ? value : undefined
+      );
+      const rttSeconds = finite(pair.currentRoundTripTime);
+      const bytesSent = finite(pair.bytesSent);
+      const bytesReceived = finite(pair.bytesReceived);
+      return {
+        ...(typeof local?.candidateType === "string"
+          ? { local_candidate_type: local.candidateType }
+          : {}),
+        ...(typeof remote?.candidateType === "string"
+          ? { remote_candidate_type: remote.candidateType }
+          : {}),
+        ...(rttSeconds === undefined ? {} : { rtt_ms: Math.round(rttSeconds * 1_000 * 10) / 10 }),
+        ...(bytesSent === undefined ? {} : { bytes_sent: bytesSent }),
+        ...(bytesReceived === undefined ? {} : { bytes_received: bytesReceived }),
+      };
+    } catch {
+      return {};
+    }
+  }
+
   private static responseId(event: Record<string, unknown>): string | undefined {
     if (typeof event.response_id === "string") return event.response_id;
     if (event.response && typeof event.response === "object") {
@@ -1370,6 +1609,24 @@ export class JarvisRealtimeController {
 
   private errorName(cause: unknown): string {
     return cause instanceof Error ? cause.name : "unknown";
+  }
+
+  private connectionErrorCode(stage: ConnectionAttemptStage, cause: unknown): string {
+    const message = cause instanceof Error ? cause.message.toLowerCase() : "";
+    if (message.includes("cancelled")) return `${stage}_cancelled`;
+    if (message.includes("in time") || message.includes("timeout")) return `${stage}_timeout`;
+    if (
+      message.includes("unavailable")
+      || message.includes("failed")
+      || message.includes("closed")
+      || message.includes("incomplete")
+    ) return `${stage}_unavailable`;
+    const name = this.errorName(cause)
+      .replace(/error$/i, "")
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_|_$/g, "")
+      .toLowerCase();
+    return `${stage}_${name || "error"}`;
   }
 }
 
