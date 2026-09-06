@@ -9,6 +9,7 @@ import {
   getGeneratedAppBySlug,
   getJarvisState,
   getJarvisLogEvents,
+  getJarvisLiveEvents,
   getJarvisSessionEvents,
   getTask,
   getTaskWorkerHealth,
@@ -148,6 +149,20 @@ describe("Jarvis daily-log api", () => {
       "/api/conversations?include_archived=true&kind=all&archived_only=true",
       { credentials: "include", cache: "no-store" },
     );
+  });
+
+  it("replays missed live events from a durable cursor", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ latest_sequence: 8, events: [{ sequence: 8 }] }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getJarvisLiveEvents(7)).resolves.toMatchObject({ latest_sequence: 8 });
+    expect(fetchMock).toHaveBeenCalledWith("/api/jarvis/live/replay?after=7&limit=250", {
+      credentials: "include",
+      cache: "no-store",
+    });
   });
 
   it("sends idempotency keys for text turns and explicit fresh starts", async () => {

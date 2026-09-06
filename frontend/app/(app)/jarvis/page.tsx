@@ -28,6 +28,7 @@ import {
   closeJarvisRealtimeSession,
   createJarvisRealtimeCall,
   getJarvisLogEvents,
+  getJarvisLiveEvents,
   getJarvisPreferences,
   getJarvisSessionEvents,
   getJarvisState,
@@ -382,6 +383,85 @@ export default function JarvisPage() {
     let disposed = false;
     let source: EventSource | null = null;
     let retry: number | null = null;
+    let polling = false;
+
+    const deliver = (event: JarvisLiveEvent) => {
+      if (event.sequence <= liveCursorRef.current) return;
+      realtimeControllerRef.current?.recordBackendEvent(event);
+      liveCursorRef.current = event.sequence;
+      if (event.event_type === "provider.user_transcript_delta") {
+        setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+          id: String(event.payload?.item_id ?? "live-user"),
+          transcript: String(event.payload?.transcript ?? ""),
+          afterMessageId: newestMessageIdRef.current,
+        }));
+        return;
+      }
+      if (event.event_type === "provider.user_transcript" && pendingWakeAddressRef.current) {
+        const pending = pendingWakeAddressRef.current;
+        pendingWakeAddressRef.current = null;
+        const decision = classifyJarvisAddress({
+          transcript: String(event.payload?.transcript ?? ""),
+          wakeScore: pending.wakeScore,
+          speechStartedMsBeforeWake: 600,
+          speechContinuedMsAfterWake: Math.max(0, Date.now() - pending.detectedAt),
+          followUpWindowOpen: false,
+        });
+        if (!decision.accepted) {
+          const lifecycle = wakeLifecycleRef.current;
+          if (lifecycle && lifecycle.current().status !== "destroyed") lifecycle.sleep();
+          setProvisionalUser(null);
+          return;
+        }
+      }
+      if (event.event_type === "provider.user_transcript") {
+        const itemId = String(event.payload?.item_id ?? "live-user");
+        setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+          id: itemId,
+          transcript: String(event.payload?.transcript ?? ""),
+          replace: true,
+          afterMessageId: newestMessageIdRef.current,
+        }));
+        void refresh().finally(() => setProvisionalUser((current) => (
+          current?.id === itemId ? null : current
+        )));
+        return;
+      }
+      if (event.event_type === "provider.assistant_transcript_delta") {
+        const responseId = String(event.payload?.response_id ?? "assistant-live");
+        setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
+          id: responseId,
+          transcript: String(event.payload?.transcript ?? ""),
+          afterMessageId: newestMessageIdRef.current,
+        }));
+        return;
+      }
+      if (["provider.assistant_response", "provider.assistant_interrupted"].includes(event.event_type)) {
+        const responseId = String(event.payload?.response_id ?? "");
+        void refresh().finally(() => setProvisionalAssistant((current) => (
+          !responseId || current?.id === responseId ? null : current
+        )));
+        return;
+      }
+      if (event.event_type === "session.rotation_requested") {
+        void realtimeControllerRef.current?.stop().then(() => realtimeControllerRef.current?.start());
+      }
+      if (event.source_domain !== "session" || event.event_type.startsWith("task.")) {
+        void refresh();
+      }
+    };
+
+    const catchUp = () => {
+      if (disposed || polling) return;
+      polling = true;
+      void getJarvisLiveEvents(liveCursorRef.current)
+        .then((response) => response.events
+          .sort((left, right) => left.sequence - right.sequence)
+          .forEach(deliver))
+        .catch(() => undefined)
+        .finally(() => { polling = false; });
+    };
+
     const connect = () => {
       if (disposed) return;
       source = new EventSource(jarvisLiveUrl(liveCursorRef.current), { withCredentials: true });
@@ -393,68 +473,10 @@ export default function JarvisPage() {
         );
       };
       source.addEventListener("jarvis", (raw) => {
-        const event = JSON.parse((raw as MessageEvent<string>).data) as JarvisLiveEvent;
-        realtimeControllerRef.current?.recordBackendEvent(event);
-        liveCursorRef.current = Math.max(liveCursorRef.current, event.sequence);
-        if (event.event_type === "provider.user_transcript_delta") {
-          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
-            id: String(event.payload?.item_id ?? "live-user"),
-            transcript: String(event.payload?.transcript ?? ""),
-            afterMessageId: newestMessageIdRef.current,
-          }));
-          return;
-        }
-        if (event.event_type === "provider.user_transcript" && pendingWakeAddressRef.current) {
-          const pending = pendingWakeAddressRef.current;
-          pendingWakeAddressRef.current = null;
-          const decision = classifyJarvisAddress({
-            transcript: String(event.payload?.transcript ?? ""),
-            wakeScore: pending.wakeScore,
-            speechStartedMsBeforeWake: 600,
-            speechContinuedMsAfterWake: Math.max(0, Date.now() - pending.detectedAt),
-            followUpWindowOpen: false,
-          });
-          if (!decision.accepted) {
-            const lifecycle = wakeLifecycleRef.current;
-            if (lifecycle && lifecycle.current().status !== "destroyed") lifecycle.sleep();
-            setProvisionalUser(null);
-            return;
-          }
-        }
-        if (event.event_type === "provider.user_transcript") {
-          const itemId = String(event.payload?.item_id ?? "live-user");
-          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
-            id: itemId,
-            transcript: String(event.payload?.transcript ?? ""),
-            replace: true,
-            afterMessageId: newestMessageIdRef.current,
-          }));
-          void refresh().finally(() => setProvisionalUser((current) => (
-            current?.id === itemId ? null : current
-          )));
-          return;
-        }
-        if (event.event_type === "provider.assistant_transcript_delta") {
-          const responseId = String(event.payload?.response_id ?? "assistant-live");
-          setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
-            id: responseId,
-            transcript: String(event.payload?.transcript ?? ""),
-            afterMessageId: newestMessageIdRef.current,
-          }));
-          return;
-        }
-        if (["provider.assistant_response", "provider.assistant_interrupted"].includes(event.event_type)) {
-          const responseId = String(event.payload?.response_id ?? "");
-          void refresh().finally(() => setProvisionalAssistant((current) => (
-            !responseId || current?.id === responseId ? null : current
-          )));
-          return;
-        }
-        if (event.event_type === "session.rotation_requested") {
-          void realtimeControllerRef.current?.stop().then(() => realtimeControllerRef.current?.start());
-        }
-        if (event.source_domain !== "session" || event.event_type.startsWith("task.")) {
-          void refresh();
+        try {
+          deliver(JSON.parse((raw as MessageEvent<string>).data) as JarvisLiveEvent);
+        } catch {
+          // Durable replay recovers malformed or incomplete stream frames.
         }
       });
       source.onerror = () => {
@@ -468,10 +490,13 @@ export default function JarvisPage() {
       };
     };
     connect();
+    catchUp();
+    const pollTimer = window.setInterval(catchUp, 1000);
     return () => {
       disposed = true;
       source?.close();
       if (retry !== null) window.clearTimeout(retry);
+      window.clearInterval(pollTimer);
     };
   }, [refresh, liveCursorReady]);
 

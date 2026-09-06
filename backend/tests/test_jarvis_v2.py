@@ -58,6 +58,18 @@ async def test_live_replay_unifies_task_events_with_monotonic_cursor() -> None:
     async with session_scope() as session:
         assert await session.scalar(select(func.count()).select_from(JarvisLiveEvent)) == len(events)
 
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": "dev"})
+        response = await client.get("/api/jarvis/live/replay", params={"after": 0, "limit": 1})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest_sequence"] == latest
+    assert len(body["events"]) == 1
+    assert body["events"][0]["sequence"] == events[0].sequence
+    assert body["events"][0]["event_type"] == events[0].event_type
+
 
 @pytest.mark.asyncio
 async def test_natural_task_focus_and_ambiguity_never_require_ids() -> None:

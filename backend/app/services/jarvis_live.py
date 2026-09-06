@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 import asyncio
 import json
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -12,6 +13,19 @@ from app.db.tables import JarvisLiveEvent
 
 
 class JarvisLiveService:
+    @staticmethod
+    def event_payload(row: JarvisLiveEvent) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "sequence": row.sequence,
+            "event_type": row.event_type,
+            "source_domain": row.source_domain,
+            "source_id": row.source_id,
+            "source_sequence": row.source_sequence,
+            "payload": row.payload_json,
+            "created_at": row.created_at.isoformat(),
+        }
+
     async def latest_cursor(self) -> int:
         """Return the committed global cursor without replaying historical rows."""
         async with session_scope() as session:
@@ -42,19 +56,7 @@ class JarvisLiveService:
                     yield {
                         "id": str(row.sequence),
                         "event": "jarvis",
-                        "data": json.dumps(
-                            {
-                                "id": row.id,
-                                "sequence": row.sequence,
-                                "event_type": row.event_type,
-                                "source_domain": row.source_domain,
-                                "source_id": row.source_id,
-                                "source_sequence": row.source_sequence,
-                                "payload": row.payload_json,
-                                "created_at": row.created_at.isoformat(),
-                            },
-                            ensure_ascii=False,
-                        ),
+                        "data": json.dumps(self.event_payload(row), ensure_ascii=False),
                     }
                 heartbeat = 0
                 continue

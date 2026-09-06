@@ -652,6 +652,22 @@ export function jarvisLiveUrl(cursor = 0): string {
   return `${BASE}/api/jarvis/live?${params}`;
 }
 
+export async function getJarvisLiveEvents(
+  after = 0,
+  limit = 250,
+): Promise<JarvisLiveEventReplayResponse> {
+  const params = new URLSearchParams({
+    after: String(Math.max(0, after)),
+    limit: String(Math.max(1, Math.min(1000, limit))),
+  });
+  const res = await fetch(`${BASE}/api/jarvis/live/replay?${params}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function getJarvisPreferences(): Promise<JarvisPreferences> {
   const res = await fetch(`${BASE}/api/jarvis/preferences`, { credentials: "include", cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1076,11 +1092,16 @@ export interface JarvisLiveEvent {
   id: string;
   sequence: number;
   event_type: string;
-  source_domain: "conversation" | "task" | "session";
+  source_domain: "conversation" | "task" | "session" | "notification";
   source_id: string | null;
   source_sequence: number | null;
   payload: Record<string, unknown> | null;
   created_at: string;
+}
+
+export interface JarvisLiveEventReplayResponse {
+  latest_sequence: number;
+  events: JarvisLiveEvent[];
 }
 
 export interface JarvisDomainCursors {

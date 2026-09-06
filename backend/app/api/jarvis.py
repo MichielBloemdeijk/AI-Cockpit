@@ -23,6 +23,8 @@ from app.models.jarvis import (
     JarvisRealtimeCallResponse,
     JarvisRealtimeTelemetryAccepted,
     JarvisRealtimeTelemetryBatch,
+    JarvisLiveEventReplayResponse,
+    JarvisLiveEventView,
     ReminderCreateRequest,
     ReminderSnoozeRequest,
     JarvisSessionEventReplayResponse,
@@ -221,6 +223,21 @@ async def stream_jarvis_live_events(
         jarvis_live_service.stream(request, cursor=cursor),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         ping=None,
+    )
+
+
+@router.get("/live/replay", response_model=JarvisLiveEventReplayResponse)
+async def replay_jarvis_live_events(
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=250, ge=1, le=1000),
+) -> JarvisLiveEventReplayResponse:
+    latest, rows = await jarvis_live_service.replay(after=after, limit=limit)
+    return JarvisLiveEventReplayResponse(
+        latest_sequence=latest,
+        events=[
+            JarvisLiveEventView.model_validate(jarvis_live_service.event_payload(row))
+            for row in rows
+        ],
     )
 
 

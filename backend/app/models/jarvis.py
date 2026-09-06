@@ -179,6 +179,11 @@ class JarvisLiveEventView(BaseModel):
     created_at: datetime
 
 
+class JarvisLiveEventReplayResponse(BaseModel):
+    latest_sequence: int
+    events: list[JarvisLiveEventView] = Field(default_factory=list)
+
+
 class JarvisClientContext(BaseModel):
     time_zone: str = Field(min_length=1, max_length=255)
     utc_offset_minutes: int = Field(ge=-840, le=840)
