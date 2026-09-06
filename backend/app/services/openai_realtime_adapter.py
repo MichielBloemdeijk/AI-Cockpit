@@ -53,6 +53,7 @@ RealtimeCallCreator = Callable[..., Awaitable[httpx.Response]]
 class _ResponseTimeline:
     response_id: str
     created_monotonic: float
+    request_sent_monotonic: float | None = None
     response_kind: str = ""
     request_id: str = ""
     item_id: str = ""
@@ -92,6 +93,9 @@ class _OpenAISession:
     responses: dict[str, _ResponseTimeline] = field(default_factory=dict)
     response_by_item: dict[str, str] = field(default_factory=dict)
     user_transcripts: dict[str, str] = field(default_factory=dict)
+    response_requests: dict[str, float] = field(default_factory=dict)
+    last_user_boundary_monotonic: float | None = None
+    last_user_boundary_kind: str | None = None
     fallback_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     speech_duration_scale: float = 1.0
 
@@ -497,14 +501,19 @@ class OpenAIRealtimeAdapter:
                     "tool_choice": "none",
                 }
             )
-        await self._send(
-            provider_session,
-            {
-                "type": "response.create",
-                "event_id": f"jarvis-controlled-response:{uuid4()}",
-                "response": response,
-            },
-        )
+        provider_session.response_requests[request_id] = time.monotonic()
+        try:
+            await self._send(
+                provider_session,
+                {
+                    "type": "response.create",
+                    "event_id": f"jarvis-controlled-response:{uuid4()}",
+                    "response": response,
+                },
+            )
+        except Exception:
+            provider_session.response_requests.pop(request_id, None)
+            raise
 
         jarvis_realtime_telemetry.record({
             "trace_id": session_id,
@@ -810,7 +819,14 @@ class OpenAIRealtimeAdapter:
                         "observed_at": datetime.now(timezone.utc),
                         "monotonic_ms": None,
                         "duration_ms": round(queue_ms, 3),
-                        "detail_json": {"queue_ms": round(queue_ms, 3)},
+                        "detail_json": {
+                            "queue_ms": round(queue_ms, 3),
+                            **(
+                                {"timing_ms": event.payload["timing_ms"]}
+                                if isinstance(event.payload.get("timing_ms"), dict)
+                                else {}
+                            ),
+                        },
                     })
                 finally:
                     provider_session.event_queue.task_done()
@@ -839,8 +855,12 @@ class OpenAIRealtimeAdapter:
                     self._timeline(provider_session, response_id).mute_monotonic = now
             return [VoiceProviderEvent(event_id=event_id, kind="user_speaking")]
         if event_type == "input_audio_buffer.speech_stopped":
+            provider_session.last_user_boundary_monotonic = time.monotonic()
+            provider_session.last_user_boundary_kind = "speech_stopped"
             return [VoiceProviderEvent(event_id=event_id, kind="user_stopped")]
         if event_type == "input_audio_buffer.committed":
+            provider_session.last_user_boundary_monotonic = time.monotonic()
+            provider_session.last_user_boundary_kind = "committed"
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
@@ -871,6 +891,7 @@ class OpenAIRealtimeAdapter:
                 )
             ]
         if event_type == "conversation.item.input_audio_transcription.completed":
+            transcript_completed = time.monotonic()
             item_id = str(event.get("item_id") or "active-user-turn")
             transcript = str(
                 event.get("transcript") or provider_session.user_transcripts.get(item_id) or ""
@@ -878,11 +899,28 @@ class OpenAIRealtimeAdapter:
             provider_session.user_transcripts.pop(item_id, None)
             if not transcript:
                 return []
+            timing_ms: dict[str, float] = {}
+            if provider_session.last_user_boundary_monotonic is not None:
+                timing_ms["provider_boundary_to_transcript"] = round(
+                    max(
+                        0.0,
+                        (
+                            transcript_completed
+                            - provider_session.last_user_boundary_monotonic
+                        ) * 1_000,
+                    ),
+                    3,
+                )
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
                     kind="user_transcript",
-                    payload={"item_id": item_id, "transcript": transcript},
+                    payload={
+                        "item_id": item_id,
+                        "transcript": transcript,
+                        "boundary_kind": provider_session.last_user_boundary_kind,
+                        "timing_ms": timing_ms,
+                    },
                 )
             ]
         if event_type == "response.created":
@@ -897,6 +935,19 @@ class OpenAIRealtimeAdapter:
                 timeline.presentation_ids = self._presentation_ids(metadata)
                 timeline.response_kind = str(metadata.get("jarvis_purpose") or "")
                 timeline.request_id = str(metadata.get("jarvis_request_id") or "")
+                timeline.request_sent_monotonic = provider_session.response_requests.pop(
+                    timeline.request_id,
+                    None,
+                )
+            timing_ms: dict[str, float] = {}
+            if response_id and timeline.request_sent_monotonic is not None:
+                timing_ms["response_create_sent_to_created"] = round(
+                    max(
+                        0.0,
+                        (timeline.created_monotonic - timeline.request_sent_monotonic) * 1_000,
+                    ),
+                    3,
+                )
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
@@ -905,6 +956,7 @@ class OpenAIRealtimeAdapter:
                         "response_id": response_id,
                         "response_kind": "" if not response_id else timeline.response_kind,
                         "request_id": "" if not response_id else timeline.request_id,
+                        "timing_ms": timing_ms,
                     },
                 )
             ]
@@ -930,6 +982,17 @@ class OpenAIRealtimeAdapter:
             if response_id in provider_session.speaking_responses:
                 return []
             provider_session.speaking_responses.add(response_id)
+            timing_ms = {
+                "response_created_to_first_audio": round(
+                    max(0.0, (time.monotonic() - timeline.created_monotonic) * 1_000),
+                    3,
+                )
+            }
+            if timeline.request_sent_monotonic is not None:
+                timing_ms["response_create_sent_to_first_audio"] = round(
+                    max(0.0, (time.monotonic() - timeline.request_sent_monotonic) * 1_000),
+                    3,
+                )
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
@@ -938,6 +1001,7 @@ class OpenAIRealtimeAdapter:
                         "response_id": response_id,
                         "response_kind": timeline.response_kind,
                         "request_id": timeline.request_id,
+                        "timing_ms": timing_ms,
                     },
                 )
             ]
@@ -998,6 +1062,17 @@ class OpenAIRealtimeAdapter:
             if response_id in provider_session.speaking_responses:
                 return []
             provider_session.speaking_responses.add(response_id)
+            timing_ms = {
+                "response_created_to_first_audio": round(
+                    max(0.0, (time.monotonic() - timeline.created_monotonic) * 1_000),
+                    3,
+                )
+            }
+            if timeline.request_sent_monotonic is not None:
+                timing_ms["response_create_sent_to_first_audio"] = round(
+                    max(0.0, (time.monotonic() - timeline.request_sent_monotonic) * 1_000),
+                    3,
+                )
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
@@ -1006,6 +1081,7 @@ class OpenAIRealtimeAdapter:
                         "response_id": response_id,
                         "response_kind": timeline.response_kind,
                         "request_id": timeline.request_id,
+                        "timing_ms": timing_ms,
                     },
                 )
             ]

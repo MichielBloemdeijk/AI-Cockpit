@@ -101,6 +101,9 @@ def _http_error(exc: ValueError) -> HTTPException:
 
 @router.get("/state", response_model=JarvisStateResponse)
 async def get_jarvis_state() -> JarvisStateResponse:
+    # Capture this before reading projections. Events racing with the state read
+    # are replayed (at worst redundantly); no event can be skipped unseen.
+    live_event_cursor = await jarvis_live_service.latest_cursor()
     state = await jarvis_daily_service.get_state()
     situation = None
     detail = None
@@ -144,6 +147,7 @@ async def get_jarvis_state() -> JarvisStateResponse:
         operational_day=state.operational_day,
         state_revision=state.state_revision,
         situation_revision=0 if situation is None else situation.revision,
+        live_event_cursor=live_event_cursor,
         current_log=detail,
         tasks=[_task_summary(item) for item in tasks],
         pending_questions=questions,

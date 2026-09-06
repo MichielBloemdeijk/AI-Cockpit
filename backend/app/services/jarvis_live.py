@@ -12,6 +12,13 @@ from app.db.tables import JarvisLiveEvent
 
 
 class JarvisLiveService:
+    async def latest_cursor(self) -> int:
+        """Return the committed global cursor without replaying historical rows."""
+        async with session_scope() as session:
+            return int((await session.execute(
+                select(func.max(JarvisLiveEvent.sequence))
+            )).scalar_one_or_none() or 0)
+
     async def replay(self, *, after: int = 0, limit: int = 250) -> tuple[int, list[JarvisLiveEvent]]:
         async with session_scope() as session:
             latest = int((await session.execute(select(func.max(JarvisLiveEvent.sequence)))).scalar_one_or_none() or 0)

@@ -77,6 +77,7 @@ class JarvisStateResponse(BaseModel):
     operational_day: DateValue
     state_revision: int
     situation_revision: int = 0
+    live_event_cursor: int = 0
     current_log: ConversationDetail | None = None
     tasks: list[TaskSummaryView] = Field(default_factory=list)
     pending_questions: list[JarvisPendingQuestionView] = Field(default_factory=list)

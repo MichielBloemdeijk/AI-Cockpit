@@ -133,6 +133,7 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
   const peers: FakePeer[] = [];
   const streams: FakeStream[] = [];
   const timers: Array<() => void> = [];
+  const telemetryTimers: Array<() => void> = [];
   const createCall = vi.fn().mockResolvedValue(response(1));
   const closeSession = vi.fn().mockResolvedValue(undefined);
   const wait = vi.fn().mockResolvedValue(undefined);
@@ -162,6 +163,11 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
       return timers.length;
     },
     clearTimer: vi.fn(),
+    setTelemetryTimer: (callback) => {
+      telemetryTimers.push(callback);
+      return telemetryTimers.length;
+    },
+    clearTelemetryTimer: vi.fn(),
     now: vi.fn().mockReturnValue(1_000),
     wallNow: vi.fn().mockReturnValue("2026-08-28T00:00:00.000Z"),
     createBargeInDetector: vi.fn(async (_stream, onSpeechStart) => {
@@ -184,6 +190,7 @@ function dependencies(overrides: Partial<JarvisRealtimeDependencies> = {}) {
     peers,
     streams,
     timers,
+    telemetryTimers,
     createCall,
     closeSession,
     wait,
@@ -335,6 +342,35 @@ describe("JarvisRealtimeController", () => {
     const events = sendTelemetry.mock.calls.flatMap(([batch]) => batch);
     expect(events.some((event) => event.event_type === "wake_candidate")).toBe(true);
     expect(events.every((event) => !("audio" in (event.detail ?? {})))).toBe(true);
+  });
+
+  it("defers telemetry until after the connection critical path", async () => {
+    const sendTelemetry = vi.fn().mockResolvedValue(undefined);
+    const deps = dependencies({ sendTelemetry });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start();
+
+    expect(sendTelemetry).not.toHaveBeenCalled();
+    expect(deps.telemetryTimers).toHaveLength(1);
+    deps.telemetryTimers[0]();
+    await vi.waitFor(() => expect(sendTelemetry).toHaveBeenCalledOnce());
+    await controller.stop();
+  });
+
+  it("does not copy noisy or stale backend events into the timing trace", async () => {
+    const sendTelemetry = vi.fn().mockResolvedValue(undefined);
+    const deps = dependencies({ sendTelemetry });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.start();
+
+    controller.recordBackendEvent(liveEvent("provider.assistant_transcript_delta", 1));
+    controller.recordBackendEvent(liveEvent("provider.ready", 2));
+    await controller.stop();
+
+    const eventTypes = controller.traceSnapshot().map((event) => event.kind);
+    expect(eventTypes).not.toContain("backend.provider.assistant_transcript_delta");
+    expect(eventTypes).not.toContain("backend.provider.ready");
   });
 
   it("retries at 0.5, 1, and 2 seconds before entering typed fallback", async () => {
@@ -622,16 +658,25 @@ describe("JarvisRealtimeController", () => {
       entry("wake_local_speech_stopped", 400),
       entry("wake_utterance_ready", 1_450),
       entry("input_audio_buffer.speech_stopped", 1_600),
+      entry("backend.provider.user_transcript", 1_640, {
+        timing_ms: { provider_boundary_to_transcript: 35 },
+      }),
       entry("backend.response.arbiter.started", 1_680, {
         timing_ms: { total_to_provider_submit: 42 },
       }),
+      entry("backend.provider.assistant_generating", 1_695, {
+        timing_ms: { response_create_sent_to_created: 15 },
+      }),
       entry("response.created", 1_700, { response_id: "response-1" }),
+      entry("backend.provider.assistant_speaking", 1_880, {
+        timing_ms: { response_created_to_first_audio: 180 },
+      }),
       entry("response.output_audio.delta", 1_900, { response_id: "response-1" }),
       entry("output_audio_buffer.started", 2_000, { response_id: "response-1" }),
     ];
 
     expect(summarizeJarvisRealtimeTrace(entries)).toEqual({
-      schema: "jarvis.realtime_timing.v1",
+      schema: "jarvis.realtime_timing.v2",
       connections: [{
         attempt: 1,
         total_ms: 215,
@@ -643,6 +688,8 @@ describe("JarvisRealtimeController", () => {
         sideband_connect_ms: 15,
         backend_control_ready_ms: undefined,
         data_channel_ready_ms: undefined,
+        wake_detect_to_backend_call_ms: 75,
+        wake_detect_to_data_channel_ms: undefined,
       }],
       turns: [{
         turn: 1,
@@ -655,9 +702,16 @@ describe("JarvisRealtimeController", () => {
         provider_stop_to_playback_started_ms: 400,
         local_speech_stop_to_playback_started_ms: 1_600,
         backend_arbiter_ms: 42,
+        provider_boundary_to_transcript_ms: 35,
+        transcript_to_arbiter_ms: 40,
+        arbiter_to_response_created_ms: 20,
+        response_create_sent_to_created_ms: 15,
+        response_created_to_first_audio_provider_ms: 180,
+        first_audio_to_playback_started_ms: 100,
         wake_audio_upload_ms: undefined,
         wake_commit_ack_ms: undefined,
         local_speech_stop_to_commit_ms: undefined,
+        outcome: "complete",
         bottleneck: "endpointing",
         bottleneck_ms: 1_050,
       }],
@@ -691,6 +745,9 @@ describe("JarvisRealtimeController", () => {
       entry("wake_audio_upload_completed", 735),
       entry("wake_audio_commit_sent", 736),
       entry("input_audio_buffer.committed", 780, { item_id: "wake-item" }),
+      entry("backend.provider.user_transcript", 820, {
+        timing_ms: { provider_boundary_to_transcript: 35 },
+      }),
       entry("backend.response.arbiter.started", 850, { timing_ms: { total_to_provider_submit: 20 } }),
       entry("response.created", 870, { response_id: "response-1" }),
       entry("response.output_audio.delta", 1_050, { response_id: "response-1" }),
@@ -701,14 +758,39 @@ describe("JarvisRealtimeController", () => {
     expect(summary.connections[0]).toMatchObject({
       backend_control_ready_ms: 690,
       data_channel_ready_ms: 195,
+      wake_detect_to_backend_call_ms: 20,
+      wake_detect_to_data_channel_ms: 715,
     });
     expect(summary.turns[0]).toMatchObject({
       kind: "wake",
       wake_audio_upload_ms: 15,
       wake_commit_ack_ms: 44,
       local_speech_stop_to_commit_ms: 636,
+      outcome: "complete",
       bottleneck: "provider_connection",
-      bottleneck_ms: 690,
+      bottleneck_ms: 695,
+    });
+  });
+
+  it("labels a transcribed turn that never reached the response arbiter", () => {
+    const entry = (kind: string, monotonic_ms: number): JarvisRealtimeTraceEntry => ({
+      kind,
+      monotonic_ms,
+      wall_time: "2026-08-28T00:00:00.000Z",
+    });
+
+    const summary = summarizeJarvisRealtimeTrace([
+      entry("wake_detected", 0),
+      entry("wake_local_speech_stopped", 500),
+      entry("input_audio_buffer.speech_stopped", 700),
+      entry("backend.provider.user_transcript", 900),
+    ]);
+
+    expect(summary.turns).toHaveLength(1);
+    expect(summary.turns[0]).toMatchObject({
+      kind: "wake",
+      outcome: "no_arbiter",
+      provider_stop_to_response_created_ms: undefined,
     });
   });
 });

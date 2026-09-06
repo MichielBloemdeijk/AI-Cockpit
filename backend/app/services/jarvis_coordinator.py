@@ -30,6 +30,7 @@ from app.db.tables import (
     VoiceSessionEvent,
 )
 from app.services.jarvis_brain import restricted_brain_gateway
+from app.services.jarvis_realtime_telemetry import jarvis_realtime_telemetry
 from app.services.task_error_messages import public_tool_error
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.jarvis_time import normalize_client_context
@@ -159,6 +160,33 @@ class JarvisCoordinator:
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
 
+    def _trace_response_gate(
+        self,
+        event_type: str,
+        *,
+        session_id: str,
+        generation: int,
+        reason: str,
+        request_id: str | None = None,
+        duration_ms: float | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        activation = self._wake_activations.get((session_id, generation))
+        jarvis_realtime_telemetry.record({
+            "trace_id": session_id,
+            "activation_id": None if activation is None else activation.activation_id,
+            "session_id": session_id,
+            "generation": generation,
+            "request_id": request_id,
+            "provider_response_id": None,
+            "source": "backend",
+            "event_type": event_type,
+            "observed_at": utc_now(),
+            "monotonic_ms": round(time.monotonic() * 1_000, 3),
+            "duration_ms": None if duration_ms is None else round(duration_ms, 3),
+            "detail_json": {"reason": reason, **(detail or {})},
+        })
+
     async def start(self) -> None:
         if self._delivery_task is not None and not self._delivery_task.done():
             return
@@ -267,13 +295,27 @@ class JarvisCoordinator:
                         payload_json={
                             "reason": "transcript_grace_elapsed",
                             "wake_score": activation.wake_score,
+                            "session_id": session_id,
+                            "generation": generation,
                         },
                         idempotency_key=f"wake-verification-timeout:{session_id}:{generation}",
                     )
                 await self._queue_controlled_response(session_id, generation, "user_turn")
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                self._trace_response_gate(
+                    "response.arbiter.failed",
+                    session_id=session_id,
+                    generation=generation,
+                    reason="wake_verification_fallback",
+                    detail={"failure_type": type(exc).__name__},
+                )
+                logger.exception(
+                    "Wake verification fallback failed for session %s generation %s",
+                    session_id,
+                    generation,
+                )
                 # A failed verification fallback cannot bring down provider event handling.
                 return
             finally:
@@ -433,73 +475,145 @@ class JarvisCoordinator:
         gate_acquired = request_started
         snapshot_started = request_started
         snapshot_finished = request_started
+        candidate_sync_started = request_started
+        candidate_sync_finished = request_started
+        situation_started = request_started
+        situation_finished = request_started
+        reservation_started = request_started
+        reservation_finished = request_started
         key = (session_id, generation)
         gate = self._response_gates.setdefault(key, _ResponseGate())
         adapter = None
         reservation = None
         context = None
         selected_reason = reason
-        async with gate.lock:
-            gate_acquired = time.monotonic()
-            gate.pending.add(reason)
-            if gate.attempt is not None:
-                return
-            selected_reason = min(
-                gate.pending,
-                key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
-            )
-            activation = self._wake_activations.get(key)
-            if (
-                selected_reason == "task_update"
-                and activation is not None
-                and activation.verification_state != "accepted"
-            ):
-                return
-            snapshot_started = time.monotonic()
-            await task_presentation_service.sync_candidates()
-            async with session_scope() as session:
-                realtime = await self._require_current_generation(session, session_id, generation)
-                floor = await self._floor_state(session, session_id)
-                adapter = get_voice_session_adapter(realtime.provider_adapter)
-                if not adapter.is_connected(session_id=session_id, generation=generation):
+        self._trace_response_gate(
+            "response.arbiter.requested",
+            session_id=session_id,
+            generation=generation,
+            reason=reason,
+        )
+        try:
+            async with gate.lock:
+                gate_acquired = time.monotonic()
+                gate.pending.add(reason)
+                if gate.attempt is not None:
+                    self._trace_response_gate(
+                        "response.arbiter.coalesced",
+                        session_id=session_id,
+                        generation=generation,
+                        reason=reason,
+                        request_id=gate.attempt.request_id,
+                        duration_ms=(gate_acquired - request_started) * 1_000,
+                    )
                     return
-                if floor in {"user_speaking", "assistant_speaking", "connecting", "text_fallback"}:
+                selected_reason = min(
+                    gate.pending,
+                    key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
+                )
+                activation = self._wake_activations.get(key)
+                if (
+                    selected_reason == "task_update"
+                    and activation is not None
+                    and activation.verification_state != "accepted"
+                ):
+                    self._trace_response_gate(
+                        "response.arbiter.deferred",
+                        session_id=session_id,
+                        generation=generation,
+                        reason=selected_reason,
+                        detail={"blocked_by": "wake_verification"},
+                    )
                     return
-                if selected_reason == "task_update" and floor != "listening":
-                    return
+                snapshot_started = time.monotonic()
+                candidate_sync_started = snapshot_started
+                await task_presentation_service.sync_candidates()
+                candidate_sync_finished = time.monotonic()
+                async with session_scope() as session:
+                    realtime = await self._require_current_generation(session, session_id, generation)
+                    floor = await self._floor_state(session, session_id)
+                    adapter = get_voice_session_adapter(realtime.provider_adapter)
+                    if not adapter.is_connected(session_id=session_id, generation=generation):
+                        self._trace_response_gate(
+                            "response.arbiter.deferred",
+                            session_id=session_id,
+                            generation=generation,
+                            reason=selected_reason,
+                            detail={"blocked_by": "provider_not_connected", "floor": floor},
+                        )
+                        return
+                    if floor in {"user_speaking", "assistant_speaking", "connecting", "text_fallback"}:
+                        self._trace_response_gate(
+                            "response.arbiter.deferred",
+                            session_id=session_id,
+                            generation=generation,
+                            reason=selected_reason,
+                            detail={"blocked_by": "floor", "floor": floor},
+                        )
+                        return
+                    if selected_reason == "task_update" and floor != "listening":
+                        self._trace_response_gate(
+                            "response.arbiter.deferred",
+                            session_id=session_id,
+                            generation=generation,
+                            reason=selected_reason,
+                            detail={"blocked_by": "floor", "floor": floor},
+                        )
+                        return
 
-                projected = await jarvis_situation_projector.project_in_session(
-                    session,
-                    conversation_id=realtime.conversation_id,
-                    session_id=session_id,
-                )
-                context = projected.payload
-                reservation = await task_presentation_service.reserve_in_session(
-                    session,
-                    session_id=session_id,
-                    generation=generation,
-                    user_owns_floor=False,
-                    limit=3,
-                )
-                if selected_reason == "task_update" and reservation is None:
+                    situation_started = time.monotonic()
+                    projected = await jarvis_situation_projector.project_in_session(
+                        session,
+                        conversation_id=realtime.conversation_id,
+                        session_id=session_id,
+                    )
+                    situation_finished = time.monotonic()
+                    context = projected.payload
+                    reservation_started = situation_finished
+                    reservation = await task_presentation_service.reserve_in_session(
+                        session,
+                        session_id=session_id,
+                        generation=generation,
+                        user_owns_floor=False,
+                        limit=3,
+                    )
+                    reservation_finished = time.monotonic()
+                    if selected_reason == "task_update" and reservation is None:
+                        gate.pending.discard(selected_reason)
+                        self._trace_response_gate(
+                            "response.arbiter.skipped",
+                            session_id=session_id,
+                            generation=generation,
+                            reason=selected_reason,
+                            detail={"blocked_by": "no_pending_updates"},
+                        )
+                        return
+                    if reservation is not None:
+                        context["pending_update_count"] = reservation.total_pending
                     gate.pending.discard(selected_reason)
-                    return
-                if reservation is not None:
-                    context["pending_update_count"] = reservation.total_pending
-                gate.pending.discard(selected_reason)
-                request_id = str(uuid4())
-                now_monotonic = time.monotonic()
-                gate.attempt = _ResponseAttempt(
-                    request_id=request_id,
-                    reason=selected_reason,
-                    presentation_ids=(
-                        () if reservation is None else reservation.presentation_ids
-                    ),
-                    state="submitting",
-                    started_monotonic=now_monotonic,
-                    last_activity_monotonic=now_monotonic,
-                )
-            snapshot_finished = time.monotonic()
+                    request_id = str(uuid4())
+                    now_monotonic = time.monotonic()
+                    gate.attempt = _ResponseAttempt(
+                        request_id=request_id,
+                        reason=selected_reason,
+                        presentation_ids=(
+                            () if reservation is None else reservation.presentation_ids
+                        ),
+                        state="submitting",
+                        started_monotonic=now_monotonic,
+                        last_activity_monotonic=now_monotonic,
+                    )
+                snapshot_finished = time.monotonic()
+        except Exception as exc:
+            self._trace_response_gate(
+                "response.arbiter.failed",
+                session_id=session_id,
+                generation=generation,
+                reason=selected_reason,
+                duration_ms=(time.monotonic() - request_started) * 1_000,
+                detail={"stage": "snapshot", "failure_type": type(exc).__name__},
+            )
+            raise
 
         presentation_ids = () if reservation is None else reservation.presentation_ids
         facts = () if reservation is None else reservation.facts
@@ -516,6 +630,34 @@ class JarvisCoordinator:
                 context=context,
             )
             provider_submit_finished = time.monotonic()
+            timing_ms = {
+                "gate_wait": round((gate_acquired - request_started) * 1_000, 3),
+                "candidate_sync": round(
+                    (candidate_sync_finished - candidate_sync_started) * 1_000,
+                    3,
+                ),
+                "state_checks": round((situation_started - candidate_sync_finished) * 1_000, 3),
+                "situation_projection": round(
+                    (situation_finished - situation_started) * 1_000,
+                    3,
+                ),
+                "presentation_reservation": round(
+                    (reservation_finished - reservation_started) * 1_000,
+                    3,
+                ),
+                "situation_snapshot": round(
+                    (snapshot_finished - snapshot_started) * 1_000,
+                    3,
+                ),
+                "provider_submit": round(
+                    (provider_submit_finished - provider_submit_started) * 1_000,
+                    3,
+                ),
+                "total_to_provider_submit": round(
+                    (provider_submit_finished - request_started) * 1_000,
+                    3,
+                ),
+            }
             async with session_scope() as session:
                 await self._require_current_generation(session, session_id, generation)
                 await JarvisDomainRepository(session).append_session_event(
@@ -524,26 +666,23 @@ class JarvisCoordinator:
                     payload_json={
                         "reason": selected_reason,
                         "request_id": request_id,
+                        "session_id": session_id,
+                        "generation": generation,
                         "presentation_ids": list(presentation_ids),
-                        "timing_ms": {
-                            "gate_wait": round((gate_acquired - request_started) * 1_000, 3),
-                            "situation_snapshot": round(
-                                (snapshot_finished - snapshot_started) * 1_000,
-                                3,
-                            ),
-                            "provider_submit": round(
-                                (provider_submit_finished - provider_submit_started) * 1_000,
-                                3,
-                            ),
-                            "total_to_provider_submit": round(
-                                (provider_submit_finished - request_started) * 1_000,
-                                3,
-                            ),
-                        },
+                        "timing_ms": timing_ms,
                     },
                     idempotency_key=f"response-arbiter:{session_id}:{generation}:{uuid4()}",
                 )
-        except Exception:
+            self._trace_response_gate(
+                "response.arbiter.started",
+                session_id=session_id,
+                generation=generation,
+                reason=selected_reason,
+                request_id=request_id,
+                duration_ms=(provider_submit_finished - request_started) * 1_000,
+                detail={"timing_ms": timing_ms},
+            )
+        except Exception as exc:
             async with gate.lock:
                 if gate.attempt is not None and gate.attempt.request_id == request_id:
                     gate.attempt = None
@@ -555,6 +694,15 @@ class JarvisCoordinator:
                     generation=generation,
                     error="controlled_response_create_failed",
                 )
+            self._trace_response_gate(
+                "response.arbiter.failed",
+                session_id=session_id,
+                generation=generation,
+                reason=selected_reason,
+                request_id=request_id,
+                duration_ms=(time.monotonic() - request_started) * 1_000,
+                detail={"stage": "provider_submit", "failure_type": type(exc).__name__},
+            )
             raise
 
         await self._ensure_response_watchdog(session_id, generation, request_id)
@@ -943,8 +1091,9 @@ class JarvisCoordinator:
             repo = JarvisDomainRepository(session)
             event_type = f"provider.{event.kind}"
             payload = dict(event.payload)
-            if event.kind in {"ready", "provider_error", "disconnected"}:
-                payload.update({"session_id": session_id, "generation": generation})
+            # Every live session event is self-identifying so clients can reject
+            # stale events without consulting historical session state.
+            payload.update({"session_id": session_id, "generation": generation})
             if await self._is_late_delivery_state(session, realtime, event):
                 event_type = "provider.event.ignored"
                 payload = {**payload, "kind": event.kind, "reason": "delivery_already_terminal"}
@@ -985,6 +1134,8 @@ class JarvisCoordinator:
                         payload_json={
                             "reason": decision.reason,
                             "wake_score": activation.wake_score,
+                            "session_id": session_id,
+                            "generation": generation,
                         },
                         idempotency_key=f"wake-verification:{session_id}:{generation}:{event.event_id}",
                     )

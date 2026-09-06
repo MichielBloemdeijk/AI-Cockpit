@@ -526,6 +526,9 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "provisional": True,
     }
     assert events[5].payload["transcript"] == "Please prepare a report."
+    assert events[5].payload["boundary_kind"] == "committed"
+    assert events[5].payload["timing_ms"]["provider_boundary_to_transcript"] >= 0
+    assert events[7].payload["timing_ms"]["response_created_to_first_audio"] >= 0
     assert events[8].payload["delta"] == "I can "
     assert events[9].payload["transcript"] == "I can help with that."
     assert events[10].payload["arguments"] == {"goal": "Prepare a report"}
@@ -694,6 +697,8 @@ async def test_openai_adapter_creates_one_controlled_response_with_fresh_facts(
         }
     )
     delivery = next(event for event in events if event.kind == "assistant_response")
+    generating = next(event for event in events if event.kind == "assistant_generating")
+    assert generating.payload["timing_ms"]["response_create_sent_to_created"] >= 0
     assert delivery.payload["presentation_ids"] == ["presentation-1"]
     assert delivery.payload["transcript"] == "The report is complete."
     assert delivery.payload["response_kind"] == "user_turn"

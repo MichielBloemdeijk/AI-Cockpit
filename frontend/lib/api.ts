@@ -1042,6 +1042,7 @@ export interface JarvisStateResponse {
   operational_day: string;
   state_revision: number;
   situation_revision: number;
+  live_event_cursor: number;
   current_log: ConversationDetail | null;
   tasks: TaskSummary[];
   pending_questions: JarvisPendingQuestion[];

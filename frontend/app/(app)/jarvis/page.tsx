@@ -131,6 +131,7 @@ export default function JarvisPage() {
     status: "idle",
     error: null,
   });
+  const [liveCursorReady, setLiveCursorReady] = useState(false);
   const streamsRef = useRef<JarvisLiveStreamState>(EMPTY_JARVIS_LIVE_STREAMS);
   const logIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -145,6 +146,7 @@ export default function JarvisPage() {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const liveCursorRef = useRef(0);
+  const liveCursorSeededRef = useRef(false);
   const pendingWakeAddressRef = useRef<{ wakeScore: number; detectedAt: number } | null>(null);
   const newestMessageIdRef = useRef<string | null>(null);
   const currentConversationId = state?.current_log?.id ?? null;
@@ -195,6 +197,11 @@ export default function JarvisPage() {
     refreshInFlightRef.current = true;
     try {
       const projection = await getJarvisState();
+      if (!liveCursorSeededRef.current) {
+        liveCursorSeededRef.current = true;
+        liveCursorRef.current = Math.max(0, projection.live_event_cursor);
+        setLiveCursorReady(true);
+      }
       const logId = projection.current_log?.id ?? null;
       let nextStreams = streamsRef.current;
       if (logIdRef.current !== logId) {
@@ -368,6 +375,7 @@ export default function JarvisPage() {
   }, [refresh]);
 
   useEffect(() => {
+    if (!liveCursorReady) return;
     let disposed = false;
     let source: EventSource | null = null;
     let retry: number | null = null;
@@ -450,7 +458,7 @@ export default function JarvisPage() {
       source?.close();
       if (retry !== null) window.clearTimeout(retry);
     };
-  }, [refresh]);
+  }, [refresh, liveCursorReady]);
 
   useEffect(() => {
     if (!WAKE_MODEL_CONFIGURATION || !currentConversationId) return;

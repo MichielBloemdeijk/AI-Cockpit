@@ -26,6 +26,7 @@ from app.services.jarvis_coordinator import (
     _ResponseAttempt,
     jarvis_coordinator,
 )
+from app.services.jarvis_live import jarvis_live_service
 from app.services.reminder_scheduler import reminder_scheduler
 from app.services.task_notifications import route_pending_task_notifications
 from app.services.task_presentations import task_presentation_service
@@ -185,6 +186,10 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
         and (event.payload_json or {}).get("reason") == "user_turn"
     )
     assert arbiter_event.payload_json["timing_ms"]["gate_wait"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["candidate_sync"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["state_checks"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["situation_projection"] >= 0
+    assert arbiter_event.payload_json["timing_ms"]["presentation_reservation"] >= 0
     assert arbiter_event.payload_json["timing_ms"]["situation_snapshot"] >= 0
     assert arbiter_event.payload_json["timing_ms"]["provider_submit"] >= 0
     assert arbiter_event.payload_json["timing_ms"]["total_to_provider_submit"] >= 0
@@ -1081,6 +1086,7 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         assert body["current_log"]["messages"][-1]["content"] == "I understand."
         assert body["session"]["provider_adapter"] == "fake"
         assert set(body["cursors"]) == {"conversation", "task", "session"}
+        assert body["live_event_cursor"] == await jarvis_live_service.latest_cursor()
         situation_revision = body["situation_revision"]
         repeated_state = await client.get("/api/jarvis/state")
         assert repeated_state.status_code == 200
