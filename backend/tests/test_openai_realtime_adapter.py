@@ -340,6 +340,14 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     await socket.feed({"type": "input_audio_buffer.speech_stopped", "event_id": "evt-2"})
     await socket.feed(
         {
+            "type": "input_audio_buffer.committed",
+            "event_id": "evt-2-commit",
+            "item_id": "item-user",
+            "previous_item_id": "item-previous",
+        }
+    )
+    await socket.feed(
+        {
             "type": "conversation.item.input_audio_transcription.delta",
             "event_id": "evt-2a",
             "item_id": "item-user",
@@ -434,6 +442,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "ready",
         "user_speaking",
         "user_stopped",
+        "wake_audio_committed",
         "user_transcript_delta",
         "user_transcript",
         "assistant_generating",
@@ -444,14 +453,18 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     ]
     assert events[3].payload == {
         "item_id": "item-user",
+        "previous_item_id": "item-previous",
+    }
+    assert events[4].payload == {
+        "item_id": "item-user",
         "delta": "Please prepare ",
         "transcript": "Please prepare ",
         "provisional": True,
     }
-    assert events[4].payload["transcript"] == "Please prepare a report."
-    assert events[7].payload["delta"] == "I can "
-    assert events[8].payload["transcript"] == "I can help with that."
-    assert events[9].payload["arguments"] == {"goal": "Prepare a report"}
+    assert events[5].payload["transcript"] == "Please prepare a report."
+    assert events[8].payload["delta"] == "I can "
+    assert events[9].payload["transcript"] == "I can help with that."
+    assert events[10].payload["arguments"] == {"goal": "Prepare a report"}
     await adapter.close(session_id="session-events", generation=1, reason="done")
 
 

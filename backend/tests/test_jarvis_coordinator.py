@@ -145,7 +145,11 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
     await jarvis_coordinator.handle_provider_event(
         realtime.id,
         realtime.generation,
-        VoiceProviderEvent(event_id="wake-stopped", kind="user_stopped"),
+        VoiceProviderEvent(
+            event_id="wake-committed",
+            kind="wake_audio_committed",
+            payload={"item_id": "wake-item"},
+        ),
     )
     _, before = await jarvis_coordinator.replay_session_events(realtime.id)
     assert not any(
@@ -180,6 +184,79 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
     assert arbiter_event.payload_json["timing_ms"]["situation_snapshot"] >= 0
     assert arbiter_event.payload_json["timing_ms"]["provider_submit"] >= 0
     assert arbiter_event.payload_json["timing_ms"]["total_to_provider_submit"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_wake_response_accepts_transcript_before_audio_commit() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Wake setup",
+        idempotency_key="wake-transcript-first-setup",
+    )
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-browser-transcript-first",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.2},
+    )
+    realtime = bootstrap.session
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="wake-transcript-first",
+            kind="user_transcript",
+            payload={"item_id": "wake-item", "transcript": "what is on my schedule"},
+        ),
+    )
+    _, before = await jarvis_coordinator.replay_session_events(realtime.id)
+    assert not any(event.event_type == "response.arbiter.started" for event in before)
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="wake-commit-second",
+            kind="wake_audio_committed",
+            payload={"item_id": "wake-item"},
+        ),
+    )
+    _, after = await jarvis_coordinator.replay_session_events(realtime.id)
+    assert any(
+        event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+        for event in after
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_wake_audio_commit_does_not_queue_an_extra_response() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Start",
+        idempotency_key="non-wake-commit-setup",
+    )
+    realtime = await jarvis_coordinator.get_active_session()
+    assert realtime is not None
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="non-wake-commit",
+            kind="wake_audio_committed",
+            payload={"item_id": "later-item"},
+        ),
+    )
+    _, events = await jarvis_coordinator.replay_session_events(realtime.id)
+    committed_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type == "provider.wake_audio_committed"
+    )
+    assert not any(
+        event.event_type == "response.arbiter.started"
+        for event in events[committed_index + 1:]
+    )
 
 
 @pytest.mark.asyncio

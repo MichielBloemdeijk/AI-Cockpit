@@ -742,6 +742,17 @@ class OpenAIRealtimeAdapter:
             return [VoiceProviderEvent(event_id=event_id, kind="user_speaking")]
         if event_type == "input_audio_buffer.speech_stopped":
             return [VoiceProviderEvent(event_id=event_id, kind="user_stopped")]
+        if event_type == "input_audio_buffer.committed":
+            return [
+                VoiceProviderEvent(
+                    event_id=event_id,
+                    kind="wake_audio_committed",
+                    payload={
+                        "item_id": str(event.get("item_id") or ""),
+                        "previous_item_id": str(event.get("previous_item_id") or ""),
+                    },
+                )
+            ]
         if event_type == "conversation.item.input_audio_transcription.delta":
             item_id = str(event.get("item_id") or "active-user-turn")
             delta = str(event.get("delta") or "")

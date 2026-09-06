@@ -981,10 +981,10 @@ class JarvisCoordinator:
                         idempotency_key=f"wake-verification:{session_id}:{generation}:{event.event_id}",
                     )
                     queue_user_response = decision.accepted and activation.speech_stopped
-            elif event.kind == "user_stopped":
+            elif event.kind in {"user_stopped", "wake_audio_committed"}:
                 activation = self._wake_activations.get((session_id, generation))
                 if activation is None:
-                    queue_user_response = True
+                    queue_user_response = event.kind == "user_stopped"
                 else:
                     activation.speech_stopped = True
                     if activation.verification_state == "accepted":
