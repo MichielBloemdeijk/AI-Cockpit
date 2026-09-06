@@ -75,6 +75,7 @@ class _OpenAISession:
     call_id: str
     socket: SidebandSocket
     on_event: ProviderEventHandler
+    activation_id: str | None = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     receiver_task: asyncio.Task[None] | None = None
     consumer_task: asyncio.Task[None] | None = None
@@ -340,6 +341,7 @@ class OpenAIRealtimeAdapter:
                 call_id=pending.call_id,
                 socket=socket,
                 on_event=pending.on_event,
+                activation_id=str(pending.context.get("activation_id") or "") or None,
             )
             provider_session.ready.set()
             self._sessions[key] = provider_session
@@ -506,7 +508,7 @@ class OpenAIRealtimeAdapter:
 
         jarvis_realtime_telemetry.record({
             "trace_id": session_id,
-            "activation_id": None,
+            "activation_id": provider_session.activation_id,
             "session_id": session_id,
             "generation": generation,
             "request_id": request_id,
@@ -798,7 +800,7 @@ class OpenAIRealtimeAdapter:
                         provider_session.ready_delivered.set()
                     jarvis_realtime_telemetry.record({
                         "trace_id": provider_session.session_id,
-                        "activation_id": None,
+                        "activation_id": provider_session.activation_id,
                         "session_id": provider_session.session_id,
                         "generation": provider_session.generation,
                         "request_id": str(event.payload.get("request_id") or "") or None,

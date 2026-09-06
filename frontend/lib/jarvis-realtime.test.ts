@@ -641,6 +641,8 @@ describe("JarvisRealtimeController", () => {
         wake_detect_to_connected_ms: 220,
         provider_call_ms: 55,
         sideband_connect_ms: 15,
+        backend_control_ready_ms: undefined,
+        data_channel_ready_ms: undefined,
       }],
       turns: [{
         turn: 1,
@@ -653,7 +655,60 @@ describe("JarvisRealtimeController", () => {
         provider_stop_to_playback_started_ms: 400,
         local_speech_stop_to_playback_started_ms: 1_600,
         backend_arbiter_ms: 42,
+        wake_audio_upload_ms: undefined,
+        wake_commit_ack_ms: undefined,
+        local_speech_stop_to_commit_ms: undefined,
+        bottleneck: "endpointing",
+        bottleneck_ms: 1_050,
       }],
+    });
+  });
+
+  it("attributes a bulk-wake latency outlier to its slowest stage", () => {
+    const entry = (
+      kind: string,
+      monotonic_ms: number,
+      extra: Partial<JarvisRealtimeTraceEntry> = {},
+    ): JarvisRealtimeTraceEntry => ({
+      kind,
+      monotonic_ms,
+      wall_time: "2026-08-28T00:00:00.000Z",
+      ...extra,
+    });
+    const summary = summarizeJarvisRealtimeTrace([
+      entry("wake_detected", 0),
+      entry("realtime_start_requested", 5),
+      entry("realtime_connection_attempt_started", 10, { attempt: 1 }),
+      entry("realtime_backend_call_started", 20),
+      entry("realtime_backend_call_completed", 500),
+      entry("realtime_remote_description_set", 520),
+      entry("backend.provider.ready", 700, { timing_ms: { provider_call: 480, sideband_connect: 670 } }),
+      entry("realtime_backend_control_ready", 710),
+      entry("realtime_data_channel_open", 715),
+      entry("wake_local_speech_stopped", 100),
+      entry("wake_utterance_ready", 700),
+      entry("wake_audio_upload_started", 720),
+      entry("wake_audio_upload_completed", 735),
+      entry("wake_audio_commit_sent", 736),
+      entry("input_audio_buffer.committed", 780, { item_id: "wake-item" }),
+      entry("backend.response.arbiter.started", 850, { timing_ms: { total_to_provider_submit: 20 } }),
+      entry("response.created", 870, { response_id: "response-1" }),
+      entry("response.output_audio.delta", 1_050, { response_id: "response-1" }),
+      entry("output_audio_buffer.started", 1_100, { response_id: "response-1" }),
+      entry("realtime_connection_ready", 1_110),
+    ]);
+
+    expect(summary.connections[0]).toMatchObject({
+      backend_control_ready_ms: 690,
+      data_channel_ready_ms: 195,
+    });
+    expect(summary.turns[0]).toMatchObject({
+      kind: "wake",
+      wake_audio_upload_ms: 15,
+      wake_commit_ack_ms: 44,
+      local_speech_stop_to_commit_ms: 636,
+      bottleneck: "provider_connection",
+      bottleneck_ms: 690,
     });
   });
 });

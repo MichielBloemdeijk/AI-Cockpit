@@ -136,6 +136,7 @@ class _ResponseGate:
 @dataclass(slots=True)
 class _WakeActivation:
     wake_score: float
+    activation_id: str | None = None
     verification_state: str = "pending"
     speech_stopped: bool = False
 
@@ -221,16 +222,19 @@ class JarvisCoordinator:
         if isinstance(value, dict):
             source = value.get("source")
             raw_score = value.get("wake_score")
+            raw_activation_id = value.get("activation_id")
         else:
             source = getattr(value, "source", None)
             raw_score = getattr(value, "wake_score", None)
+            raw_activation_id = getattr(value, "activation_id", None)
         if source != "wake_word" or raw_score is None:
             return None
         try:
             wake_score = max(0.0, min(1.0, float(raw_score)))
         except (TypeError, ValueError):
             return None
-        return _WakeActivation(wake_score=wake_score)
+        activation_id = str(raw_activation_id).strip() if raw_activation_id else None
+        return _WakeActivation(wake_score=wake_score, activation_id=activation_id)
 
     def _schedule_wake_verification(self, session_id: str, generation: int) -> None:
         key = (session_id, generation)
@@ -788,6 +792,8 @@ class JarvisCoordinator:
                 conversation_id=conversation_id,
                 session_id=realtime.id,
             )
+            if wake_activation is not None and wake_activation.activation_id:
+                context = {**context, "activation_id": wake_activation.activation_id}
 
         if wake_activation is not None:
             self._wake_activations[(record.id, record.generation)] = wake_activation
