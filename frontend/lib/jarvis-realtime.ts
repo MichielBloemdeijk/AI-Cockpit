@@ -92,6 +92,7 @@ export interface JarvisRealtimeTurnTiming {
   response_created_to_first_audio_ms?: number;
   provider_stop_to_first_playable_media_ms?: number;
   local_speech_stop_to_first_playable_media_ms?: number;
+  browser_speech_end_to_first_playable_ms?: number;
   backend_arbiter_ms?: number;
   provider_boundary_to_transcript_ms?: number;
   transcript_to_arbiter_ms?: number;
@@ -190,6 +191,12 @@ interface ReceiverAudioSnapshot {
   packetsReceived?: number;
   totalSamplesReceived?: number;
   timestamp?: number;
+}
+
+interface LocalSpeechEndpoint {
+  monotonicMs: number;
+  source: "wake_local_speech_stopped" | "local_speech_stopped";
+  activationId: string | null;
 }
 
 interface JarvisRealtimeConnectionInput {
@@ -381,6 +388,9 @@ export class JarvisRealtimeController {
   private lastLiveStreamErrorMonotonic = Number.NEGATIVE_INFINITY;
   private playbackPlaying = false;
   private playbackMuted = false;
+  private localSpeechActive = false;
+  private latestLocalSpeechEndpoint: LocalSpeechEndpoint | null = null;
+  private readonly responseSpeechEndpoints = new Map<string, LocalSpeechEndpoint>();
   private readonly reportedTurns = new Set<string>();
   private readonly turnResultTimers = new Set<number>();
   private lastTurnBoundaryMonotonic = Number.NEGATIVE_INFINITY;
@@ -425,9 +435,15 @@ export class JarvisRealtimeController {
   }
 
   recordClientSignal(kind: string, detail?: Record<string, unknown>): void {
-    this.recordTrace(kind, {
+    const entry = this.recordTrace(kind, {
       detail: detail ? JSON.stringify(detail) : undefined,
     });
+    if (kind === "wake_local_speech_started" || kind === "local_speech_started") {
+      this.localSpeechActive = true;
+    } else if (kind === "wake_local_speech_stopped" || kind === "local_speech_stopped") {
+      this.localSpeechActive = false;
+      this.rememberLocalSpeechEndpoint(entry, kind);
+    }
   }
 
   handlePageHide(): void {
@@ -622,6 +638,9 @@ export class JarvisRealtimeController {
   }
 
   async start(options: JarvisRealtimeStartOptions = {}): Promise<JarvisRealtimeSnapshot> {
+    this.localSpeechActive = false;
+    this.latestLocalSpeechEndpoint = null;
+    this.responseSpeechEndpoints.clear();
     this.activationId = options.activationContext?.activation_id ?? crypto.randomUUID();
     const activationContext = options.activationContext
       ? {
@@ -668,6 +687,9 @@ export class JarvisRealtimeController {
     this.options.onPlaybackMuted?.(false);
     this.playbackPlaying = false;
     this.playbackMuted = false;
+    this.localSpeechActive = false;
+    this.latestLocalSpeechEndpoint = null;
+    this.responseSpeechEndpoints.clear();
     this.publish({ status: "idle", attempt: 0, session: null, error: null });
   }
 
@@ -1409,6 +1431,13 @@ export class JarvisRealtimeController {
       connection.activeResponseId = responseId ?? connection.activeResponseId;
       connection.cancellingResponseId = null;
       if (connection.activeResponseId) {
+        if (!this.localSpeechActive && this.latestLocalSpeechEndpoint) {
+          this.responseSpeechEndpoints.set(
+            connection.activeResponseId,
+            this.latestLocalSpeechEndpoint,
+          );
+          this.latestLocalSpeechEndpoint = null;
+        }
         this.queueReceiverStatsSample(
           connection,
           connection.activeResponseId,
@@ -1467,6 +1496,7 @@ export class JarvisRealtimeController {
     operation: number,
   ): void {
     if (!connection || operation !== this.operation || this.active?.peer !== connection.peer) return;
+    this.localSpeechActive = true;
     this.recordTrace("local_speech_started", {
       response_id: connection.activeResponseId ?? undefined,
     });
@@ -1488,9 +1518,11 @@ export class JarvisRealtimeController {
       this.dependencies.clearTimer(connection.bargeInTimer);
       connection.bargeInTimer = null;
     }
-    this.recordTrace("local_speech_stopped", {
+    this.localSpeechActive = false;
+    const entry = this.recordTrace("local_speech_stopped", {
       response_id: connection.activeResponseId ?? undefined,
     });
+    this.rememberLocalSpeechEndpoint(entry, "local_speech_stopped");
   }
 
   private cancelActiveResponse(connection: BrowserConnection, reason: string): void {
@@ -1532,10 +1564,11 @@ export class JarvisRealtimeController {
   private recordTrace(
     kind: string,
     details: Omit<JarvisRealtimeTraceEntry, "kind" | "monotonic_ms" | "wall_time"> = {},
-  ): void {
+    monotonicMs = this.dependencies.now(),
+  ): JarvisRealtimeTraceEntry {
     const entry: JarvisRealtimeTraceEntry = {
       kind,
-      monotonic_ms: this.dependencies.now(),
+      monotonic_ms: monotonicMs,
       wall_time: this.dependencies.wallNow(),
       ...details,
     };
@@ -1543,8 +1576,20 @@ export class JarvisRealtimeController {
     if (this.trace.length > MAX_BROWSER_TRACE_EVENTS) {
       this.trace.splice(0, this.trace.length - MAX_BROWSER_TRACE_EVENTS);
     }
-    if (!PERSISTED_BROWSER_TELEMETRY_EVENTS.has(entry.kind)) return;
+    if (!PERSISTED_BROWSER_TELEMETRY_EVENTS.has(entry.kind)) return entry;
     this.enqueueTelemetryEvent(this.telemetryEventFromTrace(entry));
+    return entry;
+  }
+
+  private rememberLocalSpeechEndpoint(
+    entry: JarvisRealtimeTraceEntry,
+    source: LocalSpeechEndpoint["source"],
+  ): void {
+    this.latestLocalSpeechEndpoint = {
+      monotonicMs: entry.monotonic_ms,
+      source,
+      activationId: this.activationId,
+    };
   }
 
   private telemetryEventFromTrace(
@@ -1739,6 +1784,7 @@ export class JarvisRealtimeController {
           arbitration: turn.response_arbitration_ms,
           generation: turn.generation_ms,
           media_arrival: turn.response_created_to_first_playable_media_ms,
+          speech_end_to_first_playable: turn.browser_speech_end_to_first_playable_ms,
           overall: turn.local_speech_stop_to_first_playable_media_ms,
         }).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
       );
@@ -1821,13 +1867,24 @@ export class JarvisRealtimeController {
           entry.kind === "first_playable_media" && entry.response_id === responseId
         ))
       ) {
+        const playableMonotonic = this.dependencies.now();
+        const endpoint = this.responseSpeechEndpoints.get(responseId);
+        const speechToPlayableMs = endpoint && playableMonotonic >= endpoint.monotonicMs
+          ? Math.round((playableMonotonic - endpoint.monotonicMs) * 10) / 10
+          : undefined;
         this.recordTrace("first_playable_media", {
           response_id: responseId,
+          timing_ms: speechToPlayableMs === undefined
+            ? undefined
+            : { speech_end_to_first_playable: speechToPlayableMs },
           detail: JSON.stringify({
             proxy: "inbound_audio_bytes_increased_while_playing",
             sample: reason,
+            speech_endpoint_source: endpoint?.source ?? null,
+            speech_endpoint_activation_id: endpoint?.activationId ?? null,
           }),
-        });
+        }, playableMonotonic);
+        this.responseSpeechEndpoints.delete(responseId);
       }
       connection.receiverStatsBaseline = snapshot;
     } catch (cause) {
@@ -2184,6 +2241,7 @@ export function summarizeJarvisRealtimeTrace(
     const responseArbitrationMs = elapsedMilliseconds(transcript, arbiter);
     const generationMs = elapsedMilliseconds(arbiter ?? responseCreated, firstAudio);
     const mediaArrivalMs = elapsedMilliseconds(firstAudio ?? responseCreated, firstPlayableMedia);
+    const browserSpeechEndToPlayableMs = firstPlayableMedia?.timing_ms?.speech_end_to_first_playable;
     const bottleneck = [
       { label: "endpointing" as const, milliseconds: endpointMs },
       { label: "provider_connection" as const, milliseconds: providerConnectionMs },
@@ -2206,7 +2264,9 @@ export function summarizeJarvisRealtimeTrace(
       provider_stop_to_response_created_ms: elapsedMilliseconds(providerStop, responseCreated),
       response_created_to_first_audio_ms: elapsedMilliseconds(responseCreated, firstAudio),
       provider_stop_to_first_playable_media_ms: elapsedMilliseconds(providerStop, firstPlayableMedia),
-      local_speech_stop_to_first_playable_media_ms: elapsedMilliseconds(localStop, firstPlayableMedia),
+      local_speech_stop_to_first_playable_media_ms: browserSpeechEndToPlayableMs
+        ?? elapsedMilliseconds(localStop, firstPlayableMedia),
+      browser_speech_end_to_first_playable_ms: browserSpeechEndToPlayableMs,
       backend_arbiter_ms: arbiter?.timing_ms?.total_to_provider_submit,
       provider_boundary_to_transcript_ms: backendTranscript?.timing_ms?.provider_boundary_to_transcript,
       transcript_to_arbiter_ms: elapsedMilliseconds(transcript, arbiter),

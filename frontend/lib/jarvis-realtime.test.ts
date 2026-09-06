@@ -882,6 +882,7 @@ describe("JarvisRealtimeController", () => {
       arbitration: 50,
       generation: 200,
       media_arrival: 200,
+      speech_end_to_first_playable: 450,
       overall: 450,
     });
     expect(JSON.parse(results[0].detail ?? "{}")).toMatchObject({
@@ -895,6 +896,49 @@ describe("JarvisRealtimeController", () => {
       (event) => event.kind === "webrtc.receiver_sample",
     )).toHaveLength(3));
     expect(controller.traceSnapshot().filter((event) => event.kind === "turn.result")).toHaveLength(1);
+    await controller.stop();
+  });
+
+  it("measures first playable media from the latest local speech endpoint", async () => {
+    let now = 1_000;
+    const deps = dependencies({ now: () => now });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.start();
+    controller.recordPlaybackSignal("audio_element_playing");
+
+    now = 1_050;
+    controller.recordClientSignal("wake_local_speech_stopped");
+    now = 1_100;
+    controller.recordClientSignal("wake_local_speech_started");
+    now = 1_200;
+    controller.recordClientSignal("wake_local_speech_stopped");
+    now = 1_300;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({ type: "response.created", response: { id: "response-continuation" } }),
+    } as MessageEvent);
+    await vi.waitFor(() => expect(controller.traceSnapshot().filter(
+      (event) => event.kind === "webrtc.receiver_sample",
+    )).toHaveLength(1));
+
+    deps.peers[0].inboundBytesReceived = 512;
+    now = 1_500;
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({
+        type: "output_audio_buffer.started",
+        response_id: "response-continuation",
+      }),
+    } as MessageEvent);
+    await vi.waitFor(() => expect(controller.traceSnapshot().some(
+      (event) => event.kind === "first_playable_media",
+    )).toBe(true));
+
+    const playable = controller.traceSnapshot().find(
+      (event) => event.kind === "first_playable_media",
+    );
+    expect(playable?.timing_ms).toEqual({ speech_end_to_first_playable: 300 });
+    expect(JSON.parse(playable?.detail ?? "{}")).toMatchObject({
+      speech_endpoint_source: "wake_local_speech_stopped",
+    });
     await controller.stop();
   });
 
@@ -1067,6 +1111,7 @@ describe("JarvisRealtimeController", () => {
         response_created_to_first_audio_ms: 200,
         provider_stop_to_first_playable_media_ms: 400,
         local_speech_stop_to_first_playable_media_ms: 1_600,
+        browser_speech_end_to_first_playable_ms: undefined,
         backend_arbiter_ms: 42,
         provider_boundary_to_transcript_ms: 35,
         transcript_to_arbiter_ms: 40,
@@ -1086,6 +1131,42 @@ describe("JarvisRealtimeController", () => {
         bottleneck: "endpointing",
         bottleneck_ms: 1_050,
       }],
+    });
+  });
+
+  it("keeps the direct browser latency when provider boundaries split a wake request", () => {
+    const entry = (
+      kind: string,
+      monotonic_ms: number,
+      extra: Partial<JarvisRealtimeTraceEntry> = {},
+    ): JarvisRealtimeTraceEntry => ({
+      kind,
+      monotonic_ms,
+      wall_time: "2026-08-28T00:00:00.000Z",
+      ...extra,
+    });
+    const summary = summarizeJarvisRealtimeTrace([
+      entry("wake_detected", 0),
+      entry("wake_local_speech_stopped", 100),
+      entry("input_audio_buffer.committed", 200, { item_id: "wake-item" }),
+      entry("backend.provider.user_transcript", 250),
+      entry("input_audio_buffer.speech_stopped", 500, { item_id: "continuation-item" }),
+      entry("backend.provider.user_transcript", 600),
+      entry("backend.response.arbiter.started", 650),
+      entry("response.created", 700, { response_id: "response-1" }),
+      entry("response.output_audio.delta", 800, { response_id: "response-1" }),
+      entry("first_playable_media", 1_000, {
+        response_id: "response-1",
+        timing_ms: { speech_end_to_first_playable: 900 },
+      }),
+    ]);
+
+    expect(summary.turns).toHaveLength(2);
+    expect(summary.turns[1]).toMatchObject({
+      response_id: "response-1",
+      local_speech_stop_to_first_playable_media_ms: 900,
+      browser_speech_end_to_first_playable_ms: 900,
+      outcome: "complete",
     });
   });
 
