@@ -451,6 +451,7 @@ async def ingest_realtime_telemetry(
     accepted = jarvis_realtime_telemetry.record_many([
         {
             "trace_id": event.trace_id,
+            "client_sequence": event.client_sequence,
             "activation_id": event.activation_id,
             "session_id": event.session_id,
             "generation": event.generation,

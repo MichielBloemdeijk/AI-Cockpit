@@ -284,6 +284,9 @@ const TELEMETRY_MISSING_RESPONSE_DELAY_MS = 8_000;
 const RECEIVER_STATS_FOLLOW_UP_MS = 100;
 const TURN_RESULT_SETTLE_MS = 150;
 const LIVE_STREAM_ERROR_COALESCE_MS = 30_000;
+const MAX_BROWSER_TRACE_EVENTS = 500;
+const MAX_PENDING_TELEMETRY_EVENTS = 500;
+const TELEMETRY_FAILURE_INTEGRITY_THRESHOLD = 3;
 const WAKE_PCM_SAMPLE_RATE = 24_000 as const;
 const WAKE_PCM_CHUNK_BYTES = 24_000;
 const BACKEND_TRACE_EVENTS = new Set([
@@ -315,6 +318,20 @@ const BROWSER_PROVIDER_TRACE_EVENTS = new Set([
   "output_audio_buffer.stopped",
   "response.done",
   "error",
+]);
+const PERSISTED_BROWSER_TELEMETRY_EVENTS = new Set([
+  "live_stream.opened",
+  "live_stream.errored",
+  "live_stream.reconnected",
+  "backend.readiness_event_received",
+  "realtime_backend_control_wait_started",
+  "realtime_backend_control_wait_failed",
+  "realtime_backend_control_ready",
+  "connection.attempt.succeeded",
+  "connection.attempt.failed",
+  "connection.attempt.cleanup",
+  "turn.result",
+  "telemetry.integrity",
 ]);
 
 const browserDependencies: JarvisRealtimeDependencies = {
@@ -350,6 +367,9 @@ export class JarvisRealtimeController {
   private activationId: string | null = null;
   private telemetryPending: JarvisRealtimeTelemetryEvent[] = [];
   private telemetrySending = false;
+  private telemetryClientSequence = 0;
+  private telemetryDropped = 0;
+  private telemetryConsecutiveFailures = 0;
   private telemetrySendPromise: Promise<void> | null = null;
   private telemetryFlushTimer: number | null = null;
   private readonly backendReadiness = new Map<string, BackendReadinessObservation>();
@@ -408,6 +428,15 @@ export class JarvisRealtimeController {
     this.recordTrace(kind, {
       detail: detail ? JSON.stringify(detail) : undefined,
     });
+  }
+
+  handlePageHide(): void {
+    if (!this.telemetryPending.length && !this.telemetrySending) return;
+    this.recordTelemetryIntegrity("page_shutdown_pending", {
+      pending_count: this.telemetryPending.length,
+      in_flight: this.telemetrySending,
+    });
+    void this.flushTelemetry();
   }
 
   recordBackendEvent(event: JarvisLiveEvent): void {
@@ -720,7 +749,7 @@ export class JarvisRealtimeController {
     this.options.onRemoteStream?.(null);
     const error = lastError instanceof Error ? lastError.message : "Realtime connection failed";
     this.publish({ status: "text_fallback", attempt: RETRY_DELAYS_MS.length, session: null, error });
-    await this.flushTelemetry(true);
+    void this.flushTelemetry();
     throw new Error(error);
   }
 
@@ -1511,10 +1540,20 @@ export class JarvisRealtimeController {
       ...details,
     };
     this.trace.push(entry);
-    if (this.trace.length > 2_000) this.trace.splice(0, this.trace.length - 2_000);
+    if (this.trace.length > MAX_BROWSER_TRACE_EVENTS) {
+      this.trace.splice(0, this.trace.length - MAX_BROWSER_TRACE_EVENTS);
+    }
+    if (!PERSISTED_BROWSER_TELEMETRY_EVENTS.has(entry.kind)) return;
+    this.enqueueTelemetryEvent(this.telemetryEventFromTrace(entry));
+  }
+
+  private telemetryEventFromTrace(
+    entry: JarvisRealtimeTraceEntry,
+  ): JarvisRealtimeTelemetryEvent {
     const traceSession = this.active?.session ?? this.connectingSession;
-    this.telemetryPending.push({
+    return {
       trace_id: this.traceId,
+      client_sequence: ++this.telemetryClientSequence,
       ...(this.activationId ? { activation_id: this.activationId } : {}),
       ...(traceSession ? {
         session_id: traceSession.id,
@@ -1532,7 +1571,63 @@ export class JarvisRealtimeController {
         ...(entry.timing_ms === undefined ? {} : { timing_ms: entry.timing_ms }),
         ...(entry.detail === undefined ? {} : { detail: entry.detail.slice(0, 500) }),
       },
-    });
+    };
+  }
+
+  private enqueueTelemetryEvent(event: JarvisRealtimeTelemetryEvent): void {
+    this.telemetryPending.push(event);
+    const overflow = this.telemetryPending.length - MAX_PENDING_TELEMETRY_EVENTS;
+    if (overflow <= 0) return;
+    this.telemetryPending.splice(0, overflow);
+    this.telemetryDropped += overflow;
+    this.recordTelemetryIntegrity("queue_overflow");
+  }
+
+  private recordTelemetryIntegrity(
+    reason: "queue_overflow" | "repeated_submission_failure" | "page_shutdown_pending",
+    detail: Record<string, unknown> = {},
+  ): void {
+    const existing = this.telemetryPending.find(
+      (event) => event.event_type === "telemetry.integrity",
+    );
+    const existingIntegrity = existing?.detail?.integrity;
+    const existingReasons = (
+      existingIntegrity
+      && typeof existingIntegrity === "object"
+      && Array.isArray((existingIntegrity as Record<string, unknown>).reasons)
+    )
+      ? (existingIntegrity as { reasons: unknown[] }).reasons.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [];
+    const integrity = {
+      reasons: [...new Set([...existingReasons, reason])],
+      dropped_count: this.telemetryDropped,
+      consecutive_failures: this.telemetryConsecutiveFailures,
+      ...detail,
+    };
+    if (existing) {
+      existing.detail = { integrity };
+      return;
+    }
+    if (this.telemetryPending.length >= MAX_PENDING_TELEMETRY_EVENTS) {
+      this.telemetryPending.shift();
+      this.telemetryDropped += 1;
+      integrity.dropped_count = this.telemetryDropped;
+    }
+    const entry: JarvisRealtimeTraceEntry = {
+      kind: "telemetry.integrity",
+      monotonic_ms: this.dependencies.now(),
+      wall_time: this.dependencies.wallNow(),
+      detail: JSON.stringify(integrity),
+    };
+    this.trace.push(entry);
+    if (this.trace.length > MAX_BROWSER_TRACE_EVENTS) {
+      this.trace.splice(0, this.trace.length - MAX_BROWSER_TRACE_EVENTS);
+    }
+    const event = this.telemetryEventFromTrace(entry);
+    event.detail = { integrity };
+    this.telemetryPending.push(event);
   }
 
   private scheduleTelemetryFlush(milliseconds: number): void {
@@ -1566,14 +1661,23 @@ export class JarvisRealtimeController {
     let sent = false;
     const send = (async () => {
       try {
-        await this.dependencies.sendTelemetry?.(batch);
-        sent = true;
-      } catch {
-        this.telemetryPending.unshift(...batch);
-        if (this.telemetryPending.length > 2_000) {
-          this.telemetryPending.splice(0, this.telemetryPending.length - 2_000);
+        const acceptedResult = await this.dependencies.sendTelemetry?.(batch);
+        const accepted = typeof acceptedResult === "number" && Number.isFinite(acceptedResult)
+          ? Math.max(0, Math.min(batch.length, Math.floor(acceptedResult)))
+          : batch.length;
+        sent = accepted > 0;
+        if (accepted < batch.length) {
+          this.restoreTelemetryTail(batch.slice(accepted));
         }
+        if (accepted > 0) this.telemetryConsecutiveFailures = 0;
+        else this.telemetryConsecutiveFailures += 1;
+      } catch {
+        this.restoreTelemetryTail(batch);
+        this.telemetryConsecutiveFailures += 1;
       } finally {
+        if (this.telemetryConsecutiveFailures >= TELEMETRY_FAILURE_INTEGRITY_THRESHOLD) {
+          this.recordTelemetryIntegrity("repeated_submission_failure");
+        }
         this.telemetrySending = false;
       }
     })();
@@ -1586,6 +1690,16 @@ export class JarvisRealtimeController {
       return;
     }
     this.scheduleTelemetryFlush(TELEMETRY_AFTER_AUDIO_DELAY_MS);
+  }
+
+  private restoreTelemetryTail(events: JarvisRealtimeTelemetryEvent[]): void {
+    if (!events.length) return;
+    this.telemetryPending.unshift(...events);
+    const overflow = this.telemetryPending.length - MAX_PENDING_TELEMETRY_EVENTS;
+    if (overflow <= 0) return;
+    this.telemetryPending.splice(0, overflow);
+    this.telemetryDropped += overflow;
+    this.recordTelemetryIntegrity("queue_overflow");
   }
 
   private scheduleTurnResult(milliseconds: number, boundary = false): void {

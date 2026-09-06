@@ -792,6 +792,7 @@ export interface JarvisRealtimeActivationContext {
 
 export interface JarvisRealtimeTelemetryEvent {
   trace_id: string;
+  client_sequence?: number;
   activation_id?: string;
   session_id?: string;
   generation?: number;
@@ -807,8 +808,8 @@ export interface JarvisRealtimeTelemetryEvent {
 
 export async function submitJarvisRealtimeTelemetry(
   events: JarvisRealtimeTelemetryEvent[],
-): Promise<void> {
-  if (!events.length) return;
+): Promise<number> {
+  if (!events.length) return 0;
   const res = await fetch(`${BASE}/api/jarvis/realtime/telemetry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -817,6 +818,8 @@ export async function submitJarvisRealtimeTelemetry(
     body: JSON.stringify({ events: events.slice(0, 100) }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const payload = await res.json() as { accepted?: number };
+  return typeof payload.accepted === "number" ? payload.accepted : 0;
 }
 
 export function currentJarvisClientContext(now = new Date()): JarvisClientContext {

@@ -515,7 +515,7 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
-  it("uploads metadata-only timing traces in a batch", async () => {
+  it("persists summaries and essential transitions without noisy client detail", async () => {
     const sendTelemetry = vi.fn().mockResolvedValue(undefined);
     const deps = dependencies({ sendTelemetry });
     const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
@@ -526,8 +526,97 @@ describe("JarvisRealtimeController", () => {
 
     expect(sendTelemetry).toHaveBeenCalled();
     const events = sendTelemetry.mock.calls.flatMap(([batch]) => batch);
-    expect(events.some((event) => event.event_type === "wake_candidate")).toBe(true);
+    expect(events.some((event) => event.event_type === "connection.attempt.succeeded")).toBe(true);
+    expect(events.some((event) => event.event_type === "wake_candidate")).toBe(false);
     expect(events.every((event) => !("audio" in (event.detail ?? {})))).toBe(true);
+    expect(events.map((event) => event.client_sequence)).toEqual(
+      events.map((_, index) => index + 1),
+    );
+  });
+
+  it("retries exactly the unaccepted telemetry tail", async () => {
+    const sendTelemetry = vi.fn()
+      .mockImplementationOnce(async (batch: unknown[]) => batch.length - 1)
+      .mockImplementation(async (batch: unknown[]) => batch.length);
+    const deps = dependencies({ sendTelemetry });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    await controller.start();
+    await vi.waitFor(() => expect(controller.traceSnapshot().some(
+      (event) => event.kind === "connection.attempt.succeeded",
+    )).toBe(true));
+    await controller.stop();
+
+    expect(sendTelemetry).toHaveBeenCalledTimes(2);
+    const first = sendTelemetry.mock.calls[0][0];
+    const retried = sendTelemetry.mock.calls[1][0];
+    expect(retried).toHaveLength(1);
+    expect(retried[0].client_sequence).toBe(first.at(-1)?.client_sequence);
+  });
+
+  it("emits one integrity record after repeated submission failures", async () => {
+    const sendTelemetry = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockImplementation(async (batch: unknown[]) => batch.length);
+    const deps = dependencies({ sendTelemetry });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.start();
+    await vi.waitFor(() => expect(controller.traceSnapshot().some(
+      (event) => event.kind === "connection.attempt.succeeded",
+    )).toBe(true));
+
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      deps.telemetryTimers.at(-1)?.();
+      await vi.waitFor(() => expect(sendTelemetry).toHaveBeenCalledTimes(attempt));
+    }
+
+    const sent = sendTelemetry.mock.calls.flatMap(([batch]) => batch);
+    const integrity = sent.filter((event) => event.event_type === "telemetry.integrity");
+    expect(integrity).toHaveLength(1);
+    expect(integrity[0].detail).toMatchObject({
+      integrity: {
+        reasons: ["repeated_submission_failure"],
+        consecutive_failures: 3,
+      },
+    });
+    await controller.stop();
+  });
+
+  it("bounds browser telemetry memory and reports sequence gaps after overflow", async () => {
+    let now = 0;
+    const sendTelemetry = vi.fn().mockImplementation(async (batch: unknown[]) => batch.length);
+    const deps = dependencies({ sendTelemetry, now: () => ++now });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    for (let index = 0; index < 260; index += 1) {
+      controller.recordLiveStreamState("errored", index * 2, 0);
+      controller.recordLiveStreamState("opened", index * 2 + 1, 1);
+    }
+    expect(controller.traceSnapshot()).toHaveLength(500);
+    await controller.stop();
+
+    const events = sendTelemetry.mock.calls.flatMap(([batch]) => batch);
+    const sequences = events.map((event) => event.client_sequence as number);
+    expect(sequences[0]).toBeGreaterThan(1);
+    expect(events.filter((event) => event.event_type === "telemetry.integrity")).toHaveLength(1);
+  });
+
+  it("adds an integrity record before a non-blocking pagehide flush", async () => {
+    const sendTelemetry = vi.fn().mockImplementation(async (batch: unknown[]) => batch.length);
+    const deps = dependencies({ sendTelemetry });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    controller.recordLiveStreamState("opened", 4, 1);
+
+    controller.handlePageHide();
+    await vi.waitFor(() => expect(sendTelemetry).toHaveBeenCalledOnce());
+
+    const pagehideBatch = sendTelemetry.mock.calls[0][0] as Array<{ event_type: string }>;
+    expect(pagehideBatch.map((event) => event.event_type)).toEqual([
+      "live_stream.opened",
+      "telemetry.integrity",
+    ]);
   });
 
   it("defers telemetry until after the connection critical path", async () => {

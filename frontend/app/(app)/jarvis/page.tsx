@@ -302,6 +302,8 @@ export default function JarvisPage() {
       },
     });
     realtimeControllerRef.current = realtimeController;
+    const handlePageHide = () => realtimeController.handlePageHide();
+    window.addEventListener("pagehide", handlePageHide);
     const lifecycle = new JarvisWakeLifecycle({
       onSnapshot: setWake,
       onRearmRequested: (reason) => void rearmWakeRef.current(reason),
@@ -366,6 +368,7 @@ export default function JarvisPage() {
     return () => {
       disposed = true;
       window.clearInterval(timer);
+      window.removeEventListener("pagehide", handlePageHide);
       lifecycle.destroy();
       void realtimeController.stop().finally(() => runtime.stop());
       realtimeControllerRef.current = null;

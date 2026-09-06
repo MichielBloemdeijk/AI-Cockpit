@@ -807,27 +807,28 @@ class OpenAIRealtimeAdapter:
                     )
                     if event.kind == "ready":
                         provider_session.ready_delivered.set()
-                    jarvis_realtime_telemetry.record({
-                        "trace_id": provider_session.session_id,
-                        "activation_id": provider_session.activation_id,
-                        "session_id": provider_session.session_id,
-                        "generation": provider_session.generation,
-                        "request_id": str(event.payload.get("request_id") or "") or None,
-                        "provider_response_id": str(event.payload.get("response_id") or "") or None,
-                        "source": "provider",
-                        "event_type": event.kind,
-                        "observed_at": datetime.now(timezone.utc),
-                        "monotonic_ms": None,
-                        "duration_ms": round(queue_ms, 3),
-                        "detail_json": {
-                            "queue_ms": round(queue_ms, 3),
-                            **(
-                                {"timing_ms": event.payload["timing_ms"]}
-                                if isinstance(event.payload.get("timing_ms"), dict)
-                                else {}
-                            ),
-                        },
-                    })
+                    if event.kind not in {"user_transcript_delta", "assistant_transcript_delta"}:
+                        jarvis_realtime_telemetry.record({
+                            "trace_id": provider_session.session_id,
+                            "activation_id": provider_session.activation_id,
+                            "session_id": provider_session.session_id,
+                            "generation": provider_session.generation,
+                            "request_id": str(event.payload.get("request_id") or "") or None,
+                            "provider_response_id": str(event.payload.get("response_id") or "") or None,
+                            "source": "provider",
+                            "event_type": event.kind,
+                            "observed_at": datetime.now(timezone.utc),
+                            "monotonic_ms": None,
+                            "duration_ms": round(queue_ms, 3),
+                            "detail_json": {
+                                "queue_ms": round(queue_ms, 3),
+                                **(
+                                    {"timing_ms": event.payload["timing_ms"]}
+                                    if isinstance(event.payload.get("timing_ms"), dict)
+                                    else {}
+                                ),
+                            },
+                        })
                 finally:
                     provider_session.event_queue.task_done()
         except asyncio.CancelledError:

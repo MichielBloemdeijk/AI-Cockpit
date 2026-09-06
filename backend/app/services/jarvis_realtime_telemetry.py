@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any
 
-from sqlalchemy import delete, insert
+from sqlalchemy import delete, insert, select
 
 from app.db.session import session_scope
 from app.db.tables import JarvisRealtimeTraceEvent
@@ -20,8 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 class JarvisRealtimeTelemetryService:
-    def __init__(self) -> None:
-        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=5_000)
+    def __init__(
+        self,
+        *,
+        queue_size: int = 5_000,
+        retention_days: int = 7,
+        max_rows: int = 50_000,
+    ) -> None:
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
+        self._retention_days = retention_days
+        self._max_rows = max_rows
         self._task: asyncio.Task[None] | None = None
         self._stop: asyncio.Event | None = None
 
@@ -41,7 +49,9 @@ class JarvisRealtimeTelemetryService:
 
     def record(self, event: dict[str, Any]) -> bool:
         try:
-            self._queue.put_nowait(event)
+            normalized = dict(event)
+            normalized.setdefault("client_sequence", None)
+            self._queue.put_nowait(normalized)
             return True
         except asyncio.QueueFull:
             return False
@@ -74,15 +84,34 @@ class JarvisRealtimeTelemetryService:
                         self._queue.task_done()
             if utc_now() >= next_cleanup:
                 try:
-                    async with session_scope() as session:
-                        await session.execute(
-                            delete(JarvisRealtimeTraceEvent).where(
-                                JarvisRealtimeTraceEvent.created_at < utc_now() - timedelta(days=7)
-                            )
-                        )
+                    await self._prune()
                 except Exception:
                     logger.exception("Unable to prune Jarvis Realtime telemetry")
                 next_cleanup = utc_now() + timedelta(hours=24)
+
+    async def _prune(self) -> None:
+        async with session_scope() as session:
+            await session.execute(
+                delete(JarvisRealtimeTraceEvent).where(
+                    JarvisRealtimeTraceEvent.created_at
+                    < utc_now() - timedelta(days=self._retention_days)
+                )
+            )
+            if self._max_rows <= 0:
+                await session.execute(delete(JarvisRealtimeTraceEvent))
+                return
+            cutoff = await session.scalar(
+                select(JarvisRealtimeTraceEvent.sequence)
+                .order_by(JarvisRealtimeTraceEvent.sequence.desc())
+                .offset(self._max_rows - 1)
+                .limit(1)
+            )
+            if cutoff is not None:
+                await session.execute(
+                    delete(JarvisRealtimeTraceEvent).where(
+                        JarvisRealtimeTraceEvent.sequence < cutoff
+                    )
+                )
 
 
 jarvis_realtime_telemetry = JarvisRealtimeTelemetryService()

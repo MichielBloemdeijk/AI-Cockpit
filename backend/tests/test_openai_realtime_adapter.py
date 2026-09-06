@@ -988,6 +988,8 @@ async def test_openai_call_api_returns_only_internal_session_and_sdp(
             "sdp_answer",
             "rotate_after_seconds",
             "request_id",
+            "server_received_at",
+            "server_responded_at",
         }
 
         closed = await client.delete(

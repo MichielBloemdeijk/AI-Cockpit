@@ -20,6 +20,7 @@ import {
   login,
   streamChat,
   streamConversationEvents,
+  submitJarvisRealtimeTelemetry,
   startFreshJarvisLog,
   dispatchTask,
   type ConversationEventView,
@@ -86,6 +87,34 @@ describe("global task api", () => {
       credentials: "include",
       cache: "no-store",
     });
+  });
+});
+
+describe("realtime telemetry api", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the accepted prefix count", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ accepted: 1 }),
+    } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const accepted = await submitJarvisRealtimeTelemetry([{
+      trace_id: "trace-1",
+      client_sequence: 4,
+      source: "browser",
+      event_type: "turn.result",
+      observed_at: "2026-09-06T00:00:00.000Z",
+    }]);
+
+    expect(accepted).toBe(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/jarvis/realtime/telemetry", expect.objectContaining({
+      keepalive: true,
+    }));
   });
 });
 

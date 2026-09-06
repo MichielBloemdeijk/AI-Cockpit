@@ -195,6 +195,7 @@ class JarvisRealtimeActivationContext(BaseModel):
 
 class JarvisRealtimeTelemetryEvent(BaseModel):
     trace_id: str = Field(min_length=1, max_length=64)
+    client_sequence: int | None = Field(default=None, ge=1)
     activation_id: str | None = Field(default=None, min_length=1, max_length=64)
     session_id: str | None = Field(default=None, min_length=1, max_length=36)
     generation: int | None = Field(default=None, gt=0)

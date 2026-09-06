@@ -42,6 +42,10 @@ def test_situation_health_migration_resumes_after_partial_sqlite_ddl(tmp_path: P
         }
         assert "runtime_component_health" in inspector.get_table_names()
         assert "jarvis_realtime_trace_events" in inspector.get_table_names()
+        assert "client_sequence" in {
+            column["name"]
+            for column in inspector.get_columns("jarvis_realtime_trace_events")
+        }
         assert "task_projection_checkpoints" in inspector.get_table_names()
         assert "_alembic_tmp_tasks" not in inspector.get_table_names()
         status_check = next(
@@ -53,7 +57,7 @@ def test_situation_health_migration_resumes_after_partial_sqlite_ddl(tmp_path: P
         with engine.connect() as connection:
             assert connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
-            ).scalar_one() == "20260905_0017"
+            ).scalar_one() == "20260906_0018"
     finally:
         engine.dispose()
 
@@ -70,5 +74,5 @@ def test_run_migrations_serializes_parallel_sqlite_startup(tmp_path: Path) -> No
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260905_0017",
+            "20260906_0018",
         )
