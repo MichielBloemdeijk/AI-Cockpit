@@ -382,6 +382,13 @@ export default function JarvisPage() {
     const connect = () => {
       if (disposed) return;
       source = new EventSource(jarvisLiveUrl(liveCursorRef.current), { withCredentials: true });
+      source.onopen = () => {
+        realtimeControllerRef.current?.recordLiveStreamState(
+          "opened",
+          liveCursorRef.current,
+          source?.readyState,
+        );
+      };
       source.addEventListener("jarvis", (raw) => {
         const event = JSON.parse((raw as MessageEvent<string>).data) as JarvisLiveEvent;
         realtimeControllerRef.current?.recordBackendEvent(event);
@@ -448,6 +455,11 @@ export default function JarvisPage() {
         }
       });
       source.onerror = () => {
+        realtimeControllerRef.current?.recordLiveStreamState(
+          "errored",
+          liveCursorRef.current,
+          source?.readyState,
+        );
         source?.close();
         if (!disposed) retry = window.setTimeout(connect, 1000);
       };

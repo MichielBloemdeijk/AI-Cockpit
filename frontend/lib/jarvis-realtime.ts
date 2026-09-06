@@ -151,8 +151,20 @@ interface WakeCommitWaiter {
 
 interface BackendReadyWaiter {
   timer: number;
-  resolve: () => void;
+  resolve: (observation: BackendReadinessObservation) => void;
   reject: (cause: Error) => void;
+}
+
+interface BackendReadinessObservation {
+  ready: boolean;
+  error?: string;
+  eventType: string;
+  sessionId: string;
+  generation: number;
+  sequence: number;
+  serverCreatedAt: string;
+  receivedMonotonic: number;
+  uncalibratedDeliveryMs?: number;
 }
 
 interface JarvisRealtimeConnectionInput {
@@ -200,6 +212,7 @@ const DATA_CHANNEL_OPEN_TIMEOUT_MS = 10_000;
 const WAKE_COMMIT_TIMEOUT_MS = 3_000;
 const TELEMETRY_AFTER_AUDIO_DELAY_MS = 1_000;
 const TELEMETRY_MISSING_RESPONSE_DELAY_MS = 8_000;
+const LIVE_STREAM_ERROR_COALESCE_MS = 30_000;
 const WAKE_PCM_SAMPLE_RATE = 24_000 as const;
 const WAKE_PCM_CHUNK_BYTES = 24_000;
 const BACKEND_TRACE_EVENTS = new Set([
@@ -268,8 +281,12 @@ export class JarvisRealtimeController {
   private telemetrySending = false;
   private telemetrySendPromise: Promise<void> | null = null;
   private telemetryFlushTimer: number | null = null;
-  private readonly backendReadiness = new Map<string, { ready: boolean; error?: string }>();
+  private readonly backendReadiness = new Map<string, BackendReadinessObservation>();
   private readonly backendReadyWaiters = new Map<string, BackendReadyWaiter>();
+  private lastBackendReadiness: BackendReadinessObservation | null = null;
+  private liveStreamState: "idle" | "open" | "error" = "idle";
+  private liveStreamErrorCount = 0;
+  private lastLiveStreamErrorMonotonic = Number.NEGATIVE_INFINITY;
   private snapshot: JarvisRealtimeSnapshot = {
     status: "idle",
     attempt: 0,
@@ -314,13 +331,49 @@ export class JarvisRealtimeController {
     const generation = typeof payload.generation === "number" ? payload.generation : null;
     if (sessionId && generation !== null) {
       const key = this.sessionKey(sessionId, generation);
-      if (event.event_type === "provider.ready") {
-        this.setBackendReadiness(key, { ready: true });
-      } else if (["provider.provider_error", "provider.disconnected"].includes(event.event_type)) {
+      if (
+        event.event_type === "provider.ready"
+        || ["provider.provider_error", "provider.disconnected"].includes(event.event_type)
+      ) {
         const reason = typeof payload.reason === "string" ? payload.reason : undefined;
-        this.setBackendReadiness(key, {
-          ready: false,
-          error: reason || "Realtime backend control connection failed",
+        const receivedWall = Date.parse(this.dependencies.wallNow());
+        const serverCreated = Date.parse(event.created_at);
+        const observation: BackendReadinessObservation = {
+          ready: event.event_type === "provider.ready",
+          ...(event.event_type === "provider.ready"
+            ? {}
+            : { error: reason || "Realtime backend control connection failed" }),
+          eventType: event.event_type,
+          sessionId,
+          generation,
+          sequence: event.sequence,
+          serverCreatedAt: event.created_at,
+          receivedMonotonic: this.dependencies.now(),
+          ...(Number.isFinite(receivedWall) && Number.isFinite(serverCreated)
+            ? { uncalibratedDeliveryMs: Math.max(0, receivedWall - serverCreated) }
+            : {}),
+        };
+        this.lastBackendReadiness = observation;
+        this.setBackendReadiness(key, observation);
+        const currentForReadiness = this.active?.session ?? this.connectingSession;
+        this.recordTrace("backend.readiness_event_received", {
+          sequence: event.sequence,
+          server_time: event.created_at,
+          timing_ms: observation.uncalibratedDeliveryMs === undefined
+            ? undefined
+            : { uncalibrated_delivery: observation.uncalibratedDeliveryMs },
+          detail: JSON.stringify({
+            event_type: event.event_type,
+            observed_session_id: sessionId,
+            observed_generation: generation,
+            expected_session_id: currentForReadiness?.id ?? null,
+            expected_generation: currentForReadiness?.generation ?? null,
+            matches_current: Boolean(
+              currentForReadiness
+              && currentForReadiness.id === sessionId
+              && currentForReadiness.generation === generation
+            ),
+          }),
         });
       }
       const current = this.active?.session ?? this.connectingSession;
@@ -358,6 +411,46 @@ export class JarvisRealtimeController {
     ].includes(event.event_type)) {
       this.scheduleTelemetryFlush(TELEMETRY_AFTER_AUDIO_DELAY_MS);
     }
+  }
+
+  recordLiveStreamState(
+    state: "opened" | "errored",
+    cursor: number,
+    readyState?: number,
+  ): void {
+    const now = this.dependencies.now();
+    if (state === "errored") {
+      if (
+        this.liveStreamState === "error"
+        && now - this.lastLiveStreamErrorMonotonic < LIVE_STREAM_ERROR_COALESCE_MS
+      ) {
+        this.liveStreamErrorCount += 1;
+        this.lastLiveStreamErrorMonotonic = now;
+        return;
+      }
+      this.liveStreamState = "error";
+      this.liveStreamErrorCount = 1;
+      this.lastLiveStreamErrorMonotonic = now;
+      this.recordTrace("live_stream.errored", {
+        sequence: cursor,
+        detail: JSON.stringify({ cursor, ready_state: readyState ?? null }),
+      });
+      return;
+    }
+    const eventType = this.liveStreamState === "error"
+      ? "live_stream.reconnected"
+      : "live_stream.opened";
+    const repeatedErrors = this.liveStreamErrorCount;
+    this.liveStreamState = "open";
+    this.liveStreamErrorCount = 0;
+    this.recordTrace(eventType, {
+      sequence: cursor,
+      detail: JSON.stringify({
+        cursor,
+        ready_state: readyState ?? null,
+        ...(eventType === "live_stream.reconnected" ? { error_count: repeatedErrors } : {}),
+      }),
+    });
   }
 
   async prepare(localStream: MediaStream): Promise<void> {
@@ -722,35 +815,85 @@ export class JarvisRealtimeController {
     operation: number,
     attempt: number,
   ): Promise<void> {
-    if (session.lifecycle_state === "ready") {
-      this.recordTrace("realtime_backend_control_ready", { attempt, detail: "call_response" });
-      return;
-    }
-    if (["disconnected", "superseded"].includes(session.lifecycle_state)) {
-      throw new Error("Realtime backend control connection failed");
-    }
+    const waitStarted = this.dependencies.now();
     const key = this.sessionKey(session.id, session.generation);
-    const observed = this.backendReadiness.get(key);
-    if (observed?.ready) {
-      this.recordTrace("realtime_backend_control_ready", { attempt, detail: "cached_event" });
-      return;
-    }
-    if (observed?.error) throw new Error(observed.error);
-    await new Promise<void>((resolve, reject) => {
-      const waiter: BackendReadyWaiter = { timer: 0, resolve, reject };
-      waiter.timer = this.dependencies.setTimer(() => {
-        if (this.backendReadyWaiters.get(key) === waiter) this.backendReadyWaiters.delete(key);
-        reject(new Error("Realtime backend control did not become ready in time"));
-      }, DATA_CHANNEL_OPEN_TIMEOUT_MS);
-      this.backendReadyWaiters.set(key, waiter);
+    this.recordTrace("realtime_backend_control_wait_started", {
+      attempt,
+      detail: JSON.stringify({ session_id: session.id, generation: session.generation }),
     });
-    if (operation !== this.operation) throw new Error("Realtime connection was cancelled");
-    this.recordTrace("realtime_backend_control_ready", { attempt, detail: "live_event" });
+    try {
+      if (session.lifecycle_state === "ready") {
+        this.recordBackendControlResult(session, attempt, waitStarted, "response");
+        return;
+      }
+      if (["disconnected", "superseded"].includes(session.lifecycle_state)) {
+        throw new Error("Realtime backend control connection failed");
+      }
+      const observed = this.backendReadiness.get(key);
+      if (observed?.ready) {
+        this.recordBackendControlResult(session, attempt, waitStarted, "cached_event", observed);
+        return;
+      }
+      if (observed?.error) throw new Error(observed.error);
+      const liveObservation = await new Promise<BackendReadinessObservation>((resolve, reject) => {
+        const waiter: BackendReadyWaiter = { timer: 0, resolve, reject };
+        waiter.timer = this.dependencies.setTimer(() => {
+          if (this.backendReadyWaiters.get(key) === waiter) this.backendReadyWaiters.delete(key);
+          reject(new Error("Realtime backend control did not become ready in time"));
+        }, DATA_CHANNEL_OPEN_TIMEOUT_MS);
+        this.backendReadyWaiters.set(key, waiter);
+      });
+      if (operation !== this.operation) throw new Error("Realtime connection was cancelled");
+      this.recordBackendControlResult(session, attempt, waitStarted, "live_event", liveObservation);
+    } catch (cause) {
+      this.recordTrace("realtime_backend_control_wait_failed", {
+        attempt,
+        timing_ms: { wait: Math.max(0, this.dependencies.now() - waitStarted) },
+        detail: JSON.stringify({
+          session_id: session.id,
+          generation: session.generation,
+          error: this.errorName(cause),
+          last_readiness_event: this.lastBackendReadiness === null ? null : {
+            event_type: this.lastBackendReadiness.eventType,
+            session_id: this.lastBackendReadiness.sessionId,
+            generation: this.lastBackendReadiness.generation,
+            sequence: this.lastBackendReadiness.sequence,
+          },
+        }),
+      });
+      throw cause;
+    }
+  }
+
+  private recordBackendControlResult(
+    session: JarvisSession,
+    attempt: number,
+    waitStarted: number,
+    source: "response" | "cached_event" | "live_event",
+    observation?: BackendReadinessObservation,
+  ): void {
+    this.recordTrace("realtime_backend_control_ready", {
+      attempt,
+      sequence: observation?.sequence,
+      server_time: observation?.serverCreatedAt,
+      timing_ms: {
+        wait: Math.max(0, this.dependencies.now() - waitStarted),
+        ...(observation?.uncalibratedDeliveryMs === undefined
+          ? {}
+          : { uncalibrated_delivery: observation.uncalibratedDeliveryMs }),
+      },
+      detail: JSON.stringify({
+        source,
+        session_id: session.id,
+        generation: session.generation,
+        observed_event_type: observation?.eventType ?? null,
+      }),
+    });
   }
 
   private setBackendReadiness(
     key: string,
-    state: { ready: boolean; error?: string },
+    state: BackendReadinessObservation,
   ): void {
     this.backendReadiness.set(key, state);
     while (this.backendReadiness.size > 32) {
@@ -762,7 +905,7 @@ export class JarvisRealtimeController {
     if (!waiter) return;
     this.backendReadyWaiters.delete(key);
     this.dependencies.clearTimer(waiter.timer);
-    if (state.ready) waiter.resolve();
+    if (state.ready) waiter.resolve(state);
     else waiter.reject(new Error(state.error || "Realtime backend control connection failed"));
   }
 

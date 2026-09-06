@@ -307,7 +307,79 @@ describe("JarvisRealtimeController", () => {
     await started;
 
     expect(deps.handoffTransports[0].connectLive).toHaveBeenCalledOnce();
+    const readiness = controller.traceSnapshot().find(
+      (event) => event.kind === "realtime_backend_control_ready",
+    );
+    expect(JSON.parse(readiness?.detail ?? "{}")).toMatchObject({
+      source: "cached_event",
+      session_id: "session-1",
+      generation: 1,
+    });
     await controller.stop();
+  });
+
+  it("records live readiness correlation and event delivery timing", async () => {
+    const createCall = vi.fn().mockResolvedValue(connectingResponse(1));
+    const now = vi.fn()
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_010)
+      .mockReturnValue(1_125);
+    const deps = dependencies({
+      createCall,
+      now,
+      wallNow: vi.fn().mockReturnValue("2026-08-28T00:00:01.125Z"),
+    });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    const started = controller.start();
+    await vi.waitFor(() => expect(deps.peers[0].remoteDescription).not.toBeNull());
+    controller.recordBackendEvent(liveEvent("provider.ready", 1));
+    await started;
+
+    const received = controller.traceSnapshot().find(
+      (event) => event.kind === "backend.readiness_event_received",
+    );
+    const resolved = controller.traceSnapshot().find(
+      (event) => event.kind === "realtime_backend_control_ready",
+    );
+    expect(received).toMatchObject({
+      sequence: 1,
+      server_time: "2026-08-28T00:00:01Z",
+      timing_ms: { uncalibrated_delivery: 125 },
+    });
+    expect(JSON.parse(resolved?.detail ?? "{}")).toMatchObject({
+      source: "live_event",
+      observed_event_type: "provider.ready",
+    });
+    await controller.stop();
+  });
+
+  it("coalesces repeated live-stream errors and reports reconnection", () => {
+    const now = vi.fn().mockReturnValue(2_500)
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_500)
+      .mockReturnValueOnce(2_000)
+      .mockReturnValueOnce(2_500);
+    const deps = dependencies({ now });
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+
+    controller.recordLiveStreamState("opened", 10, 1);
+    controller.recordLiveStreamState("errored", 11, 0);
+    controller.recordLiveStreamState("errored", 11, 0);
+    controller.recordLiveStreamState("opened", 12, 1);
+
+    const streamEvents = controller.traceSnapshot().filter(
+      (event) => event.kind.startsWith("live_stream."),
+    );
+    expect(streamEvents.map((event) => event.kind)).toEqual([
+      "live_stream.opened",
+      "live_stream.errored",
+      "live_stream.reconnected",
+    ]);
+    expect(JSON.parse(streamEvents[2].detail ?? "{}")).toMatchObject({
+      cursor: 12,
+      error_count: 2,
+    });
   });
 
   it("retries without opening the mic when sideband control fails after SDP", async () => {
