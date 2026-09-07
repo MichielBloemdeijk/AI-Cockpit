@@ -341,6 +341,279 @@ async def test_wake_verification_grace_favors_activation_when_transcript_is_late
 
 
 @pytest.mark.asyncio
+async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Wake setup",
+        idempotency_key="wake-late-transcript-regression",
+    )
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-late-transcript-browser",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.2},
+    )
+    realtime = bootstrap.session
+
+    for event in (
+        VoiceProviderEvent(event_id="late-first-speaking", kind="user_speaking"),
+        VoiceProviderEvent(
+            event_id="late-first-commit",
+            kind="wake_audio_committed",
+            payload={"item_id": "late-first-wake-item"},
+        ),
+        VoiceProviderEvent(event_id="late-first-stop", kind="user_stopped"),
+        VoiceProviderEvent(
+            event_id="late-first-delta",
+            kind="user_transcript_delta",
+            payload={
+                "item_id": "late-first-user-item",
+                "delta": "Hi Jarvis",
+                "transcript": "Hi Jarvis",
+            },
+        ),
+    ):
+        await jarvis_coordinator.handle_provider_event(
+            realtime.id,
+            realtime.generation,
+            event,
+        )
+
+    verification_task = jarvis_coordinator._wake_verification_tasks.get(
+        (realtime.id, realtime.generation)
+    )
+    assert verification_task is not None
+    await verification_task
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="late-first-transcript",
+            kind="user_transcript",
+            payload={
+                "item_id": "late-first-user-item",
+                "transcript": "Hi Jarvis, are you there?",
+            },
+        ),
+    )
+
+    _, events = await jarvis_coordinator.replay_session_events(realtime.id)
+    user_responses = [
+        event
+        for event in events
+        if event.event_type == "response.arbiter.started"
+        and (event.payload_json or {}).get("reason") == "user_turn"
+    ]
+    assistant_responses = [
+        event for event in events if event.event_type == "provider.assistant_response"
+    ]
+    assert len(user_responses) == 1
+    assert len(assistant_responses) == 1
+
+
+@pytest.mark.asyncio
+async def test_wake_boundaries_request_once_then_normal_turns_continue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Wake setup",
+        idempotency_key="wake-one-shot-regression",
+    )
+    create_calls: list[dict] = []
+
+    async def capture_response(**kwargs) -> None:
+        create_calls.append(kwargs)
+
+    monkeypatch.setattr(fake_voice_session_adapter, "create_response", capture_response)
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-one-shot-browser",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.2},
+    )
+    realtime = bootstrap.session
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="one-shot-transcript-first",
+            kind="user_transcript",
+            payload={"item_id": "one-shot-item", "transcript": "Are you there?"},
+        ),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="one-shot-commit",
+            kind="wake_audio_committed",
+            payload={"item_id": "one-shot-item"},
+        ),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="one-shot-stop", kind="user_stopped"),
+    )
+    assert len(create_calls) == 1
+
+    first_request = create_calls[0]["request_id"]
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="one-shot-generating",
+            kind="assistant_generating",
+            payload={
+                "request_id": first_request,
+                "response_id": "one-shot-response",
+                "response_kind": "user_turn",
+            },
+        ),
+    )
+    assert (realtime.id, realtime.generation) in jarvis_coordinator._wake_activations
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="one-shot-late-stop", kind="user_stopped"),
+    )
+    assert len(create_calls) == 1
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="one-shot-interrupted",
+            kind="assistant_interrupted",
+            payload={
+                "request_id": first_request,
+                "response_id": "one-shot-response",
+                "item_id": "one-shot-assistant-item",
+                "response_kind": "user_turn",
+                "transcript": "An unfinished ordinary response.",
+                "heard_transcript": "",
+                "interrupted": True,
+            },
+        ),
+    )
+    assert len(create_calls) == 1
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="normal-follow-up-speaking", kind="user_speaking"),
+    )
+    assert (realtime.id, realtime.generation) not in jarvis_coordinator._wake_activations
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="normal-follow-up-stop", kind="user_stopped"),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="normal-follow-up-commit",
+            kind="wake_audio_committed",
+            payload={"item_id": "normal-follow-up-item"},
+        ),
+    )
+    assert len(create_calls) == 2
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="normal-follow-up-response",
+            kind="assistant_response",
+            payload={
+                "request_id": create_calls[1]["request_id"],
+                "response_id": "normal-follow-up-response",
+                "item_id": "normal-follow-up-assistant-item",
+                "response_kind": "user_turn",
+                "transcript": "Yes.",
+            },
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_deferred_wake_response_retries_only_after_real_speech_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Wake setup",
+        idempotency_key="wake-deferred-retry-regression",
+    )
+    create_calls: list[dict] = []
+
+    async def capture_response(**kwargs) -> None:
+        create_calls.append(kwargs)
+
+    monkeypatch.setattr(fake_voice_session_adapter, "create_response", capture_response)
+    bootstrap = await jarvis_coordinator.bootstrap_controller(
+        conversation_id=accepted.conversation.id,
+        controller_id="wake-deferred-retry-browser",
+        adapter_name="fake",
+        activation_context={"source": "wake_word", "wake_score": 0.2},
+    )
+    realtime = bootstrap.session
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="deferred-wake-commit",
+            kind="wake_audio_committed",
+            payload={"item_id": "deferred-wake-item"},
+        ),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="deferred-wake-stop", kind="user_stopped"),
+    )
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="continued-speech-start", kind="user_speaking"),
+    )
+    await asyncio.sleep(0.7)
+    assert create_calls == []
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="deferred-wake-transcript",
+            kind="user_transcript",
+            payload={"item_id": "deferred-wake-item", "transcript": "Jarvis, tell me"},
+        ),
+    )
+    assert create_calls == []
+
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(event_id="continued-speech-stop", kind="user_stopped"),
+    )
+    assert len(create_calls) == 1
+    await jarvis_coordinator.handle_provider_event(
+        realtime.id,
+        realtime.generation,
+        VoiceProviderEvent(
+            event_id="continued-speech-response",
+            kind="assistant_response",
+            payload={
+                "request_id": create_calls[0]["request_id"],
+                "response_id": "continued-speech-response",
+                "item_id": "continued-speech-assistant-item",
+                "response_kind": "user_turn",
+                "transcript": "Done.",
+            },
+        ),
+    )
+
+
+@pytest.mark.asyncio
 async def test_fake_provider_direct_response_and_delegation_acknowledgement() -> None:
     first = await jarvis_coordinator.accept_text_turn("Status check", idempotency_key="direct")
     session = await jarvis_coordinator.get_active_session()

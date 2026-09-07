@@ -53,8 +53,6 @@ FLOOR_EVENT_TYPES = {
     "ready": "listening",
     "user_speaking": "user_speaking",
     "user_stopped": "thinking",
-    "user_transcript_delta": "user_speaking",
-    "user_transcript": "thinking",
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",
     "assistant_transcript_delta": "assistant_speaking",
@@ -140,6 +138,7 @@ class _WakeActivation:
     activation_id: str | None = None
     verification_state: str = "pending"
     speech_stopped: bool = False
+    response_requested: bool = False
 
 
 _RESPONSE_PRIORITY = {
@@ -281,6 +280,7 @@ class JarvisCoordinator:
                 ):
                     return
                 activation.verification_state = "accepted"
+                activation.response_requested = True
                 async with session_scope() as session:
                     realtime = await session.get(RealtimeSession, session_id)
                     if (
@@ -470,6 +470,8 @@ class JarvisCoordinator:
         session_id: str,
         generation: int,
         reason: str,
+        *,
+        enqueue: bool = True,
     ) -> None:
         request_started = time.monotonic()
         gate_acquired = request_started
@@ -488,7 +490,7 @@ class JarvisCoordinator:
         context = None
         selected_reason = reason
         self._trace_response_gate(
-            "response.arbiter.requested",
+            "response.arbiter.requested" if enqueue else "response.arbiter.retry_requested",
             session_id=session_id,
             generation=generation,
             reason=reason,
@@ -496,16 +498,27 @@ class JarvisCoordinator:
         try:
             async with gate.lock:
                 gate_acquired = time.monotonic()
-                gate.pending.add(reason)
-                if gate.attempt is not None:
+                if enqueue:
+                    gate.pending.add(reason)
+                elif reason not in gate.pending:
                     self._trace_response_gate(
-                        "response.arbiter.coalesced",
+                        "response.arbiter.duplicate_ignored",
                         session_id=session_id,
                         generation=generation,
                         reason=reason,
-                        request_id=gate.attempt.request_id,
                         duration_ms=(gate_acquired - request_started) * 1_000,
                     )
+                    return
+                if gate.attempt is not None:
+                    if enqueue:
+                        self._trace_response_gate(
+                            "response.arbiter.coalesced",
+                            session_id=session_id,
+                            generation=generation,
+                            reason=reason,
+                            request_id=gate.attempt.request_id,
+                            duration_ms=(gate_acquired - request_started) * 1_000,
+                        )
                     return
                 selected_reason = min(
                     gate.pending,
@@ -603,6 +616,15 @@ class JarvisCoordinator:
                         started_monotonic=now_monotonic,
                         last_activity_monotonic=now_monotonic,
                     )
+                    if not enqueue:
+                        self._trace_response_gate(
+                            "response.arbiter.resumed",
+                            session_id=session_id,
+                            generation=generation,
+                            reason=selected_reason,
+                            request_id=request_id,
+                            duration_ms=(time.monotonic() - request_started) * 1_000,
+                        )
                 snapshot_finished = time.monotonic()
         except Exception as exc:
             self._trace_response_gate(
@@ -741,7 +763,12 @@ class JarvisCoordinator:
                 gate.pending,
                 key=lambda item: _RESPONSE_PRIORITY.get(item, 99),
             )
-            await self._queue_controlled_response(session_id, generation, pending_reason)
+            await self._queue_controlled_response(
+                session_id,
+                generation,
+                pending_reason,
+                enqueue=False,
+            )
 
     async def _observe_controlled_response(
         self,
@@ -1082,6 +1109,7 @@ class JarvisCoordinator:
         release_reservations = False
         response_finished = False
         queue_user_response = False
+        retry_user_response = False
         queue_task_updates = False
         schedule_wake_fallback = False
         cancel_wake_fallback = False
@@ -1118,28 +1146,41 @@ class JarvisCoordinator:
                 response_finished = True
                 clear_wake_activation = True
 
+            if event.kind == "user_speaking":
+                activation = self._wake_activations.get((session_id, generation))
+                if activation is not None and activation.response_requested:
+                    clear_wake_activation = True
+
             if event.kind == "user_transcript":
                 await self._persist_user_transcript(session, realtime, event)
                 activation = self._wake_activations.get((session_id, generation))
-                if activation is not None and activation.verification_state == "pending":
-                    decision = verify_wake_transcript(
-                        str(event.payload.get("transcript") or ""),
-                        activation.wake_score,
-                    )
-                    activation.verification_state = "accepted" if decision.accepted else "rejected"
-                    cancel_wake_fallback = True
-                    await repo.append_session_event(
-                        session_id=session_id,
-                        event_type=f"wake.verification.{activation.verification_state}",
-                        payload_json={
-                            "reason": decision.reason,
-                            "wake_score": activation.wake_score,
-                            "session_id": session_id,
-                            "generation": generation,
-                        },
-                        idempotency_key=f"wake-verification:{session_id}:{generation}:{event.event_id}",
-                    )
-                    queue_user_response = decision.accepted and activation.speech_stopped
+                if activation is not None:
+                    if activation.verification_state == "pending":
+                        decision = verify_wake_transcript(
+                            str(event.payload.get("transcript") or ""),
+                            activation.wake_score,
+                        )
+                        activation.verification_state = "accepted" if decision.accepted else "rejected"
+                        cancel_wake_fallback = True
+                        await repo.append_session_event(
+                            session_id=session_id,
+                            event_type=f"wake.verification.{activation.verification_state}",
+                            payload_json={
+                                "reason": decision.reason,
+                                "wake_score": activation.wake_score,
+                                "session_id": session_id,
+                                "generation": generation,
+                            },
+                            idempotency_key=f"wake-verification:{session_id}:{generation}:{event.event_id}",
+                        )
+                    if activation.verification_state == "rejected":
+                        clear_wake_activation = True
+                    elif activation.verification_state == "accepted" and activation.speech_stopped:
+                        if activation.response_requested:
+                            retry_user_response = True
+                        else:
+                            activation.response_requested = True
+                            queue_user_response = True
             elif event.kind in {"user_stopped", "wake_audio_committed"}:
                 activation = self._wake_activations.get((session_id, generation))
                 if activation is None:
@@ -1147,7 +1188,11 @@ class JarvisCoordinator:
                 else:
                     activation.speech_stopped = True
                     if activation.verification_state == "accepted":
-                        queue_user_response = True
+                        if activation.response_requested:
+                            retry_user_response = True
+                        else:
+                            activation.response_requested = True
+                            queue_user_response = True
                     elif activation.verification_state == "pending":
                         schedule_wake_fallback = True
             elif event.kind in {"assistant_response", "assistant_interrupted"}:
@@ -1229,6 +1274,13 @@ class JarvisCoordinator:
 
         if queue_user_response:
             await self._queue_controlled_response(session_id, generation, "user_turn")
+        elif retry_user_response:
+            await self._queue_controlled_response(
+                session_id,
+                generation,
+                "user_turn",
+                enqueue=False,
+            )
 
         if queue_task_updates:
             if bool(event.payload.get("defer_initial_updates")):
@@ -1710,13 +1762,17 @@ class JarvisCoordinator:
                 continue
             if event_type.startswith("provider."):
                 provider_kind = event_type.removeprefix("provider.")
+                if provider_kind in {"user_transcript_delta", "user_transcript"}:
+                    continue
                 if provider_kind in {"assistant_response", "assistant_interrupted"}:
                     for older_event in events[index + 1 :]:
                         older_event_type = older_event.event_type
                         older_kind = older_event_type.removeprefix("provider.")
-                        if older_kind in {"user_speaking", "user_transcript_delta"}:
+                        if older_kind in {"user_transcript_delta", "user_transcript"}:
+                            continue
+                        if older_kind == "user_speaking":
                             return "user_speaking", older_event.created_at
-                        if older_kind in {"user_stopped", "user_transcript"}:
+                        if older_kind == "user_stopped":
                             break
                 return FLOOR_EVENT_TYPES.get(provider_kind, "thinking"), event.created_at
             if event_type == "session.connecting":
