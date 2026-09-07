@@ -1,0 +1,11 @@
+---
+description: Restart affected development processes after runtime code changes
+alwaysApply: true
+---
+
+# Restart After Runtime Changes
+
+- After completing or committing changes that affect a running application process, restart the affected process before handing the work back.
+- Verify its health after restart, including any relevant worker heartbeat or application state endpoint.
+- Restart only affected processes. Do not restart for documentation-only or test-only changes.
+- If a safe restart or health check is unavailable, state that explicitly in the final response.
