@@ -17,7 +17,7 @@ from uuid import uuid4
 import certifi
 import httpx
 
-from app.config import settings
+from app.config import RealtimeAudioPolicy, build_realtime_audio_policy, settings
 from app.services.heard_prefix import (
     TranscriptBoundary,
     estimate_heard_prefix,
@@ -56,6 +56,8 @@ class _ResponseTimeline:
     request_sent_monotonic: float | None = None
     response_kind: str = ""
     request_id: str = ""
+    activation_id: str | None = None
+    input_item_id: str | None = None
     item_id: str = ""
     transcript: str = ""
     transcript_boundaries: list[TranscriptBoundary] = field(default_factory=list)
@@ -94,8 +96,11 @@ class _OpenAISession:
     response_by_item: dict[str, str] = field(default_factory=dict)
     user_transcripts: dict[str, str] = field(default_factory=dict)
     response_requests: dict[str, float] = field(default_factory=dict)
-    last_user_boundary_monotonic: float | None = None
-    last_user_boundary_kind: str | None = None
+    response_request_metadata: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    user_boundary_monotonic: dict[str, float] = field(default_factory=dict)
+    user_boundary_kind: dict[str, str] = field(default_factory=dict)
+    locally_generated_commit_event_ids: dict[str, str | None] = field(default_factory=dict)
+    committed_item_by_activation: dict[str, str] = field(default_factory=dict)
     fallback_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     speech_duration_scale: float = 1.0
 
@@ -461,6 +466,8 @@ class OpenAIRealtimeAdapter:
         session_id: str,
         generation: int,
         request_id: str,
+        activation_id: str | None = None,
+        input_item_id: str | None = None,
         response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
@@ -477,6 +484,8 @@ class OpenAIRealtimeAdapter:
                 "jarvis_request_id": request_id,
                 "jarvis_purpose": response_kind,
                 "jarvis_presentation_ids": json.dumps(presentation_ids),
+                "jarvis_activation_id": activation_id or "",
+                "jarvis_input_item_id": input_item_id or "",
             },
             "output_modalities": ["audio"],
             "instructions": response_instructions,
@@ -502,6 +511,7 @@ class OpenAIRealtimeAdapter:
                 }
             )
         provider_session.response_requests[request_id] = time.monotonic()
+        provider_session.response_request_metadata[request_id] = (activation_id, input_item_id)
         try:
             await self._send(
                 provider_session,
@@ -513,11 +523,12 @@ class OpenAIRealtimeAdapter:
             )
         except Exception:
             provider_session.response_requests.pop(request_id, None)
+            provider_session.response_request_metadata.pop(request_id, None)
             raise
 
         jarvis_realtime_telemetry.record({
             "trace_id": session_id,
-            "activation_id": provider_session.activation_id,
+            "activation_id": activation_id,
             "session_id": session_id,
             "generation": generation,
             "request_id": request_id,
@@ -554,9 +565,46 @@ class OpenAIRealtimeAdapter:
             },
         )
 
+    async def discard_candidate_items(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        item_ids: tuple[str, ...],
+    ) -> None:
+        provider_session = self._require_session(session_id, generation)
+        for item_id in item_ids:
+            if not item_id:
+                continue
+            await self._send(
+                provider_session,
+                {
+                    "type": "conversation.item.delete",
+                    "event_id": f"jarvis-candidate-delete:{uuid4()}",
+                    "item_id": item_id,
+                },
+            )
+
     def is_connected(self, *, session_id: str, generation: int) -> bool:
         provider_session = self._sessions.get((session_id, generation))
         return bool(provider_session is not None and not provider_session.closing)
+
+    def record_commit_event_id(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        event_id: str,
+        activation_id: str | None = None,
+        item_id: str | None = None,
+    ) -> None:
+        """Remember a client commit for precise empty-commit classification."""
+        provider_session = self._sessions.get((session_id, generation))
+        if provider_session is None:
+            return
+        provider_session.locally_generated_commit_event_ids[event_id] = activation_id
+        if activation_id and item_id:
+            provider_session.committed_item_by_activation[activation_id] = item_id
 
     async def close(
         self,
@@ -810,11 +858,17 @@ class OpenAIRealtimeAdapter:
                     if event.kind not in {"user_transcript_delta", "assistant_transcript_delta"}:
                         jarvis_realtime_telemetry.record({
                             "trace_id": provider_session.session_id,
-                            "activation_id": provider_session.activation_id,
+                            "activation_id": str(event.payload.get("activation_id") or "")
+                            or provider_session.activation_id,
                             "session_id": provider_session.session_id,
                             "generation": provider_session.generation,
                             "request_id": str(event.payload.get("request_id") or "") or None,
                             "provider_response_id": str(event.payload.get("response_id") or "") or None,
+                            "provider_input_item_id": str(
+                                event.payload.get("item_id")
+                                or event.payload.get("input_item_id")
+                                or ""
+                            ) or None,
                             "source": "provider",
                             "event_type": event.kind,
                             "observed_at": datetime.now(timezone.utc),
@@ -822,6 +876,11 @@ class OpenAIRealtimeAdapter:
                             "duration_ms": round(queue_ms, 3),
                             "detail_json": {
                                 "queue_ms": round(queue_ms, 3),
+                                **(
+                                    {"activation_id": event.payload["activation_id"]}
+                                    if event.payload.get("activation_id")
+                                    else {}
+                                ),
                                 **(
                                     {"timing_ms": event.payload["timing_ms"]}
                                     if isinstance(event.payload.get("timing_ms"), dict)
@@ -851,24 +910,64 @@ class OpenAIRealtimeAdapter:
             return [VoiceProviderEvent(event_id=event_id, kind="ready")]
         if event_type == "input_audio_buffer.speech_started":
             now = time.monotonic()
+            item_id = str(event.get("item_id") or "")
+            if item_id:
+                provider_session.user_boundary_monotonic[item_id] = now
+                provider_session.user_boundary_kind[item_id] = "speech_started"
+                self._prune_user_boundaries(provider_session)
             for response_id in provider_session.speaking_responses:
                 if response_id not in provider_session.completed_responses:
                     self._timeline(provider_session, response_id).mute_monotonic = now
-            return [VoiceProviderEvent(event_id=event_id, kind="user_speaking")]
-        if event_type == "input_audio_buffer.speech_stopped":
-            provider_session.last_user_boundary_monotonic = time.monotonic()
-            provider_session.last_user_boundary_kind = "speech_stopped"
-            return [VoiceProviderEvent(event_id=event_id, kind="user_stopped")]
-        if event_type == "input_audio_buffer.committed":
-            provider_session.last_user_boundary_monotonic = time.monotonic()
-            provider_session.last_user_boundary_kind = "committed"
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
-                    kind="wake_audio_committed",
+                    kind="user_speaking",
                     payload={
-                        "item_id": str(event.get("item_id") or ""),
-                        "previous_item_id": str(event.get("previous_item_id") or ""),
+                        "item_id": item_id,
+                        "audio_start_ms": self._optional_int(event.get("audio_start_ms")),
+                    },
+                )
+            ]
+        if event_type == "input_audio_buffer.speech_stopped":
+            now = time.monotonic()
+            item_id = str(event.get("item_id") or "")
+            if item_id:
+                provider_session.user_boundary_monotonic[item_id] = now
+                provider_session.user_boundary_kind[item_id] = "speech_stopped"
+                self._prune_user_boundaries(provider_session)
+            return [
+                VoiceProviderEvent(
+                    event_id=event_id,
+                    kind="user_stopped",
+                    payload={
+                        "item_id": item_id,
+                        "audio_end_ms": self._optional_int(event.get("audio_end_ms")),
+                    },
+                )
+            ]
+        if event_type == "input_audio_buffer.committed":
+            now = time.monotonic()
+            item_id = str(event.get("item_id") or "")
+            previous_item_id = str(event.get("previous_item_id") or "") or None
+            activation_id = provider_session.activation_id
+            if item_id:
+                provider_session.user_boundary_monotonic[item_id] = now
+                provider_session.user_boundary_kind[item_id] = "committed"
+                if activation_id:
+                    provider_session.committed_item_by_activation[activation_id] = item_id
+                self._prune_user_boundaries(provider_session)
+            # The cold-call activation applies to exactly the first committed
+            # item. Follow-up provider boundaries in the same session must not
+            # inherit it.
+            provider_session.activation_id = None
+            return [
+                VoiceProviderEvent(
+                    event_id=event_id,
+                    kind="user_input_committed",
+                    payload={
+                        "item_id": item_id,
+                        "previous_item_id": previous_item_id,
+                        **({"activation_id": activation_id} if activation_id else {}),
                     },
                 )
             ]
@@ -901,27 +1000,42 @@ class OpenAIRealtimeAdapter:
             if not transcript:
                 return []
             timing_ms: dict[str, float] = {}
-            if provider_session.last_user_boundary_monotonic is not None:
-                timing_ms["provider_boundary_to_transcript"] = round(
+            boundary_monotonic = provider_session.user_boundary_monotonic.get(item_id)
+            if boundary_monotonic is not None:
+                timing_ms["item_commit_to_transcript"] = round(
                     max(
                         0.0,
                         (
-                            transcript_completed
-                            - provider_session.last_user_boundary_monotonic
+                            transcript_completed - boundary_monotonic
                         ) * 1_000,
                     ),
                     3,
                 )
+            payload = {
+                "item_id": item_id,
+                "transcript": transcript,
+                "timing_ms": timing_ms,
+                **(
+                    {"activation_id": activation_id}
+                    if (
+                        activation_id := next(
+                            (
+                                candidate_activation_id
+                                for candidate_activation_id, committed_item_id
+                                in provider_session.committed_item_by_activation.items()
+                                if committed_item_id == item_id
+                            ),
+                            None,
+                        )
+                    )
+                    else {}
+                ),
+            }
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
                     kind="user_transcript",
-                    payload={
-                        "item_id": item_id,
-                        "transcript": transcript,
-                        "boundary_kind": provider_session.last_user_boundary_kind,
-                        "timing_ms": timing_ms,
-                    },
+                    payload=payload,
                 )
             ]
         if event_type == "response.created":
@@ -936,10 +1050,20 @@ class OpenAIRealtimeAdapter:
                 timeline.presentation_ids = self._presentation_ids(metadata)
                 timeline.response_kind = str(metadata.get("jarvis_purpose") or "")
                 timeline.request_id = str(metadata.get("jarvis_request_id") or "")
+                request_metadata = provider_session.response_request_metadata.get(timeline.request_id)
+                timeline.activation_id = (
+                    str(metadata.get("jarvis_activation_id") or "")
+                    or (None if request_metadata is None else request_metadata[0])
+                ) or None
+                timeline.input_item_id = (
+                    str(metadata.get("jarvis_input_item_id") or "")
+                    or (None if request_metadata is None else request_metadata[1])
+                ) or None
                 timeline.request_sent_monotonic = provider_session.response_requests.pop(
                     timeline.request_id,
                     None,
                 )
+                provider_session.response_request_metadata.pop(timeline.request_id, None)
             timing_ms: dict[str, float] = {}
             if response_id and timeline.request_sent_monotonic is not None:
                 timing_ms["response_create_sent_to_created"] = round(
@@ -949,16 +1073,19 @@ class OpenAIRealtimeAdapter:
                     ),
                     3,
                 )
+            response_payload = {
+                "response_id": response_id,
+                "response_kind": "" if not response_id else timeline.response_kind,
+                "request_id": "" if not response_id else timeline.request_id,
+                "activation_id": None if not response_id else timeline.activation_id,
+                "input_item_id": None if not response_id else timeline.input_item_id,
+                "timing_ms": timing_ms,
+            }
             return [
                 VoiceProviderEvent(
                     event_id=event_id,
                     kind="assistant_generating",
-                    payload={
-                        "response_id": response_id,
-                        "response_kind": "" if not response_id else timeline.response_kind,
-                        "request_id": "" if not response_id else timeline.request_id,
-                        "timing_ms": timing_ms,
-                    },
+                    payload=response_payload,
                 )
             ]
         if event_type == "response.output_item.added":
@@ -1002,6 +1129,8 @@ class OpenAIRealtimeAdapter:
                         "response_id": response_id,
                         "response_kind": timeline.response_kind,
                         "request_id": timeline.request_id,
+                        "activation_id": timeline.activation_id,
+                        "input_item_id": timeline.input_item_id,
                         "timing_ms": timing_ms,
                     },
                 )
@@ -1036,6 +1165,8 @@ class OpenAIRealtimeAdapter:
                         "provisional": True,
                         "response_kind": timeline.response_kind,
                         "request_id": timeline.request_id,
+                        "activation_id": timeline.activation_id,
+                        "input_item_id": timeline.input_item_id,
                     },
                 )
             ]
@@ -1082,6 +1213,8 @@ class OpenAIRealtimeAdapter:
                         "response_id": response_id,
                         "response_kind": timeline.response_kind,
                         "request_id": timeline.request_id,
+                        "activation_id": timeline.activation_id,
+                        "input_item_id": timeline.input_item_id,
                         "timing_ms": timing_ms,
                     },
                 )
@@ -1118,7 +1251,52 @@ class OpenAIRealtimeAdapter:
         if event_type == "error":
             error = event.get("error") if isinstance(event.get("error"), dict) else {}
             reason = str(error.get("code") or error.get("type") or "openai_realtime_error")
-            return [VoiceProviderEvent(event_id=event_id, kind="provider_error", payload={"reason": reason})]
+            error_event_id = str(error.get("event_id") or event.get("event_id") or "")
+            if (
+                reason == "input_audio_buffer_commit_empty"
+                and error_event_id in provider_session.locally_generated_commit_event_ids
+                and not provider_session.closing
+            ):
+                activation_id = provider_session.locally_generated_commit_event_ids[error_event_id]
+                item_id = (
+                    None
+                    if activation_id is None
+                    else provider_session.committed_item_by_activation.get(activation_id)
+                )
+                if not activation_id or not item_id:
+                    return [
+                        VoiceProviderEvent(
+                            event_id=event_id,
+                            kind="provider_error",
+                            payload={
+                                "reason": reason,
+                                "error_event_id": error_event_id,
+                            },
+                        )
+                    ]
+                return [
+                    VoiceProviderEvent(
+                        event_id=event_id,
+                        kind="provider_protocol_warning",
+                        payload={
+                            "reason": reason,
+                            "original_code": reason,
+                            "error_event_id": error_event_id,
+                            "activation_id": activation_id,
+                            "item_id": item_id,
+                        },
+                    )
+                ]
+            return [
+                VoiceProviderEvent(
+                    event_id=event_id,
+                    kind="provider_error",
+                    payload={
+                        "reason": reason,
+                        "error_event_id": error_event_id,
+                    },
+                )
+            ]
         return []
 
     def _normalize_response_done(
@@ -1139,6 +1317,12 @@ class OpenAIRealtimeAdapter:
             if not timeline.presentation_ids:
                 timeline.presentation_ids = self._presentation_ids(metadata)
             timeline.request_id = timeline.request_id or str(metadata.get("jarvis_request_id") or "")
+            timeline.activation_id = timeline.activation_id or (
+                str(metadata.get("jarvis_activation_id") or "") or None
+            )
+            timeline.input_item_id = timeline.input_item_id or (
+                str(metadata.get("jarvis_input_item_id") or "") or None
+            )
         normalized: list[VoiceProviderEvent] = []
         for index, item in enumerate(output):
             if not isinstance(item, dict) or item.get("type") != "function_call":
@@ -1163,6 +1347,8 @@ class OpenAIRealtimeAdapter:
                         ),
                         "response_kind": "" if timeline is None else timeline.response_kind,
                         "request_id": "" if timeline is None else timeline.request_id,
+                        "activation_id": None if timeline is None else timeline.activation_id,
+                        "input_item_id": None if timeline is None else timeline.input_item_id,
                     },
                 )
             )
@@ -1292,6 +1478,8 @@ class OpenAIRealtimeAdapter:
                     "presentation_ids": list(timeline.presentation_ids),
                     "response_kind": timeline.response_kind,
                     "request_id": timeline.request_id,
+                    "activation_id": timeline.activation_id,
+                    "input_item_id": timeline.input_item_id,
                     "response_status": timeline.response_status,
                 },
             )
@@ -1333,6 +1521,22 @@ class OpenAIRealtimeAdapter:
             current = provider_session.fallback_tasks.get(response_id)
             if current is asyncio.current_task():
                 provider_session.fallback_tasks.pop(response_id, None)
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        try:
+            return None if value is None else int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _prune_user_boundaries(provider_session: _OpenAISession) -> None:
+        while len(provider_session.user_boundary_monotonic) > 64:
+            oldest = next(iter(provider_session.user_boundary_monotonic), None)
+            if oldest is None:
+                break
+            provider_session.user_boundary_monotonic.pop(oldest, None)
+            provider_session.user_boundary_kind.pop(oldest, None)
 
     @staticmethod
     def _pcm_duration_ms(value: Any) -> float:
@@ -1725,6 +1929,13 @@ class OpenAIRealtimeAdapter:
         voice = str(preferences.get("voice") or settings.openai_realtime_voice)
         if voice not in {"marin", "cedar"}:
             voice = settings.openai_realtime_voice
+        policy_value = context.get("audio_policy") or context.get("_audio_policy")
+        if isinstance(policy_value, RealtimeAudioPolicy):
+            policy = policy_value
+        elif isinstance(policy_value, dict):
+            policy = RealtimeAudioPolicy.from_dict(policy_value)
+        else:
+            policy = build_realtime_audio_policy(settings)
         return {
             "type": "realtime",
             "model": settings.openai_realtime_model,
@@ -1738,12 +1949,7 @@ class OpenAIRealtimeAdapter:
                         "model": settings.openai_realtime_transcription_model,
                         "keywords": ["Jarvis", "queued", "reminder", "snooze"],
                     },
-                    "turn_detection": {
-                        "type": "semantic_vad",
-                        "eagerness": settings.openai_realtime_vad_eagerness,
-                        "create_response": False,
-                        "interrupt_response": False,
-                    },
+                    "turn_detection": policy.provider_turn_detection(),
                 },
                 "output": {"voice": voice},
             },

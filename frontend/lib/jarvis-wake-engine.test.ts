@@ -158,4 +158,179 @@ describe("JarvisWakeEngine", () => {
     await value.destroy();
     expect(destroy).toHaveBeenCalledOnce();
   });
+
+  it("streams bounded pre-roll and subsequent chunks before one endpoint", async () => {
+    const starts: Array<{ probability: number; samples: Float32Array }> = [];
+    const chunks: Float32Array[] = [];
+    const endpoints: unknown[] = [];
+    const results: JarvisWakeInferenceResult[] = [
+      { speechProbability: 0.9, wakeProbability: 0.9 },
+      { speechProbability: 0.1, wakeProbability: 0 },
+    ];
+    const value = new JarvisWakeEngine({
+      inference: { analyze: async () => results.shift() ?? { speechProbability: 0, wakeProbability: 0 } },
+      onDetected: vi.fn(),
+      onCandidateStart: (probability, preRoll) => starts.push({ probability, samples: preRoll }),
+      onCandidateAudio: (samples) => chunks.push(samples),
+      onCandidateEndpoint: (endpoint) => endpoints.push(endpoint),
+      onUtterance: vi.fn(),
+      onError: vi.fn(),
+      batchSamples: 2,
+      batchIntervalSamples: 2,
+      speechLookbackMs: 0,
+      preRollPaddingMs: 300,
+      endpointSilenceMs: 0,
+    });
+
+    value.push(new Float32Array(4_800).fill(1));
+    await value.idle();
+    value.push(new Float32Array([2, 3]));
+    await value.idle();
+
+    expect(starts).toHaveLength(1);
+    expect(starts[0].probability).toBe(0.9);
+    expect(starts[0].samples.length).toBe(4_800);
+    expect(chunks.map((chunk) => [...chunk])).toEqual([[2, 3]]);
+    expect(endpoints).toEqual([{
+      sampleRate: 16_000,
+      totalSamples: 4_802,
+      trailingSilenceMs: 0,
+    }]);
+  });
+
+  it("keeps split candidate audio open independently of capture age and utterance duration", async () => {
+    const chunks: Float32Array[] = [];
+    const close = vi.fn();
+    const classifyWake = vi.fn(async () => ({ wakeProbability: 0.9 }));
+    const value = new JarvisWakeEngine({
+      inference: {
+        observeSpeech: async (_frame, range) => ({ ...range, speechProbability: 0.9, completedMonotonicMs: 0 }),
+        classifyWake,
+      },
+      onDetected: vi.fn(),
+      onCandidateChunk: (chunk) => chunks.push(chunk.samples.slice()),
+      onCandidateClose: close,
+      onUtterance: vi.fn(),
+      onError: vi.fn(),
+      maximumUtteranceSamples: 320,
+    });
+
+    value.push(new Float32Array(17_280).fill(1), 1_000);
+    await value.idle();
+    const initialChunkCount = chunks.length;
+    value.push(new Float32Array(640).fill(2), 2_080);
+    await value.idle();
+
+    expect(classifyWake).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(chunks).toHaveLength(initialChunkCount + 2);
+    expect([...chunks.at(-1)!]).toEqual([...new Float32Array(320).fill(2)]);
+  });
+
+  it("accepts repeated low-confidence split wake hits during recent speech", async () => {
+    const wakeScores = [0.2, 0.22];
+    const detected = vi.fn();
+    const value = new JarvisWakeEngine({
+      inference: {
+        observeSpeech: async (_frame, range) => ({ ...range, speechProbability: 0.9, completedMonotonicMs: 0 }),
+        classifyWake: async () => ({ wakeProbability: wakeScores.shift() ?? 0 }),
+      },
+      onDetected: detected,
+      onUtterance: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    // Fill the first wake window without also advancing through a second
+    // overlapping classification in the same drain cycle.
+    value.push(new Float32Array(15_360));
+    await value.idle();
+    value.push(new Float32Array(1_920));
+    await value.idle();
+    expect(detected).not.toHaveBeenCalled();
+    value.push(new Float32Array(1_920));
+    await value.idle();
+    expect(detected).toHaveBeenCalledWith(0.22);
+  });
+
+  it("accepts a strong split wake hit just after VAD speech ends", async () => {
+    const speechProbabilities = [
+      ...Array.from({ length: 9 }, () => 0.9),
+      0.1,
+    ];
+    const wakeScores = [0, 0.9];
+    const detected = vi.fn();
+    const value = new JarvisWakeEngine({
+      inference: {
+        observeSpeech: async (_frame, range) => ({
+          ...range,
+          speechProbability: speechProbabilities.shift() ?? 0.1,
+          completedMonotonicMs: 0,
+        }),
+        classifyWake: async () => ({ wakeProbability: wakeScores.shift() ?? 0 }),
+      },
+      onDetected: detected,
+      onUtterance: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    value.push(new Float32Array(17_280));
+    await value.idle();
+    value.push(new Float32Array(1_920));
+    await value.idle();
+    expect(detected).toHaveBeenCalledWith(0.9);
+  });
+
+  it("requires consecutive negative split VAD frames and never pads an endpoint", async () => {
+    const probabilities = [
+      ...Array.from({ length: 9 }, () => 0.9),
+      0.1,
+      0.5,
+      0.1,
+      0.1,
+      0.9,
+    ];
+    const chunks: Float32Array[] = [];
+    const endpoints: unknown[] = [];
+    const value = new JarvisWakeEngine({
+      inference: {
+        observeSpeech: async (_frame, range) => ({
+          ...range,
+          speechProbability: probabilities.shift() ?? 0.9,
+          completedMonotonicMs: 0,
+        }),
+        classifyWake: async () => ({ wakeProbability: 0.9 }),
+      },
+      onDetected: vi.fn(),
+      onCandidateChunk: (chunk) => chunks.push(chunk.samples.slice()),
+      onCandidateEndpoint: (endpoint) => endpoints.push(endpoint),
+      onUtterance: vi.fn(),
+      onError: vi.fn(),
+      endpointSilenceMs: 240,
+    });
+
+    value.push(new Float32Array(17_280).fill(1));
+    await value.idle();
+    // A negative frame followed by a hysteresis frame is not 240 ms silence.
+    value.push(new Float32Array(3_840).fill(2));
+    await value.idle();
+    expect(endpoints).toHaveLength(0);
+    value.push(new Float32Array(1_920).fill(3));
+    await value.idle();
+    expect(endpoints).toHaveLength(0);
+    value.push(new Float32Array(1_920).fill(4));
+    await value.idle();
+    expect(endpoints).toHaveLength(1);
+
+    const countAtEndpoint = chunks.length;
+    value.push(new Float32Array(100).fill(5));
+    await value.idle();
+    expect(chunks).toHaveLength(countAtEndpoint);
+    value.push(new Float32Array(220).fill(6));
+    await value.idle();
+    expect(chunks).toHaveLength(countAtEndpoint + 1);
+    expect([...chunks.at(-1)!]).toEqual([
+      ...new Float32Array(100).fill(5),
+      ...new Float32Array(220).fill(6),
+    ]);
+  });
 });

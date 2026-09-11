@@ -57,7 +57,7 @@ def test_situation_health_migration_resumes_after_partial_sqlite_ddl(tmp_path: P
         with engine.connect() as connection:
             assert connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
-            ).scalar_one() == "20260906_0018"
+            ).scalar_one() == "20260908_0020"
     finally:
         engine.dispose()
 
@@ -74,5 +74,5 @@ def test_run_migrations_serializes_parallel_sqlite_startup(tmp_path: Path) -> No
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "20260906_0018",
+            "20260908_0020",
         )

@@ -801,9 +801,97 @@ export interface JarvisClientContext {
 export interface JarvisRealtimeActivationContext {
   source: "wake_word";
   wake_score: number;
-  activation_id?: string;
+  activation_id: string;
   wake_detected_at?: string;
   local_speech_started_at?: string;
+  gate_mode?: "transcript_rules" | "immediate";
+  benchmark_run_id?: string | null;
+  benchmark_fixture?: string | null;
+}
+
+export interface JarvisRealtimeActivationRequest {
+  generation: number;
+  wake_score: number;
+  activation_id: string;
+  wake_detected_at?: string;
+  local_speech_started_at?: string;
+  gate_mode?: "transcript_rules" | "immediate";
+  benchmark_run_id?: string | null;
+  benchmark_fixture?: string | null;
+}
+
+export interface JarvisRealtimeActivationResponse {
+  session_id: string;
+  generation: number;
+  activation_id: string;
+  gate_state: "pending" | "accepted" | "rejected" | "timed_out";
+  gate_mode: "transcript_rules" | "immediate";
+  gate_timeout_ms: number;
+  audio_policy: JarvisRealtimeAudioPolicy;
+}
+
+export interface JarvisRealtimeAudioPolicy {
+  configuration_id: string;
+  turn_mode: "server_vad" | "semantic_vad" | "client_vad";
+  commit_owner: "provider" | "client";
+  silence_duration_ms: number | null;
+  vad_threshold: number | null;
+  prefix_padding_ms: number | null;
+  semantic_eagerness: "low" | "medium" | "high" | "auto" | null;
+  create_response: false;
+  interrupt_response: false;
+}
+
+export interface JarvisBargeInRequest {
+  generation: number;
+  speech_event_id: string;
+  source: "browser_local_vad" | "browser_provider_vad";
+  request_id: string;
+  response_id: string | null;
+  input_item_id: string | null;
+}
+
+export interface JarvisBargeInResponse {
+  accepted: boolean;
+}
+
+export async function registerJarvisRealtimeActivation(
+  sessionId: string,
+  request: JarvisRealtimeActivationRequest,
+): Promise<JarvisRealtimeActivationResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}/activations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json() as { detail?: string }).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function bargeInJarvisRealtime(
+  sessionId: string,
+  request: JarvisBargeInRequest,
+): Promise<JarvisBargeInResponse> {
+  const res = await fetch(
+    `${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}/barge-in`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(request),
+    },
+  );
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json() as { detail?: string }).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
 }
 
 export interface JarvisRealtimeTelemetryEvent {
@@ -814,6 +902,7 @@ export interface JarvisRealtimeTelemetryEvent {
   generation?: number;
   request_id?: string;
   provider_response_id?: string;
+  provider_input_item_id?: string;
   source: "browser" | "android" | "backend" | "provider";
   event_type: string;
   observed_at: string;
@@ -1176,6 +1265,7 @@ export interface JarvisRealtimeCallResponse {
   session: JarvisSession | null;
   sdp_answer: string | null;
   rotate_after_seconds: number | null;
+  audio_policy: JarvisRealtimeAudioPolicy | null;
   server_received_at: string;
   server_responded_at: string;
 }

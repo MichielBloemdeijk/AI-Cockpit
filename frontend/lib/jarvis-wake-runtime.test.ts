@@ -121,6 +121,35 @@ describe("JarvisWakeRuntime", () => {
     expect(value.traces.map((trace) => trace.kind)).toContain("wake_utterance_ready");
   });
 
+  it("queues candidate chunks until subscribed and resolves the local endpoint", async () => {
+    const value = harness();
+    await value.runtime.start(configuration);
+    value.worker.emit({ type: "ready" });
+    const preRoll = new Float32Array([1, 2]);
+    value.worker.emit({ type: "detected", probability: 0.91, preRoll, sampleRate: 16_000 });
+    const candidate = value.handoffs[0].candidateAudio;
+    expect(candidate?.preRoll).toBe(preRoll);
+    const queued = new Float32Array([3, 4]);
+    value.worker.emit({ type: "candidate_audio", samples: queued, sampleRate: 16_000 });
+    const received: number[][] = [];
+    candidate?.subscribe((samples) => received.push([...samples]));
+    const direct = new Float32Array([5, 6]);
+    value.worker.emit({ type: "candidate_audio", samples: direct, sampleRate: 16_000 });
+    value.worker.emit({
+      type: "candidate_endpoint",
+      sampleRate: 16_000,
+      totalSamples: 6,
+      trailingSilenceMs: 300,
+    });
+
+    expect(received).toEqual([[3, 4], [5, 6]]);
+    await expect(candidate?.endpoint).resolves.toMatchObject({ totalSamples: 6 });
+    expect(value.traces).toContainEqual({
+      kind: "wake_local_endpoint",
+      detail: { samples: 6, silence_ms: 300 },
+    });
+  });
+
   it("reports local VAD boundaries for latency diagnostics", async () => {
     const value = harness();
     await value.runtime.start(configuration);

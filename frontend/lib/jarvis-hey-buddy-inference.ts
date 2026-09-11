@@ -46,21 +46,49 @@ export class HeyBuddyOnnxInference implements JarvisWakeInference {
     return new HeyBuddyOnnxInference(vad, spectrogram, embedding, wake);
   }
 
-  async analyze(audio: Float32Array): Promise<JarvisWakeInferenceResult> {
-    const vadInput = audio.subarray(Math.max(0, audio.length - VAD_INTERVAL_SAMPLES));
-    const vadOutput = await this.vad.run({
-      input: new ort.Tensor("float32", vadInput, [1, vadInput.length]),
-      h: this.vadStateH,
-      c: this.vadStateC,
-      sr: this.sampleRateTensor,
-    });
-    this.vadStateH = vadOutput.hn as ort.Tensor;
-    this.vadStateC = vadOutput.cn as ort.Tensor;
-    const speechProbability = Number(vadOutput.output.data[0]);
+  async observeSpeech(
+    frame: Float32Array,
+    range: { startSample: number; endSample: number },
+  ): Promise<{ startSample: number; endSample: number; speechProbability: number; completedMonotonicMs: number }> {
+    if (frame.length !== VAD_INTERVAL_SAMPLES) {
+      throw new Error(`Hey Buddy VAD requires ${VAD_INTERVAL_SAMPLES} samples`);
+    }
+    const input = new ort.Tensor("float32", frame, [1, frame.length]);
+    const previousH = this.vadStateH;
+    const previousC = this.vadStateC;
+    let vadOutput: ort.InferenceSession.OnnxValueMapType;
+    try {
+      vadOutput = await this.vad.run({ input, h: previousH, c: previousC, sr: this.sampleRateTensor });
+    } finally {
+      input.dispose();
+    }
+    const nextH = vadOutput.hn as ort.Tensor;
+    const nextC = vadOutput.cn as ort.Tensor;
+    const probabilityTensor = vadOutput.output as ort.Tensor;
+    const speechProbability = Number(probabilityTensor.data[0]);
+    this.vadStateH = nextH;
+    this.vadStateC = nextC;
+    if (previousH !== nextH) previousH.dispose();
+    if (previousC !== nextC) previousC.dispose();
+    probabilityTensor.dispose();
+    return {
+      startSample: range.startSample,
+      endSample: range.endSample,
+      speechProbability,
+      completedMonotonicMs: typeof performance !== "undefined" ? performance.now() : Date.now(),
+    };
+  }
 
-    const melOutput = await this.spectrogram.run({
-      input: new ort.Tensor("float32", audio, [1, audio.length]),
-    });
+  async classifyWake(audio: Float32Array): Promise<{ wakeProbability: number }> {
+    if (audio.length < 17_280) return { wakeProbability: 0 };
+
+    const spectrogramInput = new ort.Tensor("float32", audio, [1, audio.length]);
+    let melOutput: ort.InferenceSession.OnnxValueMapType;
+    try {
+      melOutput = await this.spectrogram.run({ input: spectrogramInput });
+    } finally {
+      spectrogramInput.dispose();
+    }
     const rawMel = melOutput.output as ort.Tensor;
     const melBins = Number(rawMel.dims.at(-1));
     const frameCount = Number(rawMel.dims.at(-2));
@@ -69,26 +97,47 @@ export class HeyBuddyOnnxInference implements JarvisWakeInference {
       rawMel.data as Float32Array,
       (value) => Number(value) / 10 + 2,
     );
+    rawMel.dispose();
 
     const embeddings = await this.runEmbedding(normalizedMel, frameCount, melBins);
     this.appendEmbeddingHistory(embeddings);
     let wakeProbability = 0;
     if (this.embeddingHistory.length === WAKE_EMBEDDING_FRAMES * EMBEDDING_DIMENSION) {
-      const output = await this.wake.run({
-        input: new ort.Tensor(
-          "float32",
-          this.embeddingHistory,
-          [1, WAKE_EMBEDDING_FRAMES, EMBEDDING_DIMENSION],
-        ),
-      });
-      wakeProbability = Number(output.output.data[0]);
+      const wakeInput = new ort.Tensor(
+        "float32",
+        this.embeddingHistory,
+        [1, WAKE_EMBEDDING_FRAMES, EMBEDDING_DIMENSION],
+      );
+      let output: ort.InferenceSession.OnnxValueMapType;
+      try {
+        output = await this.wake.run({ input: wakeInput });
+      } finally {
+        wakeInput.dispose();
+      }
+      const probability = output.output as ort.Tensor;
+      wakeProbability = Number(probability.data[0]);
+      probability.dispose();
     }
-    return { speechProbability, wakeProbability };
+    return { wakeProbability };
+  }
+
+  resetWakeState(): void {
+    this.embeddingHistory.fill(0);
+    this.embeddingHistory = new Float32Array(0);
+  }
+
+  async analyze(audio: Float32Array): Promise<JarvisWakeInferenceResult> {
+    const vadInput = audio.subarray(Math.max(0, audio.length - VAD_INTERVAL_SAMPLES));
+    const speech = await this.observeSpeech(
+      vadInput,
+      { startSample: Math.max(0, audio.length - vadInput.length), endSample: audio.length },
+    );
+    const wake = await this.classifyWake(audio);
+    return { speechProbability: speech.speechProbability, wakeProbability: wake.wakeProbability };
   }
 
   async destroy(): Promise<void> {
-    this.embeddingHistory.fill(0);
-    this.embeddingHistory = new Float32Array(0);
+    this.resetWakeState();
     this.vadStateH.dispose();
     this.vadStateC.dispose();
     this.sampleRateTensor.dispose();
@@ -123,15 +172,22 @@ export class HeyBuddyOnnxInference implements JarvisWakeInference {
         batch * EMBEDDING_WINDOW_SIZE * melBins,
       );
     }
-    const output = await this.embedding.run({
-      input_1: new ort.Tensor(
-        "float32",
-        stacked,
-        [batchCount, EMBEDDING_WINDOW_SIZE, melBins, 1],
-      ),
-    });
+    const input = new ort.Tensor(
+      "float32",
+      stacked,
+      [batchCount, EMBEDDING_WINDOW_SIZE, melBins, 1],
+    );
+    let output: ort.InferenceSession.OnnxValueMapType;
+    try {
+      output = await this.embedding.run({ input_1: input });
+    } finally {
+      input.dispose();
+    }
     const tensor = output.conv2d_19 as ort.Tensor;
-    return Float32Array.from(tensor.data as Float32Array);
+    const result = Float32Array.from(tensor.data as Float32Array);
+    tensor.dispose();
+    stacked.fill(0);
+    return result;
   }
 
   private appendEmbeddingHistory(next: Float32Array): void {

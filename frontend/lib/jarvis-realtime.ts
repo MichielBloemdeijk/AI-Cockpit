@@ -1,11 +1,25 @@
 import {
   closeJarvisRealtimeSession,
   createJarvisRealtimeCall,
+  bargeInJarvisRealtime,
+  registerJarvisRealtimeActivation,
   submitJarvisRealtimeTelemetry,
   type JarvisLiveEvent,
   type JarvisRealtimeTelemetryEvent,
   type JarvisSession,
+  type JarvisRealtimeActivationResponse,
+  type JarvisRealtimeAudioPolicy,
 } from "./api";
+import {
+  createJarvisActivationAudio,
+  type JarvisAudioChunk,
+  type JarvisCandidateAudio,
+} from "./jarvis-activation-audio";
+import {
+  summarizeJarvisRealtimeTurns,
+  type JarvisRealtimeTurnResult,
+  type JarvisRealtimeReducerEntry,
+} from "./jarvis-realtime-turns";
 import {
   createJarvisBargeInDetector,
   type JarvisBargeInDetector,
@@ -14,8 +28,13 @@ import {
 export type JarvisRealtimeStatus =
   | "idle"
   | "connecting"
+  | "standby"
+  | "candidate"
+  | "active"
   | "connected"
   | "reconnecting"
+  | "rotating"
+  | "degraded"
   | "text_fallback";
 
 export interface JarvisRealtimeSnapshot {
@@ -31,33 +50,65 @@ export interface JarvisRealtimeControllerOptions {
   onRemoteStream?: (stream: MediaStream | null) => void;
   onProviderEvent?: (event: Record<string, unknown>) => void;
   onPlaybackMuted?: (muted: boolean) => void;
+  onActivationPolicy?: (observation: {
+    activationId: string;
+    requestedGateMode: "transcript_rules" | "immediate";
+    backendGateMode: "transcript_rules" | "immediate";
+    configurationId: string;
+  }) => void;
 }
 
 export interface JarvisRealtimeAudioHandoff {
   localStream: MediaStream;
   utterance: Promise<Float32Array>;
   sampleRate: number;
+  activationId?: string;
+  candidateAudio?: JarvisRealtimeCandidateAudio | JarvisCandidateAudio;
 }
 
 export interface JarvisRealtimeStartOptions {
   audioHandoff?: JarvisRealtimeAudioHandoff;
   activationContext?: JarvisRealtimeActivationContext;
+  standby?: boolean;
 }
 
 export interface JarvisRealtimeActivationContext {
   source: "wake_word";
   wake_score: number;
-  activation_id?: string;
+  activation_id: string;
   wake_detected_at?: string;
   local_speech_started_at?: string;
+  gate_mode?: "transcript_rules" | "immediate";
+  benchmark_run_id?: string | null;
+  benchmark_fixture?: string | null;
+}
+
+export interface JarvisRealtimeCandidateAudio {
+  sampleRate: number;
+  preRoll: Float32Array;
+  endpoint: Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>;
+  subscribe: (listener: (samples: Float32Array) => void) => () => void;
+}
+
+export interface JarvisRealtimeCandidateOptions {
+  candidateAudio: JarvisRealtimeCandidateAudio;
+  activationContext: JarvisRealtimeActivationContext;
 }
 
 export interface JarvisRealtimeTraceEntry {
   kind: string;
   monotonic_ms: number;
   wall_time: string;
+  activation_id?: string;
+  session_id?: string;
+  generation?: number;
+  request_id?: string;
   response_id?: string;
   item_id?: string;
+  provider_input_item_id?: string;
+  event_id?: string;
+  client_sequence?: number;
+  clock_uncertainty_ms?: number;
   attempt?: number;
   sequence?: number;
   server_time?: string;
@@ -104,11 +155,25 @@ export interface JarvisRealtimeTurnTiming {
   wake_audio_upload_ms?: number;
   wake_commit_ack_ms?: number;
   local_speech_stop_to_commit_ms?: number;
+  gate_started_to_decision_ms?: number;
+  local_speech_stop_to_gate_decision_ms?: number;
+  gate_decision?: "accepted" | "rejected" | "timed_out";
+  gate_decision_source?: string;
+  standby_ready?: boolean;
+  standby_age_ms?: number;
   provider_connection_ms?: number;
   transcription_ms?: number;
   response_arbitration_ms?: number;
   generation_ms?: number;
-  outcome?: "complete" | "no_transcript" | "no_arbiter" | "no_response" | "no_audio" | "no_playable_media";
+  outcome?:
+    | "complete"
+    | "no_transcript"
+    | "no_arbiter"
+    | "no_response"
+    | "no_audio"
+    | "no_playable_media"
+    | "gate_rejected"
+    | "gate_timed_out";
   bottleneck?: "endpointing" | "provider_connection" | "audio_handoff" | "transcription" | "response_arbitration" | "generation" | "media_arrival";
   bottleneck_ms?: number;
 }
@@ -117,6 +182,7 @@ export interface JarvisRealtimeTimingSummary {
   schema: "jarvis.realtime_timing.v2";
   connections: JarvisRealtimeConnectionTiming[];
   turns: JarvisRealtimeTurnTiming[];
+  turn_results?: JarvisRealtimeTurnResult[];
 }
 
 interface BrowserConnection {
@@ -125,10 +191,13 @@ interface BrowserConnection {
   localStream: MediaStream;
   ownsLocalStream: boolean;
   handoffTransport: JarvisRealtimeHandoffTransport | null;
+  silentTransport: JarvisRealtimeSilentTransport | null;
   session: JarvisSession;
+  audioPolicy: JarvisRealtimeAudioPolicy | null;
   rotateAfterSeconds: number;
   bargeInDetector: JarvisBargeInDetector | null;
   activeResponseId: string | null;
+  responseCorrelation: BrowserResponseCorrelation | null;
   cancellingResponseId: string | null;
   bargeInTimer: number | null;
   mutedResponseId: string | null;
@@ -137,12 +206,51 @@ interface BrowserConnection {
   receiverStatsBaseline: ReceiverAudioSnapshot | null;
   receiverStatsChain: Promise<void>;
   receiverStatsTimer: number | null;
+  mode: "standby" | "active";
+  candidate: CandidateActivation | null;
+  conversationAudio: JarvisCandidateAudio | null;
+  conversationAudioUnsubscribe: (() => void) | null;
+  conversationChunkQueue: JarvisAudioChunk[];
+  conversationAppendSequence: number;
+  sender: RTCRtpSender;
+}
+
+interface BrowserResponseCorrelation {
+  requestId: string;
+  responseId: string;
+  activationId: string | null;
+  inputItemId: string | null;
+  state: "generating" | "speaking" | "cancelling";
 }
 
 interface JarvisRealtimeHandoffTransport {
   stream: MediaStream;
   connectLive: () => Promise<void>;
   destroy: () => Promise<void>;
+}
+
+interface JarvisRealtimeSilentTransport {
+  stream: MediaStream;
+  destroy: () => Promise<void>;
+}
+
+interface CandidateActivation {
+  activationId: string;
+  unsubscribe: (() => void) | null;
+  appendSequence: number;
+  commitSent: boolean;
+  gate: JarvisRealtimeActivationResponse | null;
+  gateDecision: Promise<"accepted" | "rejected" | "timed_out">;
+  resolveGateDecision: (decision: "accepted" | "rejected" | "timed_out") => void;
+  rejectGateDecision: (cause: unknown) => void;
+  standbySettlement: Promise<boolean>;
+  resolveStandbySettlement: (standby: boolean) => void;
+  gateSettled: boolean;
+  audioPolicy: JarvisRealtimeAudioPolicy | null;
+  orderedAudio: JarvisCandidateAudio | null;
+  chunkQueue: JarvisAudioChunk[];
+  committed: boolean;
+  primaryInputItemId: string | null;
 }
 
 export interface JarvisRealtimeWakeAudioEnvelope {
@@ -203,7 +311,11 @@ interface JarvisRealtimeConnectionInput {
   localStream: MediaStream;
   ownsLocalStream: boolean;
   wakeAudio?: Promise<JarvisRealtimeWakeAudioEnvelope>;
+  candidateAudio?: JarvisRealtimeCandidateAudio | JarvisCandidateAudio;
+  conversationAudio?: JarvisCandidateAudio;
   activationContext?: JarvisRealtimeActivationContext;
+  activationCohort?: "warm" | "connecting" | "cold";
+  standby?: boolean;
 }
 
 type ConnectionAttemptStage =
@@ -256,14 +368,17 @@ interface BrowserPreparation {
   localStream: MediaStream;
   sender: RTCRtpSender;
   offer: Promise<RTCSessionDescriptionInit>;
+  silentTransport: JarvisRealtimeSilentTransport | null;
 }
 
 export interface JarvisRealtimeDependencies {
   createPeer: () => RTCPeerConnection;
   getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
   createCall: typeof createJarvisRealtimeCall;
+  registerActivation?: typeof registerJarvisRealtimeActivation;
   closeSession: typeof closeJarvisRealtimeSession;
   sendTelemetry?: typeof submitJarvisRealtimeTelemetry;
+  bargeIn?: typeof bargeInJarvisRealtime;
   wait: (milliseconds: number) => Promise<void>;
   setTimer: (callback: () => void, milliseconds: number) => number;
   clearTimer: (timer: number) => void;
@@ -279,6 +394,7 @@ export interface JarvisRealtimeDependencies {
   createHandoffTransport: (
     localStream: MediaStream,
   ) => Promise<JarvisRealtimeHandoffTransport>;
+  createSilentTransport?: () => Promise<JarvisRealtimeSilentTransport>;
 }
 
 const RETRY_DELAYS_MS = [0, 500, 1_000, 2_000] as const;
@@ -287,7 +403,10 @@ const ICE_CANDIDATE_WAIT_MS = 750;
 const DATA_CHANNEL_OPEN_TIMEOUT_MS = 10_000;
 const WAKE_COMMIT_TIMEOUT_MS = 3_000;
 const TELEMETRY_AFTER_AUDIO_DELAY_MS = 1_000;
-const TELEMETRY_MISSING_RESPONSE_DELAY_MS = 8_000;
+// The backend response watchdog closes after 15 seconds (plus scheduling
+// margin). Do not synthesize a failed turn while a valid response may still
+// be inside that server-side budget.
+const TELEMETRY_MISSING_RESPONSE_DELAY_MS = 20_000;
 const RECEIVER_STATS_FOLLOW_UP_MS = 100;
 const TURN_RESULT_SETTLE_MS = 150;
 const LIVE_STREAM_ERROR_COALESCE_MS = 30_000;
@@ -300,8 +419,12 @@ const BACKEND_TRACE_EVENTS = new Set([
   "provider.ready",
   "provider.user_speaking",
   "provider.user_stopped",
-  "provider.wake_audio_committed",
+  "provider.user_input_committed",
   "provider.user_transcript",
+  "wake.gate.started",
+  "wake.gate.accepted",
+  "wake.gate.rejected",
+  "wake.gate.timed_out",
   "wake.verification.accepted",
   "wake.verification.rejected",
   "response.arbiter.started",
@@ -310,6 +433,7 @@ const BACKEND_TRACE_EVENTS = new Set([
   "provider.assistant_response",
   "provider.assistant_interrupted",
   "provider.provider_error",
+  "provider.provider_protocol_warning",
   "provider.disconnected",
 ]);
 const BROWSER_PROVIDER_TRACE_EVENTS = new Set([
@@ -338,6 +462,7 @@ const PERSISTED_BROWSER_TELEMETRY_EVENTS = new Set([
   "connection.attempt.failed",
   "connection.attempt.cleanup",
   "turn.result",
+  "turn.result.amendment",
   "telemetry.integrity",
 ]);
 
@@ -345,6 +470,7 @@ const browserDependencies: JarvisRealtimeDependencies = {
   createPeer: () => new RTCPeerConnection(),
   getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
   createCall: createJarvisRealtimeCall,
+  registerActivation: registerJarvisRealtimeActivation,
   closeSession: closeJarvisRealtimeSession,
   sendTelemetry: submitJarvisRealtimeTelemetry,
   wait: (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)),
@@ -355,7 +481,9 @@ const browserDependencies: JarvisRealtimeDependencies = {
   now: () => performance.now(),
   wallNow: () => new Date().toISOString(),
   createBargeInDetector: createJarvisBargeInDetector,
+  bargeIn: bargeInJarvisRealtime,
   createHandoffTransport: createBrowserHandoffTransport,
+  createSilentTransport: createBrowserSilentTransport,
 };
 
 export class JarvisRealtimeController {
@@ -365,7 +493,9 @@ export class JarvisRealtimeController {
   private connectingSession: JarvisSession | null = null;
   private preparation: BrowserPreparation | null = null;
   private preparationOperation = 0;
+  private standbyConnectionPromise: Promise<JarvisRealtimeSnapshot> | null = null;
   private rotationTimer: number | null = null;
+  private rotationPending = false;
   private disconnectTimer: number | null = null;
   private operation = 0;
   private reconnecting = false;
@@ -392,6 +522,7 @@ export class JarvisRealtimeController {
   private latestLocalSpeechEndpoint: LocalSpeechEndpoint | null = null;
   private readonly responseSpeechEndpoints = new Map<string, LocalSpeechEndpoint>();
   private readonly reportedTurns = new Set<string>();
+  private readonly reportedV3Turns = new Map<string, string>();
   private readonly turnResultTimers = new Set<number>();
   private lastTurnBoundaryMonotonic = Number.NEGATIVE_INFINITY;
   private snapshot: JarvisRealtimeSnapshot = {
@@ -411,6 +542,18 @@ export class JarvisRealtimeController {
 
   current(): JarvisRealtimeSnapshot {
     return this.snapshot;
+  }
+
+  /**
+   * Waits until a rejected wake candidate has either restored warm standby or
+   * the connection has become unavailable. Page lifecycle code uses this to
+   * avoid racing the asynchronous sender/transport rollback.
+   */
+  async waitForWakeGateStandby(): Promise<boolean> {
+    const candidate = this.active?.candidate;
+    if (!candidate) return this.snapshot.status === "standby";
+    await candidate.standbySettlement;
+    return this.snapshot.status === "standby";
   }
 
   traceSnapshot(): readonly JarvisRealtimeTraceEntry[] {
@@ -455,9 +598,10 @@ export class JarvisRealtimeController {
     void this.flushTelemetry();
   }
 
-  recordBackendEvent(event: JarvisLiveEvent): void {
-    if (event.source_domain !== "session") return;
+  recordBackendEvent(event: JarvisLiveEvent): boolean {
+    if (event.source_domain !== "session") return false;
     const payload = event.payload ?? {};
+    let gateHandled = false;
     const sessionId = typeof payload.session_id === "string" ? payload.session_id : null;
     const generation = typeof payload.generation === "number" ? payload.generation : null;
     if (sessionId && generation !== null) {
@@ -519,9 +663,12 @@ export class JarvisRealtimeController {
         !current
         || current.id !== sessionId
         || current.generation !== generation
-      ) return;
+      ) return false;
+      if (["wake.gate.accepted", "wake.gate.rejected", "wake.gate.timed_out"].includes(event.event_type)) {
+        gateHandled = this.resolveCandidateGateDecision(event.event_type, payload, sessionId, generation);
+      }
     }
-    if (!BACKEND_TRACE_EVENTS.has(event.event_type)) return;
+    if (!BACKEND_TRACE_EVENTS.has(event.event_type)) return gateHandled;
     const timing = payload.timing_ms;
     const timingMs = timing && typeof timing === "object"
       ? Object.fromEntries(
@@ -533,13 +680,48 @@ export class JarvisRealtimeController {
     const responseId = typeof payload.response_id === "string"
       ? payload.response_id
       : undefined;
+    const activationId = typeof payload.activation_id === "string"
+      ? payload.activation_id
+      : undefined;
+    const providerItemId = typeof payload.item_id === "string" ? payload.item_id : undefined;
+    const inputItemId = typeof payload.input_item_id === "string"
+      ? payload.input_item_id
+      : event.event_type.includes("user_input_committed")
+        || event.event_type.includes("user_transcript")
+        ? providerItemId
+        : undefined;
+    const itemId = inputItemId ?? providerItemId;
+    const requestId = typeof payload.request_id === "string"
+      ? payload.request_id
+      : undefined;
     const reason = typeof payload.reason === "string" ? payload.reason : undefined;
+    const traceDetail = Object.fromEntries(
+      Object.entries({
+        reason,
+        original_code: typeof payload.original_code === "string" ? payload.original_code : undefined,
+        configuration_id: typeof payload.configuration_id === "string" ? payload.configuration_id : undefined,
+        turn_mode: typeof payload.turn_mode === "string" ? payload.turn_mode : undefined,
+        commit_owner: typeof payload.commit_owner === "string" ? payload.commit_owner : undefined,
+        benchmark_run_id: typeof payload.benchmark_run_id === "string" ? payload.benchmark_run_id : undefined,
+        benchmark_fixture: typeof payload.benchmark_fixture === "string" ? payload.benchmark_fixture : undefined,
+        cohort: typeof payload.cohort === "string" ? payload.cohort : undefined,
+        status: typeof payload.status === "string" ? payload.status : undefined,
+        response_status: typeof payload.response_status === "string" ? payload.response_status : undefined,
+      }).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
     this.recordTrace(`backend.${event.event_type}`, {
+      event_id: event.id,
+      activation_id: activationId,
+      session_id: sessionId ?? undefined,
+      generation: generation ?? undefined,
+      request_id: requestId,
       response_id: responseId,
+      item_id: itemId,
+      provider_input_item_id: inputItemId,
       sequence: event.sequence,
       server_time: event.created_at,
       timing_ms: timingMs,
-      detail: reason,
+      detail: Object.keys(traceDetail).length ? JSON.stringify(traceDetail) : undefined,
     });
     if ([
       "provider.assistant_response",
@@ -549,6 +731,60 @@ export class JarvisRealtimeController {
     ].includes(event.event_type)) {
       this.scheduleTelemetryFlush(TELEMETRY_AFTER_AUDIO_DELAY_MS);
     }
+    return gateHandled;
+  }
+
+  private resolveCandidateGateDecision(
+    eventType: string,
+    payload: Record<string, unknown>,
+    sessionId: string,
+    generation: number,
+  ): boolean {
+    const connection = this.active;
+    const candidate = connection?.candidate;
+    if (!connection || !candidate || candidate.gateSettled) return false;
+    const activationId = typeof payload.activation_id === "string"
+      ? payload.activation_id
+      : null;
+    if (
+      activationId !== candidate.activationId
+      || sessionId !== connection.session.id
+      || generation !== connection.session.generation
+    ) return false;
+    const decision = eventType === "wake.gate.accepted"
+      ? "accepted"
+      : eventType === "wake.gate.rejected"
+        ? "rejected"
+        : "timed_out";
+    candidate.gateSettled = true;
+    if (candidate.gate) candidate.gate = { ...candidate.gate, gate_state: decision };
+    candidate.resolveGateDecision(decision);
+    this.maybePromoteOrderedCandidate(connection, candidate, decision);
+    return true;
+  }
+
+  private maybePromoteOrderedCandidate(
+    connection: BrowserConnection,
+    candidate: CandidateActivation,
+    decision?: "accepted" | "rejected" | "timed_out",
+  ): void {
+    if (!candidate.orderedAudio) return;
+    const effectiveDecision = decision
+      ?? (candidate.gate?.gate_state === "accepted" ? "accepted" : undefined);
+    if (effectiveDecision !== "accepted" || !candidate.committed) return;
+    candidate.orderedAudio.promoteToConversation();
+    connection.conversationAudio = candidate.orderedAudio;
+    this.recordTrace("wake_audio_promoted_to_conversation", {
+      item_id: candidate.primaryInputItemId ?? undefined,
+    });
+    this.publish({
+      status: "connected",
+      attempt: this.snapshot.attempt,
+      session: connection.session,
+      error: null,
+    });
+    this.scheduleRotation(connection.rotateAfterSeconds);
+    void this.maybeRotate();
   }
 
   recordLiveStreamState(
@@ -605,13 +841,18 @@ export class JarvisRealtimeController {
 
     const peer = this.dependencies.createPeer();
     const channel = peer.createDataChannel("oai-events");
-    const track = localStream.getAudioTracks()[0];
+    const silentTransport = this.dependencies.createSilentTransport
+      ? await this.dependencies.createSilentTransport()
+      : null;
+    const sourceStream = silentTransport?.stream ?? localStream;
+    const track = sourceStream.getAudioTracks()[0];
     if (!track) {
       channel.close();
       peer.close();
+      await silentTransport?.destroy().catch(() => undefined);
       throw new Error("Wake stream has no audio track");
     }
-    const sender = peer.addTrack(track, localStream);
+    const sender = peer.addTrack(track, sourceStream);
     this.recordTrace("realtime_offer_started");
     const offer = this.createLocalOffer(peer).then((value) => {
       this.recordTrace("realtime_offer_ready");
@@ -623,6 +864,7 @@ export class JarvisRealtimeController {
       localStream,
       sender,
       offer,
+      silentTransport,
     };
     this.preparation = preparation;
     try {
@@ -637,33 +879,112 @@ export class JarvisRealtimeController {
     }
   }
 
+  async arm(localStream: MediaStream): Promise<JarvisRealtimeSnapshot> {
+    await this.prepare(localStream);
+    return this.start({ standby: true });
+  }
+
   async start(options: JarvisRealtimeStartOptions = {}): Promise<JarvisRealtimeSnapshot> {
     this.localSpeechActive = false;
     this.latestLocalSpeechEndpoint = null;
     this.responseSpeechEndpoints.clear();
-    this.activationId = options.activationContext?.activation_id ?? crypto.randomUUID();
+    this.activationId = options.activationContext?.activation_id
+      ?? options.audioHandoff?.activationId
+      ?? (options.audioHandoff ? crypto.randomUUID() : null);
+    const audioHandoff = options.audioHandoff;
     const activationContext = options.activationContext
       ? {
           ...options.activationContext,
-          activation_id: this.activationId,
+          ...(this.activationId ? { activation_id: this.activationId } : {}),
           wake_detected_at: options.activationContext.wake_detected_at ?? this.dependencies.wallNow(),
         }
       : undefined;
+    const requestedActivationId = options.activationContext?.activation_id;
+    const activationCandidateAudio = audioHandoff?.candidateAudio
+      ?? (
+        requestedActivationId && audioHandoff
+          ? adaptLegacyHandoffToActivationAudio(audioHandoff, requestedActivationId)
+          : undefined
+      );
     this.recordTrace("realtime_start_requested", {
-      detail: options.audioHandoff ? "wake_handoff" : "direct",
+      detail: audioHandoff ? "wake_handoff" : "direct",
     });
+    const standbyConnection = !options.standby && activationCandidateAudio
+      ? this.standbyConnectionPromise
+      : null;
+    if (standbyConnection) {
+      try {
+        await standbyConnection;
+      } catch {
+        // Reuse the retained candidate for the normal cold retry path below.
+      }
+      if (
+        activationCandidateAudio
+        && audioHandoff
+        && this.active?.mode === "standby"
+        && this.active.localStream === audioHandoff.localStream
+      ) {
+        this.cancelRotation();
+        this.cancelDisconnect();
+        await this.activateCandidate(
+          this.active,
+          { ...audioHandoff, candidateAudio: activationCandidateAudio },
+          activationContext,
+          "connecting",
+        );
+        return this.snapshot;
+      }
+    }
+    if (
+      activationCandidateAudio
+      && audioHandoff
+      && this.active?.mode === "standby"
+      && this.active.localStream === audioHandoff.localStream
+    ) {
+      this.cancelRotation();
+      this.cancelDisconnect();
+      await this.activateCandidate(
+        this.active,
+        { ...audioHandoff, candidateAudio: activationCandidateAudio },
+        activationContext,
+        "warm",
+      );
+      return this.snapshot;
+    }
     const operation = ++this.operation;
     this.cancelRotation();
     this.cancelDisconnect();
-    const input = options.audioHandoff
+    const input = audioHandoff
       ? {
-          localStream: options.audioHandoff.localStream,
+          localStream: audioHandoff.localStream,
           ownsLocalStream: false,
-          wakeAudio: this.prepareWakeAudio(options.audioHandoff),
+          ...(activationCandidateAudio
+            ? { candidateAudio: activationCandidateAudio }
+            : { wakeAudio: this.prepareWakeAudio(audioHandoff) }),
           activationContext,
+          activationCohort: "cold" as const,
+          standby: false,
         }
-      : undefined;
-    return this.connectWithRetry(operation, false, input);
+      : options.standby
+        ? {
+            localStream: this.preparation?.localStream
+              ?? (() => { throw new Error("Standby requires a prepared local stream"); })(),
+            ownsLocalStream: false,
+            standby: true,
+          }
+        : undefined;
+    const connectionPromise = this.connectWithRetry(operation, false, input);
+    if (options.standby) {
+      this.standbyConnectionPromise = connectionPromise;
+      try {
+        return await connectionPromise;
+      } finally {
+        if (this.standbyConnectionPromise === connectionPromise) {
+          this.standbyConnectionPromise = null;
+        }
+      }
+    }
+    return connectionPromise;
   }
 
   async stop(): Promise<void> {
@@ -701,8 +1022,22 @@ export class JarvisRealtimeController {
     this.cancelDisconnect();
     try {
       const current = this.active;
+      const conversationAudio = current?.conversationAudio;
+      if (conversationAudio) {
+        // Leave the owner queued, but release the old connection's sole
+        // subscription before a replacement attempt attaches to it.
+        current.candidate?.unsubscribe?.();
+        if (current.candidate) current.candidate.unsubscribe = null;
+        current.conversationAudioUnsubscribe?.();
+        current.conversationAudioUnsubscribe = null;
+      }
       const input = current
-        ? { localStream: current.localStream, ownsLocalStream: false }
+        ? {
+            localStream: current.localStream,
+            ownsLocalStream: false,
+            ...(conversationAudio ? { conversationAudio } : {}),
+            standby: current.mode === "standby",
+          }
         : undefined;
       await this.connectWithRetry(operation, true, input);
     } catch {
@@ -745,10 +1080,10 @@ export class JarvisRealtimeController {
             connection.ownsLocalStream = previous.ownsLocalStream;
             previous.ownsLocalStream = false;
           }
-          await this.disposeConnection(previous, false);
+          await this.disposeConnection(previous, false, input?.conversationAudio);
         }
         this.publish({
-          status: "connected",
+          status: connection.mode === "standby" ? "standby" : "connected",
           attempt: index + 1,
           session: connection.session,
           error: null,
@@ -788,7 +1123,7 @@ export class JarvisRealtimeController {
       stage: "media",
       timingMs: {},
       session: null,
-      wakeAudioRetained: Boolean(input?.wakeAudio),
+      wakeAudioRetained: Boolean(input?.wakeAudio || input?.candidateAudio),
       clockAlignment: null,
     };
     let localStream: MediaStream | null = null;
@@ -799,6 +1134,9 @@ export class JarvisRealtimeController {
     let providerSession: JarvisSession | null = null;
     let connection: BrowserConnection | null = null;
     let handoffTransport: JarvisRealtimeHandoffTransport | null = null;
+    let silentTransport: JarvisRealtimeSilentTransport | null = null;
+    let audioSender: RTCRtpSender | null = null;
+    const hasCandidateAudio = Boolean(input?.candidateAudio);
     try {
       const mediaStarted = this.dependencies.now();
       localStream = input?.localStream ?? await this.dependencies.getUserMedia({
@@ -812,18 +1150,45 @@ export class JarvisRealtimeController {
       prepared = this.takePreparation(localStream);
       peer = prepared?.peer ?? this.dependencies.createPeer();
       channel = prepared?.channel ?? peer.createDataChannel("oai-events");
-      this.recordTrace("wake_handoff_transport_started", { attempt });
-      handoffTransport = await this.dependencies.createHandoffTransport(localStream);
-      const outgoingStream = handoffTransport.stream;
-      this.recordTrace("wake_handoff_transport_ready", { attempt });
       if (prepared) {
-        const outgoingTrack = outgoingStream.getAudioTracks()[0];
-        if (!outgoingTrack) throw new Error("Realtime stream has no audio track");
-        if (outgoingTrack !== localStream.getAudioTracks()[0]) {
-          await prepared.sender.replaceTrack(outgoingTrack);
+        audioSender = prepared.sender;
+        silentTransport = prepared.silentTransport;
+      }
+      if (input?.standby || hasCandidateAudio) {
+        silentTransport = prepared?.silentTransport ?? null;
+        if (!prepared) {
+          silentTransport = this.dependencies.createSilentTransport
+            ? await this.dependencies.createSilentTransport()
+            : null;
+          const outgoingStream = silentTransport?.stream ?? localStream;
+          for (const track of outgoingStream.getAudioTracks()) {
+            audioSender = peer.addTrack(track, outgoingStream);
+          }
         }
+        this.recordTrace(
+          input?.standby
+            ? "realtime_standby_transport_ready"
+            : "realtime_wake_pcm_transport_ready",
+          { attempt },
+        );
       } else {
-        for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
+        this.recordTrace("wake_handoff_transport_started", { attempt });
+        handoffTransport = await this.dependencies.createHandoffTransport(localStream);
+        const outgoingStream = handoffTransport.stream;
+        this.recordTrace("wake_handoff_transport_ready", { attempt });
+        if (prepared) {
+          const outgoingTrack = outgoingStream.getAudioTracks()[0];
+          if (!outgoingTrack) throw new Error("Realtime stream has no audio track");
+          if (outgoingTrack !== localStream.getAudioTracks()[0]) {
+            await prepared.sender.replaceTrack(outgoingTrack);
+          }
+          await silentTransport?.destroy().catch(() => undefined);
+          silentTransport = null;
+        } else {
+          for (const track of outgoingStream.getAudioTracks()) {
+            audioSender = peer.addTrack(track, outgoingStream);
+          }
+        }
       }
       peer.ontrack = (event) => {
         if (operation !== this.operation) return;
@@ -908,10 +1273,13 @@ export class JarvisRealtimeController {
         localStream,
         ownsLocalStream,
         handoffTransport,
+        silentTransport,
         session: providerSession,
+        audioPolicy: response.audio_policy ?? null,
         rotateAfterSeconds: response.rotate_after_seconds ?? 55 * 60,
         bargeInDetector: null,
         activeResponseId: null,
+        responseCorrelation: null,
         cancellingResponseId: null,
         bargeInTimer: null,
         mutedResponseId: null,
@@ -920,19 +1288,80 @@ export class JarvisRealtimeController {
         receiverStatsBaseline: null,
         receiverStatsChain: Promise.resolve(),
         receiverStatsTimer: null,
+        mode: input?.standby ? "standby" : "active",
+        candidate: null,
+        conversationAudio: null,
+        conversationAudioUnsubscribe: null,
+        conversationChunkQueue: [],
+        conversationAppendSequence: 0,
+        sender: audioSender ?? (() => { throw new Error("Realtime stream has no audio sender"); })(),
+      };
+      // Ordered candidate PCM must resume only after the browser has drained
+      // its SCTP send buffer.  The low-watermark callback is deliberately
+      // attached to this connection, rather than polling from the capture
+      // path, so a quiet microphone cannot strand queued audio.
+      channel.bufferedAmountLowThreshold = 64 * 1024;
+      channel.onbufferedamountlow = () => {
+        const currentCandidate = connection?.candidate;
+        if (connection && currentCandidate) {
+          this.drainOrderedChunks(connection, currentCandidate);
+        }
+        if (connection) this.drainConversationChunks(connection);
       };
       this.enterConnectionStage(tracker, "backend_control");
       await this.waitForBackendControl(providerSession, operation, attempt);
-      if (input?.wakeAudio) {
+      const candidateAudio = input?.candidateAudio;
+      if (candidateAudio) {
+        this.enterConnectionStage(tracker, "data_channel");
+        await this.waitForDataChannelOpen(channel, operation, attempt);
+        if (isOrderedCandidateAudio(candidateAudio)) {
+          await this.streamOrderedCandidate(
+            connection,
+            candidateAudio,
+            input.activationContext,
+            input.activationCohort ?? "cold",
+          );
+        } else {
+          await this.activateCandidate(
+            connection,
+            {
+              localStream,
+              utterance: Promise.resolve(new Float32Array(0)),
+              sampleRate: candidateAudio.sampleRate,
+              activationId: input.activationContext?.activation_id,
+              candidateAudio,
+            },
+            input.activationContext,
+            input.activationCohort ?? "cold",
+          );
+        }
+        tracker.wakeAudioRetained = false;
+      } else if (input?.conversationAudio) {
+        this.enterConnectionStage(tracker, "data_channel");
+        await this.waitForDataChannelOpen(channel, operation, attempt);
+        this.attachConversationAudio(connection, input.conversationAudio);
+        tracker.wakeAudioRetained = false;
+      } else if (input?.wakeAudio) {
         this.enterConnectionStage(tracker, "data_channel");
         await this.waitForDataChannelOpen(channel, operation, attempt);
         const wakeAudio = await input.wakeAudio;
+        if (!handoffTransport) throw new Error("Wake handoff transport is unavailable");
         await this.submitWakeAudio(connection, handoffTransport, wakeAudio, attempt, tracker);
         tracker.wakeAudioRetained = false;
+      } else if (input?.standby) {
+        this.enterConnectionStage(tracker, "data_channel");
+        await this.waitForDataChannelOpen(channel, operation, attempt);
       } else {
         this.enterConnectionStage(tracker, "microphone_activation");
+        if (!handoffTransport) throw new Error("Realtime handoff transport is unavailable");
         await handoffTransport.connectLive();
         this.recordTrace("realtime_live_mic_activated", { attempt });
+      }
+      if (input?.standby) {
+        this.recordTrace("realtime_standby_ready", {
+          attempt,
+          detail: `${providerSession.id}:${providerSession.generation}`,
+        });
       }
       try {
         connection.bargeInDetector = await this.dependencies.createBargeInDetector(
@@ -946,7 +1375,13 @@ export class JarvisRealtimeController {
       }
       this.recordTrace("realtime_connection_ready", {
         attempt,
-        detail: `${providerSession.id}:${providerSession.generation}`,
+        detail: JSON.stringify({
+          session_id: providerSession.id,
+          generation: providerSession.generation,
+          configuration_id: response.audio_policy?.configuration_id ?? null,
+          turn_mode: response.audio_policy?.turn_mode ?? null,
+          commit_owner: response.audio_policy?.commit_owner ?? null,
+        }),
       });
       this.completeConnectionStage(tracker);
       const successTiming = this.connectionTimingSnapshot(tracker);
@@ -983,6 +1418,14 @@ export class JarvisRealtimeController {
         await handoffTransport?.destroy();
       } catch (cleanupCause) {
         cleanupErrors.push(`handoff:${this.errorName(cleanupCause)}`);
+      }
+      connection?.candidate?.unsubscribe?.();
+      if (connection?.candidate) connection.candidate.unsubscribe = null;
+      connection?.conversationAudioUnsubscribe?.();
+      if (connection) connection.conversationAudioUnsubscribe = null;
+      if (connection) {
+        for (const chunk of connection.conversationChunkQueue) chunk.samples.fill(0);
+        connection.conversationChunkQueue.length = 0;
       }
       try {
         channel?.close();
@@ -1031,9 +1474,556 @@ export class JarvisRealtimeController {
   private scheduleRotation(seconds: number): void {
     this.cancelRotation();
     this.rotationTimer = this.dependencies.setTimer(
-      () => void this.reconnect(),
+      () => {
+        this.rotationTimer = null;
+        this.rotationPending = true;
+        void this.maybeRotate();
+      },
       Math.max(1, seconds) * 1_000,
     );
+  }
+
+  private async maybeRotate(): Promise<void> {
+    if (!this.rotationPending || !this.active) return;
+    const connection = this.active;
+    const candidate = connection.candidate;
+    const candidatePending = Boolean(
+      candidate
+      && !(
+        candidate.gateSettled
+        && candidate.gate?.gate_state === "accepted"
+        && (candidate.orderedAudio ? candidate.committed : candidate.commitSent)
+        && candidate.chunkQueue.length === 0
+      ),
+    );
+    if (
+      candidatePending
+      || connection.activeResponseId
+      || connection.responseCorrelation
+      || this.localSpeechActive
+    ) {
+      this.recordTrace("realtime_rotation_deferred", {
+        detail: JSON.stringify({
+          candidate_pending: candidatePending,
+          response_active: Boolean(connection.activeResponseId || connection.responseCorrelation),
+          local_speech_active: this.localSpeechActive,
+        }),
+      });
+      this.rotationTimer = this.dependencies.setTimer(() => {
+        this.rotationTimer = null;
+        void this.maybeRotate();
+      }, 1_000);
+      return;
+    }
+    this.rotationPending = false;
+    this.recordTrace("realtime_rotation_started");
+    await this.reconnect();
+  }
+
+  private async activateCandidate(
+    connection: BrowserConnection,
+    handoff: JarvisRealtimeAudioHandoff,
+    activationContext: JarvisRealtimeActivationContext | undefined,
+    cohort: "warm" | "connecting" | "cold" = "cold",
+  ): Promise<void> {
+    if (!activationContext?.activation_id) {
+      throw new Error("Wake candidate activation requires an activation id");
+    }
+    if (connection.channel.readyState !== "open") {
+      throw new Error("Realtime data channel is not open");
+    }
+    const candidateAudio = handoff.candidateAudio;
+    if (!candidateAudio) throw new Error("Wake candidate audio is unavailable");
+    if (isOrderedCandidateAudio(candidateAudio)) {
+      await this.activateOrderedCandidate(connection, candidateAudio, activationContext, cohort);
+      return;
+    }
+    if (connection.audioPolicy?.commit_owner === "provider") {
+      await this.activateOrderedCandidate(
+        connection,
+        adaptLegacyCandidateAudio(candidateAudio, activationContext.activation_id),
+        activationContext,
+        cohort,
+      );
+      return;
+    }
+    const activation = await (this.dependencies.registerActivation ?? registerJarvisRealtimeActivation)(
+      connection.session.id,
+      {
+        generation: connection.session.generation,
+        wake_score: activationContext.wake_score,
+        activation_id: activationContext.activation_id,
+        wake_detected_at: activationContext.wake_detected_at,
+        local_speech_started_at: activationContext.local_speech_started_at,
+        gate_mode: activationContext.gate_mode ?? "transcript_rules",
+        benchmark_run_id: activationContext.benchmark_run_id,
+        benchmark_fixture: activationContext.benchmark_fixture,
+      },
+    );
+    connection.audioPolicy = activation.audio_policy ?? connection.audioPolicy;
+    const requestedGateMode = activationContext.gate_mode ?? "transcript_rules";
+    this.recordTrace("wake.gate.policy", {
+      activation_id: activation.activation_id,
+      detail: JSON.stringify({
+        requested_gate_mode: requestedGateMode,
+        backend_gate_mode: activation.gate_mode,
+        configuration_id: connection.audioPolicy?.configuration_id ?? null,
+        mismatch: requestedGateMode !== activation.gate_mode,
+      }),
+    });
+    this.options.onActivationPolicy?.({
+      activationId: activation.activation_id,
+      requestedGateMode,
+      backendGateMode: activation.gate_mode,
+      configurationId: connection.audioPolicy?.configuration_id ?? "unknown",
+    });
+    this.recordTrace("wake.gate.started", {
+      detail: JSON.stringify({
+        activation_id: activation.activation_id,
+        gate_mode: activation.gate_mode,
+        standby: true,
+        cohort,
+      }),
+    });
+    let resolveGateDecision!: (
+      decision: "accepted" | "rejected" | "timed_out",
+    ) => void;
+    let rejectGateDecision!: (cause: unknown) => void;
+    const gateDecision = new Promise<"accepted" | "rejected" | "timed_out">((resolve, reject) => {
+      resolveGateDecision = resolve;
+      rejectGateDecision = reject;
+    });
+    let resolveStandbySettlement!: (standby: boolean) => void;
+    const standbySettlement = new Promise<boolean>((resolve) => {
+      resolveStandbySettlement = resolve;
+    });
+    const candidate: CandidateActivation = {
+      activationId: activation.activation_id,
+      unsubscribe: null,
+      appendSequence: 0,
+      commitSent: false,
+      gate: activation,
+      gateDecision,
+      resolveGateDecision,
+      rejectGateDecision,
+      standbySettlement,
+      resolveStandbySettlement,
+      gateSettled: false,
+      audioPolicy: null,
+      orderedAudio: null,
+      chunkQueue: [],
+      committed: false,
+      primaryInputItemId: null,
+    };
+    connection.candidate = candidate;
+    connection.mode = "active";
+    if (activation.gate_state !== "pending") {
+      candidate.gateSettled = true;
+      candidate.resolveGateDecision(activation.gate_state);
+    }
+    this.publish({
+      status: "candidate",
+      attempt: this.snapshot.attempt,
+      session: connection.session,
+      error: null,
+    });
+
+    const transport = await this.dependencies.createHandoffTransport(handoff.localStream);
+    connection.handoffTransport = transport;
+    const liveTrack = transport.stream.getAudioTracks()[0];
+    if (!liveTrack) throw new Error("Realtime stream has no audio track");
+    await connection.sender.replaceTrack(liveTrack);
+
+    this.recordTrace("wake_audio_upload_started", { detail: "candidate_stream" });
+    const append = (samples: Float32Array) => {
+      if (connection.candidate !== candidate || candidate.commitSent) {
+        samples.fill(0);
+        return;
+      }
+      const envelope = encodeJarvisWakeAudio(samples, candidateAudio.sampleRate);
+      samples.fill(0);
+      for (const audio of envelope.chunks) {
+        connection.channel.send(JSON.stringify({
+          type: "input_audio_buffer.append",
+          event_id: `jarvis-wake-stream-${candidate.activationId}-${candidate.appendSequence++}`,
+          audio,
+        }));
+      }
+    };
+    append(candidateAudio.preRoll);
+    candidate.unsubscribe = candidateAudio.subscribe(append);
+    try {
+      await candidateAudio.endpoint;
+      if (connection.candidate !== candidate || candidate.commitSent) return;
+      candidate.commitSent = true;
+      this.recordTrace("wake_audio_upload_completed", { detail: "candidate_endpoint" });
+      const commitEventId = `jarvis-wake-commit-${candidate.activationId}-${this.snapshot.attempt}`;
+      const acknowledgement = new Promise<string | undefined>((resolve, reject) => {
+        const timer = this.dependencies.setTimer(
+          () => reject(new Error("OpenAI did not acknowledge the wake audio in time")),
+          WAKE_COMMIT_TIMEOUT_MS,
+        );
+        connection.wakeCommitWaiter = { eventId: commitEventId, timer, resolve, reject };
+      });
+      connection.channel.send(JSON.stringify({
+        type: "input_audio_buffer.commit",
+        event_id: commitEventId,
+      }));
+      this.recordTrace("wake_audio_commit_sent", { detail: "candidate_endpoint" });
+      const gateDecision = await candidate.gateDecision;
+      if (connection.candidate !== candidate) return;
+      if (gateDecision !== "accepted") {
+        await this.restoreStandbyAfterCandidateDecision(connection, candidate, gateDecision);
+        return;
+      }
+      await transport.connectLive();
+      this.recordTrace("wake_live_mic_activated", { detail: "candidate_endpoint" });
+      await acknowledgement;
+      this.recordTrace("wake_audio_commit_acknowledged", { item_id: candidate.activationId });
+      this.publish({
+        status: "connected",
+        attempt: this.snapshot.attempt,
+        session: connection.session,
+        error: null,
+      });
+      this.scheduleRotation(connection.rotateAfterSeconds);
+    } finally {
+      candidate.unsubscribe?.();
+      candidate.unsubscribe = null;
+      if (connection.wakeCommitWaiter?.eventId.startsWith(`jarvis-wake-commit-${candidate.activationId}`)) {
+        this.dependencies.clearTimer(connection.wakeCommitWaiter.timer);
+        connection.wakeCommitWaiter = null;
+      }
+    }
+  }
+
+  private async activateOrderedCandidate(
+    connection: BrowserConnection,
+    candidateAudio: JarvisCandidateAudio,
+    activationContext: JarvisRealtimeActivationContext | undefined,
+    cohort: "warm" | "connecting" | "cold" = "cold",
+  ): Promise<void> {
+    if (!activationContext?.activation_id) {
+      throw new Error("Wake candidate activation requires an activation id");
+    }
+    if (connection.channel.readyState !== "open") {
+      throw new Error("Realtime data channel is not open");
+    }
+    const activation = await (this.dependencies.registerActivation ?? registerJarvisRealtimeActivation)(
+      connection.session.id,
+      {
+        generation: connection.session.generation,
+        wake_score: activationContext.wake_score,
+        activation_id: activationContext.activation_id,
+        wake_detected_at: activationContext.wake_detected_at,
+        local_speech_started_at: activationContext.local_speech_started_at,
+        gate_mode: activationContext.gate_mode ?? "transcript_rules",
+        benchmark_run_id: activationContext.benchmark_run_id,
+        benchmark_fixture: activationContext.benchmark_fixture,
+      },
+    );
+    const policy = activation.audio_policy ?? connection.audioPolicy;
+    connection.audioPolicy = policy;
+    const requestedGateMode = activationContext.gate_mode ?? "transcript_rules";
+    this.recordTrace("wake.gate.policy", {
+      activation_id: activation.activation_id,
+      detail: JSON.stringify({
+        requested_gate_mode: requestedGateMode,
+        backend_gate_mode: activation.gate_mode,
+        configuration_id: policy?.configuration_id ?? null,
+        mismatch: requestedGateMode !== activation.gate_mode,
+      }),
+    });
+    this.options.onActivationPolicy?.({
+      activationId: activation.activation_id,
+      requestedGateMode,
+      backendGateMode: activation.gate_mode,
+      configurationId: policy?.configuration_id ?? "unknown",
+    });
+    let resolveGateDecision!: (
+      decision: "accepted" | "rejected" | "timed_out",
+    ) => void;
+    let rejectGateDecision!: (cause: unknown) => void;
+    const gateDecision = new Promise<"accepted" | "rejected" | "timed_out">((resolve, reject) => {
+      resolveGateDecision = resolve;
+      rejectGateDecision = reject;
+    });
+    let resolveStandbySettlement!: (standby: boolean) => void;
+    const standbySettlement = new Promise<boolean>((resolve) => {
+      resolveStandbySettlement = resolve;
+    });
+    const candidate: CandidateActivation = {
+      activationId: activation.activation_id,
+      unsubscribe: null,
+      appendSequence: 0,
+      commitSent: false,
+      gate: activation,
+      gateDecision,
+      resolveGateDecision,
+      rejectGateDecision,
+      standbySettlement,
+      resolveStandbySettlement,
+      gateSettled: false,
+      audioPolicy: policy ?? null,
+      orderedAudio: candidateAudio,
+      chunkQueue: [],
+      committed: false,
+      primaryInputItemId: null,
+    };
+    connection.candidate = candidate;
+    connection.mode = "active";
+    if (activation.gate_state !== "pending") {
+      candidate.gateSettled = true;
+      candidate.resolveGateDecision(activation.gate_state);
+    }
+    this.publish({
+      status: "candidate",
+      attempt: this.snapshot.attempt,
+      session: connection.session,
+      error: null,
+    });
+    this.recordTrace("wake_audio_stream_started", {
+      detail: JSON.stringify({
+        activation_id: activation.activation_id,
+        configuration_id: policy?.configuration_id ?? null,
+        commit_owner: policy?.commit_owner ?? "provider",
+        cohort,
+      }),
+    });
+    this.recordTrace("wake.gate.started", {
+      activation_id: activation.activation_id,
+      detail: JSON.stringify({
+        activation_id: activation.activation_id,
+        gate_mode: activation.gate_mode,
+        configuration_id: policy?.configuration_id ?? null,
+        commit_owner: policy?.commit_owner ?? "provider",
+        cohort,
+      }),
+    });
+    candidate.unsubscribe = candidateAudio.subscribe((chunk) => {
+      this.enqueueOrderedChunk(connection, candidate, chunk);
+    });
+    void candidateAudio.observeEndpoint()
+      .then((endpoint) => {
+        this.recordTrace("wake_local_endpoint", {
+          item_id: String(endpoint.speechEndSample),
+          timing_ms: { processing_lag: endpoint.processingLagMs },
+          detail: JSON.stringify({
+            observed_at_sample: endpoint.observedAtSample,
+            trailing_silence_samples: endpoint.trailingSilenceSamples,
+          }),
+        });
+        if (candidate.audioPolicy?.commit_owner === "client") {
+          void this.commitOrderedCandidate(connection, candidate);
+        }
+      })
+      .catch((cause) => {
+        if (!candidateAudio.isClosed) {
+          this.recordTrace("wake_local_endpoint_unavailable", { detail: this.errorName(cause) });
+        } else if (connection.candidate === candidate) {
+          void this.restoreStandbyAfterCandidateDecision(connection, candidate, "timed_out");
+        }
+      });
+    this.drainOrderedChunks(connection, candidate);
+    if (candidate.gateSettled && candidate.gate?.gate_state === "rejected") {
+      await this.restoreStandbyAfterCandidateDecision(connection, candidate, "rejected");
+    }
+  }
+
+  private async streamOrderedCandidate(
+    connection: BrowserConnection,
+    candidateAudio: JarvisCandidateAudio,
+    activationContext: JarvisRealtimeActivationContext | undefined,
+    cohort: "warm" | "connecting" | "cold" = "cold",
+  ): Promise<void> {
+    await this.activateOrderedCandidate(connection, candidateAudio, activationContext, cohort);
+  }
+
+  private enqueueOrderedChunk(
+    connection: BrowserConnection,
+    candidate: CandidateActivation,
+    chunk: JarvisAudioChunk,
+  ): void {
+    if (connection.candidate !== candidate || candidate.orderedAudio === null) {
+      chunk.samples.fill(0);
+      return;
+    }
+    candidate.chunkQueue.push({ ...chunk, samples: chunk.samples.slice() });
+    this.drainOrderedChunks(connection, candidate);
+    const queuedSamples = candidate.chunkQueue.reduce((total, item) => total + item.samples.length, 0);
+    if (queuedSamples > 16_000 * 30) {
+      for (const item of candidate.chunkQueue) item.samples.fill(0);
+      candidate.chunkQueue.length = 0;
+      candidate.orderedAudio.close("audio_backlog_overflow");
+      this.recordTrace("wake_audio_backlog_overflow", {
+        detail: JSON.stringify({ activation_id: candidate.activationId, retained_samples: queuedSamples }),
+      });
+    } else if (queuedSamples > 16_000 / 2) {
+      this.recordTrace("wake_audio_backlog_soft", {
+        detail: JSON.stringify({ activation_id: candidate.activationId, retained_samples: queuedSamples }),
+      });
+    }
+  }
+
+  private drainOrderedChunks(connection: BrowserConnection, candidate: CandidateActivation): void {
+    if (connection.candidate !== candidate || connection.channel.readyState !== "open") return;
+    if (typeof connection.channel.bufferedAmount === "number" && connection.channel.bufferedAmount > 64 * 1024) {
+      return;
+    }
+    while (candidate.chunkQueue.length && connection.channel.readyState === "open") {
+      if (
+        typeof connection.channel.bufferedAmount === "number"
+        && connection.channel.bufferedAmount > 64 * 1024
+      ) return;
+      const first = candidate.chunkQueue.shift();
+      if (!first) return;
+      const second = candidate.chunkQueue.length ? candidate.chunkQueue.shift() : undefined;
+      const combined = second
+        ? Float32Array.from([...first.samples, ...second.samples])
+        : first.samples;
+      try {
+        const envelope = encodeJarvisWakeAudio(combined, 16_000);
+        for (const audio of envelope.chunks) {
+          connection.channel.send(JSON.stringify({
+            type: "input_audio_buffer.append",
+            event_id: `jarvis-wake-stream-${candidate.activationId}-${candidate.appendSequence++}`,
+            audio,
+          }));
+        }
+      } finally {
+        first.samples.fill(0);
+        second?.samples.fill(0);
+        if (combined !== first.samples) combined.fill(0);
+      }
+    }
+  }
+
+  private attachConversationAudio(
+    connection: BrowserConnection,
+    audio: JarvisCandidateAudio,
+  ): void {
+    connection.conversationAudio = audio;
+    connection.conversationAudioUnsubscribe = audio.subscribe((chunk) => {
+      if (connection.conversationAudio !== audio) {
+        chunk.samples.fill(0);
+        return;
+      }
+      connection.conversationChunkQueue.push({ ...chunk, samples: chunk.samples.slice() });
+      chunk.samples.fill(0);
+      this.drainConversationChunks(connection);
+      const retainedSamples = connection.conversationChunkQueue.reduce(
+        (total, item) => total + item.samples.length,
+        0,
+      );
+      if (retainedSamples > 16_000 * 30) {
+        for (const item of connection.conversationChunkQueue) item.samples.fill(0);
+        connection.conversationChunkQueue.length = 0;
+        audio.close("audio_backlog_overflow");
+        this.recordTrace("wake_audio_backlog_overflow", {
+          detail: JSON.stringify({ activation_id: audio.activationId, retained_samples: retainedSamples }),
+        });
+      } else if (retainedSamples > 16_000 / 2) {
+        this.recordTrace("wake_audio_backlog_soft", {
+          detail: JSON.stringify({ activation_id: audio.activationId, retained_samples: retainedSamples }),
+        });
+      }
+    });
+    this.drainConversationChunks(connection);
+    this.recordTrace("wake_audio_conversation_source_attached", {
+      activation_id: audio.activationId,
+    });
+  }
+
+  private drainConversationChunks(connection: BrowserConnection): void {
+    if (connection.channel.readyState !== "open") return;
+    if (
+      typeof connection.channel.bufferedAmount === "number"
+      && connection.channel.bufferedAmount > 64 * 1024
+    ) return;
+    while (connection.conversationChunkQueue.length && connection.channel.readyState === "open") {
+      if (
+        typeof connection.channel.bufferedAmount === "number"
+        && connection.channel.bufferedAmount > 64 * 1024
+      ) return;
+      const first = connection.conversationChunkQueue.shift();
+      if (!first) return;
+      const second = connection.conversationChunkQueue.length
+        ? connection.conversationChunkQueue.shift()
+        : undefined;
+      const combined = second
+        ? Float32Array.from([...first.samples, ...second.samples])
+        : first.samples;
+      try {
+        const envelope = encodeJarvisWakeAudio(combined, 16_000);
+        for (const audio of envelope.chunks) {
+          connection.channel.send(JSON.stringify({
+            type: "input_audio_buffer.append",
+            event_id: `jarvis-conversation-stream-${connection.conversationAudio?.activationId ?? "unknown"}-${connection.conversationAppendSequence++}`,
+            audio,
+          }));
+        }
+      } finally {
+        first.samples.fill(0);
+        second?.samples.fill(0);
+        if (combined !== first.samples) combined.fill(0);
+      }
+    }
+  }
+
+  private async commitOrderedCandidate(
+    connection: BrowserConnection,
+    candidate: CandidateActivation,
+  ): Promise<void> {
+    if (
+      candidate.commitSent
+      || candidate.audioPolicy?.commit_owner !== "client"
+      || candidate.audioPolicy.turn_mode !== "client_vad"
+      || connection.channel.readyState !== "open"
+    ) return;
+    this.drainOrderedChunks(connection, candidate);
+    candidate.commitSent = true;
+    const eventId = `jarvis-wake-commit-${candidate.activationId}-${this.snapshot.attempt}`;
+    connection.channel.send(JSON.stringify({
+      type: "input_audio_buffer.commit",
+      event_id: eventId,
+    }));
+    this.recordTrace("wake_audio_commit_sent", { detail: "client_vad" });
+  }
+
+  private async restoreStandbyAfterCandidateDecision(
+    connection: BrowserConnection,
+    candidate: CandidateActivation,
+    decision: "rejected" | "timed_out",
+  ): Promise<void> {
+    if (connection.candidate !== candidate) return;
+    const transport = connection.handoffTransport;
+    const silentTrack = connection.silentTransport?.stream.getAudioTracks()[0] ?? null;
+    try {
+      await connection.sender.replaceTrack(silentTrack);
+    } catch (cause) {
+      this.recordTrace("wake_gate_standby_restore_failed", {
+        detail: this.errorName(cause),
+      });
+    }
+    connection.handoffTransport = null;
+    if (candidate.orderedAudio) {
+      for (const chunk of candidate.chunkQueue) chunk.samples.fill(0);
+      candidate.chunkQueue.length = 0;
+      candidate.orderedAudio.close(decision === "rejected" ? "rejected" : "timed_out");
+    }
+    connection.candidate = null;
+    connection.mode = "standby";
+    this.recordTrace("wake_gate_activation_ended", {
+      detail: JSON.stringify({ decision, activation_id: candidate.activationId }),
+    });
+    this.publish({
+      status: "standby",
+      attempt: this.snapshot.attempt,
+      session: connection.session,
+      error: null,
+    });
+    candidate.resolveStandbySettlement(true);
+    await transport?.destroy().catch(() => undefined);
   }
 
   private async createLocalOffer(peer: RTCPeerConnection): Promise<RTCSessionDescriptionInit> {
@@ -1261,6 +2251,26 @@ export class JarvisRealtimeController {
     }
     if (connection.channel.readyState !== "open") throw new Error("Realtime data channel is not open");
     const activationId = this.activationId ?? crypto.randomUUID();
+    const providerOwned = connection.audioPolicy?.commit_owner === "provider";
+    if (providerOwned) {
+      this.recordTrace("wake_audio_upload_started", {
+        attempt,
+        detail: `bytes:${envelope.byteLength}:chunks:${envelope.chunks.length}:provider_owned`,
+      });
+      this.enterConnectionStage(tracker, "wake_upload");
+      envelope.chunks.forEach((audio, index) => {
+        connection.channel.send(JSON.stringify({
+          type: "input_audio_buffer.append",
+          event_id: `jarvis-wake-append-${activationId}-${attempt}-${index}`,
+          audio,
+        }));
+      });
+      this.recordTrace("wake_audio_upload_completed", { attempt, detail: `bytes:${envelope.byteLength}` });
+      this.enterConnectionStage(tracker, "microphone_activation");
+      await handoffTransport.connectLive();
+      this.recordTrace("wake_live_mic_activated", { attempt, detail: "provider_owned" });
+      return;
+    }
     const commitEventId = `jarvis-wake-commit-${activationId}-${attempt}`;
     const acknowledgement = new Promise<string | undefined>((resolve, reject) => {
       const timer = this.dependencies.setTimer(
@@ -1342,12 +2352,14 @@ export class JarvisRealtimeController {
   private disposePreparation(preparation: BrowserPreparation): void {
     preparation.channel.close();
     preparation.peer.close();
+    void preparation.silentTransport?.destroy().catch(() => undefined);
   }
 
   private cancelRotation(): void {
     if (this.rotationTimer === null) return;
     this.dependencies.clearTimer(this.rotationTimer);
     this.rotationTimer = null;
+    this.rotationPending = false;
   }
 
   private cancelDisconnect(): void {
@@ -1356,13 +2368,18 @@ export class JarvisRealtimeController {
     this.disconnectTimer = null;
   }
 
-  private async disposeConnection(connection: BrowserConnection, notifyBackend: boolean): Promise<void> {
+  private async disposeConnection(
+    connection: BrowserConnection,
+    notifyBackend: boolean,
+    preserveConversationAudio?: JarvisCandidateAudio,
+  ): Promise<void> {
     if (connection.bargeInTimer !== null) this.dependencies.clearTimer(connection.bargeInTimer);
     if (connection.receiverStatsTimer !== null) {
       this.dependencies.clearTelemetryTimer(connection.receiverStatsTimer);
       connection.receiverStatsTimer = null;
     }
     connection.bargeInDetector?.destroy();
+    connection.channel.onbufferedamountlow = null;
     connection.channel.close();
     connection.peer.ontrack = null;
     connection.peer.onconnectionstatechange = null;
@@ -1372,7 +2389,28 @@ export class JarvisRealtimeController {
       connection.wakeCommitWaiter.reject(new Error("Realtime connection closed during wake handoff"));
       connection.wakeCommitWaiter = null;
     }
+    if (connection.candidate && !connection.candidate.gateSettled) {
+      connection.candidate.gateSettled = true;
+      connection.candidate.rejectGateDecision(new Error("Realtime connection closed during wake gate"));
+    }
+    connection.candidate?.unsubscribe?.();
+    if (connection.candidate?.orderedAudio && connection.candidate.orderedAudio !== preserveConversationAudio) {
+      for (const chunk of connection.candidate.chunkQueue) chunk.samples.fill(0);
+      connection.candidate.chunkQueue.length = 0;
+      connection.candidate.orderedAudio.close("disconnected");
+    }
+    connection.conversationAudioUnsubscribe?.();
+    connection.conversationAudioUnsubscribe = null;
+    for (const chunk of connection.conversationChunkQueue) chunk.samples.fill(0);
+    connection.conversationChunkQueue.length = 0;
+    if (connection.conversationAudio && connection.conversationAudio !== preserveConversationAudio) {
+      connection.conversationAudio.close("disconnected");
+    }
+    connection.conversationAudio = null;
+    connection.candidate?.resolveStandbySettlement(false);
+    connection.candidate = null;
     await connection.handoffTransport?.destroy().catch(() => undefined);
+    await connection.silentTransport?.destroy().catch(() => undefined);
     if (connection.ownsLocalStream) {
       for (const track of connection.localStream.getTracks()) track.stop();
     }
@@ -1390,6 +2428,26 @@ export class JarvisRealtimeController {
     connection: BrowserConnection | null,
     event: Record<string, unknown>,
   ): void {
+    const eventId = typeof event.event_id === "string" ? event.event_id : undefined;
+    const type = typeof event.type === "string" ? event.type : "provider.unknown";
+    this.recordTrace("provider.event.received", {
+      event_id: eventId,
+      detail: type,
+    });
+    try {
+      this.processBrowserProviderEvent(connection, event);
+    } finally {
+      this.recordTrace("provider.event.handled", {
+        event_id: eventId,
+        detail: type,
+      });
+    }
+  }
+
+  private processBrowserProviderEvent(
+    connection: BrowserConnection | null,
+    event: Record<string, unknown>,
+  ): void {
     const type = typeof event.type === "string" ? event.type : "provider.unknown";
     const responseId = this.responseId(event);
     const itemId = typeof event.item_id === "string" ? event.item_id : undefined;
@@ -1400,7 +2458,39 @@ export class JarvisRealtimeController {
       connection.tracedAudioDeltaResponses.add(key);
     }
     if (shouldTrace) {
-      this.recordTrace(type, { response_id: responseId, item_id: itemId });
+      const response = event.response && typeof event.response === "object"
+        ? event.response as Record<string, unknown>
+        : {};
+      const metadata = response.metadata && typeof response.metadata === "object"
+        ? response.metadata as Record<string, unknown>
+        : {};
+      const providerInputItemId = typeof metadata.jarvis_input_item_id === "string"
+        ? metadata.jarvis_input_item_id || undefined
+        : undefined;
+      const eventActivationId = typeof metadata.jarvis_activation_id === "string"
+        ? metadata.jarvis_activation_id || undefined
+        : undefined;
+      const eventRequestId = typeof metadata.jarvis_request_id === "string"
+        ? metadata.jarvis_request_id || undefined
+        : undefined;
+      const responseStatus = typeof response.status === "string" ? response.status : undefined;
+      const statusDetails = response.status_details && typeof response.status_details === "object"
+        ? response.status_details as Record<string, unknown>
+        : undefined;
+      this.recordTrace(type, {
+        event_id: typeof event.event_id === "string" ? event.event_id : undefined,
+        response_id: responseId,
+        item_id: itemId ?? providerInputItemId,
+        provider_input_item_id: providerInputItemId,
+        activation_id: eventActivationId,
+        request_id: eventRequestId,
+        detail: responseStatus || statusDetails
+          ? JSON.stringify({
+            ...(responseStatus ? { status: responseStatus } : {}),
+            ...(typeof statusDetails?.reason === "string" ? { status_reason: statusDetails.reason } : {}),
+          })
+          : undefined,
+      });
     }
     if (["output_audio_buffer.started", "response.done"].includes(type)) {
       this.scheduleTelemetryFlush(TELEMETRY_AFTER_AUDIO_DELAY_MS);
@@ -1417,6 +2507,14 @@ export class JarvisRealtimeController {
       connection.wakeCommitWaiter.resolve(itemId);
       return;
     }
+    if (type === "input_audio_buffer.committed" && connection.candidate?.orderedAudio) {
+      const candidate = connection.candidate;
+      candidate.committed = true;
+      candidate.primaryInputItemId = itemId ?? null;
+      this.recordTrace("wake_audio_commit_acknowledged", { item_id: itemId });
+      this.maybePromoteOrderedCandidate(connection, candidate);
+      return;
+    }
     if (type === "error" && connection.wakeCommitWaiter) {
       const error = event.error && typeof event.error === "object"
         ? event.error as Record<string, unknown>
@@ -1431,6 +2529,25 @@ export class JarvisRealtimeController {
       connection.activeResponseId = responseId ?? connection.activeResponseId;
       connection.cancellingResponseId = null;
       if (connection.activeResponseId) {
+        const response = event.response && typeof event.response === "object"
+          ? event.response as Record<string, unknown>
+          : {};
+        const metadata = response.metadata && typeof response.metadata === "object"
+          ? response.metadata as Record<string, unknown>
+          : {};
+        connection.responseCorrelation = {
+          requestId: typeof metadata.jarvis_request_id === "string"
+            ? metadata.jarvis_request_id
+            : "",
+          responseId: connection.activeResponseId,
+          activationId: typeof metadata.jarvis_activation_id === "string"
+            ? metadata.jarvis_activation_id || null
+            : null,
+          inputItemId: typeof metadata.jarvis_input_item_id === "string"
+            ? metadata.jarvis_input_item_id || null
+            : null,
+          state: "generating",
+        };
         if (!this.localSpeechActive && this.latestLocalSpeechEndpoint) {
           this.responseSpeechEndpoints.set(
             connection.activeResponseId,
@@ -1456,6 +2573,9 @@ export class JarvisRealtimeController {
         this.setPlaybackMuted(connection, false);
       }
       connection.activeResponseId = responseId ?? connection.activeResponseId;
+      if (connection.responseCorrelation && responseId === connection.responseCorrelation.responseId) {
+        connection.responseCorrelation.state = "speaking";
+      }
       if (type === "output_audio_buffer.started" && connection.activeResponseId) {
         const activeResponseId = connection.activeResponseId;
         this.queueReceiverStatsSample(connection, activeResponseId, "output_started");
@@ -1471,21 +2591,37 @@ export class JarvisRealtimeController {
     }
     if (type === "input_audio_buffer.speech_started" && connection.activeResponseId) {
       this.setPlaybackMuted(connection, true);
-      this.cancelActiveResponse(connection, "provider_speech_started");
+      const onsetCorrelation = connection.responseCorrelation;
+      if (onsetCorrelation) {
+        this.requestBrowserBargeIn(
+          connection,
+          "browser_provider_vad",
+          typeof event.event_id === "string" ? event.event_id : crypto.randomUUID(),
+          itemId ?? null,
+          onsetCorrelation,
+        );
+      }
       return;
     }
     if (type === "response.done" && (!responseId || responseId === connection.activeResponseId)) {
+      const completedActivationId = connection.responseCorrelation?.activationId ?? null;
       this.scheduleTurnResult(TURN_RESULT_SETTLE_MS);
       connection.activeResponseId = null;
+      connection.responseCorrelation = null;
       connection.cancellingResponseId = null;
+      if (completedActivationId && completedActivationId === this.activationId) {
+        this.activationId = null;
+      }
       this.setPlaybackMuted(connection, false);
+      void this.maybeRotate();
       return;
     }
     if (
-      type === "output_audio_buffer.cleared"
-      || type === "output_audio_buffer.stopped"
+      (type === "output_audio_buffer.cleared" || type === "output_audio_buffer.stopped")
+      && (!responseId || responseId === connection.activeResponseId)
     ) {
       connection.activeResponseId = null;
+      connection.responseCorrelation = null;
       connection.cancellingResponseId = null;
       this.setPlaybackMuted(connection, false);
     }
@@ -1497,15 +2633,22 @@ export class JarvisRealtimeController {
   ): void {
     if (!connection || operation !== this.operation || this.active?.peer !== connection.peer) return;
     this.localSpeechActive = true;
+    const onsetCorrelation = connection.responseCorrelation;
     this.recordTrace("local_speech_started", {
-      response_id: connection.activeResponseId ?? undefined,
+      response_id: onsetCorrelation?.responseId ?? connection.activeResponseId ?? undefined,
     });
-    if (!connection.activeResponseId) return;
+    if (!onsetCorrelation) return;
     this.setPlaybackMuted(connection, true);
     if (connection.bargeInTimer !== null) return;
     connection.bargeInTimer = this.dependencies.setTimer(() => {
       connection.bargeInTimer = null;
-      this.cancelActiveResponse(connection, "local_speech_confirmed");
+      this.requestBrowserBargeIn(
+        connection,
+        "browser_local_vad",
+        crypto.randomUUID(),
+        null,
+        onsetCorrelation,
+      );
     }, 120);
   }
 
@@ -1523,27 +2666,43 @@ export class JarvisRealtimeController {
       response_id: connection.activeResponseId ?? undefined,
     });
     this.rememberLocalSpeechEndpoint(entry, "local_speech_stopped");
+    void this.maybeRotate();
   }
 
-  private cancelActiveResponse(connection: BrowserConnection, reason: string): void {
-    const responseId = connection.activeResponseId;
-    if (
-      !responseId
-      || connection.cancellingResponseId === responseId
-      || connection.channel.readyState !== "open"
-    ) return;
-    connection.cancellingResponseId = responseId;
-    connection.channel.send(JSON.stringify({
-      type: "response.cancel",
-      event_id: `jarvis-response-cancel-${crypto.randomUUID()}`,
-      response_id: responseId,
-    }));
-    connection.channel.send(JSON.stringify({
-      type: "output_audio_buffer.clear",
-      event_id: `jarvis-output-clear-${crypto.randomUUID()}`,
-    }));
-    this.recordTrace("response.cancel.sent", { response_id: responseId, detail: reason });
-    this.recordTrace("output_audio_buffer.clear.sent", { response_id: responseId, detail: reason });
+  private requestBrowserBargeIn(
+    connection: BrowserConnection,
+    source: "browser_local_vad" | "browser_provider_vad",
+    speechEventId: string,
+    inputItemId: string | null,
+    capturedCorrelation: BrowserResponseCorrelation | null = connection.responseCorrelation,
+  ): void {
+    const correlation = capturedCorrelation;
+    if (!correlation?.requestId || !this.dependencies.bargeIn) return;
+    if (correlation.state === "cancelling") return;
+    correlation.state = "cancelling";
+    this.recordTrace("response.barge_in.requested", {
+      response_id: correlation.responseId,
+      item_id: correlation.inputItemId ?? undefined,
+      detail: JSON.stringify({ source, speech_event_id: speechEventId }),
+    });
+    void this.dependencies.bargeIn(connection.session.id, {
+      generation: connection.session.generation,
+      speech_event_id: speechEventId,
+      source,
+      request_id: correlation.requestId,
+      response_id: correlation.responseId,
+      input_item_id: inputItemId ?? correlation.inputItemId,
+    }).then((result) => {
+      this.recordTrace("response.barge_in.result", {
+        response_id: correlation.responseId,
+        detail: JSON.stringify({ accepted: result.accepted, source }),
+      });
+    }).catch((cause) => {
+      this.recordTrace("response.barge_in.failed", {
+        response_id: correlation.responseId,
+        detail: this.errorName(cause),
+      });
+    });
   }
 
   private setPlaybackMuted(connection: BrowserConnection, muted: boolean): void {
@@ -1570,6 +2729,7 @@ export class JarvisRealtimeController {
       kind,
       monotonic_ms: monotonicMs,
       wall_time: this.dependencies.wallNow(),
+      ...(this.activationId ? { activation_id: this.activationId } : {}),
       ...details,
     };
     this.trace.push(entry);
@@ -1596,26 +2756,45 @@ export class JarvisRealtimeController {
     entry: JarvisRealtimeTraceEntry,
   ): JarvisRealtimeTelemetryEvent {
     const traceSession = this.active?.session ?? this.connectingSession;
+    let detail: Record<string, unknown> = {
+      ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
+      ...(entry.sequence === undefined ? {} : { sequence: entry.sequence }),
+      ...(entry.server_time === undefined ? {} : { server_time: entry.server_time }),
+      ...(entry.event_id === undefined ? {} : { event_id: entry.event_id }),
+      ...(entry.timing_ms === undefined ? {} : { timing_ms: entry.timing_ms }),
+      ...(entry.detail === undefined ? {} : { detail: entry.detail.slice(0, 500) }),
+    };
+    if (
+      (entry.kind === "turn.result" || entry.kind === "turn.result.amendment")
+      && entry.detail
+    ) {
+      try {
+        const terminalRecord: unknown = JSON.parse(entry.detail);
+        if (terminalRecord && typeof terminalRecord === "object") {
+          detail = terminalRecord as Record<string, unknown>;
+        }
+      } catch {
+        // Keep the bounded diagnostic representation for malformed data.
+      }
+    }
     return {
       trace_id: this.traceId,
       client_sequence: ++this.telemetryClientSequence,
-      ...(this.activationId ? { activation_id: this.activationId } : {}),
+      ...(entry.activation_id ? { activation_id: entry.activation_id } : {}),
       ...(traceSession ? {
         session_id: traceSession.id,
         generation: traceSession.generation,
       } : {}),
+      ...(entry.request_id ? { request_id: entry.request_id } : {}),
       ...(entry.response_id ? { provider_response_id: entry.response_id } : {}),
+      ...((entry.provider_input_item_id ?? entry.item_id)
+        ? { provider_input_item_id: entry.provider_input_item_id ?? entry.item_id }
+        : {}),
       source: "browser",
       event_type: entry.kind.slice(0, 128),
       observed_at: entry.wall_time,
       monotonic_ms: entry.monotonic_ms,
-      detail: {
-        ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
-        ...(entry.sequence === undefined ? {} : { sequence: entry.sequence }),
-        ...(entry.server_time === undefined ? {} : { server_time: entry.server_time }),
-        ...(entry.timing_ms === undefined ? {} : { timing_ms: entry.timing_ms }),
-        ...(entry.detail === undefined ? {} : { detail: entry.detail.slice(0, 500) }),
-      },
+      detail,
     };
   }
 
@@ -1768,7 +2947,30 @@ export class JarvisRealtimeController {
   }
 
   private recordUnreportedTurnResults(): void {
-    const turns = summarizeJarvisRealtimeTrace(this.trace).turns;
+    const summary = summarizeJarvisRealtimeTrace(this.trace);
+    if (summary.turn_results?.length) {
+      for (const result of summary.turn_results) {
+        const previous = this.reportedV3Turns.get(result.turn_key);
+        const serialized = JSON.stringify(result);
+        if (previous === serialized) continue;
+        this.reportedV3Turns.set(result.turn_key, serialized);
+        this.recordTrace(previous ? "turn.result.amendment" : "turn.result", {
+          activation_id: result.activation_id ?? undefined,
+          session_id: result.session_id ?? undefined,
+          generation: result.generation ?? undefined,
+          item_id: result.input_item_id ?? undefined,
+          request_id: result.request_id ?? undefined,
+          response_id: result.response_id ?? undefined,
+          clock_uncertainty_ms: result.clock_uncertainty_ms ?? undefined,
+          detail: JSON.stringify({
+            ...result,
+            ...(previous ? { amends_turn_key: result.turn_key } : {}),
+          }),
+        });
+      }
+      return;
+    }
+    const turns = summary.turns;
     for (const turn of turns) {
       const key = turn.input_item_id
         ? `item:${turn.input_item_id}`
@@ -1777,12 +2979,16 @@ export class JarvisRealtimeController {
       this.reportedTurns.add(key);
       const timingMs = Object.fromEntries(
         Object.entries({
-          endpointing: turn.wake_handoff_tail_ms ?? turn.local_speech_stop_to_provider_stop_ms,
+          endpointing: turn.local_speech_stop_to_provider_stop_ms,
+          wake_handoff: turn.wake_handoff_tail_ms,
           connection: turn.provider_connection_ms,
           upload: turn.wake_audio_upload_ms,
           transcription: turn.transcription_ms,
           arbitration: turn.response_arbitration_ms,
           generation: turn.generation_ms,
+          gate: turn.gate_started_to_decision_ms,
+          speech_end_to_gate_decision: turn.local_speech_stop_to_gate_decision_ms,
+          standby_age: turn.standby_age_ms,
           media_arrival: turn.response_created_to_first_playable_media_ms,
           speech_end_to_first_playable: turn.browser_speech_end_to_first_playable_ms,
           overall: turn.local_speech_stop_to_first_playable_media_ms,
@@ -1796,6 +3002,10 @@ export class JarvisRealtimeController {
           kind: turn.kind,
           input_item_id: turn.input_item_id ?? null,
           outcome: turn.outcome,
+          gate_decision: turn.gate_decision ?? null,
+          gate_decision_source: turn.gate_decision_source ?? null,
+          standby_ready: turn.standby_ready ?? null,
+          standby_age_ms: turn.standby_age_ms ?? null,
           bottleneck: turn.bottleneck ?? null,
           bottleneck_ms: turn.bottleneck_ms ?? null,
         }),
@@ -2098,6 +3308,121 @@ function lastTrace(
   return undefined;
 }
 
+interface TurnBoundary {
+  boundaryIndex: number;
+  providerStopIndex: number;
+  inputItemId?: string;
+  committedIndex?: number;
+}
+
+const GATE_START_KINDS = [
+  "wake.gate.started",
+  "wake.verification.started",
+  "backend.wake.gate.started",
+  "backend.wake.verification.started",
+] as const;
+
+const GATE_DECISION_KINDS = [
+  "wake.gate.accepted",
+  "wake.gate.rejected",
+  "wake.gate.timed_out",
+  "wake.verification.accepted",
+  "wake.verification.rejected",
+  "wake.verification.timed_out",
+  "backend.wake.gate.accepted",
+  "backend.wake.gate.rejected",
+  "backend.wake.gate.timed_out",
+  "backend.wake.verification.accepted",
+  "backend.wake.verification.rejected",
+  "backend.wake.verification.timed_out",
+] as const;
+
+const RESPONSE_CREATE_SENT_KINDS = [
+  "response.create.sent",
+  "response_create.sent",
+  "response.create",
+] as const;
+
+const STANDBY_READY_KINDS = [
+  "realtime_standby_ready",
+  "standby.ready",
+  "realtime_connection_ready",
+] as const;
+
+function collectTurnBoundaries(entries: readonly JarvisRealtimeTraceEntry[]): TurnBoundary[] {
+  const boundaries: TurnBoundary[] = [];
+  entries.forEach((entry, index) => {
+    const isCommitted = entry.kind === "input_audio_buffer.committed";
+    const isSpeechStopped = entry.kind === "input_audio_buffer.speech_stopped";
+    if (!isCommitted && !isSpeechStopped) return;
+    const previous = boundaries.at(-1);
+    if (!previous) {
+      boundaries.push({
+        boundaryIndex: index,
+        providerStopIndex: index,
+        ...(isCommitted ? { committedIndex: index } : {}),
+        ...(entry.item_id ? { inputItemId: entry.item_id } : {}),
+      });
+      return;
+    }
+    const responseBetween = firstTrace(
+      entries,
+      ["response.created", "response.done"],
+      previous.boundaryIndex + 1,
+      index,
+    );
+    if (responseBetween) {
+      boundaries.push({
+        boundaryIndex: index,
+        providerStopIndex: index,
+        ...(isCommitted ? { committedIndex: index } : {}),
+        ...(entry.item_id ? { inputItemId: entry.item_id } : {}),
+      });
+      return;
+    }
+    const wakeDetected = firstTrace(
+      entries,
+      ["wake_detected"],
+      previous.boundaryIndex + 1,
+      index + 1,
+    ) ?? firstTrace(entries, ["wake_detected"], 0, previous.boundaryIndex + 1);
+    const sameActivation = Boolean(
+      entries[previous.boundaryIndex].activation_id
+      && entries[previous.boundaryIndex].activation_id === entry.activation_id,
+    );
+    const nearProviderBoundary = entry.monotonic_ms - entries[previous.boundaryIndex].monotonic_ms <= 250;
+    const shouldMerge = (
+      previous.committedIndex !== undefined
+      || isCommitted
+    ) && Boolean(wakeDetected || nearProviderBoundary || sameActivation);
+    if (!shouldMerge) {
+      boundaries.push({
+        boundaryIndex: index,
+        providerStopIndex: index,
+        ...(isCommitted ? { committedIndex: index } : {}),
+        ...(entry.item_id ? { inputItemId: entry.item_id } : {}),
+      });
+      return;
+    }
+    previous.boundaryIndex = index;
+    if (isSpeechStopped) previous.providerStopIndex = index;
+    if (isCommitted) previous.committedIndex = index;
+    if (isCommitted && entry.item_id) previous.inputItemId = entry.item_id;
+    if (!previous.inputItemId && entry.item_id) previous.inputItemId = entry.item_id;
+  });
+  return boundaries;
+}
+
+function gateDecision(
+  entry: JarvisRealtimeTraceEntry | undefined,
+): JarvisRealtimeTurnTiming["gate_decision"] {
+  if (!entry) return undefined;
+  if (entry.kind.endsWith(".accepted")) return "accepted";
+  if (entry.kind.endsWith(".rejected")) return "rejected";
+  if (entry.kind.endsWith(".timed_out")) return "timed_out";
+  return undefined;
+}
+
 /** Produce a compact, turn-oriented view while retaining the raw trace for deeper diagnosis. */
 export function summarizeJarvisRealtimeTrace(
   entries: readonly JarvisRealtimeTraceEntry[],
@@ -2144,24 +3469,12 @@ export function summarizeJarvisRealtimeTrace(
     };
   });
 
-  const stopIndexes: number[] = [];
-  entries.forEach((entry, index) => {
-    if (entry.kind === "input_audio_buffer.speech_stopped") {
-      stopIndexes.push(index);
-      return;
-    }
-    if (entry.kind !== "input_audio_buffer.committed") return;
-    const previous = stopIndexes.length ? entries[stopIndexes[stopIndexes.length - 1]] : undefined;
-    if (
-      previous?.kind === "input_audio_buffer.speech_stopped"
-      && entry.monotonic_ms - previous.monotonic_ms <= 250
-    ) return;
-    stopIndexes.push(index);
-  });
-  const turns = stopIndexes.map((stopIndex, turnIndex) => {
-    const segmentStart = turnIndex === 0 ? 0 : stopIndexes[turnIndex - 1] + 1;
-    const segmentEnd = stopIndexes[turnIndex + 1] ?? entries.length;
-    const providerStop = entries[stopIndex];
+  const boundaries = collectTurnBoundaries(entries);
+  const turns = boundaries.map((boundary, turnIndex) => {
+    const stopIndex = boundary.boundaryIndex;
+    const segmentStart = turnIndex === 0 ? 0 : boundaries[turnIndex - 1].boundaryIndex + 1;
+    const segmentEnd = boundaries[turnIndex + 1]?.boundaryIndex ?? entries.length;
+    const providerStop = entries[boundary.providerStopIndex];
     const localStop = lastTrace(
       entries,
       ["wake_local_speech_stopped", "local_speech_stopped"],
@@ -2190,19 +3503,20 @@ export function summarizeJarvisRealtimeTrace(
     const readinessBarrier = [controlReady, dataChannelReady]
       .filter((entry): entry is JarvisRealtimeTraceEntry => entry !== undefined)
       .sort((left, right) => right.monotonic_ms - left.monotonic_ms)[0];
-    const backendTranscript = firstTrace(
+    const responseCreated = firstTrace(entries, ["response.created"], stopIndex + 1, segmentEnd);
+    const responseIndex = responseCreated ? entries.indexOf(responseCreated) : segmentEnd;
+    const backendTranscript = lastTrace(
       entries,
       ["backend.provider.user_transcript"],
-      stopIndex + 1,
-      segmentEnd,
+      segmentStart,
+      responseIndex,
     );
-    const transcript = backendTranscript ?? firstTrace(
+    const transcript = backendTranscript ?? lastTrace(
       entries,
       ["conversation.item.input_audio_transcription.completed"],
-      stopIndex + 1,
-      segmentEnd,
+      segmentStart,
+      responseIndex,
     );
-    const responseCreated = firstTrace(entries, ["response.created"], stopIndex + 1, segmentEnd);
     const responseId = responseCreated?.response_id;
     const firstAudio = firstTrace(
       entries,
@@ -2234,6 +3548,20 @@ export function summarizeJarvisRealtimeTrace(
       stopIndex + 1,
       segmentEnd,
     );
+    const gateStarted = firstTrace(entries, GATE_START_KINDS, segmentStart, responseIndex);
+    const gateDecisionEntry = firstTrace(entries, GATE_DECISION_KINDS, segmentStart, responseIndex);
+    const decision = gateDecision(gateDecisionEntry);
+    const standbyReadyEntry = lastTrace(
+      entries,
+      STANDBY_READY_KINDS,
+      0,
+      wakeDetected ? entries.indexOf(wakeDetected) : segmentStart,
+    );
+    const standbyReady = standbyReadyEntry && Boolean(wakeDetected);
+    const standbyAgeMs = standbyReadyEntry && wakeDetected
+      ? elapsedMilliseconds(standbyReadyEntry, wakeDetected)
+      : undefined;
+    const responseCreateSent = firstTrace(entries, RESPONSE_CREATE_SENT_KINDS, segmentStart, responseIndex);
     const endpointMs = elapsedMilliseconds(localStop, utteranceReady);
     const providerConnectionMs = elapsedMilliseconds(controlStart, readinessBarrier);
     const audioHandoffMs = elapsedMilliseconds(uploadStarted, commitAcknowledged ?? providerStop);
@@ -2256,9 +3584,11 @@ export function summarizeJarvisRealtimeTrace(
     return {
       turn: turnIndex + 1,
       kind: wakeDetected ? "wake" : "follow_up",
-      input_item_id: providerStop.item_id,
       boundary_monotonic_ms: providerStop.monotonic_ms,
       response_id: responseId,
+      ...(boundary.inputItemId || providerStop.item_id
+        ? { input_item_id: boundary.inputItemId ?? providerStop.item_id }
+        : {}),
       local_speech_stop_to_provider_stop_ms: elapsedMilliseconds(localStop, providerStop),
       wake_handoff_tail_ms: elapsedMilliseconds(localStop, utteranceReady),
       provider_stop_to_response_created_ms: elapsedMilliseconds(providerStop, responseCreated),
@@ -2271,7 +3601,6 @@ export function summarizeJarvisRealtimeTrace(
       provider_boundary_to_transcript_ms: backendTranscript?.timing_ms?.provider_boundary_to_transcript,
       transcript_to_arbiter_ms: elapsedMilliseconds(transcript, arbiter),
       arbiter_to_response_created_ms: elapsedMilliseconds(arbiter, responseCreated),
-      response_create_sent_to_created_ms: providerGenerating?.timing_ms?.response_create_sent_to_created,
       response_created_to_first_audio_provider_ms: providerSpeaking?.timing_ms?.response_created_to_first_audio,
       first_audio_to_first_playable_media_ms: elapsedMilliseconds(firstAudio, firstPlayableMedia),
       response_created_to_first_playable_media_ms: elapsedMilliseconds(responseCreated, firstPlayableMedia),
@@ -2282,7 +3611,19 @@ export function summarizeJarvisRealtimeTrace(
       transcription_ms: transcriptionMs,
       response_arbitration_ms: responseArbitrationMs,
       generation_ms: generationMs,
-      outcome: !transcript
+      gate_started_to_decision_ms: elapsedMilliseconds(gateStarted, gateDecisionEntry),
+      local_speech_stop_to_gate_decision_ms: elapsedMilliseconds(localStop, gateDecisionEntry),
+      ...(decision ? { gate_decision: decision } : {}),
+      ...(gateDecisionEntry ? { gate_decision_source: gateDecisionEntry.kind } : {}),
+      ...(standbyReady === undefined ? {} : { standby_ready: standbyReady }),
+      ...(standbyAgeMs === undefined ? {} : { standby_age_ms: standbyAgeMs }),
+      response_create_sent_to_created_ms: elapsedMilliseconds(responseCreateSent, responseCreated)
+        ?? providerGenerating?.timing_ms?.response_create_sent_to_created,
+      outcome: decision === "rejected"
+        ? "gate_rejected"
+        : decision === "timed_out"
+          ? "gate_timed_out"
+          : !transcript
         ? "no_transcript"
         : !arbiter
           ? "no_arbiter"
@@ -2298,10 +3639,23 @@ export function summarizeJarvisRealtimeTrace(
     } satisfies JarvisRealtimeTurnTiming;
   });
 
+  const v3 = summarizeJarvisRealtimeTurns(
+    entries as readonly JarvisRealtimeReducerEntry[],
+  );
+  const hasPhaseOneCorrelation = entries.some((entry) => (
+    entry.request_id !== undefined
+    || entry.provider_input_item_id !== undefined
+    || (
+      entry.activation_id !== undefined
+      && entry.item_id !== undefined
+      && entry.kind.includes("committed")
+    )
+  ));
   return {
     schema: "jarvis.realtime_timing.v2",
     connections,
     turns,
+    ...(hasPhaseOneCorrelation && v3.turns.length ? { turn_results: v3.turns } : {}),
   };
 }
 
@@ -2372,6 +3726,100 @@ async function createBrowserHandoffTransport(
       if (destroyed) return;
       destroyed = true;
       liveSource.disconnect();
+      for (const track of destination.stream.getTracks()) track.stop();
+      await context.close();
+    },
+  };
+}
+
+function adaptLegacyCandidateAudio(
+  legacy: JarvisRealtimeCandidateAudio,
+  activationId: string,
+): JarvisCandidateAudio {
+  const owner = createJarvisActivationAudio(activationId);
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  if (legacy.sampleRate === 16_000 && legacy.preRoll.length) {
+    owner.append(
+      legacy.preRoll,
+      now - legacy.preRoll.length / 16_000 * 1_000,
+    );
+  } else {
+    legacy.preRoll.fill(0);
+  }
+  legacy.subscribe((samples) => {
+    if (legacy.sampleRate === 16_000) owner.append(samples, performance.now());
+    else samples.fill(0);
+  });
+  void legacy.endpoint.then((endpoint) => {
+    const totalSamples = Math.max(0, endpoint.totalSamples);
+    owner.resolveEndpoint({
+      sampleRate: 16_000,
+      speechEndSample: totalSamples,
+      observedAtSample: totalSamples,
+      trailingSilenceSamples: Math.max(
+        0,
+        Math.round(endpoint.trailingSilenceMs / 1_000 * 16_000),
+      ),
+      processingLagMs: 0,
+    });
+  }).catch(() => owner.close("disconnected"));
+  return owner;
+}
+
+function adaptLegacyHandoffToActivationAudio(
+  handoff: JarvisRealtimeAudioHandoff,
+  activationId: string,
+): JarvisCandidateAudio {
+  const owner = createJarvisActivationAudio(activationId);
+  void handoff.utterance.then((samples) => {
+    if (owner.isClosed || handoff.sampleRate !== 16_000) {
+      samples.fill(0);
+      owner.close("disconnected");
+      return;
+    }
+    const totalSamples = samples.length;
+    owner.append(samples);
+    owner.resolveEndpoint({
+      sampleRate: 16_000,
+      speechEndSample: totalSamples,
+      observedAtSample: totalSamples,
+      trailingSilenceSamples: 0,
+      processingLagMs: 0,
+    });
+  }).catch(() => owner.close("disconnected"));
+  return owner;
+}
+
+function isOrderedCandidateAudio(
+  value: JarvisRealtimeCandidateAudio | JarvisCandidateAudio | undefined,
+): value is JarvisCandidateAudio {
+  return Boolean(
+    value
+    && typeof (value as JarvisCandidateAudio).observeEndpoint === "function"
+    && typeof (value as JarvisCandidateAudio).promoteToConversation === "function"
+    && typeof (value as JarvisCandidateAudio).close === "function",
+  );
+}
+
+async function createBrowserSilentTransport(): Promise<JarvisRealtimeSilentTransport> {
+  const context = new AudioContext();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const destination = context.createMediaStreamDestination();
+  gain.gain.value = 0;
+  oscillator.connect(gain);
+  gain.connect(destination);
+  oscillator.start();
+  if (context.state === "suspended") await context.resume();
+  let destroyed = false;
+  return {
+    stream: destination.stream,
+    destroy: async () => {
+      if (destroyed) return;
+      destroyed = true;
+      try { oscillator.stop(); } catch { /* Already stopped. */ }
+      oscillator.disconnect();
+      gain.disconnect();
       for (const track of destination.stream.getTracks()) track.stop();
       await context.close();
     },

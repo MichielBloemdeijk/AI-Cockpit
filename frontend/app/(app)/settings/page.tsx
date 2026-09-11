@@ -13,6 +13,8 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [pushState, setPushState] = useState<PushNotificationState>("checking");
   const [jarvisPreferences, setJarvisPreferences] = useState<JarvisPreferences | null>(null);
+  const [developerLabSaving, setDeveloperLabSaving] = useState(false);
+  const [developerLabStatus, setDeveloperLabStatus] = useState<"saved" | "error" | null>(null);
   const [pairingCode, setPairingCode] = useState<JarvisPairingCode | null>(null);
 
   useEffect(() => {
@@ -66,6 +68,19 @@ export default function SettingsPage() {
     }
   };
 
+  const handleDeveloperLabChange = async (enabled: boolean) => {
+    setDeveloperLabSaving(true);
+    setDeveloperLabStatus(null);
+    try {
+      setJarvisPreferences(await updateJarvisPreferences({ developer_mode: enabled }));
+      setDeveloperLabStatus("saved");
+    } catch {
+      setDeveloperLabStatus("error");
+    } finally {
+      setDeveloperLabSaving(false);
+    }
+  };
+
   const pushDescription: Record<PushNotificationState, string> = {
     checking: "Checking browser and server configuration…",
     unavailable: "This browser does not support Web Push.",
@@ -113,16 +128,21 @@ export default function SettingsPage() {
                 <option value="balanced">Balanced</option>
               </select>
             </label>
-            <label className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 text-sm text-zinc-200">
-              Developer lab
-              <input
-                type="checkbox"
-                checked={jarvisPreferences?.developer_mode ?? false}
-                disabled={!jarvisPreferences}
-                onChange={(event) => void updateJarvisPreferences({ developer_mode: event.target.checked }).then(setJarvisPreferences)}
-                className="h-6 w-6 accent-violet-500"
-              />
-            </label>
+            <div className="px-4 py-3 text-sm text-zinc-200" aria-describedby="developer-lab-status">
+              <label className="flex min-h-8 items-center justify-between gap-4">
+                <span>Developer lab</span>
+                <input
+                  type="checkbox"
+                  checked={jarvisPreferences?.developer_mode ?? false}
+                  disabled={!jarvisPreferences || developerLabSaving}
+                  onChange={(event) => void handleDeveloperLabChange(event.target.checked)}
+                  className="h-6 w-6 accent-violet-500"
+                />
+              </label>
+              <p id="developer-lab-status" role="status" className="mt-1 text-xs text-zinc-500">
+                {developerLabSaving ? "Saving developer lab setting…" : developerLabStatus === "saved" ? "Saved. Developer lab access is persistent." : developerLabStatus === "error" ? "Could not save this setting. Try again." : jarvisPreferences ? (jarvisPreferences.developer_mode ? "Enabled" : "Disabled") : "Loading…"}
+              </p>
+            </div>
             <Link href="/settings/wake" className="flex min-h-14 items-center justify-between px-4 py-3 text-sm text-zinc-200">
               Wake-word calibration <span className="text-xs text-zinc-500">Open wizard →</span>
             </Link>

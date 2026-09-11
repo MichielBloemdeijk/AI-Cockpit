@@ -15,18 +15,51 @@ export interface JarvisWakeModelConfiguration {
   positiveVadThreshold?: number;
   negativeVadThreshold?: number;
   negativeVadCount?: number;
+  endpointSilenceMs?: number;
+  preRollPaddingMs?: number;
 }
 
 export type JarvisWakeWorkerCommand =
   | { type: "init"; configuration: JarvisWakeModelConfiguration }
-  | { type: "audio"; samples: Float32Array }
+  | { type: "audio"; samples: Float32Array; capturedMonotonicMs?: number }
   | { type: "pause" }
   | { type: "resume" }
   | { type: "destroy" };
 
 export type JarvisWakeWorkerEvent =
   | { type: "ready" }
-  | { type: "detected"; probability: number }
+  | {
+    type: "detected";
+    probability: number;
+    activationId?: string;
+    preRoll?: Float32Array;
+    sampleRate?: number;
+  }
+  | { type: "candidate_audio"; samples: Float32Array; sampleRate: number }
+  | {
+    type: "candidate_chunk";
+    activationId: string;
+    sequence: number;
+    sampleRate: 16_000;
+    startSample: number;
+    endSample: number;
+    capturedMonotonicMs: number;
+    samples: Float32Array;
+  }
+  | {
+    type: "candidate_endpoint";
+    sampleRate: number;
+    totalSamples: number;
+    trailingSilenceMs: number;
+    speechEndSample?: number;
+    observedAtSample?: number;
+    trailingSilenceSamples?: number;
+    processingLagMs?: number;
+  }
+  | {
+    type: "candidate_close";
+    reason: "audio_backlog_overflow" | "rearmed" | "sleep";
+  }
   | { type: "vad_boundary"; state: "speech_started" | "speech_stopped"; probability: number }
   | { type: "utterance"; samples: Float32Array; sampleRate: number }
   | { type: "error"; message: string };
@@ -43,6 +76,8 @@ export function defaultJarvisWakeModelConfiguration(): JarvisWakeModelConfigurat
     candidateWakeHits: 2,
     speechLookbackMs: 1_200,
     candidateLookbackMs: 960,
+    endpointSilenceMs: 300,
+    preRollPaddingMs: 300,
   };
 }
 

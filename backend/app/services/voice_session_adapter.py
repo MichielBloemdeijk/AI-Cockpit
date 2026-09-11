@@ -65,6 +65,8 @@ class VoiceSessionAdapter(Protocol):
         session_id: str,
         generation: int,
         request_id: str,
+        activation_id: str | None = None,
+        input_item_id: str | None = None,
         response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
@@ -77,6 +79,14 @@ class VoiceSessionAdapter(Protocol):
         session_id: str,
         generation: int,
         response_id: str | None = None,
+    ) -> None: ...
+
+    async def discard_candidate_items(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        item_ids: tuple[str, ...],
     ) -> None: ...
 
     def is_connected(self, *, session_id: str, generation: int) -> bool: ...
@@ -105,6 +115,7 @@ class FakeVoiceSessionAdapter:
         self._handlers: dict[tuple[str, int], ProviderEventHandler] = {}
         self._pending_text: dict[tuple[str, int], tuple[str, str]] = {}
         self._pending_tool_results: dict[tuple[str, int], dict[str, Any]] = {}
+        self.discarded_candidate_items: list[tuple[str, int, tuple[str, ...]]] = []
 
     async def connect(
         self,
@@ -146,6 +157,8 @@ class FakeVoiceSessionAdapter:
         session_id: str,
         generation: int,
         request_id: str,
+        activation_id: str | None = None,
+        input_item_id: str | None = None,
         response_kind: str,
         presentation_ids: tuple[str, ...],
         facts: tuple[dict[str, Any], ...],
@@ -167,6 +180,8 @@ class FakeVoiceSessionAdapter:
                     "response_id": response_id,
                     "response_kind": response_kind,
                     "request_id": request_id,
+                    "activation_id": activation_id,
+                    "input_item_id": input_item_id,
                 },
             ),
         )
@@ -216,6 +231,8 @@ class FakeVoiceSessionAdapter:
                     "presentation_ids": list(presentation_ids),
                     "response_kind": response_kind,
                     "request_id": request_id,
+                    "activation_id": activation_id,
+                    "input_item_id": input_item_id,
                 },
             ),
         )
@@ -245,6 +262,16 @@ class FakeVoiceSessionAdapter:
                 },
             ),
         )
+
+    async def discard_candidate_items(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        item_ids: tuple[str, ...],
+    ) -> None:
+        if item_ids:
+            self.discarded_candidate_items.append((session_id, generation, item_ids))
 
     async def send_tool_result(
         self,
@@ -304,6 +331,7 @@ class FakeVoiceSessionAdapter:
         self._handlers.clear()
         self._pending_text.clear()
         self._pending_tool_results.clear()
+        self.discarded_candidate_items.clear()
 
     def detach(self, *, session_id: str, generation: int) -> None:
         self._handlers.pop((session_id, generation), None)

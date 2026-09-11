@@ -66,8 +66,13 @@ import {
   JarvisWakeLifecycle,
   type JarvisWakeSnapshot,
 } from "@/lib/jarvis-wake-state";
+import {
+  resolveJarvisWakeGateMode,
+  loadJarvisWakeGateMode,
+  saveJarvisWakeGateMode,
+  type JarvisWakeGateMode,
+} from "@/lib/jarvis-benchmark-preferences";
 import { useConversationAutoScroll } from "@/lib/conversation-auto-scroll";
-import { classifyJarvisAddress } from "@/lib/jarvis-address-detection";
 import {
   mergeProvisionalTranscript,
   provisionalTranscriptIsPersisted,
@@ -111,6 +116,10 @@ export default function JarvisPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [labOpen, setLabOpen] = useState(false);
+  const [wakeGateMode, setWakeGateMode] = useState<JarvisWakeGateMode>("transcript_rules");
+  const [wakeGatePreferencesLoaded, setWakeGatePreferencesLoaded] = useState(false);
+  const [wakeGateBackendMode, setWakeGateBackendMode] = useState<JarvisWakeGateMode | null>(null);
+  const [wakeGateMismatch, setWakeGateMismatch] = useState<string | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"tasks" | "activity" | null>(null);
   const [preferences, setPreferences] = useState<JarvisPreferences | null>(null);
@@ -140,6 +149,8 @@ export default function JarvisPage() {
   const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
   const wakeLifecycleRef = useRef<JarvisWakeLifecycle | null>(null);
   const wakeRuntimeRef = useRef<JarvisWakeRuntime | null>(null);
+  const wakeGateModeRef = useRef<JarvisWakeGateMode>("transcript_rules");
+  const developerModeRef = useRef(false);
   const refreshInFlightRef = useRef(false);
   const rearmWakeRef = useRef<(reason: "idle_timeout" | "explicit_sleep") => Promise<void>>(
     async () => undefined,
@@ -148,7 +159,6 @@ export default function JarvisPage() {
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const liveCursorRef = useRef(0);
   const liveCursorSeededRef = useRef(false);
-  const pendingWakeAddressRef = useRef<{ wakeScore: number; detectedAt: number } | null>(null);
   const newestMessageIdRef = useRef<string | null>(null);
   const currentConversationId = state?.current_log?.id ?? null;
   const currentMessages = state?.current_log?.messages ?? [];
@@ -187,6 +197,15 @@ export default function JarvisPage() {
     if (provisionalUserPersisted) setProvisionalUser(null);
     if (provisionalAssistantPersisted) setProvisionalAssistant(null);
   }, [provisionalAssistantPersisted, provisionalUserPersisted]);
+
+  useEffect(() => {
+    const developerMode = preferences?.developer_mode === true;
+    developerModeRef.current = developerMode;
+  }, [preferences?.developer_mode]);
+
+  useEffect(() => {
+    wakeGateModeRef.current = wakeGateMode;
+  }, [wakeGateMode]);
 
   const setLiveStreams = useCallback((next: JarvisLiveStreamState) => {
     streamsRef.current = next;
@@ -268,6 +287,15 @@ export default function JarvisPage() {
           `media_current_time_ms:${Math.round(audio.currentTime * 1_000)}`,
         );
       },
+      onActivationPolicy: ({ activationId, requestedGateMode, backendGateMode, configurationId }) => {
+        if (disposed) return;
+        setWakeGateBackendMode(backendGateMode);
+        setWakeGateMismatch(
+          requestedGateMode === backendGateMode
+            ? null
+            : `${activationId}: requested ${requestedGateMode}, backend used ${backendGateMode} (${configurationId})`,
+        );
+      },
       onProviderEvent: (event) => {
         const eventType = typeof event.type === "string" ? event.type : "";
         if (FOLLOW_UP_ACTIVITY_EVENTS.has(eventType)) {
@@ -313,7 +341,11 @@ export default function JarvisPage() {
     const runtime = new JarvisWakeRuntime({
       onTrace: (kind, detail) => realtimeController.recordClientSignal(kind, detail),
       onReady: (stream) => {
-        void realtimeController.prepare(stream).catch(() => undefined);
+        void realtimeController.arm(stream).catch((cause) => {
+          if (disposed) return;
+          wakeLifecycleRef.current?.fail(cause);
+          setError(cause instanceof Error ? cause.message : "Unable to prepare Jarvis voice");
+        });
       },
       onSnapshot: (snapshot) => {
         if (disposed) return;
@@ -326,26 +358,31 @@ export default function JarvisPage() {
       },
       onWake: (handoff) => {
         if (disposed || lifecycle.current().status !== "armed") return;
-        if (handoff.wakeProbability !== null) {
-          pendingWakeAddressRef.current = {
-            wakeScore: handoff.wakeProbability,
-            detectedAt: Date.now(),
-          };
-        }
         lifecycle.detected();
         lifecycle.connecting();
+        const activationId = handoff.activationId ?? crypto.randomUUID();
+        setWakeGateBackendMode(null);
+        setWakeGateMismatch(null);
+        const effectiveGateMode = resolveJarvisWakeGateMode(
+          developerModeRef.current,
+          wakeGateModeRef.current,
+        );
         void realtimeController.start({
           audioHandoff: handoff,
           activationContext: handoff.wakeProbability === null
             ? undefined
-            : { source: "wake_word", wake_score: handoff.wakeProbability },
+            : {
+                source: "wake_word",
+                wake_score: handoff.wakeProbability,
+                activation_id: activationId,
+                gate_mode: effectiveGateMode,
+              },
         })
-          .then(() => {
-            if (!disposed) lifecycle.connected();
+          .then((snapshot) => {
+            if (!disposed && snapshot.status === "connected") lifecycle.connected();
           })
           .catch((cause) => {
             if (disposed) return;
-            pendingWakeAddressRef.current = null;
             lifecycle.fail(cause);
             setError(cause instanceof Error ? cause.message : "Unable to connect after wake");
           });
@@ -354,7 +391,9 @@ export default function JarvisPage() {
     wakeRuntimeRef.current = runtime;
     rearmWakeRef.current = async () => {
       try {
-        await realtimeController.stop();
+        if (realtimeController.current().status !== "standby") {
+          await realtimeController.stop();
+        }
         await runtime.rearm();
         if (!disposed && lifecycle.current().status === "arming") lifecycle.armed();
       } catch (cause) {
@@ -363,7 +402,13 @@ export default function JarvisPage() {
     };
     void Promise.all([
       refresh(),
-      getJarvisPreferences().then(setPreferences),
+      getJarvisPreferences().then((nextPreferences) => {
+        setPreferences(nextPreferences);
+        const selected = loadJarvisWakeGateMode();
+        wakeGateModeRef.current = selected;
+        setWakeGateMode(selected);
+        setWakeGatePreferencesLoaded(true);
+      }),
     ]).catch(() => undefined);
     const timer = window.setInterval(() => void refresh(), 1500);
     return () => {
@@ -387,7 +432,7 @@ export default function JarvisPage() {
 
     const deliver = (event: JarvisLiveEvent) => {
       if (event.sequence <= liveCursorRef.current) return;
-      realtimeControllerRef.current?.recordBackendEvent(event);
+      const gateHandled = realtimeControllerRef.current?.recordBackendEvent(event) ?? false;
       liveCursorRef.current = event.sequence;
       if (event.event_type === "provider.user_transcript_delta") {
         setProvisionalUser((current) => mergeProvisionalTranscript(current, {
@@ -397,22 +442,18 @@ export default function JarvisPage() {
         }));
         return;
       }
-      if (event.event_type === "provider.user_transcript" && pendingWakeAddressRef.current) {
-        const pending = pendingWakeAddressRef.current;
-        pendingWakeAddressRef.current = null;
-        const decision = classifyJarvisAddress({
-          transcript: String(event.payload?.transcript ?? ""),
-          wakeScore: pending.wakeScore,
-          speechStartedMsBeforeWake: 600,
-          speechContinuedMsAfterWake: Math.max(0, Date.now() - pending.detectedAt),
-          followUpWindowOpen: false,
-        });
-        if (!decision.accepted) {
-          const lifecycle = wakeLifecycleRef.current;
-          if (lifecycle && lifecycle.current().status !== "destroyed") lifecycle.sleep();
-          setProvisionalUser(null);
-          return;
+      if (event.event_type === "wake.gate.rejected" || event.event_type === "wake.gate.timed_out") {
+        if (!gateHandled) return;
+        const lifecycle = wakeLifecycleRef.current;
+        const controller = realtimeControllerRef.current;
+        if (lifecycle && controller && lifecycle.current().status !== "destroyed") {
+          void controller.waitForWakeGateStandby().then(() => {
+            if (lifecycle.current().status === "destroyed") return;
+            if (["triggered", "connecting"].includes(lifecycle.current().status)) lifecycle.sleep();
+          });
         }
+        setProvisionalUser(null);
+        return;
       }
       if (event.event_type === "provider.user_transcript") {
         const itemId = String(event.payload?.item_id ?? "live-user");
@@ -602,6 +643,10 @@ export default function JarvisPage() {
   const ownsController = session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
   const realtimeBusy = realtime.status === "connecting" || realtime.status === "reconnecting";
   const voiceActive = realtime.status !== "idle";
+  const effectiveWakeGateMode = resolveJarvisWakeGateMode(
+    preferences?.developer_mode === true,
+    wakeGateMode,
+  );
   const degradedComponents = Object.entries(state?.component_health ?? {}).filter(
     ([name, component]) => name !== "worker" && !["healthy", "online"].includes(component.status),
   );
@@ -753,6 +798,16 @@ export default function JarvisPage() {
                   ? `wake ${wake.status.replaceAll("_", " ")}`
                   : "wake model pending"}
               </span>
+              <span className="text-[11px] text-zinc-500">
+                gate {wakeGatePreferencesLoaded
+                  ? `${wakeGateMode} → ${effectiveWakeGateMode}${wakeGateBackendMode ? ` → ${wakeGateBackendMode}` : ""}`
+                  : "initializing"}
+              </span>
+              {wakeGateMismatch && (
+                <span className="text-[11px] text-amber-300" title={wakeGateMismatch}>
+                  gate mismatch
+                </span>
+              )}
             </div>
             <p className="mt-1 text-xs text-zinc-500">
               {session ? `${ownsController ? "Controller" : "Observer"} · generation ${session.generation} · ${session.provider_adapter}` : "No live controller"}
@@ -792,6 +847,46 @@ export default function JarvisPage() {
         </div>
       </header>
 
+      {preferences?.developer_mode && <div className="shrink-0 border-b border-violet-500/20 bg-zinc-950 px-3 py-2 md:px-6">
+        <div className="mx-auto max-w-3xl rounded-2xl border border-dashed border-violet-500/30 bg-violet-500/5">
+          <button type="button" onClick={() => setLabOpen((value) => !value)} className="flex min-h-12 w-full items-center justify-between px-3 py-2 text-left text-xs font-medium text-violet-200">
+            <span className="flex items-center gap-2"><FlaskConical size={14} /> Developer conversation lab</span>
+            <span>{labOpen ? "Hide" : "Show"}</span>
+          </button>
+          {labOpen && (
+            <div className="grid grid-cols-2 gap-2 border-t border-violet-500/20 p-3">
+              <label className="col-span-2 rounded-xl border border-violet-500/20 bg-zinc-950/40 p-2 text-xs text-violet-100">
+                <span className="block font-medium">Wake gate benchmark</span>
+                <select
+                  value={wakeGateMode}
+                  disabled={!wakeGatePreferencesLoaded || !preferences}
+                  onChange={(event) => {
+                    const mode = event.target.value as JarvisWakeGateMode;
+                    wakeGateModeRef.current = mode;
+                    setWakeGateMode(mode);
+                    saveJarvisWakeGateMode(mode);
+                  }}
+                  className="mt-2 min-h-10 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-2 text-zinc-200"
+                >
+                  <option value="transcript_rules">Transcript rules (default)</option>
+                  <option value="immediate" disabled={!preferences?.developer_mode}>Immediate (developer)</option>
+                </select>
+                <span className="mt-1 block text-[11px] text-zinc-500">
+                  Selected: {wakeGateMode}; effective: {effectiveWakeGateMode}. Immediate mode is available only while developer mode is enabled.
+                </span>
+              </label>
+              <LabButton label="User speaking" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("user_speaking"))} />
+              <LabButton label="Release floor" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("user_stopped"))} />
+              <LabButton label="Direct reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_response", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This is a deterministic direct response." }))} />
+              <LabButton label="Interrupt reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_interrupted", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This response was interrupted before it finished.", heard_transcript: "This response was interrupted" }))} />
+              <LabButton label="Delegate demo" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("shell_call", { call_id: `lab-${crypto.randomUUID()}`, name: "dispatch_task", arguments: { goal: "Prepare the developer lab report" } }))} />
+              <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisRealtimeCall(controllerIdRef.current, "controller"); })} />
+              <LabButton label="Provider error" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("provider_error", { reason: "simulated_failure" }))} />
+              <LabButton label="Download voice trace" disabled={realtime.status === "idle"} onClick={downloadRealtimeTrace} />
+            </div>
+          )}
+        </div>
+      </div>}
       <main className="relative flex min-h-0 flex-1 overflow-hidden bg-zinc-800 xl:grid xl:grid-cols-[minmax(0,1.35fr)_minmax(17rem,.75fr)_minmax(17rem,.8fr)] xl:gap-px">
         <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-zinc-950">
           <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
@@ -945,24 +1040,6 @@ export default function JarvisPage() {
               </div>
             ))}
 
-            {preferences?.developer_mode && <div className="mt-4 rounded-2xl border border-dashed border-violet-500/30 bg-violet-500/5">
-              <button type="button" onClick={() => setLabOpen((value) => !value)} className="flex w-full items-center justify-between px-3 py-3 text-left text-xs font-medium text-violet-200">
-                <span className="flex items-center gap-2"><FlaskConical size={14} /> Developer conversation lab</span>
-                <span>{labOpen ? "Hide" : "Show"}</span>
-              </button>
-              {labOpen && (
-                <div className="grid grid-cols-2 gap-2 border-t border-violet-500/20 p-3">
-                  <LabButton label="User speaking" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("user_speaking"))} />
-                  <LabButton label="Release floor" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("user_stopped"))} />
-                  <LabButton label="Direct reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_response", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This is a deterministic direct response." }))} />
-                  <LabButton label="Interrupt reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_interrupted", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This response was interrupted before it finished.", heard_transcript: "This response was interrupted" }))} />
-                  <LabButton label="Delegate demo" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("shell_call", { call_id: `lab-${crypto.randomUUID()}`, name: "dispatch_task", arguments: { goal: "Prepare the developer lab report" } }))} />
-                  <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisRealtimeCall(controllerIdRef.current, "controller"); })} />
-                  <LabButton label="Provider error" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("provider_error", { reason: "simulated_failure" }))} />
-                  <LabButton label="Download voice trace" disabled={realtime.status === "idle"} onClick={downloadRealtimeTrace} />
-                </div>
-              )}
-            </div>}
           </div>
         </section>
       </main>

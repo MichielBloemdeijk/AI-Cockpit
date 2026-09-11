@@ -24,6 +24,7 @@ from app.services.conversation_store import conversation_store
 from app.services.jarvis_coordinator import (
     StaleSessionError,
     _ResponseAttempt,
+    _ResponseGate,
     jarvis_coordinator,
 )
 from app.services.jarvis_live import jarvis_live_service
@@ -152,7 +153,7 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
         realtime.generation,
         VoiceProviderEvent(
             event_id="wake-committed",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "wake-item"},
         ),
     )
@@ -169,11 +170,11 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
         VoiceProviderEvent(
             event_id="wake-transcript",
             kind="user_transcript",
-            payload={"item_id": "wake-item", "transcript": "remind me in ten minutes"},
+            payload={"item_id": "wake-item", "transcript": "Jarvis, remind me in ten minutes"},
         ),
     )
     _, after = await jarvis_coordinator.replay_session_events(realtime.id)
-    assert any(event.event_type == "wake.verification.accepted" for event in after)
+    assert any(event.event_type == "wake.gate.accepted" for event in after)
     assert any(
         event.event_type == "response.arbiter.started"
         and (event.payload_json or {}).get("reason") == "user_turn"
@@ -215,7 +216,7 @@ async def test_wake_response_accepts_transcript_before_audio_commit() -> None:
         VoiceProviderEvent(
             event_id="wake-transcript-first",
             kind="user_transcript",
-            payload={"item_id": "wake-item", "transcript": "what is on my schedule"},
+            payload={"item_id": "wake-item", "transcript": "Jarvis, what is on my schedule"},
         ),
     )
     _, before = await jarvis_coordinator.replay_session_events(realtime.id)
@@ -226,7 +227,7 @@ async def test_wake_response_accepts_transcript_before_audio_commit() -> None:
         realtime.generation,
         VoiceProviderEvent(
             event_id="wake-commit-second",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "wake-item"},
         ),
     )
@@ -239,7 +240,7 @@ async def test_wake_response_accepts_transcript_before_audio_commit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_wake_audio_commit_does_not_queue_an_extra_response() -> None:
+async def test_normalized_non_wake_audio_commit_queues_a_follow_up_response() -> None:
     accepted = await jarvis_coordinator.accept_text_turn(
         "Start",
         idempotency_key="non-wake-commit-setup",
@@ -252,7 +253,7 @@ async def test_non_wake_audio_commit_does_not_queue_an_extra_response() -> None:
         realtime.generation,
         VoiceProviderEvent(
             event_id="non-wake-commit",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "later-item"},
         ),
     )
@@ -260,9 +261,9 @@ async def test_non_wake_audio_commit_does_not_queue_an_extra_response() -> None:
     committed_index = next(
         index
         for index, event in enumerate(events)
-        if event.event_type == "provider.wake_audio_committed"
+        if event.event_type == "provider.user_input_committed"
     )
-    assert not any(
+    assert any(
         event.event_type == "response.arbiter.started"
         for event in events[committed_index + 1:]
     )
@@ -295,7 +296,7 @@ async def test_wake_verification_rejects_clear_incidental_mention() -> None:
     )
     await asyncio.sleep(0.7)
     _, events = await jarvis_coordinator.replay_session_events(realtime.id)
-    assert any(event.event_type == "wake.verification.rejected" for event in events)
+    assert any(event.event_type == "wake.gate.rejected" for event in events)
     assert not any(
         event.event_type == "response.arbiter.started"
         and (event.payload_json or {}).get("reason") == "user_turn"
@@ -304,7 +305,10 @@ async def test_wake_verification_rejects_clear_incidental_mention() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wake_verification_grace_favors_activation_when_transcript_is_late() -> None:
+async def test_wake_gate_timeout_rejects_when_transcript_is_late(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.jarvis_coordinator._WAKE_GATE_TIMEOUT_SECONDS", 0.01)
     accepted = await jarvis_coordinator.accept_text_turn("Wake setup", idempotency_key="wake-grace")
     bootstrap = await jarvis_coordinator.bootstrap_controller(
         conversation_id=accepted.conversation.id,
@@ -319,21 +323,10 @@ async def test_wake_verification_grace_favors_activation_when_transcript_is_late
         realtime.generation,
         VoiceProviderEvent(event_id="late-transcript-stop", kind="user_stopped"),
     )
-    events = ()
-    for _ in range(30):
-        await asyncio.sleep(0.05)
-        _, events = await jarvis_coordinator.replay_session_events(realtime.id)
-        if any(
-            event.event_type == "response.arbiter.started"
-            and (event.payload_json or {}).get("reason") == "user_turn"
-            for event in events
-        ):
-            break
-    accepted_event = next(
-        event for event in events if event.event_type == "wake.verification.accepted"
-    )
-    assert (accepted_event.payload_json or {}).get("reason") == "transcript_grace_elapsed"
-    assert any(
+    await asyncio.sleep(0.2)
+    _, events = await jarvis_coordinator.replay_session_events(realtime.id)
+    assert any(event.event_type == "wake.gate.timed_out" for event in events)
+    assert not any(
         event.event_type == "response.arbiter.started"
         and (event.payload_json or {}).get("reason") == "user_turn"
         for event in events
@@ -358,7 +351,7 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
         VoiceProviderEvent(event_id="late-first-speaking", kind="user_speaking"),
         VoiceProviderEvent(
             event_id="late-first-commit",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "late-first-wake-item"},
         ),
         VoiceProviderEvent(event_id="late-first-stop", kind="user_stopped"),
@@ -367,8 +360,8 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
             kind="user_transcript_delta",
             payload={
                 "item_id": "late-first-user-item",
-                "delta": "Hi Jarvis",
-                "transcript": "Hi Jarvis",
+                "delta": "Jarvis",
+                "transcript": "Jarvis",
             },
         ),
     ):
@@ -378,11 +371,6 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
             event,
         )
 
-    verification_task = jarvis_coordinator._wake_verification_tasks.get(
-        (realtime.id, realtime.generation)
-    )
-    assert verification_task is not None
-    await verification_task
     await jarvis_coordinator.handle_provider_event(
         realtime.id,
         realtime.generation,
@@ -391,7 +379,7 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
             kind="user_transcript",
             payload={
                 "item_id": "late-first-user-item",
-                "transcript": "Hi Jarvis, are you there?",
+                "transcript": "Jarvis, are you there?",
             },
         ),
     )
@@ -438,7 +426,7 @@ async def test_wake_boundaries_request_once_then_normal_turns_continue(
         VoiceProviderEvent(
             event_id="one-shot-transcript-first",
             kind="user_transcript",
-            payload={"item_id": "one-shot-item", "transcript": "Are you there?"},
+            payload={"item_id": "one-shot-item", "transcript": "Jarvis, are you there?"},
         ),
     )
     await jarvis_coordinator.handle_provider_event(
@@ -446,7 +434,7 @@ async def test_wake_boundaries_request_once_then_normal_turns_continue(
         realtime.generation,
         VoiceProviderEvent(
             event_id="one-shot-commit",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "one-shot-item"},
         ),
     )
@@ -513,7 +501,7 @@ async def test_wake_boundaries_request_once_then_normal_turns_continue(
         realtime.generation,
         VoiceProviderEvent(
             event_id="normal-follow-up-commit",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "normal-follow-up-item"},
         ),
     )
@@ -562,7 +550,7 @@ async def test_deferred_wake_response_retries_only_after_real_speech_stop(
         realtime.generation,
         VoiceProviderEvent(
             event_id="deferred-wake-commit",
-            kind="wake_audio_committed",
+            kind="user_input_committed",
             payload={"item_id": "deferred-wake-item"},
         ),
     )
@@ -1433,3 +1421,63 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         with_transcript = (await client.get("/api/jarvis/state")).json()
         assert with_transcript["current_log"]["messages"][-1]["content"] == "A live voice turn"
         assert with_transcript["current_log"]["messages"][-1]["modality"] == "voice"
+
+
+@pytest.mark.asyncio
+async def test_barge_in_requires_the_observed_response_identity() -> None:
+    key = ("barge-session", 7)
+    now = time.monotonic()
+    gate = _ResponseGate()
+    gate.attempt = _ResponseAttempt(
+        request_id="request-1",
+        reason="user_turn",
+        presentation_ids=(),
+        state="speaking",
+        started_monotonic=now,
+        last_activity_monotonic=now,
+        provider_response_id="response-current",
+    )
+    jarvis_coordinator._response_gates[key] = gate
+    try:
+        stale = await jarvis_coordinator._capture_barge_in_intent(
+            session_id=key[0],
+            generation=key[1],
+            speech_event_id="speech-stale",
+            speech_item_id="item-2",
+            source="browser",
+            expected_request_id="request-1",
+            expected_response_id="response-stale",
+        )
+        assert stale is None
+
+        current = await jarvis_coordinator._capture_barge_in_intent(
+            session_id=key[0],
+            generation=key[1],
+            speech_event_id="speech-current",
+            speech_item_id="item-2",
+            source="browser",
+            expected_request_id="request-1",
+            expected_response_id="response-current",
+        )
+        assert current is not None
+        assert current.response_id_at_onset == "response-current"
+    finally:
+        jarvis_coordinator._response_gates.pop(key, None)
+        jarvis_coordinator._barge_in_keys = {
+            item for item in jarvis_coordinator._barge_in_keys if item[:2] != key
+        }
+
+
+def test_activation_identity_is_active_until_session_close_then_tombstoned() -> None:
+    activation_id = "long-lived-activation"
+    key = ("long-lived-session", 3)
+    jarvis_coordinator._activation_index[activation_id] = (*key, float("inf"))
+    try:
+        jarvis_coordinator._prune_activation_index()
+        assert jarvis_coordinator._activation_index[activation_id][2] == float("inf")
+
+        jarvis_coordinator._tombstone_activation_ids(*key)
+        expires_at = jarvis_coordinator._activation_index[activation_id][2]
+        assert time.monotonic() < expires_at < float("inf")
+    finally:
+        jarvis_coordinator._activation_index.pop(activation_id, None)

@@ -15,6 +15,7 @@ interface WakeWorkerScope {
 const scope = globalThis as unknown as WakeWorkerScope;
 let engine: JarvisWakeEngine | null = null;
 let operation = 0;
+let currentActivationId: string | null = null;
 
 function emit(event: JarvisWakeWorkerEvent, transfer: Transferable[] = []): void {
   scope.postMessage(event, transfer);
@@ -23,7 +24,7 @@ function emit(event: JarvisWakeWorkerEvent, transfer: Transferable[] = []): void
 scope.onmessage = (event) => {
   const command = event.data;
   if (command.type === "audio") {
-    engine?.push(command.samples);
+    engine?.push(command.samples, command.capturedMonotonicMs);
     return;
   }
   if (command.type === "pause") {
@@ -31,6 +32,7 @@ scope.onmessage = (event) => {
     return;
   }
   if (command.type === "resume") {
+    currentActivationId = null;
     engine?.resume();
     return;
   }
@@ -56,9 +58,12 @@ scope.onmessage = (event) => {
       candidateWakeHits: command.configuration.candidateWakeHits,
       speechLookbackMs: command.configuration.speechLookbackMs,
       candidateLookbackMs: command.configuration.candidateLookbackMs,
+      endpointSilenceMs: command.configuration.endpointSilenceMs,
+      preRollPaddingMs: command.configuration.preRollPaddingMs,
       positiveVadThreshold: command.configuration.positiveVadThreshold,
       negativeVadThreshold: command.configuration.negativeVadThreshold,
       negativeVadCount: command.configuration.negativeVadCount,
+      getActivationId: () => currentActivationId,
       onSpeechStart: (probability) => emit({
         type: "vad_boundary",
         state: "speech_started",
@@ -69,7 +74,38 @@ scope.onmessage = (event) => {
         state: "speech_stopped",
         probability,
       }),
-      onDetected: (probability) => emit({ type: "detected", probability }),
+      onDetected: () => {
+        currentActivationId = crypto.randomUUID();
+      },
+      onCandidateStart: (probability, preRoll) => {
+        const copiedPreRoll = preRoll.slice();
+        emit({
+          type: "detected",
+          probability,
+          activationId: currentActivationId ?? undefined,
+          preRoll: copiedPreRoll,
+          sampleRate: JARVIS_WAKE_SAMPLE_RATE,
+        }, [copiedPreRoll.buffer]);
+      },
+      onCandidateAudio: (samples) => emit(
+        { type: "candidate_audio", samples, sampleRate: JARVIS_WAKE_SAMPLE_RATE },
+        [samples.buffer],
+      ),
+      onCandidateChunk: (chunk) => {
+        const samples = chunk.samples.slice();
+        emit({
+          type: "candidate_chunk",
+          activationId: chunk.activationId,
+          sequence: chunk.sequence,
+          sampleRate: chunk.sampleRate,
+          startSample: chunk.startSample,
+          endSample: chunk.endSample,
+          capturedMonotonicMs: chunk.capturedMonotonicMs,
+          samples,
+        }, [samples.buffer]);
+      },
+      onCandidateEndpoint: (endpoint) => emit({ type: "candidate_endpoint", ...endpoint }),
+      onCandidateClose: (reason) => emit({ type: "candidate_close", reason }),
       onUtterance: (samples) => emit(
         { type: "utterance", samples, sampleRate: JARVIS_WAKE_SAMPLE_RATE },
         [samples.buffer],

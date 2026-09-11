@@ -21,6 +21,11 @@ from app.models.jarvis import (
     JarvisPreferencesView,
     JarvisRealtimeCallRequest,
     JarvisRealtimeCallResponse,
+    JarvisRealtimeAudioPolicy,
+    JarvisRealtimeActivationRequest,
+    JarvisRealtimeActivationResponse,
+    JarvisBargeInRequest,
+    JarvisBargeInResponse,
     JarvisRealtimeTelemetryAccepted,
     JarvisRealtimeTelemetryBatch,
     JarvisLiveEventReplayResponse,
@@ -60,6 +65,18 @@ router = APIRouter(prefix="/api/jarvis", tags=["jarvis"], dependencies=[Depends(
 
 def _session_view(session) -> JarvisSessionView | None:
     return None if session is None else JarvisSessionView.model_validate(session, from_attributes=True)
+
+
+def _audio_policy_view(policy) -> JarvisRealtimeAudioPolicy | None:
+    if policy is None:
+        return None
+    if isinstance(policy, JarvisRealtimeAudioPolicy):
+        return policy
+    if hasattr(policy, "as_dict"):
+        return JarvisRealtimeAudioPolicy.model_validate(policy.as_dict())
+    if isinstance(policy, dict):
+        return JarvisRealtimeAudioPolicy.model_validate(policy)
+    return None
 
 
 def _task_summary(snapshot) -> TaskSummaryView:
@@ -398,11 +415,15 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         "detail_json": {"controller_id": request.controller_id, "role": request.role},
     })
     if request.role == "observer":
-        observed_session = _session_view(await jarvis_coordinator.observe())
+        observed_record = await jarvis_coordinator.observe()
+        observed_session = _session_view(observed_record)
         return JarvisRealtimeCallResponse(
             role="observer",
             request_id=request_id,
             session=observed_session,
+            audio_policy=_audio_policy_view(
+                None if observed_record is None else observed_record.audio_policy
+            ),
             server_received_at=server_received_at,
             server_responded_at=datetime.now(timezone.utc),
         )
@@ -435,6 +456,7 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         role="controller",
         request_id=request_id,
         session=_session_view(bootstrap.session),
+        audio_policy=_audio_policy_view(bootstrap.audio_policy),
         sdp_answer=bootstrap.sdp_answer,
         rotate_after_seconds=(
             settings.openai_realtime_rotation_minutes * 60
@@ -456,7 +478,11 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         "observed_at": datetime.now(timezone.utc),
         "monotonic_ms": None,
         "duration_ms": round((time.monotonic() - request_started) * 1_000, 3),
-        "detail_json": None,
+        "detail_json": {
+            "configuration_id": bootstrap.audio_policy.configuration_id,
+            "turn_mode": bootstrap.audio_policy.turn_mode,
+            "commit_owner": bootstrap.audio_policy.commit_owner,
+        },
     })
     return result
 
@@ -474,6 +500,7 @@ async def ingest_realtime_telemetry(
             "generation": event.generation,
             "request_id": event.request_id,
             "provider_response_id": event.provider_response_id,
+            "provider_input_item_id": event.provider_input_item_id,
             "source": event.source,
             "event_type": event.event_type,
             "observed_at": event.observed_at,
@@ -484,6 +511,68 @@ async def ingest_realtime_telemetry(
         for event in request.events
     ])
     return JarvisRealtimeTelemetryAccepted(accepted=accepted)
+
+
+@router.post(
+    "/realtime/sessions/{session_id}/activations",
+    response_model=JarvisRealtimeActivationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def register_realtime_activation(
+    session_id: str,
+    request: JarvisRealtimeActivationRequest,
+) -> JarvisRealtimeActivationResponse:
+    preferences = await jarvis_preferences_service.get()
+    if request.gate_mode == "immediate" and not preferences.developer_mode:
+        raise HTTPException(status_code=403, detail="Immediate wake gate is restricted to developer mode")
+    if (request.benchmark_run_id or request.benchmark_fixture) and not preferences.developer_mode:
+        raise HTTPException(status_code=403, detail="Benchmark metadata is restricted to developer mode")
+    try:
+        registration = await jarvis_coordinator.register_wake_activation(
+            session_id=session_id,
+            generation=request.generation,
+            activation_id=request.activation_id,
+            wake_score=request.wake_score,
+            gate_mode=request.gate_mode,
+            allow_immediate=preferences.developer_mode,
+            benchmark_run_id=request.benchmark_run_id,
+            benchmark_fixture=request.benchmark_fixture,
+        )
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    return JarvisRealtimeActivationResponse(
+        session_id=session_id,
+        generation=request.generation,
+        activation_id=registration.activation.activation_id,
+        gate_state=registration.activation.verification_state,
+        gate_mode=registration.activation.gate_mode,
+        gate_timeout_ms=2000,
+        audio_policy=_audio_policy_view(registration.audio_policy),
+    )
+
+
+@router.post(
+    "/realtime/sessions/{session_id}/barge-in",
+    response_model=JarvisBargeInResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def register_realtime_barge_in(
+    session_id: str,
+    request: JarvisBargeInRequest,
+) -> JarvisBargeInResponse:
+    try:
+        accepted = await jarvis_coordinator.capture_barge_in_intent(
+            session_id=session_id,
+            generation=request.generation,
+            speech_event_id=request.speech_event_id,
+            source=request.source,
+            request_id=request.request_id,
+            response_id=request.response_id,
+            input_item_id=request.input_item_id,
+        )
+    except ValueError as exc:
+        raise _http_error(exc) from exc
+    return JarvisBargeInResponse(accepted=accepted)
 
 
 @router.get(

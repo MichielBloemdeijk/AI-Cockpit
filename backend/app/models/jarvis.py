@@ -124,6 +124,7 @@ class JarvisRealtimeCallResponse(BaseModel):
     session: JarvisSessionView | None = None
     sdp_answer: str | None = None
     rotate_after_seconds: int | None = None
+    audio_policy: "JarvisRealtimeAudioPolicy | None" = None
     server_received_at: datetime
     server_responded_at: datetime
 
@@ -135,6 +136,7 @@ class JarvisFakeProviderEventRequest(BaseModel):
         "ready",
         "user_speaking",
         "user_stopped",
+        "user_input_committed",
         "user_transcript_delta",
         "user_transcript",
         "assistant_generating",
@@ -145,6 +147,7 @@ class JarvisFakeProviderEventRequest(BaseModel):
         "shell_call",
         "disconnected",
         "provider_error",
+        "provider_protocol_warning",
     ]
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -193,9 +196,94 @@ class JarvisClientContext(BaseModel):
 class JarvisRealtimeActivationContext(BaseModel):
     source: Literal["wake_word"]
     wake_score: float = Field(ge=0.0, le=1.0)
-    activation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    activation_id: str = Field(min_length=1, max_length=64)
     wake_detected_at: datetime | None = None
     local_speech_started_at: datetime | None = None
+    gate_mode: Literal["transcript_rules", "immediate"] = "transcript_rules"
+    benchmark_run_id: str | None = Field(default=None, max_length=64)
+    benchmark_fixture: str | None = Field(default=None, max_length=64)
+
+
+class JarvisRealtimeActivationRequest(BaseModel):
+    generation: int = Field(gt=0)
+    wake_score: float = Field(ge=0.0, le=1.0)
+    activation_id: str = Field(min_length=1, max_length=64)
+    wake_detected_at: datetime | None = None
+    local_speech_started_at: datetime | None = None
+    gate_mode: Literal["transcript_rules", "immediate"] = "transcript_rules"
+    benchmark_run_id: str | None = Field(default=None, max_length=64)
+    benchmark_fixture: str | None = Field(default=None, max_length=64)
+
+
+class JarvisRealtimeAudioPolicy(BaseModel):
+    configuration_id: str = Field(min_length=1, max_length=128)
+    turn_mode: Literal["server_vad", "semantic_vad", "client_vad"]
+    commit_owner: Literal["provider", "client"]
+    silence_duration_ms: int | None = Field(default=None, ge=100, le=2_000)
+    vad_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    prefix_padding_ms: int | None = Field(default=None, ge=0, le=2_000)
+    semantic_eagerness: Literal["low", "medium", "high", "auto"] | None = None
+    create_response: Literal[False] = False
+    interrupt_response: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_owner(self) -> "JarvisRealtimeAudioPolicy":
+        if self.create_response or self.interrupt_response:
+            raise ValueError("Realtime audio policy must disable provider-owned responses and interrupts")
+        if self.turn_mode == "client_vad" and self.commit_owner != "client":
+            raise ValueError("client_vad requires client commit ownership")
+        if self.turn_mode != "client_vad" and self.commit_owner != "provider":
+            raise ValueError("provider VAD requires provider commit ownership")
+        if self.turn_mode == "server_vad":
+            if (
+                self.silence_duration_ms is None
+                or self.vad_threshold is None
+                or self.prefix_padding_ms is None
+                or self.semantic_eagerness is not None
+            ):
+                raise ValueError("server_vad requires only server VAD parameters")
+        elif self.turn_mode == "semantic_vad":
+            if (
+                self.semantic_eagerness is None
+                or self.silence_duration_ms is not None
+                or self.vad_threshold is not None
+                or self.prefix_padding_ms is not None
+            ):
+                raise ValueError("semantic_vad requires semantic eagerness only")
+        elif any(
+            value is not None
+            for value in (
+                self.silence_duration_ms,
+                self.vad_threshold,
+                self.prefix_padding_ms,
+                self.semantic_eagerness,
+            )
+        ):
+            raise ValueError("client_vad cannot include provider VAD parameters")
+        return self
+
+
+class JarvisBargeInRequest(BaseModel):
+    generation: int = Field(gt=0)
+    speech_event_id: str = Field(min_length=1, max_length=255)
+    source: Literal["browser_local_vad", "browser_provider_vad"]
+    request_id: str = Field(min_length=1, max_length=64)
+    response_id: str | None = Field(default=None, max_length=255)
+    input_item_id: str | None = Field(default=None, max_length=255)
+
+
+class JarvisBargeInResponse(BaseModel):
+    accepted: bool
+
+
+class JarvisRealtimeActivationResponse(BaseModel):
+    session_id: str
+    generation: int = Field(gt=0)
+    activation_id: str
+    gate_state: Literal["pending", "accepted", "rejected", "timed_out"]
+    gate_mode: Literal["transcript_rules", "immediate"]
+    gate_timeout_ms: int = Field(gt=0)
+    audio_policy: JarvisRealtimeAudioPolicy
 
 
 class JarvisRealtimeTelemetryEvent(BaseModel):
@@ -206,6 +294,7 @@ class JarvisRealtimeTelemetryEvent(BaseModel):
     generation: int | None = Field(default=None, gt=0)
     request_id: str | None = Field(default=None, min_length=1, max_length=64)
     provider_response_id: str | None = Field(default=None, min_length=1, max_length=255)
+    provider_input_item_id: str | None = Field(default=None, min_length=1, max_length=255)
     source: Literal["browser", "android", "backend", "provider"]
     event_type: str = Field(min_length=1, max_length=128)
     observed_at: datetime

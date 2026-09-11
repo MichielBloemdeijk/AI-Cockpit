@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
-from app.config import settings
+from app.config import RealtimeAudioPolicy, build_realtime_audio_policy, settings
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
@@ -52,7 +52,10 @@ ACTIVE_SESSION_STATES = {"connecting", "ready"}
 FLOOR_EVENT_TYPES = {
     "ready": "listening",
     "user_speaking": "user_speaking",
-    "user_stopped": "thinking",
+    # Speech has ended, but this event is never a response boundary. Provider
+    # commit remains authoritative for user-turn generation; the floor can be
+    # released for already-queued task updates.
+    "user_stopped": "listening",
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",
     "assistant_transcript_delta": "assistant_speaking",
@@ -80,6 +83,10 @@ class StaleSessionError(ValueError):
     pass
 
 
+class ActivationConflictError(ValueError):
+    """An activation id is currently owned by another session generation."""
+
+
 @dataclass(frozen=True, slots=True)
 class SessionRecord:
     id: str
@@ -96,6 +103,7 @@ class SessionRecord:
     client_time_zone: str | None
     client_utc_offset_minutes: int | None
     client_observed_at: datetime | None
+    audio_policy: RealtimeAudioPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +116,14 @@ class DeliveryRecord:
 @dataclass(frozen=True, slots=True)
 class ControllerBootstrap:
     session: SessionRecord
+    audio_policy: RealtimeAudioPolicy
     sdp_answer: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WakeActivationRegistration:
+    activation: "_WakeActivation"
+    audio_policy: RealtimeAudioPolicy
 
 
 @dataclass(slots=True)
@@ -120,8 +135,20 @@ class _ResponseAttempt:
     started_monotonic: float
     last_activity_monotonic: float
     provider_response_id: str | None = None
+    activation_id: str | None = None
+    input_item_id: str | None = None
     cancel_requested_monotonic: float | None = None
     watchdog_task: asyncio.Task[None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _BargeInIntent:
+    speech_event_id: str
+    speech_item_id: str | None
+    request_id: str
+    response_id_at_onset: str | None
+    scheduled_monotonic: float
+    source: str = "backend_fallback"
 
 
 @dataclass(slots=True)
@@ -134,11 +161,23 @@ class _ResponseGate:
 
 @dataclass(slots=True)
 class _WakeActivation:
+    activation_id: str
     wake_score: float
-    activation_id: str | None = None
+    gate_mode: str = "transcript_rules"
     verification_state: str = "pending"
+    lifecycle_state: str = "candidate"
+    registered_monotonic: float = field(default_factory=time.monotonic)
+    committed_monotonic: float | None = None
+    primary_input_item_id: str | None = None
+    candidate_item_ids: set[str] = field(default_factory=set)
+    response_requested_for: set[str] = field(default_factory=set)
     speech_stopped: bool = False
     response_requested: bool = False
+    gate_started_monotonic: float = field(default_factory=time.monotonic)
+    gate_timeout_started_monotonic: float | None = None
+    benchmark_run_id: str | None = None
+    benchmark_fixture: str | None = None
+    legacy_compat: bool = False
 
 
 _RESPONSE_PRIORITY = {
@@ -146,16 +185,25 @@ _RESPONSE_PRIORITY = {
     "user_turn": 1,
     "task_update": 2,
 }
-_WAKE_VERIFICATION_GRACE_SECONDS = 0.65
+_WAKE_GATE_TIMEOUT_SECONDS = 2.0
 
 
 class JarvisCoordinator:
     def __init__(self) -> None:
         self._response_gates: dict[tuple[str, int], _ResponseGate] = {}
         self._wake_activations: dict[tuple[str, int], _WakeActivation] = {}
+        self._wake_activation_seen: set[tuple[str, int]] = set()
         self._wake_verification_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
         self._provider_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._background_response_tasks: set[asyncio.Task[None]] = set()
+        # Process-local identity protection. Durable session events remain the
+        # audit trail; the tombstone only prevents a late browser retry from
+        # being attached to a different session generation.
+        self._activation_index: dict[str, tuple[str, int, float]] = {}
+        self._activation_tombstone_seconds = 5 * 60
+        self._activation_index_limit = 1_024
+        self._handled_input_items: dict[tuple[str, int], dict[str, float]] = {}
+        self._barge_in_keys: set[tuple[str, int, str, str]] = set()
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
 
@@ -212,6 +260,10 @@ class JarvisCoordinator:
             await asyncio.gather(*verification_tasks, return_exceptions=True)
         self._wake_verification_tasks.clear()
         self._wake_activations.clear()
+        self._wake_activation_seen.clear()
+        self._activation_index.clear()
+        self._handled_input_items.clear()
+        self._barge_in_keys.clear()
         response_tasks: list[asyncio.Task[None]] = []
         for gate in self._response_gates.values():
             if gate.barge_in_task is not None and not gate.barge_in_task.done():
@@ -260,8 +312,32 @@ class JarvisCoordinator:
             wake_score = max(0.0, min(1.0, float(raw_score)))
         except (TypeError, ValueError):
             return None
-        activation_id = str(raw_activation_id).strip() if raw_activation_id else None
-        return _WakeActivation(wake_score=wake_score, activation_id=activation_id)
+        legacy_compat = not bool(raw_activation_id)
+        activation_id = str(raw_activation_id).strip() if raw_activation_id else str(uuid4())
+        gate_mode = str(
+            value.get("gate_mode", "transcript_rules")
+            if isinstance(value, dict)
+            else getattr(value, "gate_mode", "transcript_rules")
+        )
+        if gate_mode not in {"transcript_rules", "immediate"}:
+            gate_mode = "transcript_rules"
+        benchmark_run_id = (
+            value.get("benchmark_run_id") if isinstance(value, dict)
+            else getattr(value, "benchmark_run_id", None)
+        )
+        benchmark_fixture = (
+            value.get("benchmark_fixture") if isinstance(value, dict)
+            else getattr(value, "benchmark_fixture", None)
+        )
+        return _WakeActivation(
+            activation_id=activation_id,
+            wake_score=wake_score,
+            gate_mode=gate_mode,
+            verification_state="accepted" if gate_mode == "immediate" else "pending",
+            benchmark_run_id=(str(benchmark_run_id).strip() or None) if benchmark_run_id else None,
+            benchmark_fixture=(str(benchmark_fixture).strip() or None) if benchmark_fixture else None,
+            legacy_compat=legacy_compat,
+        )
 
     def _schedule_wake_verification(self, session_id: str, generation: int) -> None:
         key = (session_id, generation)
@@ -269,18 +345,22 @@ class JarvisCoordinator:
         if existing is not None and not existing.done():
             return
 
-        async def accept_after_grace() -> None:
+        async def reject_after_timeout() -> None:
             try:
-                await asyncio.sleep(_WAKE_VERIFICATION_GRACE_SECONDS)
+                await asyncio.sleep(_WAKE_GATE_TIMEOUT_SECONDS)
                 activation = self._wake_activations.get(key)
                 if (
                     activation is None
                     or activation.verification_state != "pending"
-                    or not activation.speech_stopped
+                    or (
+                        activation.primary_input_item_id is None
+                        and not (activation.legacy_compat and activation.speech_stopped)
+                    )
                 ):
                     return
-                activation.verification_state = "accepted"
-                activation.response_requested = True
+                activation.verification_state = "timed_out"
+                activation.lifecycle_state = "terminal"
+                decision_monotonic = time.monotonic()
                 async with session_scope() as session:
                     realtime = await session.get(RealtimeSession, session_id)
                     if (
@@ -291,16 +371,37 @@ class JarvisCoordinator:
                         return
                     await JarvisDomainRepository(session).append_session_event(
                         session_id=session_id,
-                        event_type="wake.verification.accepted",
+                        event_type="wake.gate.timed_out",
                         payload_json={
-                            "reason": "transcript_grace_elapsed",
+                            "reason": "gate_timeout",
                             "wake_score": activation.wake_score,
+                            "gate_mode": activation.gate_mode,
+                            "activation_id": activation.activation_id,
+                            "wake_term_present": False,
+                            "prefix_classification": "unavailable",
+                            "transcript_word_count": 0,
+                            "gate_duration_ms": round(
+                                (decision_monotonic - activation.gate_started_monotonic) * 1_000,
+                                3,
+                            ),
+                            "registration_to_gate_decision_ms": round(
+                                (decision_monotonic - activation.registered_monotonic) * 1_000,
+                                3,
+                            ),
+                            "commit_to_gate_decision_ms": (
+                                round(
+                                    (decision_monotonic - activation.gate_timeout_started_monotonic) * 1_000,
+                                    3,
+                                )
+                                if activation.gate_timeout_started_monotonic is not None
+                                else None
+                            ),
                             "session_id": session_id,
                             "generation": generation,
                         },
-                        idempotency_key=f"wake-verification-timeout:{session_id}:{generation}",
+                        idempotency_key=f"wake-gate-timeout:{session_id}:{generation}",
                     )
-                await self._queue_controlled_response(session_id, generation, "user_turn")
+                await self._discard_candidate_items(session_id, generation, activation)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -308,11 +409,11 @@ class JarvisCoordinator:
                     "response.arbiter.failed",
                     session_id=session_id,
                     generation=generation,
-                    reason="wake_verification_fallback",
+                    reason="wake_gate_timeout",
                     detail={"failure_type": type(exc).__name__},
                 )
                 logger.exception(
-                    "Wake verification fallback failed for session %s generation %s",
+                    "Wake gate timeout failed for session %s generation %s",
                     session_id,
                     generation,
                 )
@@ -323,8 +424,8 @@ class JarvisCoordinator:
                     self._wake_verification_tasks.pop(key, None)
 
         self._wake_verification_tasks[key] = asyncio.create_task(
-            accept_after_grace(),
-            name=f"jarvis-wake-verification:{session_id}:{generation}",
+            reject_after_timeout(),
+            name=f"jarvis-wake-gate:{session_id}:{generation}",
         )
 
     def _cancel_wake_verification(self, session_id: str, generation: int) -> None:
@@ -335,6 +436,169 @@ class JarvisCoordinator:
     def _clear_wake_activation(self, session_id: str, generation: int) -> None:
         self._cancel_wake_verification(session_id, generation)
         self._wake_activations.pop((session_id, generation), None)
+
+    def _tombstone_activation_ids(self, session_id: str, generation: int) -> None:
+        expires_at = time.monotonic() + self._activation_tombstone_seconds
+        for activation_id, (indexed_session, indexed_generation, _) in tuple(
+            self._activation_index.items()
+        ):
+            if (indexed_session, indexed_generation) == (session_id, generation):
+                self._activation_index[activation_id] = (session_id, generation, expires_at)
+
+    async def register_wake_activation(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        activation_id: str,
+        wake_score: float,
+        gate_mode: str = "transcript_rules",
+        allow_immediate: bool = False,
+        benchmark_run_id: str | None = None,
+        benchmark_fixture: str | None = None,
+    ) -> WakeActivationRegistration:
+        """Register a candidate on an already-connected standby session."""
+        if gate_mode not in {"transcript_rules", "immediate"}:
+            raise ValueError("Unsupported wake gate mode")
+        if gate_mode == "immediate" and not allow_immediate:
+            raise ValueError("Immediate wake gate is restricted to developer mode")
+        if (benchmark_run_id or benchmark_fixture) and not allow_immediate:
+            raise ValueError("Benchmark metadata is restricted to developer mode")
+        if not activation_id.strip():
+            raise ValueError("Wake activation requires an activation id")
+        self._prune_activation_index()
+        activation_id = activation_id.strip()
+        indexed = self._activation_index.get(activation_id)
+        if indexed is not None:
+            indexed_session_id, indexed_generation, expires_at = indexed
+            if (indexed_session_id, indexed_generation) != (session_id, generation):
+                if expires_at > time.monotonic():
+                    raise ActivationConflictError("Wake activation id is already active on another session")
+                self._activation_index.pop(activation_id, None)
+            else:
+                existing = self._wake_activations.get((session_id, generation))
+                if existing is not None:
+                    return WakeActivationRegistration(
+                        activation=existing,
+                        audio_policy=await self._session_audio_policy(session_id),
+                    )
+        activation = _WakeActivation(
+            activation_id=activation_id,
+            wake_score=max(0.0, min(1.0, float(wake_score))),
+            gate_mode=gate_mode,
+            verification_state="accepted" if gate_mode == "immediate" else "pending",
+            benchmark_run_id=benchmark_run_id,
+            benchmark_fixture=benchmark_fixture,
+        )
+        async with session_scope() as session:
+            realtime = await self._require_current_generation(session, session_id, generation)
+            if realtime.lifecycle_state != "ready":
+                raise ValueError("Wake activation requires a ready Realtime session")
+            if not get_voice_session_adapter(realtime.provider_adapter).is_connected(
+                session_id=session_id,
+                generation=generation,
+            ):
+                raise ValueError("Wake activation requires a connected Realtime provider")
+            audio_policy = RealtimeAudioPolicy.from_dict(realtime.audio_policy_json)
+            if audio_policy is None:
+                raise ValueError("Realtime session has no persisted audio policy; reconnect is required")
+            await JarvisDomainRepository(session).append_session_event(
+                session_id=session_id,
+                event_type="wake.gate.started",
+                payload_json={
+                    "activation_id": activation.activation_id,
+                    "wake_score": activation.wake_score,
+                    "gate_mode": activation.gate_mode,
+                    "session_id": session_id,
+                    "generation": generation,
+                    "configuration_id": audio_policy.configuration_id,
+                    "benchmark_run_id": benchmark_run_id,
+                    "benchmark_fixture": benchmark_fixture,
+                },
+                idempotency_key=f"wake-gate-started:{session_id}:{generation}:{activation.activation_id}",
+            )
+        self._activation_index[activation.activation_id] = (
+            session_id,
+            generation,
+            float("inf"),
+        )
+        self._wake_activation_seen.add((session_id, generation))
+        self._wake_activations[(session_id, generation)] = activation
+        self._prune_activation_index()
+        self._trace_response_gate(
+            "wake.gate.accepted" if activation.verification_state == "accepted" else "wake.gate.started",
+            session_id=session_id,
+            generation=generation,
+            reason="developer_immediate" if activation.verification_state == "accepted" else "activation_registered",
+            detail={
+                "configuration_id": audio_policy.configuration_id,
+                "benchmark_run_id": benchmark_run_id,
+                "benchmark_fixture": benchmark_fixture,
+            },
+        )
+        return WakeActivationRegistration(activation=activation, audio_policy=audio_policy)
+
+    def _prune_activation_index(self) -> None:
+        now = time.monotonic()
+        expired = [key for key, (_, _, expiry) in self._activation_index.items() if expiry <= now]
+        for key in expired:
+            self._activation_index.pop(key, None)
+        if len(self._activation_index) <= self._activation_index_limit:
+            return
+        overflow = len(self._activation_index) - self._activation_index_limit
+        for key, _ in sorted(self._activation_index.items(), key=lambda item: item[1][2])[:overflow]:
+            self._activation_index.pop(key, None)
+
+    def _mark_input_item_handled(
+        self,
+        session_id: str,
+        generation: int,
+        item_id: str,
+    ) -> bool:
+        if not item_id:
+            return False
+        key = (session_id, generation)
+        handled = self._handled_input_items.setdefault(key, {})
+        if item_id in handled:
+            return False
+        handled[item_id] = time.monotonic()
+        while len(handled) > 128:
+            handled.pop(next(iter(handled)))
+        return True
+
+    async def _session_audio_policy(self, session_id: str) -> RealtimeAudioPolicy:
+        async with session_scope() as session:
+            realtime = await session.get(RealtimeSession, session_id)
+            if realtime is None:
+                raise ValueError("Realtime session not found")
+            policy = RealtimeAudioPolicy.from_dict(realtime.audio_policy_json)
+            if policy is None:
+                raise ValueError("Realtime session has no persisted audio policy; reconnect is required")
+            return policy
+
+    async def _discard_candidate_items(
+        self,
+        session_id: str,
+        generation: int,
+        activation: _WakeActivation,
+    ) -> None:
+        if not activation.candidate_item_ids:
+            return
+        session = await self.get_session(session_id)
+        if session is None or session.generation != generation:
+            return
+        try:
+            await get_voice_session_adapter(session.provider_adapter).discard_candidate_items(
+                session_id=session_id,
+                generation=generation,
+                item_ids=tuple(sorted(activation.candidate_item_ids)),
+            )
+        except Exception:
+            logger.exception(
+                "Unable to discard rejected wake candidate items for session %s generation %s",
+                session_id,
+                generation,
+            )
 
     async def _run_delivery_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -465,6 +729,54 @@ class JarvisCoordinator:
         await self._queue_controlled_response(active.id, active.generation, "user_turn")
         return accepted
 
+    async def _maybe_queue_wake_response(
+        self,
+        session_id: str,
+        generation: int,
+        activation: _WakeActivation,
+    ) -> None:
+        """Authorize the first wake response from one accepted committed item."""
+        current = self._wake_activations.get((session_id, generation))
+        item_id = activation.primary_input_item_id
+        if (
+            current is not activation
+            or activation.verification_state != "accepted"
+            or activation.lifecycle_state == "terminal"
+            or not item_id
+            or item_id in activation.response_requested_for
+        ):
+            return
+        gate = self._response_gates.setdefault((session_id, generation), _ResponseGate())
+        async with gate.lock:
+            current = self._wake_activations.get((session_id, generation))
+            item_id = activation.primary_input_item_id
+            if (
+                current is not activation
+                or activation.verification_state != "accepted"
+                or activation.lifecycle_state == "terminal"
+                or not item_id
+                or item_id in activation.response_requested_for
+            ):
+                return
+            activation.response_requested_for.add(item_id)
+            activation.response_requested = True
+            activation.lifecycle_state = "conversation"
+        try:
+            await self._queue_controlled_response(
+                session_id,
+                generation,
+                "user_turn",
+                activation_id=activation.activation_id,
+                input_item_id=item_id,
+            )
+        except Exception:
+            async with gate.lock:
+                activation.response_requested_for.discard(item_id)
+                activation.response_requested = bool(activation.response_requested_for)
+                if not activation.response_requested:
+                    activation.lifecycle_state = "candidate"
+            raise
+
     async def _queue_controlled_response(
         self,
         session_id: str,
@@ -472,6 +784,8 @@ class JarvisCoordinator:
         reason: str,
         *,
         enqueue: bool = True,
+        activation_id: str | None = None,
+        input_item_id: str | None = None,
     ) -> None:
         request_started = time.monotonic()
         gate_acquired = request_started
@@ -484,6 +798,20 @@ class JarvisCoordinator:
         reservation_started = request_started
         reservation_finished = request_started
         key = (session_id, generation)
+        activation = self._wake_activations.get(key)
+        if (
+            reason == "user_turn"
+            and activation is not None
+            and activation.verification_state != "accepted"
+        ):
+            self._trace_response_gate(
+                "response.arbiter.blocked",
+                session_id=session_id,
+                generation=generation,
+                reason=reason,
+                detail={"blocked_by": "wake_gate", "gate_state": activation.verification_state},
+            )
+            return
         gate = self._response_gates.setdefault(key, _ResponseGate())
         adapter = None
         reservation = None
@@ -555,7 +883,13 @@ class JarvisCoordinator:
                             detail={"blocked_by": "provider_not_connected", "floor": floor},
                         )
                         return
-                    if floor in {"user_speaking", "assistant_speaking", "connecting", "text_fallback"}:
+                    if floor in {"assistant_speaking", "connecting", "text_fallback"} or (
+                        floor == "user_speaking"
+                        and (
+                            selected_reason != "user_turn"
+                            or (activation is not None and activation.legacy_compat)
+                        )
+                    ):
                         self._trace_response_gate(
                             "response.arbiter.deferred",
                             session_id=session_id,
@@ -615,6 +949,8 @@ class JarvisCoordinator:
                         state="submitting",
                         started_monotonic=now_monotonic,
                         last_activity_monotonic=now_monotonic,
+                        activation_id=activation_id,
+                        input_item_id=input_item_id,
                     )
                     if not enqueue:
                         self._trace_response_gate(
@@ -646,6 +982,8 @@ class JarvisCoordinator:
                 session_id=session_id,
                 generation=generation,
                 request_id=request_id,
+                activation_id=activation_id,
+                input_item_id=input_item_id,
                 response_kind=selected_reason,
                 presentation_ids=presentation_ids,
                 facts=facts,
@@ -895,6 +1233,14 @@ class JarvisCoordinator:
     ) -> ControllerBootstrap:
         adapter = get_voice_session_adapter(adapter_name)
         wake_activation = self._wake_activation(activation_context)
+        audio_policy = build_realtime_audio_policy(settings)
+        if wake_activation is not None:
+            self._prune_activation_index()
+            indexed = self._activation_index.get(wake_activation.activation_id)
+            if indexed is not None and indexed[2] > time.monotonic():
+                raise ActivationConflictError(
+                    "Wake activation id is already active on another session"
+                )
         superseded_adapters: list[tuple[str, int, str]] = []
         async with session_scope() as session:
             conversation = await session.get(Conversation, conversation_id)
@@ -933,6 +1279,14 @@ class JarvisCoordinator:
                 preferences = JarvisPreference(id="current")
                 session.add(preferences)
                 await session.flush()
+            if wake_activation is not None and wake_activation.gate_mode == "immediate" and not preferences.developer_mode:
+                raise ValueError("Immediate wake gate is restricted to developer mode")
+            if (
+                wake_activation is not None
+                and (wake_activation.benchmark_run_id or wake_activation.benchmark_fixture)
+                and not preferences.developer_mode
+            ):
+                raise ValueError("Benchmark metadata is restricted to developer mode")
             temporal = normalize_client_context(
                 client_context,
                 fallback_time_zone=preferences.time_zone,
@@ -948,6 +1302,7 @@ class JarvisCoordinator:
                 client_time_zone=temporal.time_zone,
                 client_utc_offset_minutes=temporal.utc_offset_minutes,
                 client_observed_at=temporal.observed_at,
+                audio_policy_json=audio_policy.as_dict(),
             )
             session.add(realtime)
             await session.flush()
@@ -958,22 +1313,65 @@ class JarvisCoordinator:
                     "controller_id": controller_id,
                     "adapter": adapter.name,
                     "activation_source": "wake_word" if wake_activation is not None else "manual",
+                    "configuration_id": audio_policy.configuration_id,
                 },
                 idempotency_key=f"connecting:{realtime.id}",
             )
+            if wake_activation is not None:
+                await repo.append_session_event(
+                    session_id=realtime.id,
+                    event_type="wake.gate.started",
+                    payload_json={
+                        "activation_id": wake_activation.activation_id,
+                        "wake_score": wake_activation.wake_score,
+                        "gate_mode": wake_activation.gate_mode,
+                        "session_id": realtime.id,
+                        "generation": realtime.generation,
+                        "configuration_id": audio_policy.configuration_id,
+                        "benchmark_run_id": wake_activation.benchmark_run_id,
+                        "benchmark_fixture": wake_activation.benchmark_fixture,
+                    },
+                    idempotency_key=f"wake-gate-started:{realtime.id}:{realtime.generation}",
+                )
+                if wake_activation.verification_state == "accepted":
+                    await repo.append_session_event(
+                        session_id=realtime.id,
+                        event_type="wake.gate.accepted",
+                        payload_json={
+                            "activation_id": wake_activation.activation_id,
+                            "wake_score": wake_activation.wake_score,
+                            "gate_mode": wake_activation.gate_mode,
+                            "reason": "developer_immediate",
+                            "session_id": realtime.id,
+                            "generation": realtime.generation,
+                            "configuration_id": audio_policy.configuration_id,
+                            "benchmark_run_id": wake_activation.benchmark_run_id,
+                            "benchmark_fixture": wake_activation.benchmark_fixture,
+                        },
+                        idempotency_key=f"wake-gate-accepted:{realtime.id}:{realtime.generation}",
+                    )
             record = self._record(realtime, floor_state="connecting")
             context = await self._context_in_session(
                 session,
                 conversation_id=conversation_id,
                 session_id=realtime.id,
             )
+            context = {**context, "audio_policy": audio_policy.as_dict()}
             if wake_activation is not None and wake_activation.activation_id:
                 context = {**context, "activation_id": wake_activation.activation_id}
 
         if wake_activation is not None:
+            self._activation_index[wake_activation.activation_id] = (
+                record.id,
+                record.generation,
+                float("inf"),
+            )
+            self._prune_activation_index()
             self._wake_activations[(record.id, record.generation)] = wake_activation
+            self._wake_activation_seen.add((record.id, record.generation))
 
         for old_session_id, old_generation, old_adapter in superseded_adapters:
+            self._tombstone_activation_ids(old_session_id, old_generation)
             self._clear_wake_activation(old_session_id, old_generation)
             await task_presentation_service.release_session_reservations(
                 session_id=old_session_id,
@@ -1001,6 +1399,7 @@ class JarvisCoordinator:
                 sdp_offer=sdp_offer,
             )
         except Exception as exc:
+            self._tombstone_activation_ids(record.id, record.generation)
             self._clear_wake_activation(record.id, record.generation)
             failure_type = type(exc).__name__
             failure_detail = _safe_connection_failure(exc)
@@ -1029,7 +1428,11 @@ class JarvisCoordinator:
         refreshed = await self.get_session(record.id)
         if refreshed is None:
             raise RuntimeError("Realtime session disappeared after connection")
-        return ControllerBootstrap(session=refreshed, sdp_answer=connection.sdp_answer)
+        return ControllerBootstrap(
+            session=refreshed,
+            audio_policy=audio_policy,
+            sdp_answer=connection.sdp_answer,
+        )
 
     def _schedule_provider_cleanup(
         self,
@@ -1102,23 +1505,49 @@ class JarvisCoordinator:
         if event.kind.startswith("assistant_"):
             await self._observe_controlled_response(session_id, generation, event)
         if event.kind == "user_speaking":
-            self._schedule_barge_in_cancel(session_id, generation)
+            self._schedule_barge_in_cancel(
+                session_id,
+                generation,
+                speech_event_id=event.event_id,
+                speech_item_id=str(event.payload.get("item_id") or "") or None,
+            )
         shell_call: tuple[str, dict[str, Any], str] | None = None
         presentation_action: tuple[tuple[str, ...], DeliveryRecord, str, str] | None = None
         requeue_presentations: tuple[str, ...] = ()
         release_reservations = False
         response_finished = False
         queue_user_response = False
+        normal_response_item: str | None = None
         retry_user_response = False
+        wake_response: tuple[_WakeActivation, str] | None = None
         queue_task_updates = False
+        retry_task_updates = False
         schedule_wake_fallback = False
         cancel_wake_fallback = False
         clear_wake_activation = False
+        discard_activation: _WakeActivation | None = None
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             repo = JarvisDomainRepository(session)
             event_type = f"provider.{event.kind}"
             payload = dict(event.payload)
+            activation_for_payload = self._wake_activations.get((session_id, generation))
+            if (
+                event.kind in {"user_transcript", "user_transcript_delta"}
+                and activation_for_payload is not None
+                and activation_for_payload.verification_state != "accepted"
+            ):
+                # Candidate speech stays in memory until the gate accepts it;
+                # rejected candidates must not land in durable session events.
+                payload.pop("transcript", None)
+                payload.pop("delta", None)
+                payload["transcript_redacted"] = True
+            if activation_for_payload is not None:
+                payload.update({
+                    "activation_id": activation_for_payload.activation_id,
+                    "benchmark_run_id": activation_for_payload.benchmark_run_id,
+                    "benchmark_fixture": activation_for_payload.benchmark_fixture,
+                })
             # Every live session event is self-identifying so clients can reject
             # stale events without consulting historical session state.
             payload.update({"session_id": session_id, "generation": generation})
@@ -1148,53 +1577,192 @@ class JarvisCoordinator:
 
             if event.kind == "user_speaking":
                 activation = self._wake_activations.get((session_id, generation))
-                if activation is not None and activation.response_requested:
+                if activation is not None and activation.legacy_compat:
+                    # Keep the pre-correlation alias runnable while old
+                    # clients roll forward.  Phase-2 normalized commits do
+                    # not use this speech-stop compatibility gate.
+                    activation.speech_stopped = False
+                if (
+                    activation is not None
+                    and activation.verification_state == "accepted"
+                    and activation.response_requested
+                    and (
+                        (
+                            activation.legacy_compat
+                            and not str(event.payload.get("item_id") or "")
+                        )
+                        or (
+                            str(event.payload.get("item_id") or "")
+                            and str(event.payload.get("item_id")) != activation.primary_input_item_id
+                        )
+                    )
+                ):
                     clear_wake_activation = True
 
             if event.kind == "user_transcript":
-                await self._persist_user_transcript(session, realtime, event)
                 activation = self._wake_activations.get((session_id, generation))
+                item_id = str(event.payload.get("item_id") or event.event_id)
+                if activation is None:
+                    await self._persist_user_transcript(session, realtime, event)
+                elif activation.verification_state == "accepted":
+                    activation.candidate_item_ids.add(item_id)
+                    await self._persist_user_transcript(session, realtime, event)
+                elif activation.verification_state == "pending":
+                    activation.candidate_item_ids.add(item_id)
+                    decision = verify_wake_transcript(
+                        str(event.payload.get("transcript") or ""),
+                        activation.wake_score,
+                    )
+                    activation.verification_state = "accepted" if decision.accepted else "rejected"
+                    if activation.verification_state == "rejected":
+                        activation.lifecycle_state = "terminal"
+                    cancel_wake_fallback = True
+                    decision_monotonic = time.monotonic()
+                    await repo.append_session_event(
+                        session_id=session_id,
+                        event_type=f"wake.gate.{activation.verification_state}",
+                        payload_json={
+                            "reason": decision.reason,
+                            "wake_score": activation.wake_score,
+                            "gate_mode": activation.gate_mode,
+                            "gate_duration_ms": round(
+                                (decision_monotonic - activation.gate_started_monotonic) * 1_000,
+                                3,
+                            ),
+                            "registration_to_gate_decision_ms": round(
+                                (decision_monotonic - activation.registered_monotonic) * 1_000,
+                                3,
+                            ),
+                            "commit_to_gate_decision_ms": (
+                                round(
+                                    (decision_monotonic - activation.gate_timeout_started_monotonic) * 1_000,
+                                    3,
+                                )
+                                if activation.gate_timeout_started_monotonic is not None
+                                else None
+                            ),
+                            "activation_id": activation.activation_id,
+                            "wake_term_present": decision.wake_term_present,
+                            "prefix_classification": decision.prefix_classification,
+                            "transcript_word_count": decision.transcript_word_count,
+                            "session_id": session_id,
+                            "generation": generation,
+                        },
+                        idempotency_key=f"wake-gate:{session_id}:{generation}:{event.event_id}",
+                    )
+                    if activation.verification_state == "accepted":
+                        await self._persist_user_transcript(session, realtime, event)
+                    else:
+                        discard_activation = activation
+                elif activation.verification_state in {"rejected", "timed_out"}:
+                    activation.candidate_item_ids.add(item_id)
+                    discard_activation = activation
                 if activation is not None:
                     if activation.verification_state == "pending":
-                        decision = verify_wake_transcript(
-                            str(event.payload.get("transcript") or ""),
-                            activation.wake_score,
+                        pass
+                    elif (
+                        activation.verification_state == "accepted"
+                        and activation.primary_input_item_id == item_id
+                        and not activation.response_requested
+                    ):
+                        wake_response = (activation, item_id)
+                    elif (
+                        activation.legacy_compat
+                        and activation.verification_state == "accepted"
+                        and activation.speech_stopped
+                    ):
+                        if activation.response_requested:
+                            retry_user_response = True
+                        else:
+                            activation.response_requested = True
+                            queue_user_response = True
+            elif event.kind == "user_input_committed":
+                activation = self._wake_activations.get((session_id, generation))
+                if activation is None:
+                    item_id = str(event.payload.get("item_id") or "")
+                    if (
+                        item_id
+                        and self._mark_input_item_handled(
+                        session_id,
+                        generation,
+                        item_id,
                         )
-                        activation.verification_state = "accepted" if decision.accepted else "rejected"
+                    ):
+                        normal_response_item = item_id
+                else:
+                    item_id = str(event.payload.get("item_id") or "")
+                    if item_id:
+                        activation.candidate_item_ids.add(item_id)
+                    if item_id and activation.primary_input_item_id is None:
+                        activation.primary_input_item_id = item_id
+                    activation.committed_monotonic = activation.committed_monotonic or time.monotonic()
+                    activation.gate_timeout_started_monotonic = (
+                        activation.gate_timeout_started_monotonic
+                        or activation.committed_monotonic
+                    )
+                    if activation.verification_state == "pending" and activation.gate_mode == "immediate":
+                        activation.verification_state = "accepted"
                         cancel_wake_fallback = True
+                        decision_monotonic = time.monotonic()
                         await repo.append_session_event(
                             session_id=session_id,
-                            event_type=f"wake.verification.{activation.verification_state}",
+                            event_type="wake.gate.accepted",
                             payload_json={
-                                "reason": decision.reason,
+                                "reason": "developer_immediate",
                                 "wake_score": activation.wake_score,
+                                "gate_mode": activation.gate_mode,
+                                "gate_duration_ms": round(
+                                    (decision_monotonic - activation.gate_started_monotonic) * 1_000,
+                                    3,
+                                ),
+                                "registration_to_gate_decision_ms": round(
+                                    (decision_monotonic - activation.registered_monotonic) * 1_000,
+                                    3,
+                                ),
+                                "commit_to_gate_decision_ms": round(
+                                    (decision_monotonic - activation.gate_timeout_started_monotonic) * 1_000,
+                                    3,
+                                ),
+                                "activation_id": activation.activation_id,
+                                "wake_term_present": False,
+                                "prefix_classification": "developer_immediate",
+                                "transcript_word_count": 0,
                                 "session_id": session_id,
                                 "generation": generation,
                             },
-                            idempotency_key=f"wake-verification:{session_id}:{generation}:{event.event_id}",
+                            idempotency_key=f"wake-gate-immediate:{session_id}:{generation}:{event.event_id}",
                         )
-                    if activation.verification_state == "rejected":
-                        clear_wake_activation = True
-                    elif activation.verification_state == "accepted" and activation.speech_stopped:
-                        if activation.response_requested:
-                            retry_user_response = True
-                        else:
-                            activation.response_requested = True
-                            queue_user_response = True
-            elif event.kind in {"user_stopped", "wake_audio_committed"}:
-                activation = self._wake_activations.get((session_id, generation))
-                if activation is None:
-                    queue_user_response = event.kind == "user_stopped"
-                else:
-                    activation.speech_stopped = True
                     if activation.verification_state == "accepted":
-                        if activation.response_requested:
-                            retry_user_response = True
-                        else:
-                            activation.response_requested = True
-                            queue_user_response = True
+                        if item_id and not activation.response_requested:
+                            wake_response = (activation, item_id)
+                        elif (
+                            item_id
+                            and activation.lifecycle_state == "conversation"
+                            and item_id != activation.primary_input_item_id
+                            and self._mark_input_item_handled(session_id, generation, item_id)
+                        ):
+                            normal_response_item = item_id
                     elif activation.verification_state == "pending":
                         schedule_wake_fallback = True
+                    elif activation.verification_state in {"rejected", "timed_out"}:
+                        activation.lifecycle_state = "terminal"
+                        discard_activation = activation
+            elif event.kind == "user_stopped":
+                activation = self._wake_activations.get((session_id, generation))
+                if activation is not None:
+                    activation.speech_stopped = True
+                    if activation.legacy_compat:
+                        if activation.verification_state == "pending":
+                            schedule_wake_fallback = True
+                        elif activation.verification_state == "accepted" and activation.response_requested:
+                            retry_user_response = True
+                        elif activation.verification_state in {"rejected", "timed_out"}:
+                            discard_activation = activation
+                else:
+                    # A stop may release a task-update reservation that was
+                    # queued while the user owned the floor. It never creates
+                    # a conversational response by itself.
+                    retry_task_updates = True
             elif event.kind in {"assistant_response", "assistant_interrupted"}:
                 delivery = await self._persist_delivery(session, realtime, event)
                 response_finished = True
@@ -1217,23 +1785,28 @@ class JarvisCoordinator:
                         str(payload.get("response_kind") or ""),
                     )
             elif event.kind == "shell_call":
-                response_finished = True
-                tool_name = str(payload.get("name") or "")
-                arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
-                call_id = str(payload.get("call_id") or event.event_id)
-                shell_call = (tool_name, dict(arguments), call_id)
-                raw_presentation_ids = payload.get("presentation_ids")
-                requeue_presentations = tuple(
-                    str(item)
-                    for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
-                    if item
-                )
+                activation = self._wake_activations.get((session_id, generation))
+                if activation is None or activation.verification_state == "accepted":
+                    response_finished = True
+                    tool_name = str(payload.get("name") or "")
+                    arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+                    call_id = str(payload.get("call_id") or event.event_id)
+                    shell_call = (tool_name, dict(arguments), call_id)
+                    raw_presentation_ids = payload.get("presentation_ids")
+                    requeue_presentations = tuple(
+                        str(item)
+                        for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
+                        if item
+                    )
 
         if cancel_wake_fallback:
             self._cancel_wake_verification(session_id, generation)
         if schedule_wake_fallback:
             self._schedule_wake_verification(session_id, generation)
+        if discard_activation is not None:
+            await self._discard_candidate_items(session_id, generation, discard_activation)
         if clear_wake_activation:
+            self._tombstone_activation_ids(session_id, generation)
             self._clear_wake_activation(session_id, generation)
 
         if presentation_action is not None:
@@ -1271,6 +1844,31 @@ class JarvisCoordinator:
                 request_id=str(event.payload.get("request_id") or "") or None,
                 response_id=str(event.payload.get("response_id") or "") or None,
             )
+
+        if wake_response is not None:
+            await self._maybe_queue_wake_response(
+                session_id,
+                generation,
+                wake_response[0],
+            )
+
+        if normal_response_item is not None:
+            await self._queue_controlled_response(
+                session_id,
+                generation,
+                "user_turn",
+                input_item_id=normal_response_item,
+            )
+
+        if retry_task_updates:
+            gate = self._response_gates.get((session_id, generation))
+            if gate is not None and "task_update" in gate.pending:
+                await self._queue_controlled_response(
+                    session_id,
+                    generation,
+                    "task_update",
+                    enqueue=False,
+                )
 
         if queue_user_response:
             await self._queue_controlled_response(session_id, generation, "user_turn")
@@ -1323,30 +1921,158 @@ class JarvisCoordinator:
         self._background_response_tasks.add(task)
         task.add_done_callback(self._background_response_tasks.discard)
 
-    def _schedule_barge_in_cancel(self, session_id: str, generation: int) -> None:
+    async def _capture_barge_in_intent(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        speech_event_id: str,
+        speech_item_id: str | None,
+        source: str,
+        expected_request_id: str | None = None,
+        expected_response_id: str | None = None,
+    ) -> _BargeInIntent | None:
+        gate = self._response_gates.get((session_id, generation))
+        if gate is None:
+            return None
+        key = (session_id, generation, speech_event_id, expected_request_id or "")
+        async with gate.lock:
+            if key in self._barge_in_keys:
+                return None
+            attempt = gate.attempt
+            if attempt is None or attempt.state in {"terminal", "cancelling"}:
+                return None
+            if speech_item_id and attempt.input_item_id == speech_item_id:
+                return None
+            if expected_request_id is not None and attempt.request_id != expected_request_id:
+                return None
+            if (
+                expected_response_id is not None
+                and attempt.provider_response_id is not None
+                and attempt.provider_response_id != expected_response_id
+            ):
+                return None
+            intent = _BargeInIntent(
+                speech_event_id=speech_event_id,
+                speech_item_id=speech_item_id,
+                request_id=attempt.request_id,
+                response_id_at_onset=expected_response_id or attempt.provider_response_id,
+                scheduled_monotonic=time.monotonic(),
+                source=source,
+            )
+            self._barge_in_keys.add(key)
+            return intent
+
+    async def _cancel_if_same_attempt(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        intent: _BargeInIntent,
+    ) -> bool:
+        gate = self._response_gates.get((session_id, generation))
+        if gate is None:
+            return False
+        response_id: str | None = None
+        async with gate.lock:
+            attempt = gate.attempt
+            if (
+                attempt is None
+                or attempt.request_id != intent.request_id
+                or attempt.state in {"terminal", "cancelling"}
+                or (intent.speech_item_id and attempt.input_item_id == intent.speech_item_id)
+            ):
+                return False
+            attempt.state = "cancelling"
+            attempt.cancel_requested_monotonic = time.monotonic()
+            response_id = attempt.provider_response_id or intent.response_id_at_onset
+        session = await self.get_session(session_id)
+        if session is None or session.generation != generation:
+            return False
+        adapter = get_voice_session_adapter(session.provider_adapter)
+        await adapter.cancel_response(
+            session_id=session_id,
+            generation=generation,
+            response_id=response_id,
+        )
+        self._trace_response_gate(
+            "response.cancel.sent",
+            session_id=session_id,
+            generation=generation,
+            request_id=intent.request_id,
+            response_id=response_id,
+            reason=intent.source,
+            detail={
+                "speech_event_id": intent.speech_event_id,
+                "speech_item_id": intent.speech_item_id,
+                "response_id_at_onset": intent.response_id_at_onset,
+            },
+        )
+        return True
+
+    async def capture_barge_in_intent(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        speech_event_id: str,
+        source: str,
+        request_id: str,
+        response_id: str | None,
+        input_item_id: str | None,
+    ) -> bool:
+        current = await self.get_session(session_id)
+        if current is None or current.generation != generation:
+            return False
+        intent = await self._capture_barge_in_intent(
+            session_id=session_id,
+            generation=generation,
+            speech_event_id=speech_event_id,
+            speech_item_id=input_item_id,
+            source=source,
+            expected_request_id=request_id,
+            expected_response_id=response_id,
+        )
+        if intent is None:
+            return False
+        # The browser already confirmed speech and muted playback, so the
+        # endpoint has no client grace period. The request identity remains
+        # immutable through the adapter call.
+        return await self._cancel_if_same_attempt(
+            session_id=session_id,
+            generation=generation,
+            intent=intent,
+        )
+
+    def _schedule_barge_in_cancel(
+        self,
+        session_id: str,
+        generation: int,
+        *,
+        speech_event_id: str,
+        speech_item_id: str | None,
+        source: str = "backend_fallback",
+    ) -> None:
         gate = self._response_gates.get((session_id, generation))
         if gate is None or (gate.barge_in_task is not None and not gate.barge_in_task.done()):
             return
 
         async def cancel_after_client_grace() -> None:
             try:
-                await asyncio.sleep(0.3)
-                response_id: str | None = None
-                async with gate.lock:
-                    attempt = gate.attempt
-                    if attempt is None or attempt.cancel_requested_monotonic is not None:
-                        return
-                    attempt.state = "cancelling"
-                    attempt.cancel_requested_monotonic = time.monotonic()
-                    response_id = attempt.provider_response_id
-                session = await self.get_session(session_id)
-                if session is None:
-                    return
-                adapter = get_voice_session_adapter(session.provider_adapter)
-                await adapter.cancel_response(
+                intent = await self._capture_barge_in_intent(
                     session_id=session_id,
                     generation=generation,
-                    response_id=response_id,
+                    speech_event_id=speech_event_id,
+                    speech_item_id=speech_item_id,
+                    source=source,
+                )
+                if intent is None:
+                    return
+                await asyncio.sleep(0.3)
+                await self._cancel_if_same_attempt(
+                    session_id=session_id,
+                    generation=generation,
+                    intent=intent,
                 )
             except (StaleSessionError, ValueError):
                 return
@@ -1356,7 +2082,7 @@ class JarvisCoordinator:
 
         gate.barge_in_task = asyncio.create_task(
             cancel_after_client_grace(),
-            name=f"jarvis-barge-in-fallback:{session_id}:{generation}",
+            name=f"jarvis-barge-in-fallback:{session_id}:{generation}:{speech_event_id}",
         )
 
     async def inject_fake_event(
@@ -1394,6 +2120,7 @@ class JarvisCoordinator:
             error=f"session_superseded:{reason}",
         )
         await self._drop_response_gate(session_id, generation)
+        self._tombstone_activation_ids(session_id, generation)
         self._clear_wake_activation(session_id, generation)
         if realtime.provider_adapter == "fake":
             fake_voice_session_adapter.detach(session_id=session_id, generation=generation)
@@ -1421,6 +2148,7 @@ class JarvisCoordinator:
             emit_event=True,
         )
         await self._drop_response_gate(session_id, generation)
+        self._tombstone_activation_ids(session_id, generation)
         self._clear_wake_activation(session_id, generation)
 
     async def _drop_response_gate(self, session_id: str, generation: int) -> None:
@@ -1828,6 +2556,7 @@ class JarvisCoordinator:
             client_time_zone=realtime.client_time_zone,
             client_utc_offset_minutes=realtime.client_utc_offset_minutes,
             client_observed_at=realtime.client_observed_at,
+            audio_policy=RealtimeAudioPolicy.from_dict(realtime.audio_policy_json),
         )
 
 

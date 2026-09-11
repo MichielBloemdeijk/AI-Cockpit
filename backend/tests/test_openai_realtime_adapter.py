@@ -192,8 +192,10 @@ async def test_openai_adapter_bootstraps_sideband_hydrates_and_returns_tool_resu
     assert session_config["reasoning"]["effort"] == "low"
     assert session_config["audio"]["input"]["noise_reduction"]["type"] == "near_field"
     assert session_config["audio"]["input"]["turn_detection"] == {
-        "type": "semantic_vad",
-        "eagerness": "medium",
+        "type": "server_vad",
+        "silence_duration_ms": 350,
+        "threshold": 0.5,
+        "prefix_padding_ms": 300,
         "create_response": False,
         "interrupt_response": False,
     }
@@ -395,7 +397,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     await adapter.connect(
         session_id="session-events",
         generation=1,
-        context={},
+        context={"activation_id": "activation-events"},
         on_event=on_event,
         sdp_offer="offer",
     )
@@ -506,7 +508,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "ready",
         "user_speaking",
         "user_stopped",
-        "wake_audio_committed",
+        "user_input_committed",
         "user_transcript_delta",
         "user_transcript",
         "assistant_generating",
@@ -518,6 +520,7 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
     assert events[3].payload == {
         "item_id": "item-user",
         "previous_item_id": "item-previous",
+        "activation_id": "activation-events",
     }
     assert events[4].payload == {
         "item_id": "item-user",
@@ -526,8 +529,9 @@ async def test_openai_adapter_normalizes_current_realtime_event_contract(
         "provisional": True,
     }
     assert events[5].payload["transcript"] == "Please prepare a report."
-    assert events[5].payload["boundary_kind"] == "committed"
-    assert events[5].payload["timing_ms"]["provider_boundary_to_transcript"] >= 0
+    assert events[5].payload["activation_id"] == "activation-events"
+    assert events[5].payload["timing_ms"]["item_commit_to_transcript"] >= 0
+    assert adapter._sessions[("session-events", 1)].activation_id is None
     assert events[7].payload["timing_ms"]["response_created_to_first_audio"] >= 0
     assert events[8].payload["delta"] == "I can "
     assert events[9].payload["transcript"] == "I can help with that."
@@ -990,6 +994,18 @@ async def test_openai_call_api_returns_only_internal_session_and_sdp(
             "request_id",
             "server_received_at",
             "server_responded_at",
+            "audio_policy",
+        }
+        assert body["audio_policy"] == {
+            "configuration_id": "server_vad:s350:t0.5:p300",
+            "turn_mode": "server_vad",
+            "commit_owner": "provider",
+            "silence_duration_ms": 350,
+            "vad_threshold": 0.5,
+            "prefix_padding_ms": 300,
+            "semantic_eagerness": None,
+            "create_response": False,
+            "interrupt_response": False,
         }
 
         closed = await client.delete(

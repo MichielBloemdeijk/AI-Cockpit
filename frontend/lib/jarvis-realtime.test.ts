@@ -360,6 +360,327 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
+  it("streams candidate audio while waiting for the gate, then activates after acceptance", async () => {
+    const activation = vi.fn().mockResolvedValue({
+      session_id: "session-1",
+      generation: 1,
+      activation_id: "activation-1",
+      gate_state: "pending",
+      gate_mode: "transcript_rules",
+      gate_timeout_ms: 2_000,
+    });
+    let receiveChunk: ((samples: Float32Array) => void) | null = null;
+    let resolveEndpoint!: (value: { sampleRate: number; totalSamples: number; trailingSilenceMs: number }) => void;
+    const endpoint = new Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>((resolve) => {
+      resolveEndpoint = resolve;
+    });
+    const deps = dependencies({
+      registerActivation: activation,
+      createSilentTransport: vi.fn(async () => ({
+        stream: new FakeStream() as unknown as MediaStream,
+        destroy: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.arm(wakeStream as unknown as MediaStream);
+    expect(controller.current().status).toBe("standby");
+    const candidateAudio = {
+      sampleRate: 16_000,
+      preRoll: new Float32Array([0.1, 0.2]),
+      endpoint,
+      subscribe: (listener: (samples: Float32Array) => void) => {
+        receiveChunk = listener;
+        return () => { receiveChunk = null; };
+      },
+    };
+    const started = controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array()),
+        sampleRate: 16_000,
+        candidateAudio,
+      },
+      activationContext: {
+        source: "wake_word",
+        wake_score: 0.9,
+        gate_mode: "transcript_rules",
+      },
+    });
+    await vi.waitFor(() => expect(activation).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(receiveChunk).toBeTypeOf("function"));
+    const chunkReceiver = receiveChunk as ((samples: Float32Array) => void) | null;
+    if (!chunkReceiver) throw new Error("Candidate stream did not subscribe");
+    chunkReceiver(new Float32Array([0.3, 0.4]));
+    resolveEndpoint({ sampleRate: 16_000, totalSamples: 4, trailingSilenceMs: 300 });
+    await vi.waitFor(() => expect(
+      deps.peers[0].channel.sent.map((message) => JSON.parse(message).type),
+    ).toContain("input_audio_buffer.commit"));
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    controller.recordBackendEvent(liveEvent("wake.gate.accepted", 1, {
+      activation_id: "activation-1",
+    }));
+    await started;
+
+    expect(deps.peers).toHaveLength(1);
+    expect(deps.createCall).toHaveBeenCalledOnce();
+    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
+      "input_audio_buffer.append",
+      "input_audio_buffer.append",
+      "input_audio_buffer.commit",
+    ]);
+    expect(controller.current().status).toBe("connected");
+    await controller.stop();
+  });
+
+  it("restores the silent standby track when the gate rejects", async () => {
+    const activation = vi.fn().mockResolvedValue({
+      session_id: "session-1",
+      generation: 1,
+      activation_id: "activation-rejected",
+      gate_state: "pending",
+      gate_mode: "transcript_rules",
+      gate_timeout_ms: 2_000,
+    });
+    let resolveEndpoint!: (value: { sampleRate: number; totalSamples: number; trailingSilenceMs: number }) => void;
+    const endpoint = new Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>((resolve) => {
+      resolveEndpoint = resolve;
+    });
+    const deps = dependencies({
+      registerActivation: activation,
+      createSilentTransport: vi.fn(async () => ({
+        stream: new FakeStream() as unknown as MediaStream,
+        destroy: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.arm(wakeStream as unknown as MediaStream);
+    const started = controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array()),
+        sampleRate: 16_000,
+        candidateAudio: {
+          sampleRate: 16_000,
+          preRoll: new Float32Array([0.1]),
+          endpoint,
+          subscribe: () => () => undefined,
+        },
+      },
+      activationContext: {
+        source: "wake_word",
+        wake_score: 0.9,
+        activation_id: "activation-rejected",
+        gate_mode: "transcript_rules",
+      },
+    });
+    await vi.waitFor(() => expect(activation).toHaveBeenCalledOnce());
+    resolveEndpoint({ sampleRate: 16_000, totalSamples: 1, trailingSilenceMs: 300 });
+    await vi.waitFor(() => expect(
+      deps.peers[0].channel.sent.map((message) => JSON.parse(message).type),
+    ).toContain("input_audio_buffer.commit"));
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    controller.recordBackendEvent(liveEvent("wake.gate.rejected", 1, {
+      activation_id: "activation-rejected",
+      reason: "not_a_call",
+    }));
+
+    const snapshot = await started;
+    expect(snapshot.status).toBe("standby");
+    expect(controller.current().session?.id).toBe("session-1");
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    expect(deps.handoffTransports[0].destroy).toHaveBeenCalledOnce();
+    expect(deps.peers[0].sender.replacements).toHaveLength(2);
+    await controller.stop();
+  });
+
+  it("reuses the warm session and peer for the next wake after rejection", async () => {
+    const activation = vi.fn()
+      .mockResolvedValueOnce({
+        session_id: "session-1",
+        generation: 1,
+        activation_id: "activation-first",
+        gate_state: "pending",
+        gate_mode: "transcript_rules",
+        gate_timeout_ms: 2_000,
+      })
+      .mockResolvedValueOnce({
+        session_id: "session-1",
+        generation: 1,
+        activation_id: "activation-second",
+        gate_state: "pending",
+        gate_mode: "transcript_rules",
+        gate_timeout_ms: 2_000,
+      });
+    let resolveFirstEndpoint!: (value: { sampleRate: number; totalSamples: number; trailingSilenceMs: number }) => void;
+    let resolveSecondEndpoint!: (value: { sampleRate: number; totalSamples: number; trailingSilenceMs: number }) => void;
+    const firstEndpoint = new Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>((resolve) => {
+      resolveFirstEndpoint = resolve;
+    });
+    const secondEndpoint = new Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>((resolve) => {
+      resolveSecondEndpoint = resolve;
+    });
+    const deps = dependencies({
+      registerActivation: activation,
+      createSilentTransport: vi.fn(async () => ({
+        stream: new FakeStream() as unknown as MediaStream,
+        destroy: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.arm(wakeStream as unknown as MediaStream);
+    const sender = deps.peers[0].sender;
+    const originalReplaceTrack = sender.replaceTrack.bind(sender);
+    let releaseStandbyRestore!: () => void;
+    let replacementCount = 0;
+    sender.replaceTrack = vi.fn(async (track: MediaStreamTrack | null) => {
+      replacementCount += 1;
+      if (replacementCount === 2) {
+        await new Promise<void>((resolve) => {
+          releaseStandbyRestore = resolve;
+        });
+      }
+      await originalReplaceTrack(track);
+    });
+    const candidate = (endpoint: Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>) => ({
+      sampleRate: 16_000,
+      preRoll: new Float32Array([0.1]),
+      endpoint,
+      subscribe: () => () => undefined,
+    });
+    const firstStart = controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array()),
+        sampleRate: 16_000,
+        candidateAudio: candidate(firstEndpoint),
+      },
+      activationContext: {
+        source: "wake_word",
+        wake_score: 0.9,
+        activation_id: "activation-first",
+        gate_mode: "transcript_rules",
+      },
+    });
+    await vi.waitFor(() => expect(activation).toHaveBeenCalledTimes(1));
+    resolveFirstEndpoint({ sampleRate: 16_000, totalSamples: 1, trailingSilenceMs: 300 });
+    await vi.waitFor(() => expect(
+      deps.peers[0].channel.sent.map((message) => JSON.parse(message).type),
+    ).toContain("input_audio_buffer.commit"));
+    controller.recordBackendEvent(liveEvent("wake.gate.rejected", 1, {
+      activation_id: "activation-first",
+    }));
+    const standbySettled = controller.waitForWakeGateStandby();
+    await vi.waitFor(() => expect(replacementCount).toBe(2));
+    expect(controller.current().status).toBe("candidate");
+    let settled = false;
+    void standbySettled.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseStandbyRestore();
+    await expect(standbySettled).resolves.toBe(true);
+    await expect(firstStart).resolves.toMatchObject({ status: "standby" });
+
+    const secondStart = controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array()),
+        sampleRate: 16_000,
+        candidateAudio: candidate(secondEndpoint),
+      },
+      activationContext: {
+        source: "wake_word",
+        wake_score: 0.9,
+        activation_id: "activation-second",
+        gate_mode: "transcript_rules",
+      },
+    });
+    await vi.waitFor(() => expect(activation).toHaveBeenCalledTimes(2));
+    resolveSecondEndpoint({ sampleRate: 16_000, totalSamples: 1, trailingSilenceMs: 300 });
+    await vi.waitFor(() => expect(
+      deps.peers[0].channel.sent.filter((message) => JSON.parse(message).type === "input_audio_buffer.commit"),
+    ).toHaveLength(2));
+    controller.recordBackendEvent(liveEvent("wake.gate.accepted", 1, {
+      activation_id: "activation-second",
+    }));
+    await expect(secondStart).resolves.toMatchObject({ status: "connected" });
+
+    expect(deps.peers).toHaveLength(1);
+    expect(deps.createCall).toHaveBeenCalledOnce();
+    expect(deps.handoffTransports).toHaveLength(2);
+    expect(deps.handoffTransports[0].destroy).toHaveBeenCalledOnce();
+    expect(deps.handoffTransports[1].connectLive).toHaveBeenCalledOnce();
+    await controller.stop();
+  });
+
+  it("ignores stale gate decisions and restores standby on timeout", async () => {
+    const activation = vi.fn().mockResolvedValue({
+      session_id: "session-1",
+      generation: 1,
+      activation_id: "activation-timeout",
+      gate_state: "pending",
+      gate_mode: "transcript_rules",
+      gate_timeout_ms: 2_000,
+    });
+    let resolveEndpoint!: (value: { sampleRate: number; totalSamples: number; trailingSilenceMs: number }) => void;
+    const endpoint = new Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>((resolve) => {
+      resolveEndpoint = resolve;
+    });
+    const deps = dependencies({
+      registerActivation: activation,
+      createSilentTransport: vi.fn(async () => ({
+        stream: new FakeStream() as unknown as MediaStream,
+        destroy: vi.fn().mockResolvedValue(undefined),
+      })),
+    });
+    const wakeStream = new FakeStream();
+    const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
+    await controller.arm(wakeStream as unknown as MediaStream);
+    const started = controller.start({
+      audioHandoff: {
+        localStream: wakeStream as unknown as MediaStream,
+        utterance: Promise.resolve(new Float32Array()),
+        sampleRate: 16_000,
+        candidateAudio: {
+          sampleRate: 16_000,
+          preRoll: new Float32Array([0.1]),
+          endpoint,
+          subscribe: () => () => undefined,
+        },
+      },
+      activationContext: {
+        source: "wake_word",
+        wake_score: 0.9,
+        activation_id: "activation-timeout",
+        gate_mode: "transcript_rules",
+      },
+    });
+    await vi.waitFor(() => expect(activation).toHaveBeenCalledOnce());
+    resolveEndpoint({ sampleRate: 16_000, totalSamples: 1, trailingSilenceMs: 300 });
+    await vi.waitFor(() => expect(
+      deps.peers[0].channel.sent.map((message) => JSON.parse(message).type),
+    ).toContain("input_audio_buffer.commit"));
+    controller.recordBackendEvent(liveEvent("wake.gate.accepted", 1, {
+      activation_id: "wrong-activation",
+    }));
+    controller.recordBackendEvent(liveEvent("wake.gate.accepted", 2, {
+      activation_id: "activation-timeout",
+    }));
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    expect(controller.current().status).toBe("candidate");
+    controller.recordBackendEvent(liveEvent("wake.gate.timed_out", 1, {
+      activation_id: "activation-timeout",
+    }));
+
+    const snapshot = await started;
+    expect(snapshot.status).toBe("standby");
+    expect(deps.handoffTransports[0].connectLive).not.toHaveBeenCalled();
+    expect(deps.handoffTransports[0].destroy).toHaveBeenCalledOnce();
+    await controller.stop();
+  });
+
   it("keeps wake audio and the live mic gated until backend control is ready", async () => {
     const createCall = vi.fn().mockResolvedValue(connectingResponse(1));
     const deps = dependencies({ createCall });
@@ -399,7 +720,9 @@ describe("JarvisRealtimeController", () => {
     const started = controller.start();
     await vi.waitFor(() => expect(createCall).toHaveBeenCalledOnce());
     controller.recordBackendEvent(liveEvent("provider.ready", 1));
-    resolveCall?.(connectingResponse(1));
+    const resolveConnectingCall = resolveCall as ((value: JarvisRealtimeCallResponse) => void) | null;
+    if (!resolveConnectingCall) throw new Error("Realtime call did not start");
+    resolveConnectingCall(connectingResponse(1));
     await started;
 
     expect(deps.handoffTransports[0].connectLive).toHaveBeenCalledOnce();
@@ -739,8 +1062,9 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
-  it("mutes immediately and explicitly cancels after confirmed local barge-in", async () => {
-    const deps = dependencies();
+  it("mutes immediately and sends a captured barge-in intent after confirmed local speech", async () => {
+    const bargeIn = vi.fn().mockResolvedValue({ accepted: true });
+    const deps = dependencies({ bargeIn });
     const muted: boolean[] = [];
     const controller = new JarvisRealtimeController(
       { controllerId: "browser-1", onPlaybackMuted: (value) => muted.push(value) },
@@ -748,6 +1072,15 @@ describe("JarvisRealtimeController", () => {
     );
 
     await controller.start();
+    deps.peers[0].channel.onmessage?.({
+      data: JSON.stringify({
+        type: "response.created",
+        response: {
+          id: "resp-1",
+          metadata: { jarvis_request_id: "request-1", jarvis_input_item_id: "input-1" },
+        },
+      }),
+    } as MessageEvent);
     deps.peers[0].channel.onmessage?.({
       data: JSON.stringify({ type: "output_audio_buffer.started", response_id: "resp-1" }),
     } as MessageEvent);
@@ -756,17 +1089,13 @@ describe("JarvisRealtimeController", () => {
     expect(muted).toEqual([true]);
     expect(deps.peers[0].channel.sent).toEqual([]);
     deps.timers.at(-1)?.();
-    expect(deps.peers[0].channel.sent).toHaveLength(2);
-    expect(JSON.parse(deps.peers[0].channel.sent[0])).toMatchObject({
-      type: "response.cancel",
+    expect(deps.peers[0].channel.sent).toEqual([]);
+    expect(bargeIn).toHaveBeenCalledWith("session-1", expect.objectContaining({
+      request_id: "request-1",
       response_id: "resp-1",
-    });
-    expect(JSON.parse(deps.peers[0].channel.sent[1])).toMatchObject({
-      type: "output_audio_buffer.clear",
-    });
-    expect(controller.traceSnapshot().map((entry) => entry.kind)).toContain(
-      "output_audio_buffer.clear.sent",
-    );
+      input_item_id: "input-1",
+      source: "browser_local_vad",
+    }));
 
     deps.peers[0].channel.onmessage?.({
       data: JSON.stringify({ type: "output_audio_buffer.cleared", response_id: "resp-1" }),
@@ -775,8 +1104,9 @@ describe("JarvisRealtimeController", () => {
     await controller.stop();
   });
 
-  it("uses provider speech-start as the explicit cancellation fallback", async () => {
-    const deps = dependencies();
+  it("uses provider speech-start as the explicit barge-in fallback", async () => {
+    const bargeIn = vi.fn().mockResolvedValue({ accepted: true });
+    const deps = dependencies({ bargeIn });
     const muted: boolean[] = [];
     const controller = new JarvisRealtimeController(
       { controllerId: "browser-1", onPlaybackMuted: (value) => muted.push(value) },
@@ -785,35 +1115,52 @@ describe("JarvisRealtimeController", () => {
 
     await controller.start();
     deps.peers[0].channel.onmessage?.({
-      data: JSON.stringify({ type: "output_audio_buffer.started", response_id: "resp-2" }),
+      data: JSON.stringify({
+        type: "response.created",
+        response: {
+          id: "resp-2",
+          metadata: { jarvis_request_id: "request-2", jarvis_input_item_id: "input-2" },
+        },
+      }),
     } as MessageEvent);
     deps.peers[0].channel.onmessage?.({
       data: JSON.stringify({ type: "input_audio_buffer.speech_started" }),
     } as MessageEvent);
 
     expect(muted).toEqual([true]);
-    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
-      "response.cancel",
-      "output_audio_buffer.clear",
-    ]);
+    expect(deps.peers[0].channel.sent).toEqual([]);
+    expect(bargeIn).toHaveBeenCalledWith("session-1", expect.objectContaining({
+      request_id: "request-2",
+      response_id: "resp-2",
+      source: "browser_provider_vad",
+    }));
     await controller.stop();
   });
 
-  it("can cancel a response that is generating before audio starts", async () => {
-    const deps = dependencies();
+  it("captures a generating response before audio starts", async () => {
+    const bargeIn = vi.fn().mockResolvedValue({ accepted: true });
+    const deps = dependencies({ bargeIn });
     const controller = new JarvisRealtimeController({ controllerId: "browser-1" }, deps.value);
     await controller.start();
     deps.peers[0].channel.onmessage?.({
-      data: JSON.stringify({ type: "response.created", response: { id: "resp-early" } }),
+      data: JSON.stringify({
+        type: "response.created",
+        response: {
+          id: "resp-early",
+          metadata: { jarvis_request_id: "request-early", jarvis_input_item_id: "input-early" },
+        },
+      }),
     } as MessageEvent);
 
     deps.triggerSpeechStart();
     deps.timers.at(-1)?.();
 
-    expect(deps.peers[0].channel.sent.map((message) => JSON.parse(message).type)).toEqual([
-      "response.cancel",
-      "output_audio_buffer.clear",
-    ]);
+    expect(deps.peers[0].channel.sent).toEqual([]);
+    expect(bargeIn).toHaveBeenCalledWith("session-1", expect.objectContaining({
+      request_id: "request-early",
+      response_id: "resp-early",
+      source: "browser_local_vad",
+    }));
     await controller.stop();
   });
 
@@ -1161,12 +1508,56 @@ describe("JarvisRealtimeController", () => {
       }),
     ]);
 
-    expect(summary.turns).toHaveLength(2);
-    expect(summary.turns[1]).toMatchObject({
+    expect(summary.turns).toHaveLength(1);
+    expect(summary.turns[0]).toMatchObject({
+      input_item_id: "wake-item",
+      boundary_monotonic_ms: 500,
       response_id: "response-1",
       local_speech_stop_to_first_playable_media_ms: 900,
       browser_speech_end_to_first_playable_ms: 900,
       outcome: "complete",
+    });
+  });
+
+  it("keeps gate and warm-standby milestones on the same wake turn", () => {
+    const entry = (
+      kind: string,
+      monotonic_ms: number,
+      extra: Partial<JarvisRealtimeTraceEntry> = {},
+    ): JarvisRealtimeTraceEntry => ({
+      kind,
+      monotonic_ms,
+      wall_time: "2026-08-28T00:00:00.000Z",
+      ...extra,
+    });
+    const summary = summarizeJarvisRealtimeTrace([
+      entry("realtime_standby_ready", 20),
+      entry("wake_detected", 100),
+      entry("wake_local_speech_stopped", 200),
+      entry("wake.gate.started", 250),
+      entry("input_audio_buffer.committed", 300, { item_id: "wake-item" }),
+      entry("input_audio_buffer.speech_stopped", 400, { item_id: "provider-item" }),
+      entry("backend.wake.verification.accepted", 450),
+      entry("backend.provider.user_transcript", 460),
+      entry("backend.response.arbiter.started", 480),
+      entry("response.create.sent", 500),
+      entry("response.created", 550, { response_id: "response-1" }),
+      entry("response.output_audio.delta", 600, { response_id: "response-1" }),
+      entry("first_playable_media", 650, { response_id: "response-1" }),
+    ]);
+
+    expect(summary.turns).toHaveLength(1);
+    expect(summary.turns[0]).toMatchObject({
+      kind: "wake",
+      input_item_id: "wake-item",
+      standby_ready: true,
+      standby_age_ms: 80,
+      gate_decision: "accepted",
+      gate_decision_source: "backend.wake.verification.accepted",
+      gate_started_to_decision_ms: 200,
+      local_speech_stop_to_gate_decision_ms: 250,
+      response_create_sent_to_created_ms: 50,
+      local_speech_stop_to_first_playable_media_ms: 450,
     });
   });
 

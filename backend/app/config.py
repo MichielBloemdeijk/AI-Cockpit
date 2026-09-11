@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
 import socket
@@ -9,7 +10,167 @@ from urllib.parse import urlparse
 
 from sqlalchemy.engine import make_url
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+JarvisRealtimeTurnMode = Literal["server_vad", "semantic_vad", "client_vad"]
+JarvisRealtimeCommitOwner = Literal["provider", "client"]
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeAudioPolicy:
+    """Immutable turn-detection policy used for one Realtime session.
+
+    The policy is deliberately small and serializable.  Keeping it separate
+    from ``Settings`` prevents a running session from changing semantics when
+    an experiment setting is edited or a process reloads.
+    """
+
+    configuration_id: str
+    turn_mode: JarvisRealtimeTurnMode
+    commit_owner: JarvisRealtimeCommitOwner
+    silence_duration_ms: int | None
+    vad_threshold: float | None
+    prefix_padding_ms: int | None
+    semantic_eagerness: Literal["low", "medium", "high", "auto"] | None
+    create_response: Literal[False] = False
+    interrupt_response: Literal[False] = False
+
+    def __post_init__(self) -> None:
+        if self.turn_mode not in {"server_vad", "semantic_vad", "client_vad"}:
+            raise ValueError("Unsupported Realtime turn mode")
+        if self.commit_owner not in {"provider", "client"}:
+            raise ValueError("Unsupported Realtime commit owner")
+        if self.semantic_eagerness is not None and self.semantic_eagerness not in {"low", "medium", "high", "auto"}:
+            raise ValueError("Unsupported semantic VAD eagerness")
+        if not self.configuration_id.strip():
+            raise ValueError("Realtime audio policy requires a configuration id")
+        if self.create_response or self.interrupt_response:
+            raise ValueError("Realtime audio policy must disable provider-owned responses and interrupts")
+        if self.turn_mode == "client_vad" and self.commit_owner != "client":
+            raise ValueError("client_vad requires the client commit owner")
+        if self.turn_mode != "client_vad" and self.commit_owner != "provider":
+            raise ValueError("provider VAD modes require the provider commit owner")
+        if self.commit_owner == "provider" and self.turn_mode == "client_vad":
+            raise ValueError("client_vad cannot use provider-owned commits")
+        if self.turn_mode == "server_vad":
+            if self.silence_duration_ms is None or not 100 <= self.silence_duration_ms <= 2_000:
+                raise ValueError("server VAD silence must be between 100 and 2000 ms")
+            if self.vad_threshold is None or not 0.0 <= self.vad_threshold <= 1.0:
+                raise ValueError("server VAD threshold must be between 0 and 1")
+            if self.prefix_padding_ms is None or not 0 <= self.prefix_padding_ms <= 2_000:
+                raise ValueError("server VAD prefix must be between 0 and 2000 ms")
+            if self.semantic_eagerness is not None:
+                raise ValueError("server_vad cannot include semantic eagerness")
+        elif self.turn_mode == "semantic_vad":
+            if self.semantic_eagerness is None:
+                raise ValueError("semantic_vad requires semantic eagerness")
+            if any(
+                value is not None
+                for value in (self.silence_duration_ms, self.vad_threshold, self.prefix_padding_ms)
+            ):
+                raise ValueError("semantic_vad cannot include server VAD parameters")
+        elif any(
+            value is not None
+            for value in (
+                self.silence_duration_ms,
+                self.vad_threshold,
+                self.prefix_padding_ms,
+                self.semantic_eagerness,
+            )
+        ):
+            raise ValueError("client_vad cannot include provider VAD parameters")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "configuration_id": self.configuration_id,
+            "turn_mode": self.turn_mode,
+            "commit_owner": self.commit_owner,
+            "silence_duration_ms": self.silence_duration_ms,
+            "vad_threshold": self.vad_threshold,
+            "prefix_padding_ms": self.prefix_padding_ms,
+            "semantic_eagerness": self.semantic_eagerness,
+            "create_response": False,
+            "interrupt_response": False,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "RealtimeAudioPolicy | None":
+        if not isinstance(value, dict):
+            return None
+        try:
+            return cls(
+                configuration_id=str(value["configuration_id"]),
+                turn_mode=value["turn_mode"],  # type: ignore[arg-type]
+                commit_owner=value["commit_owner"],  # type: ignore[arg-type]
+                silence_duration_ms=value.get("silence_duration_ms"),  # type: ignore[arg-type]
+                vad_threshold=value.get("vad_threshold"),  # type: ignore[arg-type]
+                prefix_padding_ms=value.get("prefix_padding_ms"),  # type: ignore[arg-type]
+                semantic_eagerness=value.get("semantic_eagerness"),  # type: ignore[arg-type]
+                create_response=value.get("create_response", False),  # type: ignore[arg-type]
+                interrupt_response=value.get("interrupt_response", False),  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def provider_turn_detection(self) -> dict[str, object] | None:
+        if self.turn_mode == "client_vad":
+            return None
+        if self.turn_mode == "semantic_vad":
+            return {
+                "type": "semantic_vad",
+                "eagerness": self.semantic_eagerness,
+                "create_response": False,
+                "interrupt_response": False,
+            }
+        return {
+            "type": "server_vad",
+            "threshold": self.vad_threshold,
+            "prefix_padding_ms": self.prefix_padding_ms,
+            "silence_duration_ms": self.silence_duration_ms,
+            "create_response": False,
+            "interrupt_response": False,
+        }
+
+
+def build_realtime_audio_policy(config: "Settings") -> RealtimeAudioPolicy:
+    """Build the effective immutable policy for a newly-created session."""
+
+    turn_mode = config.jarvis_realtime_turn_mode
+    if turn_mode == "server_vad":
+        threshold = float(config.jarvis_realtime_server_vad_threshold)
+        silence = int(config.jarvis_realtime_server_vad_silence_ms)
+        prefix = int(config.jarvis_realtime_server_vad_prefix_ms)
+        return RealtimeAudioPolicy(
+            configuration_id=f"server_vad:s{silence}:t{threshold:g}:p{prefix}",
+            turn_mode=turn_mode,
+            commit_owner="provider",
+            silence_duration_ms=silence,
+            vad_threshold=threshold,
+            prefix_padding_ms=prefix,
+            semantic_eagerness=None,
+        )
+    if turn_mode == "semantic_vad":
+        eagerness = config.openai_realtime_vad_eagerness
+        return RealtimeAudioPolicy(
+            configuration_id=f"semantic_vad:e{eagerness}",
+            turn_mode=turn_mode,
+            commit_owner="provider",
+            silence_duration_ms=None,
+            vad_threshold=None,
+            prefix_padding_ms=None,
+            semantic_eagerness=eagerness,
+        )
+    return RealtimeAudioPolicy(
+        configuration_id="client_vad:v1",
+        turn_mode="client_vad",
+        commit_owner="client",
+        silence_duration_ms=None,
+        vad_threshold=None,
+        prefix_padding_ms=None,
+        semantic_eagerness=None,
+    )
 
 
 class Settings(BaseSettings):
@@ -35,6 +196,10 @@ class Settings(BaseSettings):
     openai_realtime_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
     openai_realtime_noise_reduction: Literal["near_field", "far_field"] = "near_field"
     openai_realtime_vad_eagerness: Literal["low", "medium", "high", "auto"] = "medium"
+    jarvis_realtime_turn_mode: JarvisRealtimeTurnMode = "server_vad"
+    jarvis_realtime_server_vad_silence_ms: int = 350
+    jarvis_realtime_server_vad_threshold: float = 0.5
+    jarvis_realtime_server_vad_prefix_ms: int = 300
     openai_realtime_transcription_model: str = "gpt-live-transcribe"
     openai_realtime_connect_timeout_seconds: float = 12.0
     openai_realtime_rotation_minutes: int = 55
@@ -132,6 +297,27 @@ class Settings(BaseSettings):
     conversation_compaction_guardrail_max_chars: int = 4000
     llm_transport_retry_attempts: int = 2
     llm_transport_retry_base_delay_ms: int = 400
+
+    @field_validator("jarvis_realtime_server_vad_silence_ms")
+    @classmethod
+    def validate_jarvis_realtime_silence(cls, value: int) -> int:
+        if not 100 <= value <= 2_000:
+            raise ValueError("jarvis_realtime_server_vad_silence_ms must be between 100 and 2000")
+        return value
+
+    @field_validator("jarvis_realtime_server_vad_threshold")
+    @classmethod
+    def validate_jarvis_realtime_threshold(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("jarvis_realtime_server_vad_threshold must be between 0 and 1")
+        return value
+
+    @field_validator("jarvis_realtime_server_vad_prefix_ms")
+    @classmethod
+    def validate_jarvis_realtime_prefix(cls, value: int) -> int:
+        if not 0 <= value <= 2_000:
+            raise ValueError("jarvis_realtime_server_vad_prefix_ms must be between 0 and 2000")
+        return value
 
     @property
     def council_model_list(self) -> List[str]:
