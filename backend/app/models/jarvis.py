@@ -143,6 +143,7 @@ class JarvisFakeProviderEventRequest(BaseModel):
         "assistant_generating",
         "assistant_speaking",
         "assistant_transcript_delta",
+        "assistant_update_submitted",
         "assistant_response",
         "assistant_interrupted",
         "shell_call",

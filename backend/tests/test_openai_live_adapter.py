@@ -136,6 +136,12 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
     await adapter.handle_event("s", 1, {
+        "type": "session.input_transcript.delta", "delta": "list ", "start_ms": 10, "end_ms": 20,
+    })
+    await adapter.handle_event("s", 1, {
+        "type": "session.input_transcript.delta", "delta": "tasks", "start_ms": 20, "end_ms": 30,
+    })
+    await adapter.handle_event("s", 1, {
         "type": "response.event", "delegation_id": "delegation-a",
         "event": {"type": "response.created", "response": {"id": "resp-1"}},
     })
@@ -151,6 +157,14 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
         await adapter.handle_event("s", 1, event)
     assert [event.kind for event in events].count("shell_call") == 2
     assert {event.payload["delegation_id"] for event in events if event.kind == "shell_call"} == {"delegation-a"}
+    transcript = next(event for event in events if event.kind == "user_transcript")
+    assert transcript.payload["transcript"] == "list tasks"
+    assert transcript.payload["start_ms"] == 10
+    assert transcript.payload["end_ms"] == 30
+    assert all(
+        event.payload["origin_item_id"] == transcript.payload["item_id"]
+        for event in events if event.kind == "shell_call"
+    )
 
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-1", output={"ok": True})
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-1", output={"ok": True})
@@ -185,11 +199,18 @@ async def test_live_transcripts_and_final_usage_are_normalized(monkeypatch) -> N
 
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=3, context={}, on_event=on_event, sdp_offer="offer")
-    await adapter.handle_event("s", 3, {"type": "session.input_transcript.delta", "delta": "hello"})
-    await adapter.handle_event("s", 3, {"type": "session.output_transcript.delta", "delta": "hi"})
+    await adapter.handle_event("s", 3, {
+        "type": "session.input_transcript.delta", "delta": "hello", "start_ms": 100, "end_ms": 300,
+    })
+    await adapter.handle_event("s", 3, {
+        "type": "session.output_transcript.delta", "delta": "hi", "start_ms": 310, "end_ms": 400,
+    })
     await adapter.handle_event("s", 3, {"type": "session.closed", "usage": {"duration": 8}})
     assert [event.kind for event in events] == [
-        "user_transcript_delta", "assistant_transcript_delta", "usage", "disconnected"
+        "user_transcript_delta", "assistant_transcript_delta", "user_transcript", "usage", "disconnected"
+    ]
+    assert events[2].payload["fragments"] == [
+        {"delta": "hello", "start_ms": 100, "end_ms": 300}
     ]
     await adapter.close(session_id="s", generation=3, reason="test", emit_event=False)
 
@@ -205,8 +226,10 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
     async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
         return socket
 
-    async def on_event(_: str, __: int, ___: VoiceProviderEvent) -> None:
-        return None
+    events: list[VoiceProviderEvent] = []
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
 
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=4, context={}, on_event=on_event, sdp_offer="offer")
@@ -228,4 +251,35 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
         "type": "session.commentary.appended",
         "client_event_id": commentary["event_id"],
     })
+    assert events[-1].kind == "assistant_update_submitted"
+    assert events[-1].payload["submission_ack"] == "context_appended"
+    assert "transcript" not in events[-1].payload
     await adapter.close(session_id="s", generation=4, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_silent_sideband_events_do_not_extend_idle_activity(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_idle"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(_: str, __: int, ___: VoiceProviderEvent) -> None:
+        return None
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=5, context={}, on_event=on_event, sdp_offer="offer")
+    provider_session = adapter._sessions[("s", 5)]
+    provider_session.last_activity_monotonic -= 10
+    before = provider_session.last_activity_monotonic
+    await adapter.handle_event("s", 5, {"type": "session.input_audio.activity", "level": 0})
+    assert provider_session.last_activity_monotonic == before
+    await adapter.handle_event("s", 5, {
+        "type": "session.input_transcript.delta", "delta": "meaningful", "start_ms": 1, "end_ms": 2,
+    })
+    assert provider_session.last_activity_monotonic > before
+    await adapter.close(session_id="s", generation=5, reason="test", emit_event=False)

@@ -14,10 +14,3 @@ class LiveSessionPolicy(private val idleLimitMs: Long = 60_000L) {
     fun conversationalActivity(nowMs: Long) { lastActivityMs = nowMs }
     fun shouldClose(nowMs: Long): Boolean = nowMs - lastActivityMs >= idleLimitMs && pendingExchanges == 0 && !playing
 }
-
-data class ActivationAudioHandoff(val activationId: String, val samples: ShortArray, val replayed: Boolean)
-
-/** WebRTC's microphone track cannot replay arbitrary PCM pre-roll; fail explicitly. */
-fun boundedActivationHandoff(activationId: String, samples: ShortArray, canReplay: Boolean): Result<ActivationAudioHandoff> =
-    if (!canReplay && samples.isNotEmpty()) Result.failure(UnsupportedOperationException("WebRTC capture cannot replay activation audio"))
-    else Result.success(ActivationAudioHandoff(activationId, samples.copyOf(), samples.isNotEmpty()))

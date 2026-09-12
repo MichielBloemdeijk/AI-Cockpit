@@ -24,12 +24,13 @@ class JarvisVoiceInteractionService : VoiceInteractionService() {
 
     companion object {
         private var active = WeakReference<JarvisVoiceInteractionService>(null)
-        fun invokeFromWake(wakeScore: Float): Boolean {
+        fun invokeFromWake(wakeScore: Float, activationId: String): Boolean {
             val service = active.get() ?: return false
             service.showSession(
                 Bundle().apply {
                     putString("source", "local_wake")
                     putFloat("wake_score", wakeScore)
+                    putString("activation_id", activationId)
                 },
                 VoiceInteractionSession.SHOW_SOURCE_APPLICATION,
             )

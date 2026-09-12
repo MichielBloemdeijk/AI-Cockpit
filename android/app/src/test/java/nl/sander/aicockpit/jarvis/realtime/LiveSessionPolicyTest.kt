@@ -19,14 +19,28 @@ class LiveSessionPolicyTest {
         p.playbackChanged(true, 180_000); assertFalse(p.shouldClose(240_000))
     }
 
-    @Test fun activationAudioFailsRatherThanClaimingReplay() {
-        val result = boundedActivationHandoff("a-1", shortArrayOf(1, 2), canReplay = false)
-        assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull() is UnsupportedOperationException)
+    @Test fun activationAudioFlowsOnceBeforeNewMicrophoneFrames() {
+        val buffer = LiveActivationAudioBuffer(maxSamples = 8)
+        assertTrue(buffer.begin("a-1", shortArrayOf(1, 2, 3)))
+        assertTrue(buffer.append("a-1", shortArrayOf(4, 5), 2))
+        assertTrue(buffer.requestRecorderRelease("a-1"))
+        buffer.markRecorderReleased("a-1")
+        assertTrue(buffer.claim("a-1"))
+
+        val firstWebRtcFrame = shortArrayOf(6, 7)
+        assertTrue(buffer.replaceWithQueued(firstWebRtcFrame))
+        assertArrayEquals(shortArrayOf(1, 2), firstWebRtcFrame)
+        val secondWebRtcFrame = shortArrayOf(8, 9, 10)
+        assertTrue(buffer.replaceWithQueued(secondWebRtcFrame))
+        assertArrayEquals(shortArrayOf(3, 4, 5), secondWebRtcFrame)
     }
 
-    @Test fun emptyActivationIsSafe() {
-        val handoff = boundedActivationHandoff("a-2", shortArrayOf(), canReplay = false).getOrThrow()
-        assertFalse(handoff.replayed)
+    @Test fun activationAudioOverflowIsBoundedAndCannotBeClaimed() {
+        val buffer = LiveActivationAudioBuffer(maxSamples = 3)
+        assertTrue(buffer.begin("a-2", shortArrayOf(1, 2)))
+        assertFalse(buffer.append("a-2", shortArrayOf(3, 4), 2))
+        assertTrue(buffer.overflowed)
+        assertEquals(0, buffer.queuedSamples())
+        assertFalse(buffer.requestRecorderRelease("a-2"))
     }
 }

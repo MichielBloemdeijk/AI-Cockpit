@@ -45,6 +45,15 @@ class _DelegatedResponse:
     results: set[str] = field(default_factory=set)
     terminal: bool = False
     continued: bool = False
+    origin_item_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscriptFragment:
+    delta: str
+    start_ms: int | None
+    end_ms: int | None
+    arrival: int
 
 
 @dataclass(slots=True)
@@ -65,7 +74,16 @@ class _LiveSession:
     call_index: dict[str, tuple[str, str]] = field(default_factory=dict)
     handled_calls: set[tuple[str, str, str]] = field(default_factory=set)
     pending_commentary: dict[str, tuple[str, tuple[str, ...], str]] = field(default_factory=dict)
+    user_fragments: list[_TranscriptFragment] = field(default_factory=list)
+    unassigned_user_segments: list[str] = field(default_factory=list)
+    transcript_flush_task: asyncio.Task[None] | None = None
+    transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    transcript_arrival: int = 0
+    transcript_segment: int = 0
     last_activity_monotonic: float = field(default_factory=time.monotonic)
+
+
+_TRANSCRIPT_GAP_SECONDS = 0.75
 
 
 class OpenAILiveAdapter:
@@ -268,7 +286,6 @@ class OpenAILiveAdapter:
         key = (provider_session.session_id, provider_session.generation)
         try:
             async for raw_message in provider_session.socket:
-                provider_session.last_activity_monotonic = time.monotonic()
                 raw = raw_message.decode("utf-8") if isinstance(raw_message, bytes) else raw_message
                 event = json.loads(raw)
                 if isinstance(event, dict):
@@ -300,6 +317,7 @@ class OpenAILiveAdapter:
                 )
             return
         if event_type == "session.closed":
+            await self._flush_user_transcript(provider_session)
             usage = outer.get("usage")
             provider_session.final_usage = usage if isinstance(usage, dict) else None
             provider_session.closed.set()
@@ -308,27 +326,37 @@ class OpenAILiveAdapter:
             await self._emit(provider_session, "disconnected", {"reason": "session_closed"})
             return
         if event_type == "session.input_transcript.delta":
-            await self._emit(provider_session, "user_transcript_delta", {"delta": str(outer.get("delta") or "")})
+            await self._handle_user_transcript_delta(provider_session, outer)
             return
         if event_type == "session.output_transcript.delta":
-            await self._emit(provider_session, "assistant_transcript_delta", {"delta": str(outer.get("delta") or "")})
+            delta = str(outer.get("delta") or "")
+            if delta:
+                self._mark_meaningful_activity(provider_session)
+            await self._emit(
+                provider_session,
+                "assistant_transcript_delta",
+                {
+                    "delta": delta,
+                    "start_ms": _optional_int(outer.get("start_ms")),
+                    "end_ms": _optional_int(outer.get("end_ms")),
+                },
+            )
             return
         if event_type == "session.commentary.appended":
             client_event_id = str(outer.get("client_event_id") or "")
             pending = provider_session.pending_commentary.pop(client_event_id, None)
             if pending is not None:
                 request_id, presentation_ids, transcript = pending
+                self._mark_meaningful_activity(provider_session)
                 await self._emit(
                     provider_session,
-                    "assistant_response",
+                    "assistant_update_submitted",
                     {
-                        "response_id": f"live-commentary:{client_event_id}",
-                        "item_id": client_event_id,
                         "request_id": request_id,
                         "presentation_ids": list(presentation_ids),
                         "response_kind": "task_update",
-                        "transcript": transcript,
-                        "delivery_ack": "context_appended",
+                        "submitted_transcript": transcript,
+                        "submission_ack": "context_appended",
                     },
                     event_id=f"live-commentary-ack:{client_event_id}",
                 )
@@ -345,15 +373,19 @@ class OpenAILiveAdapter:
             await self._emit(provider_session, "provider_protocol_warning", {"reason": "invalid_response_event"})
             return
         inner_type = str(inner.get("type") or "")
+        if inner_type:
+            self._mark_meaningful_activity(provider_session)
         response = inner.get("response") if isinstance(inner.get("response"), dict) else {}
         response_id = str(response.get("id") or inner.get("response_id") or "")
         if not response_id:
             response_id = self._response_id_for_delegation(provider_session, delegation_id)
         if inner_type == "response.created" and response_id:
-            provider_session.responses.setdefault(
+            delegated = provider_session.responses.setdefault(
                 (delegation_id, response_id),
                 _DelegatedResponse(delegation_id=delegation_id, response_id=response_id),
             )
+            if delegated.origin_item_id is None:
+                delegated.origin_item_id = await self._claim_user_segment(provider_session)
             await self._emit(provider_session, "assistant_generating", {"delegation_id": delegation_id, "response_id": response_id})
             return
         if inner_type == "response.output_item.done":
@@ -405,6 +437,8 @@ class OpenAILiveAdapter:
             response_key,
             _DelegatedResponse(delegation_id=delegation_id, response_id=response_id),
         )
+        if delegated.origin_item_id is None:
+            delegated.origin_item_id = await self._claim_user_segment(provider_session)
         delegated.calls.add(call_id)
         provider_session.call_index[call_id] = response_key
         await self._emit(
@@ -416,9 +450,110 @@ class OpenAILiveAdapter:
                 "call_id": call_id,
                 "name": name,
                 "arguments": _parse_arguments(item.get("arguments")),
+                "origin_item_id": delegated.origin_item_id,
             },
             event_id=f"live-tool:{delegation_id}:{response_id}:{call_id}",
         )
+
+    async def _handle_user_transcript_delta(
+        self, provider_session: _LiveSession, event: dict[str, Any]
+    ) -> None:
+        delta = str(event.get("delta") or "")
+        start_ms = _optional_int(event.get("start_ms"))
+        end_ms = _optional_int(event.get("end_ms"))
+        if delta:
+            self._mark_meaningful_activity(provider_session)
+            provider_session.transcript_arrival += 1
+            provider_session.user_fragments.append(
+                _TranscriptFragment(
+                    delta=delta,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    arrival=provider_session.transcript_arrival,
+                )
+            )
+            task = provider_session.transcript_flush_task
+            if task is not None and not task.done():
+                task.cancel()
+            provider_session.transcript_flush_task = asyncio.create_task(
+                self._flush_user_transcript_after_gap(provider_session),
+                name=f"jarvis-live-transcript-{provider_session.session_id}-{provider_session.generation}",
+            )
+        await self._emit(
+            provider_session,
+            "user_transcript_delta",
+            {"delta": delta, "start_ms": start_ms, "end_ms": end_ms},
+        )
+
+    async def _flush_user_transcript_after_gap(self, provider_session: _LiveSession) -> None:
+        try:
+            await asyncio.sleep(_TRANSCRIPT_GAP_SECONDS)
+            await self._flush_user_transcript(provider_session)
+        except asyncio.CancelledError:
+            raise
+
+    async def _flush_user_transcript(self, provider_session: _LiveSession) -> str | None:
+        async with provider_session.transcript_lock:
+            current_task = asyncio.current_task()
+            task = provider_session.transcript_flush_task
+            if task is not None and task is not current_task and not task.done():
+                task.cancel()
+            provider_session.transcript_flush_task = None
+            fragments = provider_session.user_fragments
+            provider_session.user_fragments = []
+            if not fragments:
+                return None
+            ordered = sorted(
+                fragments,
+                key=lambda fragment: (
+                    fragment.start_ms is None,
+                    fragment.start_ms if fragment.start_ms is not None else fragment.arrival,
+                    fragment.arrival,
+                ),
+            )
+            transcript = "".join(fragment.delta for fragment in ordered)
+            if not transcript.strip():
+                return None
+            provider_session.transcript_segment += 1
+            item_id = (
+                f"live-user:{provider_session.provider_session_id}:"
+                f"{provider_session.transcript_segment}"
+            )
+            starts = [fragment.start_ms for fragment in ordered if fragment.start_ms is not None]
+            ends = [fragment.end_ms for fragment in ordered if fragment.end_ms is not None]
+            await self._emit(
+                provider_session,
+                "user_transcript",
+                {
+                    "item_id": item_id,
+                    "transcript": transcript,
+                    "start_ms": min(starts) if starts else None,
+                    "end_ms": max(ends) if ends else None,
+                    "fragments": [
+                        {
+                            "delta": fragment.delta,
+                            "start_ms": fragment.start_ms,
+                            "end_ms": fragment.end_ms,
+                        }
+                        for fragment in ordered
+                    ],
+                },
+                event_id=f"live-user-transcript:{item_id}",
+            )
+            provider_session.unassigned_user_segments.append(item_id)
+            return item_id
+
+    async def _claim_user_segment(self, provider_session: _LiveSession) -> str | None:
+        await self._flush_user_transcript(provider_session)
+        if not provider_session.unassigned_user_segments:
+            return None
+        item_id = provider_session.unassigned_user_segments[-1]
+        provider_session.unassigned_user_segments.clear()
+        return item_id
+
+    @staticmethod
+    def _mark_meaningful_activity(provider_session: _LiveSession) -> None:
+        provider_session.last_activity_monotonic = time.monotonic()
 
     async def _continue_if_ready(
         self, provider_session: _LiveSession, delegated: _DelegatedResponse
@@ -441,6 +576,7 @@ class OpenAILiveAdapter:
     ) -> None:
         if provider_session.closing:
             return
+        await self._flush_user_transcript(provider_session)
         provider_session.closing = True
         if provider_session.started and not provider_session.closed.is_set():
             try:
@@ -456,6 +592,10 @@ class OpenAILiveAdapter:
         if idle_task is not None and idle_task is not asyncio.current_task() and not idle_task.done():
             idle_task.cancel()
             await asyncio.gather(idle_task, return_exceptions=True)
+        transcript_task = provider_session.transcript_flush_task
+        if transcript_task is not None and transcript_task is not asyncio.current_task() and not transcript_task.done():
+            transcript_task.cancel()
+            await asyncio.gather(transcript_task, return_exceptions=True)
         await provider_session.socket.close(code=1000, reason=reason[:120])
         if emit_event and not provider_session.closed.is_set():
             await self._emit(provider_session, "disconnected", {"reason": reason})
@@ -612,6 +752,15 @@ def _parse_arguments(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 openai_live_adapter = OpenAILiveAdapter()

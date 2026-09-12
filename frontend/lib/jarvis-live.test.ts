@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { JarvisRealtimeCallResponse } from "./api";
 import { JarvisLiveController } from "./jarvis-live";
+import type { JarvisAudioChunk, JarvisCandidateAudio } from "./jarvis-activation-audio";
 
 function fakeCall(): JarvisRealtimeCallResponse {
   return {
@@ -46,6 +47,64 @@ function fakePc() {
   return { channel, pc };
 }
 
+function fakeAudioContext() {
+  const starts: number[] = [];
+  const buffers: number[][] = [];
+  const destination = { stream: fakeMediaStream() };
+  const context = {
+    currentTime: 1,
+    state: "running",
+    createMediaStreamDestination: () => destination,
+    createBuffer: (_channels: number, length: number) => {
+      const values = new Float32Array(length);
+      buffers.push(values as unknown as number[]);
+      return { duration: length / 16_000, getChannelData: () => values };
+    },
+    createBufferSource: () => ({
+      buffer: null,
+      onended: null,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      start: (at: number) => starts.push(at),
+      stop: vi.fn(),
+    }),
+    resume: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+  } as unknown as AudioContext;
+  return { context, starts, buffers };
+}
+
+function candidateAudio(initial: Float32Array) {
+  let listener: ((chunk: JarvisAudioChunk) => void) | null = null;
+  const unsubscribe = vi.fn();
+  const candidate: JarvisCandidateAudio = {
+    activationId: "activation-1",
+    sampleRate: 16_000,
+    subscribe: (next) => {
+      listener = next;
+      next({
+        activationId: "activation-1", sequence: 0, sampleRate: 16_000,
+        startSample: 0, endSample: initial.length, capturedMonotonicMs: 0, samples: initial,
+      });
+      return unsubscribe;
+    },
+    observeEndpoint: vi.fn(() => new Promise(() => undefined)),
+    promoteToConversation: vi.fn(),
+    close: vi.fn(),
+  };
+  return {
+    candidate,
+    unsubscribe,
+    push: (samples: Float32Array, sequence = 1) => listener?.({
+      activationId: "activation-1", sequence, sampleRate: 16_000,
+      startSample: sequence * samples.length,
+      endSample: (sequence + 1) * samples.length,
+      capturedMonotonicMs: sequence * 20,
+      samples,
+    }),
+  };
+}
+
 describe("JarvisLiveController", () => {
   it("negotiates oai-events before the offer and waits for session.started", async () => {
     const { pc, channel } = fakePc();
@@ -84,5 +143,59 @@ describe("JarvisLiveController", () => {
     ).type);
     expect(sentTypes).not.toContain("response.cancel");
     expect(sentTypes).not.toContain("session.input_audio.append");
+  });
+
+  it("streams queued and incoming activation audio without waiting for the endpoint", async () => {
+    const { pc, channel } = fakePc();
+    const audio = fakeAudioContext();
+    const activation = candidateAudio(new Float32Array([0.1, 0.2]));
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+      audioContext: () => audio.context,
+    });
+    const pending = controller.startWithOptions({ candidateAudio: activation.candidate });
+    await vi.waitFor(() => expect(channel.onmessage).toBeTypeOf("function"));
+    channel.onmessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    await pending;
+
+    expect(activation.candidate.observeEndpoint).not.toHaveBeenCalled();
+    expect(activation.candidate.promoteToConversation).toHaveBeenCalledOnce();
+    expect(audio.starts).toHaveLength(1);
+    activation.push(new Float32Array([0.3, 0.4]));
+    expect(audio.starts).toHaveLength(2);
+    expect(audio.starts[1]).toBeGreaterThan(audio.starts[0]);
+    expect(activation.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it("does not extend idle life for silent or housekeeping events", async () => {
+    const { pc, channel } = fakePc();
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
+    const setTimeout = vi.fn((callback: () => void, delay = 0) => {
+      scheduled.push({ callback, delay });
+      return scheduled.length as unknown as ReturnType<typeof globalThis.setTimeout>;
+    }) as typeof globalThis.setTimeout;
+    const clearTimeout = vi.fn() as typeof globalThis.clearTimeout;
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+      setTimeout,
+      clearTimeout,
+    });
+    const pending = controller.start();
+    await vi.waitFor(() => expect(channel.onmessage).toBeTypeOf("function"));
+    channel.onmessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    await pending;
+    const afterConnect = setTimeout.mock.calls.length;
+    channel.onmessage?.({ data: JSON.stringify({ type: "session.input_audio.activity", level: 0 }) } as MessageEvent);
+    expect(setTimeout).toHaveBeenCalledTimes(afterConnect);
+    channel.onmessage?.({
+      data: JSON.stringify({ type: "session.input_transcript.delta", delta: "hello", start_ms: 1, end_ms: 2 }),
+    } as MessageEvent);
+    expect(setTimeout.mock.calls.length).toBeGreaterThan(afterConnect);
   });
 });

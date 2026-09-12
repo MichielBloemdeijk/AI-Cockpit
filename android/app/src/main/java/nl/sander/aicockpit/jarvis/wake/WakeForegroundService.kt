@@ -20,7 +20,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import nl.sander.aicockpit.jarvis.assistant.JarvisVoiceInteractionService
 import nl.sander.aicockpit.jarvis.data.CredentialStore
+import nl.sander.aicockpit.jarvis.data.VoiceEngine
 import nl.sander.aicockpit.jarvis.notifications.JarvisNotifications
+import nl.sander.aicockpit.jarvis.realtime.LiveActivationAudioHandoff
+import java.util.UUID
 
 class WakeForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -58,6 +61,7 @@ class WakeForegroundService : Service() {
         var ringOffset = 0
         var collected = 0
         val pcm = ShortArray(OnnxWakeEngine.STRIDE_SAMPLES)
+        var liveActivationId: String? = null
         try {
             OnnxWakeEngine(this).use { engine ->
                 recorder.startRecording()
@@ -67,6 +71,14 @@ class WakeForegroundService : Service() {
                 ) {
                     val count = recorder.read(pcm, 0, pcm.size, AudioRecord.READ_BLOCKING)
                     if (count <= 0) continue
+                    val activeHandoff = liveActivationId
+                    if (activeHandoff != null) {
+                        val retained = LiveActivationAudioHandoff.append(activeHandoff, pcm, count)
+                        if (!retained || LiveActivationAudioHandoff.shouldReleaseRecorder(activeHandoff)) {
+                            return@use
+                        }
+                        continue
+                    }
                     repeat(count) { index ->
                         ring[ringOffset] = pcm[index] / 32768f
                         ringOffset = (ringOffset + 1) % ring.size
@@ -77,18 +89,37 @@ class WakeForegroundService : Service() {
                     ring.copyInto(window, 0, ringOffset, ring.size)
                     ring.copyInto(window, ring.size - ringOffset, 0, ringOffset)
                     val result = engine.analyze(window)
-                    window.fill(0f)
                     val acceptedWakeScore = gate.evaluate(result)
-                    if (
-                        acceptedWakeScore != null &&
-                        JarvisVoiceInteractionService.invokeFromWake(acceptedWakeScore)
-                    ) {
-                        break
+                    if (acceptedWakeScore != null) {
+                        val useLive = CredentialStore(this@WakeForegroundService).voiceEngine == VoiceEngine.GPT_LIVE
+                        val activationId = UUID.randomUUID().toString()
+                        if (useLive) {
+                            val startup = ShortArray(window.size) { index ->
+                                (window[index].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
+                            }
+                            if (!LiveActivationAudioHandoff.begin(activationId, startup)) {
+                                startup.fill(0)
+                                window.fill(0f)
+                                break
+                            }
+                            startup.fill(0)
+                        }
+                        if (JarvisVoiceInteractionService.invokeFromWake(acceptedWakeScore, activationId)) {
+                            window.fill(0f)
+                            if (useLive) {
+                                liveActivationId = activationId
+                                continue
+                            }
+                            break
+                        }
+                        if (useLive) LiveActivationAudioHandoff.clear(activationId)
                     }
+                    window.fill(0f)
                 }
             }
         } finally {
             runCatching { recorder.stop() }
+            liveActivationId?.let(LiveActivationAudioHandoff::markRecorderReleased)
             recorder.release(); pcm.fill(0); ring.fill(0f)
             stopSelf()
         }

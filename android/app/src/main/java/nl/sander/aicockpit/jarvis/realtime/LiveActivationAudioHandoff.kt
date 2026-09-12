@@ -1,0 +1,141 @@
+package nl.sander.aicockpit.jarvis.realtime
+
+import android.media.AudioFormat
+import kotlinx.coroutines.delay
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.ArrayDeque
+
+internal class LiveActivationAudioBuffer(
+    private val maxSamples: Int = SAMPLE_RATE * MAX_SECONDS,
+) {
+    private val queued = ArrayDeque<Short>()
+    private var activationId: String? = null
+    private var releaseRequested = false
+    private var recorderReleased = false
+    private var claimed = false
+    var overflowed: Boolean = false
+        private set
+
+    @Synchronized
+    fun begin(id: String, initial: ShortArray): Boolean {
+        clearLocked()
+        activationId = id
+        return appendLocked(id, initial, initial.size)
+    }
+
+    @Synchronized
+    fun append(id: String, samples: ShortArray, count: Int): Boolean =
+        appendLocked(id, samples, count.coerceIn(0, samples.size))
+
+    @Synchronized
+    fun requestRecorderRelease(id: String): Boolean {
+        if (activationId != id || overflowed) return false
+        releaseRequested = true
+        return true
+    }
+
+    @Synchronized fun shouldReleaseRecorder(id: String): Boolean =
+        activationId == id && releaseRequested
+
+    @Synchronized fun markRecorderReleased(id: String) {
+        if (activationId == id) recorderReleased = true
+    }
+
+    @Synchronized fun isRecorderReleased(id: String): Boolean =
+        activationId == id && recorderReleased
+
+    @Synchronized
+    fun claim(id: String): Boolean {
+        if (activationId != id || !recorderReleased || overflowed) return false
+        claimed = true
+        return true
+    }
+
+    /**
+     * Replaces the newly captured WebRTC frame with the oldest queued frame,
+     * appending the new capture first. The queue therefore stays continuous
+     * at one bounded offset without losing speech at cutover.
+     */
+    @Synchronized
+    fun replaceWithQueued(current: ShortArray): Boolean {
+        if (!claimed || overflowed || current.isEmpty()) return false
+        current.forEach(queued::addLast)
+        current.indices.forEach { current[it] = queued.removeFirst() }
+        return true
+    }
+
+    @Synchronized fun clear(id: String? = null) {
+        if (id == null || activationId == id) clearLocked()
+    }
+
+    @Synchronized fun queuedSamples(): Int = queued.size
+
+    private fun appendLocked(id: String, samples: ShortArray, count: Int): Boolean {
+        if (activationId != id || overflowed || claimed) return false
+        if (queued.size + count > maxSamples) {
+            overflowed = true
+            queued.clear()
+            return false
+        }
+        repeat(count) { queued.addLast(samples[it]) }
+        return true
+    }
+
+    private fun clearLocked() {
+        queued.clear()
+        activationId = null
+        releaseRequested = false
+        recorderReleased = false
+        claimed = false
+        overflowed = false
+    }
+
+    companion object {
+        const val SAMPLE_RATE = 16_000
+        const val MAX_SECONDS = 30
+    }
+}
+
+object LiveActivationAudioHandoff {
+    private val buffer = LiveActivationAudioBuffer()
+
+    fun begin(id: String, initial: ShortArray): Boolean = buffer.begin(id, initial)
+    fun append(id: String, samples: ShortArray, count: Int): Boolean = buffer.append(id, samples, count)
+    fun shouldReleaseRecorder(id: String): Boolean = buffer.shouldReleaseRecorder(id)
+    fun markRecorderReleased(id: String) = buffer.markRecorderReleased(id)
+
+    suspend fun releaseRecorderAndClaim(id: String, timeoutMs: Long = 1_500): Result<Unit> =
+        runCatching {
+            check(buffer.requestRecorderRelease(id)) { "Android Live activation audio is unavailable; please retry" }
+            val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs
+            while (!buffer.isRecorderReleased(id) && android.os.SystemClock.elapsedRealtime() < deadline) {
+                delay(10)
+            }
+            check(buffer.claim(id)) { "Android Live activation audio handoff timed out; please retry" }
+        }.onFailure {
+            buffer.clear(id)
+        }
+
+    fun processWebRtcBuffer(
+        bytes: ByteBuffer,
+        audioFormat: Int,
+        channels: Int,
+        sampleRate: Int,
+        byteCount: Int,
+    ) {
+        if (
+            audioFormat != AudioFormat.ENCODING_PCM_16BIT || channels != 1 ||
+            sampleRate != LiveActivationAudioBuffer.SAMPLE_RATE || byteCount <= 0
+        ) return
+        val view = bytes.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+        view.position(0)
+        val sampleCount = minOf(byteCount, view.capacity()) / 2
+        val current = ShortArray(sampleCount) { view.getShort(it * 2) }
+        if (!buffer.replaceWithQueued(current)) return
+        current.indices.forEach { view.putShort(it * 2, current[it]) }
+        current.fill(0)
+    }
+
+    fun clear(id: String? = null) = buffer.clear(id)
+}

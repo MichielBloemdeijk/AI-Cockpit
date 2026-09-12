@@ -64,6 +64,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     private var assistantTranscript by mutableStateOf("")
     private var foregroundApp by mutableStateOf<String?>(null)
     private var pendingWakeScore: Float? = null
+    private var pendingActivationId: String? = null
     private var wakeDetectedAt: Long = 0L
     private var activeVoiceEngine: VoiceEngine = VoiceEngine.REALTIME
 
@@ -109,13 +110,17 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         application.voiceSessionVisible = true
         application.eventStream.addListener(eventListener)
         pendingWakeScore = args?.takeIf { it.getString("source") == "local_wake" }?.getFloat("wake_score")
+        pendingActivationId = args?.takeIf { it.getString("source") == "local_wake" }
+            ?.getString("activation_id")
         activeVoiceEngine = store.voiceEngine
         wakeDetectedAt = android.os.SystemClock.elapsedRealtime()
         status = if (isLocked()) "Listening while locked (read-only)" else "Connecting…"
         scope.launch {
             runCatching { api.updateDevice(if (isLocked()) "locked" else "unlocked", store.eventCursor) }
             runCatching {
-                if (activeVoiceEngine == VoiceEngine.GPT_LIVE) live.connect(pendingWakeScore) { status = friendlyState(it) }
+                if (activeVoiceEngine == VoiceEngine.GPT_LIVE) {
+                    live.connect(pendingWakeScore, pendingActivationId) { status = friendlyState(it) }
+                }
                 else realtime.connect(pendingWakeScore) { status = friendlyState(it) }
             }
                 .onFailure { status = it.message ?: "Unable to connect" }

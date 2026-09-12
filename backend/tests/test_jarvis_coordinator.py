@@ -654,6 +654,81 @@ async def test_fake_provider_direct_response_and_delegation_acknowledgement() ->
 
 
 @pytest.mark.asyncio
+async def test_live_tool_call_uses_correlated_transcript_turn_not_older_history() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "An older unrelated request",
+        idempotency_key="live-origin-old",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
+        event_id="live-transcript-current",
+        kind="user_transcript",
+        payload={
+            "item_id": "live-user:current",
+            "transcript": "Prepare the correlated launch note",
+            "start_ms": 100,
+            "end_ms": 900,
+        },
+    )
+    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
+    current_turn = next(item for item in messages if item.content == "Prepare the correlated launch note")
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
+        event_id="live-shell-current",
+        kind="shell_call",
+        payload={
+            "call_id": "live-call-current",
+            "name": "dispatch_task",
+            "origin_item_id": "live-user:current",
+            "arguments": {"goal": "Prepare the correlated launch note"},
+        },
+    )
+    tasks = await task_service.list_tasks()
+    created = next(item.task for item in tasks if item.task.goal == "Prepare the correlated launch note")
+    assert created.origin_turn_id == current_turn.id
+    assert created.origin_turn_id != accepted.message.id
+
+
+@pytest.mark.asyncio
+async def test_live_commentary_submission_is_not_persisted_as_heard_delivery() -> None:
+    await jarvis_coordinator.accept_text_turn(
+        "Keep the update pending",
+        idempotency_key="live-submission-not-delivery",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    async with session_scope() as db:
+        before = len(list((await db.execute(
+            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+        )).scalars().all()))
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="live-commentary-submitted",
+            kind="assistant_update_submitted",
+            payload={
+                "request_id": "request-1",
+                "presentation_ids": ["presentation-1"],
+                "submitted_transcript": "The report is ready.",
+                "submission_ack": "context_appended",
+            },
+        ),
+    )
+    async with session_scope() as db:
+        deliveries = list((await db.execute(
+            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+        )).scalars().all())
+    assert len(deliveries) == before
+    refreshed = await jarvis_coordinator.get_session(session.id)
+    assert refreshed is not None and refreshed.floor_state == "listening"
+
+
+@pytest.mark.asyncio
 async def test_interruption_duplicate_and_reordered_delivery_truth() -> None:
     accepted = await jarvis_coordinator.accept_text_turn("Begin", idempotency_key="begin")
     session = await jarvis_coordinator.get_active_session()

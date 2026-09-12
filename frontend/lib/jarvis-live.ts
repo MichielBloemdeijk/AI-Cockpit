@@ -28,6 +28,7 @@ export interface JarvisLiveDependencies {
   waitForBackendReady?: (session: JarvisSession) => Promise<void>;
   peerConnection?: () => RTCPeerConnection;
   audio?: () => HTMLAudioElement;
+  audioContext?: () => AudioContext;
   setTimeout?: typeof globalThis.setTimeout;
   clearTimeout?: typeof globalThis.clearTimeout;
 }
@@ -80,6 +81,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
       waitForBackendReady: dependencies.waitForBackendReady ?? waitForBackendReady,
       peerConnection: dependencies.peerConnection ?? (() => new RTCPeerConnection()),
       audio: dependencies.audio ?? (() => document.createElement("audio")),
+      audioContext: dependencies.audioContext ?? (() => new AudioContext()),
       setTimeout: dependencies.setTimeout ?? globalThis.setTimeout,
       clearTimeout: dependencies.clearTimeout ?? globalThis.clearTimeout,
     };
@@ -114,7 +116,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
       this.localStream = stream;
       this.ownsLocalStream = !options.stream;
       const activationBridge = options.candidateAudio
-        ? await createLiveActivationBridge(stream, options.candidateAudio)
+        ? await createLiveActivationBridge(options.candidateAudio, this.deps.audioContext)
         : null;
       this.activationBridge = activationBridge;
       const providerStream = activationBridge?.stream ?? stream;
@@ -146,7 +148,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
         if (type === "session.started") startedResolve?.();
         if (type === "session.closed") this.closeWaiter?.();
         if (type === "response.event") this.trackDelegation(event);
-        this.touch();
+        if (isMeaningfulLiveEvent(event)) this.touch();
       };
       events.onerror = () => startedReject?.(new Error("GPT-Live events channel failed"));
 
@@ -264,31 +266,60 @@ interface LiveActivationBridge {
 const MAX_ACTIVATION_REPLAY_SAMPLES = 16_000 * 30;
 
 async function createLiveActivationBridge(
-  microphone: MediaStream,
   candidate: JarvisCandidateAudio,
+  createAudioContext: () => AudioContext,
 ): Promise<LiveActivationBridge> {
-  const context = new AudioContext();
+  const context = createAudioContext();
   const destination = context.createMediaStreamDestination();
-  const microphoneSource = context.createMediaStreamSource(microphone);
-  const microphoneGain = context.createGain();
-  microphoneGain.gain.value = 0;
-  microphoneSource.connect(microphoneGain);
-  microphoneGain.connect(destination);
   const queued: Float32Array[] = [];
   const replaySources = new Set<AudioBufferSourceNode>();
-  let retainedSamples = 0;
+  let queuedSamples = 0;
+  let scheduledAt = 0;
+  let started = false;
   let overflow = false;
   let destroyed = false;
-  let unsubscribe = candidate.subscribe((chunk) => {
+  const failOverflow = (samples?: Float32Array) => {
+    overflow = true;
+    samples?.fill(0);
+    candidate.close("audio_backlog_overflow");
+  };
+  const schedule = (samples: Float32Array) => {
+    if (destroyed || overflow) {
+      samples.fill(0);
+      return;
+    }
+    const startAt = Math.max(scheduledAt, context.currentTime + 0.03);
+    const endAt = startAt + samples.length / candidate.sampleRate;
+    if ((endAt - context.currentTime) * candidate.sampleRate > MAX_ACTIVATION_REPLAY_SAMPLES) {
+      failOverflow(samples);
+      return;
+    }
+    const buffer = context.createBuffer(1, samples.length, candidate.sampleRate);
+    buffer.getChannelData(0).set(samples);
+    samples.fill(0);
+    const source = context.createBufferSource();
+    replaySources.add(source);
+    source.buffer = buffer;
+    source.connect(destination);
+    source.onended = () => {
+      replaySources.delete(source);
+      source.disconnect();
+    };
+    source.start(startAt);
+    scheduledAt = endAt;
+  };
+  const unsubscribe = candidate.subscribe((chunk) => {
     if (destroyed || overflow) {
       chunk.samples.fill(0);
       return;
     }
-    retainedSamples += chunk.samples.length;
-    if (retainedSamples > MAX_ACTIVATION_REPLAY_SAMPLES) {
-      overflow = true;
-      chunk.samples.fill(0);
-      candidate.close("audio_backlog_overflow");
+    if (started) {
+      schedule(chunk.samples);
+      return;
+    }
+    queuedSamples += chunk.samples.length;
+    if (queuedSamples > MAX_ACTIVATION_REPLAY_SAMPLES) {
+      failOverflow(chunk.samples);
       return;
     }
     queued.push(chunk.samples.slice());
@@ -298,41 +329,20 @@ async function createLiveActivationBridge(
     stream: destination.stream,
     start: async () => {
       if (destroyed) throw new Error("GPT-Live activation bridge is closed");
-      try {
-        await candidate.observeEndpoint();
-      } catch (cause) {
-        unsubscribe();
-        unsubscribe = () => undefined;
-        if (overflow) {
-          throw new Error("GPT-Live activation audio exceeded the 30-second handoff limit; please retry");
-        }
-        throw cause;
-      }
-      unsubscribe();
-      unsubscribe = () => undefined;
       if (overflow) {
         throw new Error("GPT-Live activation audio exceeded the 30-second handoff limit; please retry");
       }
       if (context.state === "suspended") await context.resume();
-      let scheduledAt = context.currentTime + 0.03;
+      started = true;
+      candidate.promoteToConversation();
       for (const samples of queued) {
-        const buffer = context.createBuffer(1, samples.length, candidate.sampleRate);
-        buffer.getChannelData(0).set(samples);
-        samples.fill(0);
-        const source = context.createBufferSource();
-        replaySources.add(source);
-        source.buffer = buffer;
-        source.connect(destination);
-        source.onended = () => {
-          replaySources.delete(source);
-          source.disconnect();
-        };
-        source.start(scheduledAt);
-        scheduledAt += buffer.duration;
+        queuedSamples -= samples.length;
+        schedule(samples);
       }
       queued.length = 0;
-      microphoneGain.gain.setValueAtTime(1, scheduledAt);
-      candidate.promoteToConversation();
+      if (overflow) {
+        throw new Error("GPT-Live activation audio exceeded the 30-second handoff limit; please retry");
+      }
     },
     destroy: async () => {
       if (destroyed) return;
@@ -345,12 +355,23 @@ async function createLiveActivationBridge(
         source.disconnect();
       }
       replaySources.clear();
-      microphoneSource.disconnect();
-      microphoneGain.disconnect();
       destination.stream.getTracks().forEach((track) => track.stop());
       await context.close();
     },
   };
+}
+
+function isMeaningfulLiveEvent(event: Record<string, unknown>): boolean {
+  const type = typeof event.type === "string" ? event.type : "";
+  if (type === "session.input_transcript.delta" || type === "session.output_transcript.delta") {
+    return typeof event.delta === "string" && event.delta.length > 0;
+  }
+  if (type === "session.commentary.appended") return true;
+  if (type !== "response.event") return false;
+  const nested = event.event && typeof event.event === "object"
+    ? event.event as Record<string, unknown>
+    : null;
+  return typeof nested?.type === "string" && nested.type.length > 0;
 }
 
 async function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {

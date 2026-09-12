@@ -59,6 +59,7 @@ FLOOR_EVENT_TYPES = {
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",
     "assistant_transcript_delta": "assistant_speaking",
+    "assistant_update_submitted": "listening",
     "assistant_response": "listening",
     "assistant_interrupted": "listening",
     "disconnected": "text_fallback",
@@ -204,6 +205,7 @@ class JarvisCoordinator:
         self._activation_tombstone_seconds = 5 * 60
         self._activation_index_limit = 1_024
         self._handled_input_items: dict[tuple[str, int], dict[str, float]] = {}
+        self._provider_input_turns: dict[tuple[str, int, str], str] = {}
         self._barge_in_keys: set[tuple[str, int, str, str]] = set()
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
@@ -264,6 +266,7 @@ class JarvisCoordinator:
         self._wake_activation_seen.clear()
         self._activation_index.clear()
         self._handled_input_items.clear()
+        self._provider_input_turns.clear()
         self._barge_in_keys.clear()
         response_tasks: list[asyncio.Task[None]] = []
         for gate in self._response_gates.values():
@@ -1522,7 +1525,7 @@ class JarvisCoordinator:
                 speech_event_id=event.event_id,
                 speech_item_id=str(event.payload.get("item_id") or "") or None,
             )
-        shell_call: tuple[str, dict[str, Any], str] | None = None
+        shell_call: tuple[str, dict[str, Any], str, str | None] | None = None
         presentation_action: tuple[tuple[str, ...], DeliveryRecord, str, str] | None = None
         requeue_presentations: tuple[str, ...] = ()
         release_reservations = False
@@ -1774,6 +1777,12 @@ class JarvisCoordinator:
                     # queued while the user owned the floor. It never creates
                     # a conversational response by itself.
                     retry_task_updates = True
+            elif event.kind == "assistant_update_submitted":
+                # A Live context-append acknowledgment proves submission only.
+                # Keep the presentation reserved (and its notification fallback
+                # eligible) until playback is independently verified or the
+                # session releases the reservation.
+                response_finished = True
             elif event.kind in {"assistant_response", "assistant_interrupted"}:
                 delivery = await self._persist_delivery(session, realtime, event)
                 response_finished = True
@@ -1802,7 +1811,8 @@ class JarvisCoordinator:
                     tool_name = str(payload.get("name") or "")
                     arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
                     call_id = str(payload.get("call_id") or event.event_id)
-                    shell_call = (tool_name, dict(arguments), call_id)
+                    origin_item_id = str(payload.get("origin_item_id") or "") or None
+                    shell_call = (tool_name, dict(arguments), call_id, origin_item_id)
                     raw_presentation_ids = payload.get("presentation_ids")
                     requeue_presentations = tuple(
                         str(item)
@@ -1898,13 +1908,14 @@ class JarvisCoordinator:
                 await self._queue_controlled_response(session_id, generation, "task_update")
 
         if shell_call is not None:
-            tool_name, arguments, call_id = shell_call
+            tool_name, arguments, call_id, origin_item_id = shell_call
             await self._execute_shell_call(
                 session_id=session_id,
                 generation=generation,
                 tool_name=tool_name,
                 arguments=arguments,
                 call_id=call_id,
+                origin_item_id=origin_item_id,
             )
 
     def _schedule_background_response(
@@ -2163,6 +2174,11 @@ class JarvisCoordinator:
         self._clear_wake_activation(session_id, generation)
 
     async def _drop_response_gate(self, session_id: str, generation: int) -> None:
+        for key in [
+            key for key in self._provider_input_turns
+            if key[0] == session_id and key[1] == generation
+        ]:
+            self._provider_input_turns.pop(key, None)
         gate = self._response_gates.pop((session_id, generation), None)
         if gate is None:
             return
@@ -2237,6 +2253,7 @@ class JarvisCoordinator:
         tool_name: str,
         arguments: dict[str, Any],
         call_id: str,
+        origin_item_id: str | None = None,
     ) -> None:
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
@@ -2244,17 +2261,25 @@ class JarvisCoordinator:
                 None if not realtime.controller_id else await session.get(JarvisDevice, realtime.controller_id)
             )
             controller_locked = controller_device is not None and controller_device.lock_state == "locked"
-            last_turn_id = (await session.execute(
-                select(ConversationMessage.id)
-                .join(
-                    ConversationEvent,
-                    ConversationMessage.source_event_id == ConversationEvent.id,
+            if origin_item_id is not None:
+                # Live supplies the transcript segment that caused this
+                # delegated response. Never fall back to an older historical
+                # user turn when that correlation is present but unresolved.
+                last_turn_id = self._provider_input_turns.get(
+                    (session_id, generation, origin_item_id)
                 )
-                .where(ConversationMessage.conversation_id == realtime.conversation_id)
-                .where(ConversationMessage.role == "user")
-                .order_by(ConversationEvent.sequence.desc())
-                .limit(1)
-            )).scalar_one_or_none()
+            else:
+                last_turn_id = (await session.execute(
+                    select(ConversationMessage.id)
+                    .join(
+                        ConversationEvent,
+                        ConversationMessage.source_event_id == ConversationEvent.id,
+                    )
+                    .where(ConversationMessage.conversation_id == realtime.conversation_id)
+                    .where(ConversationMessage.role == "user")
+                    .order_by(ConversationEvent.sequence.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
             conversation_id = realtime.conversation_id
             active_time_zone = realtime.client_time_zone
         try:
@@ -2407,8 +2432,8 @@ class JarvisCoordinator:
             turn_id = message.id
         return DeliveryRecord(delivery.id, turn_id, delivery_state)
 
-    @staticmethod
     async def _persist_user_transcript(
+        self,
         session,
         realtime: RealtimeSession,
         event: VoiceProviderEvent,
@@ -2427,12 +2452,18 @@ class JarvisCoordinator:
                 "content": transcript,
                 "modality": "voice",
                 "provider_item_id": item_id,
+                "timeline": {
+                    "start_ms": event.payload.get("start_ms"),
+                    "end_ms": event.payload.get("end_ms"),
+                    "fragments": event.payload.get("fragments", []),
+                },
             },
             branch_key="main",
             idempotency_key=f"provider-transcript:{realtime.id}:{item_id}",
         )
         existing_turn_id = str((conversation_event.payload_json or {}).get("turn_id") or "")
         if existing_turn_id:
+            self._provider_input_turns[(realtime.id, realtime.generation, item_id)] = existing_turn_id
             return
         message = await repo.create_message(
             conversation_id=realtime.conversation_id,
@@ -2448,6 +2479,7 @@ class JarvisCoordinator:
             **(conversation_event.payload_json or {}),
             "turn_id": message.id,
         }
+        self._provider_input_turns[(realtime.id, realtime.generation, item_id)] = message.id
         await repo.touch_conversation(realtime.conversation_id, updated_at=utc_now())
 
     @staticmethod
