@@ -56,6 +56,24 @@ internal class LiveActivationAudioBuffer(
     }
 
     /**
+     * While WebRTC is negotiating, retain its newly captured microphone audio
+     * behind the wake buffer and replace the outbound frame with silence. This
+     * prevents speech during setup from overtaking the activation audio.
+     */
+    @Synchronized
+    fun holdPendingWebRtc(current: ShortArray): Boolean {
+        if (activationId == null || !recorderReleased || claimed || overflowed || current.isEmpty()) return false
+        if (queued.size + current.size > maxSamples) {
+            overflowed = true
+            queued.clear()
+        } else {
+            current.forEach(queued::addLast)
+        }
+        current.fill(0)
+        return true
+    }
+
+    /**
      * Replaces the newly captured WebRTC frame with the oldest queued frame,
      * appending the new capture first. The queue therefore stays continuous
      * at one bounded offset without losing speech at cutover.
@@ -149,17 +167,24 @@ object LiveActivationAudioHandoff {
     fun shouldReleaseRecorder(id: String): Boolean = buffer.shouldReleaseRecorder(id)
     fun markRecorderReleased(id: String) = buffer.markRecorderReleased(id)
 
-    suspend fun releaseRecorderAndClaim(id: String, timeoutMs: Long = 1_500): Result<Unit> =
+    suspend fun releaseRecorder(id: String, timeoutMs: Long = 1_500): Result<Unit> =
         runCatching {
             check(buffer.requestRecorderRelease(id)) { "Android Live activation audio is unavailable; please retry" }
             val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs
             while (!buffer.isRecorderReleased(id) && android.os.SystemClock.elapsedRealtime() < deadline) {
                 delay(10)
             }
-            check(buffer.claim(id)) { "Android Live activation audio handoff timed out; please retry" }
+            check(buffer.isRecorderReleased(id)) { "Android Live activation audio handoff timed out; please retry" }
         }.onFailure {
             buffer.clear(id)
         }
+
+    fun claim(id: String): Result<Unit> = runCatching {
+        check(buffer.claim(id)) { "Android Live activation audio is unavailable; please retry" }
+    }.onFailure { buffer.clear(id) }
+
+    suspend fun releaseRecorderAndClaim(id: String, timeoutMs: Long = 1_500): Result<Unit> =
+        releaseRecorder(id, timeoutMs).mapCatching { claim(id).getOrThrow() }
 
     fun processWebRtcBuffer(
         bytes: ByteBuffer,
@@ -176,6 +201,10 @@ object LiveActivationAudioHandoff {
         view.position(0)
         val sampleCount = minOf(byteCount, view.capacity()) / 2
         val current = ShortArray(sampleCount) { view.getShort(it * 2) }
+        if (buffer.holdPendingWebRtc(current)) {
+            current.indices.forEach { view.putShort(it * 2, current[it]) }
+            return
+        }
         if (!buffer.replaceWithQueued(current)) return
         current.indices.forEach { view.putShort(it * 2, current[it]) }
         current.fill(0)

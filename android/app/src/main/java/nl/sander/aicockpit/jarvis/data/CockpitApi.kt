@@ -21,6 +21,7 @@ import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
 data class RealtimeCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
+data class RealtimeSessionState(val sessionId: String, val generation: Int, val lifecycleState: String)
 data class JarvisComponentIssue(val name: String, val status: String, val detail: String?)
 data class JarvisAssistantStatus(
     val workerStatus: String,
@@ -133,6 +134,39 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
 
     suspend fun closeRealtime(sessionId: String, generation: Int) {
         execute(authenticated("/api/jarvis/realtime/sessions/$sessionId?generation=$generation").delete().build()).close()
+    }
+
+    suspend fun realtimeSessionState(): RealtimeSessionState? {
+        val response = execute(authenticated("/api/jarvis/state").get().build())
+        val session = JSONObject(response.body?.string().orEmpty()).optJSONObject("session") ?: return null
+        return RealtimeSessionState(
+            session.getString("id"),
+            session.getInt("generation"),
+            session.optString("lifecycle_state"),
+        )
+    }
+
+    suspend fun submitRealtimeDiagnostic(
+        traceId: String,
+        eventType: String,
+        activationId: String? = null,
+        sessionId: String? = null,
+        generation: Int? = null,
+        detail: JSONObject = JSONObject(),
+    ) {
+        val event = JSONObject()
+            .put("trace_id", traceId)
+            .put("source", "android")
+            .put("event_type", eventType)
+            .put("observed_at", Instant.now().toString())
+            .put("monotonic_ms", android.os.SystemClock.elapsedRealtime().toDouble())
+            .put("detail", detail)
+        activationId?.let { event.put("activation_id", it) }
+        sessionId?.let { event.put("session_id", it) }
+        generation?.let { event.put("generation", it) }
+        val payload = JSONObject().put("events", org.json.JSONArray().put(event))
+        execute(authenticated("/api/jarvis/realtime/telemetry")
+            .post(payload.toString().toRequestBody(json)).build()).close()
     }
 
     suspend fun snoozeByDescription(description: String, minutes: Long = 10) {

@@ -37,6 +37,7 @@ import {
   injectFakeJarvisEvent,
   retryTask,
   startFreshJarvisLog,
+  submitJarvisRealtimeTelemetry,
   updateJarvisPreferences,
   type JarvisFakeProviderEventRequest,
   type JarvisLiveEvent,
@@ -166,6 +167,7 @@ export default function JarvisPage() {
   const liveCursorRef = useRef(0);
   const liveCursorSeededRef = useRef(false);
   const newestMessageIdRef = useRef<string | null>(null);
+  const liveDiagnosticSequenceRef = useRef(0);
   const currentConversationId = state?.current_log?.id ?? null;
   const currentMessages = state?.current_log?.messages ?? [];
   const newestMessageId = currentMessages.length
@@ -334,6 +336,32 @@ export default function JarvisPage() {
         onSnapshot: handleLiveSnapshot,
         onRemoteStream: handleRemoteStream,
         onProviderEvent: handleProviderEvent,
+        onDiagnostic: (diagnostic) => {
+          realtimeControllerRef.current?.recordClientSignal(
+            `live.${diagnostic.event}`,
+            {
+              attempt: diagnostic.attempt,
+              session_id: diagnostic.sessionId,
+              generation: diagnostic.generation,
+              ...diagnostic.detail,
+            },
+          );
+          const traceId = diagnostic.activationId
+            ?? diagnostic.sessionId
+            ?? `live-startup-${controllerIdRef.current}-${diagnostic.attempt}`;
+          void submitJarvisRealtimeTelemetry([{
+            trace_id: traceId,
+            client_sequence: ++liveDiagnosticSequenceRef.current,
+            activation_id: diagnostic.activationId,
+            session_id: diagnostic.sessionId,
+            generation: diagnostic.generation,
+            source: "browser",
+            event_type: `live.${diagnostic.event}`,
+            observed_at: diagnostic.observedAt,
+            monotonic_ms: performance.now(),
+            detail: { attempt: diagnostic.attempt, ...diagnostic.detail },
+          }]).catch(() => undefined);
+        },
       },
     );
     liveControllerRef.current = liveController;

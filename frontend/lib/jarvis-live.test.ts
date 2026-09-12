@@ -25,26 +25,71 @@ function fakeMediaStream(): MediaStream {
   } as unknown as MediaStream;
 }
 
-function fakePc() {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function fakePc(options: { autoConnect?: boolean; remoteDescription?: Promise<void> } = {}) {
+  const listeners = new Map<string, Set<() => void>>();
   const channel = {
-    readyState: "open",
+    readyState: "connecting",
     send: vi.fn(),
     close: vi.fn(),
+    onopen: null as (() => void) | null,
+    onclose: null as (() => void) | null,
     onmessage: null as ((event: MessageEvent) => void) | null,
     onerror: null as (() => void) | null,
   } as unknown as RTCDataChannel;
   const pc = {
     iceGatheringState: "complete",
+    iceConnectionState: "new",
+    connectionState: "new",
     localDescription: null,
     createDataChannel: vi.fn(() => channel),
     createOffer: vi.fn(async () => ({ type: "offer", sdp: "offer" } as RTCSessionDescriptionInit)),
     setLocalDescription: vi.fn(async () => undefined),
-    setRemoteDescription: vi.fn(async () => undefined),
+    setRemoteDescription: vi.fn(async () => {
+      await options.remoteDescription;
+      if (options.autoConnect === false) return;
+      pc.connectionState = "connected";
+      pc.iceConnectionState = "connected";
+      channel.readyState = "open";
+      listeners.get("connectionstatechange")?.forEach((listener) => listener());
+      listeners.get("iceconnectionstatechange")?.forEach((listener) => listener());
+      channel.onopen?.();
+    }),
+    addEventListener: vi.fn((type: string, listener: () => void) => {
+      const entries = listeners.get(type) ?? new Set();
+      entries.add(listener);
+      listeners.set(type, entries);
+    }),
+    removeEventListener: vi.fn((type: string, listener: () => void) => listeners.get(type)?.delete(listener)),
     addTrack: vi.fn(),
     close: vi.fn(),
     ontrack: null,
   } as unknown as RTCPeerConnection;
-  return { channel, pc };
+  return {
+    channel,
+    pc,
+    connectTransport: () => {
+      (pc as unknown as { connectionState: string }).connectionState = "connected";
+      (pc as unknown as { iceConnectionState: string }).iceConnectionState = "connected";
+      (channel as unknown as { readyState: string }).readyState = "open";
+      listeners.get("connectionstatechange")?.forEach((listener) => listener());
+      listeners.get("iceconnectionstatechange")?.forEach((listener) => listener());
+      channel.onopen?.();
+    },
+    failTransport: () => {
+      (pc as unknown as { connectionState: string }).connectionState = "failed";
+      listeners.get("connectionstatechange")?.forEach((listener) => listener());
+    },
+  };
 }
 
 function fakeAudioContext() {
@@ -106,13 +151,38 @@ function candidateAudio(initial: Float32Array) {
 }
 
 describe("JarvisLiveController", () => {
-  it("negotiates oai-events before the offer and waits for session.started", async () => {
+  it("connects when backend readiness precedes SDP and transport without a browser session.started", async () => {
+    const remote = deferred<void>();
+    const { pc } = fakePc({ remoteDescription: remote.promise });
+    const diagnostics: string[] = [];
+    const controller = new JarvisLiveController("c", {
+      onDiagnostic: (event) => diagnostics.push(event.event),
+    }, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+    });
+    const pending = controller.start();
+    await vi.waitFor(() => expect(diagnostics).toContain("backend_ready"));
+    expect(controller.current().status).toBe("connecting");
+    remote.resolve();
+    await pending;
+
+    expect(controller.current().status).toBe("connected");
+    expect(diagnostics).toContain("sdp_applied");
+    expect(diagnostics).toContain("data_channel_open");
+    expect(diagnostics).not.toContain("browser_session_started");
+  });
+
+  it("negotiates oai-events before the offer and accepts backend readiness after transport", async () => {
     const { pc, channel } = fakePc();
+    const backend = deferred<void>();
     const createCall = vi.fn(async () => fakeCall());
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      waitForBackendReady: () => backend.promise,
       createCall,
     });
     const pending = controller.start();
@@ -120,9 +190,117 @@ describe("JarvisLiveController", () => {
     expect(pc.createDataChannel).toHaveBeenCalledWith("oai-events");
     expect(controller.current().status).toBe("connecting");
     channel.onmessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    backend.resolve();
     await pending;
     expect(controller.current().status).toBe("connected");
     expect(createCall).toHaveBeenCalledWith("c", "controller", "openai_live", "offer", undefined);
+  });
+
+  it("fails with the missing transport conditions and closes the accepted backend session", async () => {
+    const { pc } = fakePc({ autoConnect: false });
+    const closeCall = vi.fn(async () => undefined);
+    const setTimeout = vi.fn((callback: () => void) => {
+      queueMicrotask(callback);
+      return 1 as unknown as ReturnType<typeof globalThis.setTimeout>;
+    }) as typeof globalThis.setTimeout;
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+      closeCall,
+      setTimeout,
+      clearTimeout: vi.fn() as typeof globalThis.clearTimeout,
+    });
+
+    await expect(controller.start()).rejects.toThrow("WebRTC connected, oai-events open");
+    expect(closeCall).toHaveBeenCalledWith("session-1", 1);
+  });
+
+  it("fails immediately when the backend sideband fails", async () => {
+    const { pc } = fakePc();
+    const closeCall = vi.fn(async () => undefined);
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => { throw new Error("sideband failed"); },
+      createCall: async () => fakeCall(),
+      closeCall,
+    });
+
+    await expect(controller.start()).rejects.toThrow("sideband failed");
+    expect(closeCall).toHaveBeenCalledWith("session-1", 1);
+  });
+
+  it("rechecks sideband health when transport becomes ready", async () => {
+    const { pc } = fakePc();
+    const closeCall = vi.fn(async () => undefined);
+    const waitForBackendReady = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("sideband disconnected after ready"));
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady,
+      createCall: async () => fakeCall(),
+      closeCall,
+    });
+
+    await expect(controller.start()).rejects.toThrow("sideband disconnected after ready");
+    expect(waitForBackendReady).toHaveBeenCalledTimes(2);
+    expect(closeCall).toHaveBeenCalledWith("session-1", 1);
+  });
+
+  it("closes an accepted call that arrives after startup cancellation", async () => {
+    const { pc, channel } = fakePc();
+    const response = deferred<JarvisRealtimeCallResponse>();
+    const closeCall = vi.fn(async () => undefined);
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: () => response.promise,
+      closeCall,
+    });
+    const pending = controller.start();
+    await vi.waitFor(() => expect(pc.createOffer).toHaveBeenCalled());
+    await controller.stop();
+    response.resolve(fakeCall());
+
+    await expect(pending).rejects.toThrow("cancelled");
+    expect(channel.close).toHaveBeenCalled();
+    expect(closeCall).toHaveBeenCalledTimes(1);
+    expect(closeCall).toHaveBeenCalledWith("session-1", 1);
+    expect(controller.current().status).toBe("closed");
+  });
+
+  it("ignores stale transport and provider callbacks after cancellation", async () => {
+    const first = fakePc({ autoConnect: false });
+    const second = fakePc();
+    const firstResponse = deferred<JarvisRealtimeCallResponse>();
+    const controllers = [first.pc, second.pc];
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => controllers.shift()!,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: vi.fn()
+        .mockImplementationOnce(() => firstResponse.promise)
+        .mockImplementationOnce(async () => fakeCall()),
+    });
+    const staleOnMessage = await (async () => {
+      const pending = controller.start();
+      await vi.waitFor(() => expect(first.channel.onmessage).toBeTypeOf("function"));
+      const handler = first.channel.onmessage;
+      await controller.stop();
+      firstResponse.resolve(fakeCall());
+      await expect(pending).rejects.toThrow("cancelled");
+      return handler;
+    })();
+
+    const next = controller.start();
+    staleOnMessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    await next;
+    expect(controller.current().status).toBe("connected");
   });
 
   it("does not send raw audio or Realtime cancellation events", async () => {

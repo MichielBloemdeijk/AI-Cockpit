@@ -35,6 +35,23 @@ class LiveSessionPolicyTest {
         assertArrayEquals(shortArrayOf(3, 4, 5), secondWebRtcFrame)
     }
 
+    @Test fun activationAudioHoldsWebRtcFramesUntilReadinessClaimsTheQueue() {
+        val buffer = LiveActivationAudioBuffer(maxSamples = 8)
+        assertTrue(buffer.begin("a-ready", shortArrayOf(1, 2)))
+        assertTrue(buffer.requestRecorderRelease("a-ready"))
+        buffer.markRecorderReleased("a-ready")
+
+        val beforeReady = shortArrayOf(3, 4)
+        assertTrue(buffer.holdPendingWebRtc(beforeReady))
+        assertArrayEquals(shortArrayOf(0, 0), beforeReady)
+        assertEquals(4, buffer.queuedSamples())
+
+        assertTrue(buffer.claim("a-ready"))
+        val afterReady = shortArrayOf(5, 6)
+        assertTrue(buffer.replaceWithQueued(afterReady))
+        assertArrayEquals(shortArrayOf(1, 2), afterReady)
+    }
+
     @Test fun activationAudioOverflowIsBoundedAndCannotBeClaimed() {
         val buffer = LiveActivationAudioBuffer(maxSamples = 3)
         assertTrue(buffer.begin("a-2", shortArrayOf(1, 2)))

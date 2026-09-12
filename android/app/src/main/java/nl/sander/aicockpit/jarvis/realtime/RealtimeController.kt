@@ -2,8 +2,17 @@ package nl.sander.aicockpit.jarvis.realtime
 
 import android.content.Context
 import android.media.AudioFormat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -22,6 +31,7 @@ import org.webrtc.RtpReceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.audio.JavaAudioDeviceModule
+import org.json.JSONObject
 import kotlin.coroutines.resume
 import java.util.UUID
 
@@ -50,11 +60,12 @@ class RealtimeController(
     private var audioTrack: AudioTrack? = null
     private var call: RealtimeCall? = null
     private var iceReady = CompletableDeferred<Unit>()
-    private var liveStarted = CompletableDeferred<Unit>()
     private var liveClosed = CompletableDeferred<Unit>()
     private var eventsChannel: DataChannel? = null
     private var activeEngine: VoiceEngine = VoiceEngine.REALTIME
     private var liveActivationId: String? = null
+    private var attemptEpoch = 0
+    private val diagnosticScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     suspend fun connect(
         wakeScore: Float? = null,
@@ -62,19 +73,45 @@ class RealtimeController(
         activationId: String? = null,
         onState: (String) -> Unit = {},
     ): RealtimeCall = withContext(Dispatchers.Main) {
+        val attempt = ++attemptEpoch
         closePeerOnly()
         iceReady = CompletableDeferred()
-        liveStarted = CompletableDeferred()
         liveClosed = CompletableDeferred()
         activeEngine = engine
+        var accepted: RealtimeCall? = null
+        var readiness: LiveStartupReadiness? = null
+        var backendObserver: Job? = null
+        var latestPeerState = PeerConnection.PeerConnectionState.NEW
+        var latestIceState = PeerConnection.IceConnectionState.NEW
+        var latestDataState = DataChannel.State.CONNECTING
+        var browserSessionStarted = false
+        fun ensureCurrent() {
+            if (attempt != attemptEpoch) throw CancellationException("GPT-Live startup was cancelled")
+        }
+        fun record(event: String, detail: JSONObject = JSONObject()) {
+            if (engine != VoiceEngine.GPT_LIVE) return
+            recordDiagnostic(event, attempt, activationId, accepted, detail)
+        }
         if (engine == VoiceEngine.GPT_LIVE && activationId != null) {
-            LiveActivationAudioHandoff.releaseRecorderAndClaim(activationId).getOrThrow()
+            LiveActivationAudioHandoff.releaseRecorder(activationId).getOrThrow()
             liveActivationId = activationId
             onState("activation_audio_ready")
         }
         val observer = object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState) = onState("signaling:${state.name}")
-            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = onState("ice:${state.name}")
+            override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
+                if (attempt != attemptEpoch) return
+                latestPeerState = state
+                record("peer_state", JSONObject().put("state", state.name))
+                readiness?.observePeer(state.name)
+            }
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+                if (attempt != attemptEpoch) return
+                latestIceState = state
+                onState("ice:${state.name}")
+                record("ice_state", JSONObject().put("state", state.name))
+                readiness?.observeIce(state.name)
+            }
             override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
                 onState("gathering:${state.name}")
@@ -86,7 +123,22 @@ class RealtimeController(
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
-            override fun onDataChannel(channel: DataChannel) { channel.registerObserver(eventObserver(channel, onState)) }
+            override fun onDataChannel(channel: DataChannel) {
+                channel.registerObserver(eventObserver(
+                    channel,
+                    attempt,
+                    onState,
+                    engine == VoiceEngine.GPT_LIVE,
+                    onChannelState = { state ->
+                        latestDataState = state
+                        readiness?.observeDataChannel(state.name)
+                    },
+                    onSessionStarted = {
+                        browserSessionStarted = true
+                        readiness?.markBrowserSessionStarted()
+                    },
+                ))
+            }
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) = Unit
         }
@@ -104,36 +156,170 @@ class RealtimeController(
         // Live requires the event transport to exist before the SDP offer is made.
         val events = connection.createDataChannel("oai-events", DataChannel.Init())
         eventsChannel = events
-        events.registerObserver(eventObserver(events, onState))
+        events.registerObserver(eventObserver(
+            events,
+            attempt,
+            onState,
+            engine == VoiceEngine.GPT_LIVE,
+            onChannelState = { state ->
+                latestDataState = state
+                readiness?.observeDataChannel(state.name)
+            },
+            onSessionStarted = {
+                browserSessionStarted = true
+                readiness?.markBrowserSessionStarted()
+            },
+        ))
         val effectiveActivationId = activationId ?: UUID.randomUUID().toString()
-        val offer = connection.createOfferAwait(MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-        })
-        connection.setLocalDescriptionAwait(offer)
-        runCatching { withTimeout(750) { iceReady.await() } }
-        val local = connection.localDescription ?: offer
-        val established = api.createRealtimeCall(local.description, wakeScore, engine, effectiveActivationId)
-        connection.setRemoteDescriptionAwait(
-            SessionDescription(SessionDescription.Type.ANSWER, established.sdpAnswer)
-        )
-        if (engine == VoiceEngine.GPT_LIVE) {
-            withTimeout(15_000) { liveStarted.await() }
+        try {
+            val offer = connection.createOfferAwait(MediaConstraints().apply {
+                mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            })
+            ensureCurrent()
+            connection.setLocalDescriptionAwait(offer)
+            ensureCurrent()
+            runCatching { withTimeout(750) { iceReady.await() } }
+            ensureCurrent()
+            val local = connection.localDescription ?: offer
+            val established = api.createRealtimeCall(local.description, wakeScore, engine, effectiveActivationId)
+            accepted = established
+            ensureCurrent()
+            // Store the accepted identity before applying the answer or waiting;
+            // failure and cancellation must close this exact backend attempt.
+            call = established
+            if (engine == VoiceEngine.GPT_LIVE) {
+                readiness = LiveStartupReadiness(established.sessionId, established.generation).also {
+                    it.observePeer(latestPeerState.name)
+                    it.observeIce(latestIceState.name)
+                    it.observeDataChannel(latestDataState.name)
+                    if (browserSessionStarted) it.markBrowserSessionStarted()
+                }
+                backendObserver = launch(Dispatchers.IO) {
+                    while (attempt == attemptEpoch && readiness?.current()?.ready != true) {
+                        val stateResult = runCatching { api.realtimeSessionState() }
+                        if (stateResult.isFailure) {
+                            val cause = stateResult.exceptionOrNull()
+                            record("backend_readiness_failed", JSONObject().put("message", cause?.message))
+                            readiness?.fail(cause?.message ?: "GPT-Live backend readiness check failed")
+                            break
+                        }
+                        val state = stateResult.getOrNull()
+                        if (attempt != attemptEpoch) break
+                        val wasReady = readiness?.current()?.backendReady == true
+                        readiness?.observeBackend(state)
+                        val snapshot = readiness?.current()
+                        if (!wasReady && snapshot?.backendReady == true) {
+                            record("backend_ready")
+                        }
+                        if (snapshot?.failure != null) break
+                        delay(100)
+                    }
+                }
+            }
+            connection.setRemoteDescriptionAwait(
+                SessionDescription(SessionDescription.Type.ANSWER, established.sdpAnswer)
+            )
+            ensureCurrent()
+            if (engine == VoiceEngine.GPT_LIVE) {
+                readiness?.markSdpApplied()
+                record("sdp_applied")
+                try {
+                    withTimeout(15_000) {
+                        while (true) {
+                            ensureCurrent()
+                            val snapshot = readiness?.current() ?: error("GPT-Live readiness was not initialized")
+                            snapshot.failure?.let { error(it) }
+                            if (snapshot.ready) {
+                                val finalState = withContext(Dispatchers.IO) { api.realtimeSessionState() }
+                                readiness?.observeBackend(finalState)
+                                val confirmed = readiness?.current()
+                                    ?: error("GPT-Live readiness was not initialized")
+                                confirmed.failure?.let { error(it) }
+                                if (
+                                    finalState?.sessionId == established.sessionId
+                                    && finalState.generation == established.generation
+                                    && finalState.lifecycleState == "ready"
+                                ) break
+                            }
+                            delay(20)
+                        }
+                    }
+                } catch (_: TimeoutCancellationException) {
+                    val missing = readiness?.current()?.missing().orEmpty()
+                    error(
+                        "GPT-Live startup timed out; missing ${(
+                            missing.ifEmpty { listOf("backend sideband health confirmation") }
+                        ).joinToString(", ")}",
+                    )
+                }
+                record("backend_health_confirmed")
+                if (activationId != null) LiveActivationAudioHandoff.claim(activationId).getOrThrow()
+                record(
+                    "activation_audio_released",
+                    JSONObject()
+                        .put("buffered", activationId != null)
+                        .put("browser_session_started", readiness?.current()?.browserSessionStarted == true),
+                )
+            }
+            ensureCurrent()
+            onState("connected")
+            established
+        } catch (cause: Throwable) {
+            val snapshot = readiness?.current()
+            record(
+                "startup_failed",
+                JSONObject()
+                    .put("message", cause.message)
+                    .put("missing", snapshot?.missing()?.joinToString(", ") ?: "session acceptance"),
+            )
+            if (attempt == attemptEpoch) attemptEpoch += 1
+            call = null
+            val exact = accepted
+            if (exact != null) withContext(NonCancellable + Dispatchers.IO) {
+                runCatching { api.closeRealtime(exact.sessionId, exact.generation) }
+            }
+            closePeerOnly()
+            throw cause
+        } finally {
+            backendObserver?.cancel()
         }
-        call = established
-        onState("connected")
-        established
     }
 
-    private fun eventObserver(channel: DataChannel, onState: (String) -> Unit) = object : DataChannel.Observer {
+    private fun eventObserver(
+        channel: DataChannel,
+        attempt: Int,
+        onState: (String) -> Unit,
+        diagnosticsEnabled: Boolean,
+        onChannelState: (DataChannel.State) -> Unit,
+        onSessionStarted: () -> Unit,
+    ) = object : DataChannel.Observer {
         override fun onBufferedAmountChange(previousAmount: Long) = Unit
-        override fun onStateChange() = Unit
+        override fun onStateChange() {
+            if (attempt != attemptEpoch) return
+            val state = channel.state()
+            onState("data:${state.name}")
+            if (diagnosticsEnabled) {
+                recordDiagnostic(
+                    if (state == DataChannel.State.OPEN) "data_channel_open" else "data_channel_state",
+                    attempt,
+                    liveActivationId,
+                    call,
+                    JSONObject().put("state", state.name),
+                )
+            }
+            onChannelState(state)
+        }
         override fun onMessage(buffer: DataChannel.Buffer) {
+            if (attempt != attemptEpoch) return
             val bytes = ByteArray(buffer.data.remaining()); buffer.data.get(bytes)
             val event = String(bytes, Charsets.UTF_8)
             val reduced = reduceLiveEvent(LiveEventState(), event)
             if (reduced.started) {
-                liveStarted.complete(Unit)
+                onSessionStarted()
                 onState("session.started")
+                if (diagnosticsEnabled) {
+                    recordDiagnostic("browser_session_started", attempt, liveActivationId, call)
+                }
             }
             if (reduced.closed) {
                 liveClosed.complete(Unit)
@@ -143,6 +329,7 @@ class RealtimeController(
     }
 
     suspend fun disconnect() {
+        attemptEpoch += 1
         val active = call
         call = null
         if (activeEngine == VoiceEngine.GPT_LIVE && eventsChannel?.state() == DataChannel.State.OPEN) {
@@ -155,7 +342,9 @@ class RealtimeController(
     }
 
     override fun close() {
+        attemptEpoch += 1
         closePeerOnly()
+        diagnosticScope.cancel()
         factory.dispose()
         audioModule.release()
     }
@@ -167,6 +356,28 @@ class RealtimeController(
         audioTrack?.dispose(); audioTrack = null
         audioSource?.dispose(); audioSource = null
         peer?.close(); peer?.dispose(); peer = null
+    }
+
+    private fun recordDiagnostic(
+        event: String,
+        attempt: Int,
+        activationId: String?,
+        activeCall: RealtimeCall?,
+        detail: JSONObject = JSONObject(),
+    ) {
+        val traceId = activationId ?: activeCall?.sessionId ?: "android-live-attempt-$attempt"
+        diagnosticScope.launch {
+            runCatching {
+                api.submitRealtimeDiagnostic(
+                    traceId = traceId,
+                    eventType = "live.$event",
+                    activationId = activationId,
+                    sessionId = activeCall?.sessionId,
+                    generation = activeCall?.generation,
+                    detail = JSONObject(detail.toString()).put("attempt", attempt),
+                )
+            }
+        }
     }
 }
 
