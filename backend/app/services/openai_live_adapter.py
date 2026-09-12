@@ -52,6 +52,15 @@ class _DelegatedResponse:
     timeline_end_ms: int | None = None
 
 
+@dataclass(slots=True)
+class _Delegation:
+    delegation_id: str
+    origin_correlation_id: str
+    offset_ms: int | None = None
+    response_id: str | None = None
+    origin_item_id: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class _TranscriptFragment:
     delta: str
@@ -81,6 +90,7 @@ class _LiveSession:
     closing: bool = False
     closed: asyncio.Event = field(default_factory=asyncio.Event)
     final_usage: dict[str, Any] | None = None
+    delegations: dict[str, _Delegation] = field(default_factory=dict)
     responses: dict[tuple[str, str], _DelegatedResponse] = field(default_factory=dict)
     call_index: dict[str, tuple[str, str]] = field(default_factory=dict)
     handled_calls: set[tuple[str, str, str]] = field(default_factory=set)
@@ -370,6 +380,36 @@ class OpenAILiveAdapter:
         if event_type == "error":
             await self._emit(provider_session, "provider_error", {"error": outer.get("error")})
             return
+        if event_type == "session.delegation.created":
+            delegation = (
+                outer.get("delegation")
+                if isinstance(outer.get("delegation"), dict)
+                else {}
+            )
+            delegation_id = str(delegation.get("id") or "")
+            if not delegation_id:
+                await self._emit(
+                    provider_session,
+                    "provider_protocol_warning",
+                    {"reason": "invalid_delegation_created"},
+                )
+                return
+            observed = self._delegation(provider_session, delegation_id)
+            offset_ms = _optional_int(outer.get("offset_ms"))
+            if observed.offset_ms is None and offset_ms is not None:
+                observed.offset_ms = offset_ms
+            response_id = str(
+                delegation.get("response_id") or outer.get("response_id") or ""
+            )
+            if response_id:
+                observed.response_id = response_id
+                self._observe_delegation(
+                    provider_session, delegation_id, response_id
+                )
+            self._apply_delegation_context(provider_session, observed)
+            self._mark_meaningful_activity(provider_session)
+            await self._resolve_delegation_origins(provider_session)
+            return
         if event_type != "response.event":
             return
 
@@ -387,7 +427,7 @@ class OpenAILiveAdapter:
             response_id = self._response_id_for_delegation(provider_session, delegation_id)
         if inner_type == "response.created" and response_id:
             delegated = self._observe_delegation(
-                provider_session, delegation_id, response_id, outer, inner
+                provider_session, delegation_id, response_id
             )
             await self._resolve_delegation_origins(provider_session)
             await self._emit(provider_session, "assistant_generating", {"delegation_id": delegation_id, "response_id": response_id})
@@ -396,7 +436,7 @@ class OpenAILiveAdapter:
             item = inner.get("item") if isinstance(inner.get("item"), dict) else {}
             if item.get("type") == "function_call" and response_id:
                 self._observe_delegation(
-                    provider_session, delegation_id, response_id, outer, inner
+                    provider_session, delegation_id, response_id
                 )
                 await self._resolve_delegation_origins(provider_session)
                 await self._collect_function_call(
@@ -408,7 +448,7 @@ class OpenAILiveAdapter:
             return
         if inner_type in {"response.completed", "response.failed", "response.cancelled"} and response_id:
             delegated = self._observe_delegation(
-                provider_session, delegation_id, response_id, outer, inner
+                provider_session, delegation_id, response_id
             )
             delegated.terminal = True
             await self._continue_if_ready(provider_session, delegated)
@@ -455,6 +495,7 @@ class OpenAILiveAdapter:
                 "origin_item_id": delegated.origin_item_id,
                 "origin_correlation_id": delegated.origin_correlation_id,
                 "origin_timeline": {
+                    "offset_ms": delegated.timeline_start_ms,
                     "start_ms": delegated.timeline_start_ms,
                     "end_ms": delegated.timeline_end_ms,
                 },
@@ -596,14 +637,29 @@ class OpenAILiveAdapter:
         provider_session: _LiveSession,
         delegation_id: str,
         response_id: str,
-        outer: dict[str, Any],
-        inner: dict[str, Any],
     ) -> _DelegatedResponse:
+        delegation = self._delegation(provider_session, delegation_id)
+        delegation.response_id = response_id
         delegated = provider_session.responses.setdefault(
             (delegation_id, response_id),
             _DelegatedResponse(
                 delegation_id=delegation_id,
                 response_id=response_id,
+                origin_correlation_id=delegation.origin_correlation_id,
+            ),
+        )
+        delegated.origin_correlation_id = delegation.origin_correlation_id
+        delegated.origin_item_id = delegation.origin_item_id
+        delegated.timeline_start_ms = delegation.offset_ms
+        return delegated
+
+    def _delegation(
+        self, provider_session: _LiveSession, delegation_id: str
+    ) -> _Delegation:
+        return provider_session.delegations.setdefault(
+            delegation_id,
+            _Delegation(
+                delegation_id=delegation_id,
                 origin_correlation_id=(
                     "live-delegation:"
                     + hashlib.sha256(
@@ -612,25 +668,17 @@ class OpenAILiveAdapter:
                 ),
             ),
         )
-        start_ms = _optional_int(outer.get("start_ms"))
-        end_ms = _optional_int(outer.get("end_ms"))
-        if start_ms is None:
-            start_ms = _optional_int(inner.get("start_ms"))
-        if end_ms is None:
-            end_ms = _optional_int(inner.get("end_ms"))
-        if start_ms is not None:
-            delegated.timeline_start_ms = (
-                start_ms
-                if delegated.timeline_start_ms is None
-                else min(delegated.timeline_start_ms, start_ms)
-            )
-        if end_ms is not None:
-            delegated.timeline_end_ms = (
-                end_ms
-                if delegated.timeline_end_ms is None
-                else max(delegated.timeline_end_ms, end_ms)
-            )
-        return delegated
+
+    @staticmethod
+    def _apply_delegation_context(
+        provider_session: _LiveSession, delegation: _Delegation
+    ) -> None:
+        for (delegation_id, _response_id), response in provider_session.responses.items():
+            if delegation_id != delegation.delegation_id:
+                continue
+            response.origin_correlation_id = delegation.origin_correlation_id
+            response.origin_item_id = delegation.origin_item_id
+            response.timeline_start_ms = delegation.offset_ms
 
     async def _resolve_delegation_origins(self, provider_session: _LiveSession) -> None:
         by_correlation: dict[str, list[_DelegatedResponse]] = {}
@@ -689,6 +737,9 @@ class OpenAILiveAdapter:
             if segment.item_id in used_segments:
                 continue
             responses = by_correlation[correlation_id]
+            delegation = provider_session.delegations.get(responses[0].delegation_id)
+            if delegation is not None:
+                delegation.origin_item_id = segment.item_id
             for response in responses:
                 response.origin_item_id = segment.item_id
             used_segments.add(segment.item_id)
@@ -711,6 +762,7 @@ class OpenAILiveAdapter:
                     "origin_correlation_id": correlation_id,
                     "origin_item_id": segment.item_id,
                     "delegation_timeline": {
+                        "offset_ms": min(starts) if starts else None,
                         "start_ms": min(starts) if starts else None,
                         "end_ms": max(ends) if ends else None,
                     },
@@ -826,6 +878,9 @@ class OpenAILiveAdapter:
 
     @staticmethod
     def _response_id_for_delegation(provider_session: _LiveSession, delegation_id: str) -> str:
+        delegation = provider_session.delegations.get(delegation_id)
+        if delegation is not None and delegation.response_id:
+            return delegation.response_id
         matches = [key[1] for key in provider_session.responses if key[0] == delegation_id]
         return matches[-1] if matches else ""
 

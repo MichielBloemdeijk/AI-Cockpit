@@ -142,12 +142,27 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
         "type": "session.input_transcript.delta", "delta": "tasks", "start_ms": 20, "end_ms": 30,
     })
     await adapter.handle_event("s", 1, {
-        "type": "response.event", "delegation_id": "delegation-a", "start_ms": 40,
+        "type": "session.delegation.created",
+        "event_id": "event-delegation-a",
+        "offset_ms": 40,
+        "delegation": {
+            "id": "item_delegation_a",
+            "type": "delegation",
+            "target": "responses",
+            "response_id": "resp-1",
+        },
+    })
+    await adapter.handle_event("s", 1, {
+        "type": "response.event",
+        "event_id": "event-response-created-1",
+        "delegation_id": "item_delegation_a",
         "event": {"type": "response.created", "response": {"id": "resp-1"}},
     })
     for call_id in ("call-1", "call-2"):
         event = {
-            "type": "response.event", "delegation_id": "delegation-a",
+            "type": "response.event",
+            "event_id": f"event-{call_id}",
+            "delegation_id": "item_delegation_a",
             "event": {
                 "type": "response.output_item.done", "response_id": "resp-1",
                 "item": {"type": "function_call", "call_id": call_id, "name": "list_tasks", "arguments": "{}"},
@@ -156,10 +171,15 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
         await adapter.handle_event("s", 1, event)
         await adapter.handle_event("s", 1, event)
     assert [event.kind for event in events].count("shell_call") == 2
-    assert {event.payload["delegation_id"] for event in events if event.kind == "shell_call"} == {"delegation-a"}
+    assert {event.payload["delegation_id"] for event in events if event.kind == "shell_call"} == {"item_delegation_a"}
     shell_events = [event for event in events if event.kind == "shell_call"]
     assert all(event.payload["origin_item_id"] is None for event in shell_events)
     assert len({event.payload["origin_correlation_id"] for event in shell_events}) == 1
+    assert all(
+        event.payload["origin_timeline"]
+        == {"offset_ms": 40, "start_ms": 40, "end_ms": None}
+        for event in shell_events
+    )
     await adapter._flush_transcript(adapter._sessions[("s", 1)], "user")
     transcript = next(event for event in events if event.kind == "user_transcript")
     assert transcript.payload["transcript"] == "list tasks"
@@ -167,6 +187,11 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
     assert transcript.payload["end_ms"] == 30
     resolved = next(event for event in events if event.kind == "delegation_origin_resolved")
     assert resolved.payload["origin_item_id"] == transcript.payload["item_id"]
+    assert resolved.payload["delegation_timeline"] == {
+        "offset_ms": 40,
+        "start_ms": 40,
+        "end_ms": None,
+    }
 
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-1", output={"ok": True})
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-1", output={"ok": True})
@@ -174,13 +199,48 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
     assert [item["type"] for item in socket.sent].count("response.create") == 0
 
     await adapter.handle_event("s", 1, {
-        "type": "response.event", "delegation_id": "delegation-a",
+        "type": "response.event",
+        "event_id": "event-response-completed-1",
+        "delegation_id": "item_delegation_a",
         "event": {"type": "response.completed", "response": {"id": "resp-1"}},
     })
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-2", output={"ok": True})
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-2", output={"ok": True})
     assert [item["type"] for item in socket.sent].count("response.item.create") == 2
     assert [item["type"] for item in socket.sent].count("response.create") == 1
+
+    # The response created by the continuation keeps the original delegation
+    # offset and repaired transcript origin even though no new delegation event arrives.
+    await adapter.handle_event("s", 1, {
+        "type": "response.event",
+        "event_id": "event-response-created-2",
+        "delegation_id": "item_delegation_a",
+        "event": {"type": "response.created", "response": {"id": "resp-2"}},
+    })
+    await adapter.handle_event("s", 1, {
+        "type": "response.event",
+        "event_id": "event-call-3",
+        "delegation_id": "item_delegation_a",
+        "event": {
+            "type": "response.output_item.done",
+            "response_id": "resp-2",
+            "item": {
+                "type": "function_call",
+                "call_id": "call-3",
+                "name": "list_tasks",
+                "arguments": "{}",
+            },
+        },
+    })
+    continuation = [event for event in events if event.kind == "shell_call"][-1]
+    assert continuation.payload["response_id"] == "resp-2"
+    assert continuation.payload["origin_item_id"] == transcript.payload["item_id"]
+    assert continuation.payload["origin_correlation_id"] == shell_events[0].payload["origin_correlation_id"]
+    assert continuation.payload["origin_timeline"] == {
+        "offset_ms": 40,
+        "start_ms": 40,
+        "end_ms": None,
+    }
     await adapter.close(session_id="s", generation=1, reason="test", emit_event=False)
 
 
@@ -306,16 +366,31 @@ async def test_late_out_of_order_transcripts_match_multiple_delegation_timelines
 
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=6, context={}, on_event=on_event, sdp_offer="offer")
-    for delegation_id, response_id, call_id, start_ms in (
-        ("delegation-1", "response-1", "call-1", 500),
-        ("delegation-2", "response-2", "call-2", 1_700),
+    for delegation_id, response_id, call_id, offset_ms in (
+        ("item_delegation_1", "response-1", "call-1", 500),
+        ("item_delegation_2", "response-2", "call-2", 1_700),
     ):
         await adapter.handle_event("s", 6, {
-            "type": "response.event", "delegation_id": delegation_id, "start_ms": start_ms,
+            "type": "session.delegation.created",
+            "event_id": f"event-{delegation_id}",
+            "offset_ms": offset_ms,
+            "delegation": {
+                "id": delegation_id,
+                "type": "delegation",
+                "target": "responses",
+                "response_id": response_id,
+            },
+        })
+        await adapter.handle_event("s", 6, {
+            "type": "response.event",
+            "event_id": f"event-response-created-{response_id}",
+            "delegation_id": delegation_id,
             "event": {"type": "response.created", "response": {"id": response_id}},
         })
         await adapter.handle_event("s", 6, {
-            "type": "response.event", "delegation_id": delegation_id, "start_ms": start_ms + 10,
+            "type": "response.event",
+            "event_id": f"event-{call_id}",
+            "delegation_id": delegation_id,
             "event": {
                 "type": "response.output_item.done", "response_id": response_id,
                 "item": {"type": "function_call", "call_id": call_id, "name": "list_tasks", "arguments": "{}"},
@@ -344,8 +419,16 @@ async def test_late_out_of_order_transcripts_match_multiple_delegation_timelines
         for event in events if event.kind == "delegation_origin_resolved"
     }
     assert resolutions == {
-        "delegation-1": transcripts["first"],
-        "delegation-2": transcripts["second"],
+        "item_delegation_1": transcripts["first"],
+        "item_delegation_2": transcripts["second"],
+    }
+    resolution_offsets = {
+        event.payload["delegation_id"]: event.payload["delegation_timeline"]["offset_ms"]
+        for event in events if event.kind == "delegation_origin_resolved"
+    }
+    assert resolution_offsets == {
+        "item_delegation_1": 500,
+        "item_delegation_2": 1_700,
     }
     await adapter.close(session_id="s", generation=6, reason="test", emit_event=False)
 
@@ -368,7 +451,20 @@ async def test_ambiguous_timeline_match_stays_unattributed(monkeypatch) -> None:
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=7, context={}, on_event=on_event, sdp_offer="offer")
     await adapter.handle_event("s", 7, {
-        "type": "response.event", "delegation_id": "ambiguous", "start_ms": 2_000,
+        "type": "session.delegation.created",
+        "event_id": "event-ambiguous",
+        "offset_ms": 2_000,
+        "delegation": {
+            "id": "item_ambiguous",
+            "type": "delegation",
+            "target": "responses",
+            "response_id": "response",
+        },
+    })
+    await adapter.handle_event("s", 7, {
+        "type": "response.event",
+        "event_id": "event-response-ambiguous",
+        "delegation_id": "item_ambiguous",
         "event": {"type": "response.created", "response": {"id": "response"}},
     })
     await adapter.handle_event("s", 7, {
@@ -403,7 +499,20 @@ async def test_response_completion_does_not_end_assistant_transcript(monkeypatch
         "type": "session.output_transcript.delta", "delta": "Still speaking", "start_ms": 100, "end_ms": 300,
     })
     await adapter.handle_event("s", 8, {
-        "type": "response.event", "delegation_id": "d", "start_ms": 150,
+        "type": "session.delegation.created",
+        "event_id": "event-assistant",
+        "offset_ms": 150,
+        "delegation": {
+            "id": "item_assistant",
+            "type": "delegation",
+            "target": "responses",
+            "response_id": "r",
+        },
+    })
+    await adapter.handle_event("s", 8, {
+        "type": "response.event",
+        "event_id": "event-response-assistant",
+        "delegation_id": "item_assistant",
         "event": {"type": "response.completed", "response": {"id": "r"}},
     })
     assert not any(event.kind == "assistant_transcript" for event in events)
