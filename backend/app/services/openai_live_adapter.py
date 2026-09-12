@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+import hashlib
 import json
 import time
 from typing import Any, Protocol
@@ -46,6 +47,9 @@ class _DelegatedResponse:
     terminal: bool = False
     continued: bool = False
     origin_item_id: str | None = None
+    origin_correlation_id: str = ""
+    timeline_start_ms: int | None = None
+    timeline_end_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,13 @@ class _TranscriptFragment:
     start_ms: int | None
     end_ms: int | None
     arrival: int
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscriptSegment:
+    item_id: str
+    start_ms: int | None
+    end_ms: int | None
 
 
 @dataclass(slots=True)
@@ -75,15 +86,20 @@ class _LiveSession:
     handled_calls: set[tuple[str, str, str]] = field(default_factory=set)
     pending_commentary: dict[str, tuple[str, tuple[str, ...], str]] = field(default_factory=dict)
     user_fragments: list[_TranscriptFragment] = field(default_factory=list)
-    unassigned_user_segments: list[str] = field(default_factory=list)
-    transcript_flush_task: asyncio.Task[None] | None = None
+    assistant_fragments: list[_TranscriptFragment] = field(default_factory=list)
+    user_segments: list[_TranscriptSegment] = field(default_factory=list)
+    user_transcript_flush_task: asyncio.Task[None] | None = None
+    assistant_transcript_flush_task: asyncio.Task[None] | None = None
     transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     transcript_arrival: int = 0
-    transcript_segment: int = 0
+    user_transcript_segment: int = 0
+    assistant_transcript_segment: int = 0
     last_activity_monotonic: float = field(default_factory=time.monotonic)
 
 
 _TRANSCRIPT_GAP_SECONDS = 0.75
+_TRANSCRIPT_TIMELINE_GAP_MS = 750
+_DELEGATION_MATCH_WINDOW_MS = 2_500
 
 
 class OpenAILiveAdapter:
@@ -317,7 +333,8 @@ class OpenAILiveAdapter:
                 )
             return
         if event_type == "session.closed":
-            await self._flush_user_transcript(provider_session)
+            await self._flush_transcript(provider_session, "user")
+            await self._flush_transcript(provider_session, "assistant")
             usage = outer.get("usage")
             provider_session.final_usage = usage if isinstance(usage, dict) else None
             provider_session.closed.set()
@@ -326,21 +343,10 @@ class OpenAILiveAdapter:
             await self._emit(provider_session, "disconnected", {"reason": "session_closed"})
             return
         if event_type == "session.input_transcript.delta":
-            await self._handle_user_transcript_delta(provider_session, outer)
+            await self._handle_transcript_delta(provider_session, "user", outer)
             return
         if event_type == "session.output_transcript.delta":
-            delta = str(outer.get("delta") or "")
-            if delta:
-                self._mark_meaningful_activity(provider_session)
-            await self._emit(
-                provider_session,
-                "assistant_transcript_delta",
-                {
-                    "delta": delta,
-                    "start_ms": _optional_int(outer.get("start_ms")),
-                    "end_ms": _optional_int(outer.get("end_ms")),
-                },
-            )
+            await self._handle_transcript_delta(provider_session, "assistant", outer)
             return
         if event_type == "session.commentary.appended":
             client_event_id = str(outer.get("client_event_id") or "")
@@ -380,17 +386,19 @@ class OpenAILiveAdapter:
         if not response_id:
             response_id = self._response_id_for_delegation(provider_session, delegation_id)
         if inner_type == "response.created" and response_id:
-            delegated = provider_session.responses.setdefault(
-                (delegation_id, response_id),
-                _DelegatedResponse(delegation_id=delegation_id, response_id=response_id),
+            delegated = self._observe_delegation(
+                provider_session, delegation_id, response_id, outer, inner
             )
-            if delegated.origin_item_id is None:
-                delegated.origin_item_id = await self._claim_user_segment(provider_session)
+            await self._resolve_delegation_origins(provider_session)
             await self._emit(provider_session, "assistant_generating", {"delegation_id": delegation_id, "response_id": response_id})
             return
         if inner_type == "response.output_item.done":
             item = inner.get("item") if isinstance(inner.get("item"), dict) else {}
             if item.get("type") == "function_call" and response_id:
+                self._observe_delegation(
+                    provider_session, delegation_id, response_id, outer, inner
+                )
+                await self._resolve_delegation_origins(provider_session)
                 await self._collect_function_call(
                     provider_session,
                     delegation_id=delegation_id,
@@ -399,9 +407,8 @@ class OpenAILiveAdapter:
                 )
             return
         if inner_type in {"response.completed", "response.failed", "response.cancelled"} and response_id:
-            delegated = provider_session.responses.setdefault(
-                (delegation_id, response_id),
-                _DelegatedResponse(delegation_id=delegation_id, response_id=response_id),
+            delegated = self._observe_delegation(
+                provider_session, delegation_id, response_id, outer, inner
             )
             delegated.terminal = True
             await self._continue_if_ready(provider_session, delegated)
@@ -433,12 +440,7 @@ class OpenAILiveAdapter:
             return
         provider_session.handled_calls.add(execution_key)
         response_key = (delegation_id, response_id)
-        delegated = provider_session.responses.setdefault(
-            response_key,
-            _DelegatedResponse(delegation_id=delegation_id, response_id=response_id),
-        )
-        if delegated.origin_item_id is None:
-            delegated.origin_item_id = await self._claim_user_segment(provider_session)
+        delegated = provider_session.responses[response_key]
         delegated.calls.add(call_id)
         provider_session.call_index[call_id] = response_key
         await self._emit(
@@ -451,12 +453,20 @@ class OpenAILiveAdapter:
                 "name": name,
                 "arguments": _parse_arguments(item.get("arguments")),
                 "origin_item_id": delegated.origin_item_id,
+                "origin_correlation_id": delegated.origin_correlation_id,
+                "origin_timeline": {
+                    "start_ms": delegated.timeline_start_ms,
+                    "end_ms": delegated.timeline_end_ms,
+                },
             },
             event_id=f"live-tool:{delegation_id}:{response_id}:{call_id}",
         )
 
-    async def _handle_user_transcript_delta(
-        self, provider_session: _LiveSession, event: dict[str, Any]
+    async def _handle_transcript_delta(
+        self,
+        provider_session: _LiveSession,
+        speaker: str,
+        event: dict[str, Any],
     ) -> None:
         delta = str(event.get("delta") or "")
         start_ms = _optional_int(event.get("start_ms"))
@@ -464,7 +474,12 @@ class OpenAILiveAdapter:
         if delta:
             self._mark_meaningful_activity(provider_session)
             provider_session.transcript_arrival += 1
-            provider_session.user_fragments.append(
+            fragments = (
+                provider_session.user_fragments
+                if speaker == "user"
+                else provider_session.assistant_fragments
+            )
+            fragments.append(
                 _TranscriptFragment(
                     delta=delta,
                     start_ms=start_ms,
@@ -472,84 +487,240 @@ class OpenAILiveAdapter:
                     arrival=provider_session.transcript_arrival,
                 )
             )
-            task = provider_session.transcript_flush_task
+            task = (
+                provider_session.user_transcript_flush_task
+                if speaker == "user"
+                else provider_session.assistant_transcript_flush_task
+            )
             if task is not None and not task.done():
                 task.cancel()
-            provider_session.transcript_flush_task = asyncio.create_task(
-                self._flush_user_transcript_after_gap(provider_session),
-                name=f"jarvis-live-transcript-{provider_session.session_id}-{provider_session.generation}",
+            task = asyncio.create_task(
+                self._flush_transcript_after_gap(provider_session, speaker),
+                name=(
+                    f"jarvis-live-{speaker}-transcript-"
+                    f"{provider_session.session_id}-{provider_session.generation}"
+                ),
             )
+            if speaker == "user":
+                provider_session.user_transcript_flush_task = task
+            else:
+                provider_session.assistant_transcript_flush_task = task
         await self._emit(
             provider_session,
-            "user_transcript_delta",
+            f"{speaker}_transcript_delta",
             {"delta": delta, "start_ms": start_ms, "end_ms": end_ms},
         )
 
-    async def _flush_user_transcript_after_gap(self, provider_session: _LiveSession) -> None:
+    async def _flush_transcript_after_gap(
+        self, provider_session: _LiveSession, speaker: str
+    ) -> None:
         try:
             await asyncio.sleep(_TRANSCRIPT_GAP_SECONDS)
-            await self._flush_user_transcript(provider_session)
+            await self._flush_transcript(provider_session, speaker)
         except asyncio.CancelledError:
             raise
 
-    async def _flush_user_transcript(self, provider_session: _LiveSession) -> str | None:
+    async def _flush_transcript(
+        self, provider_session: _LiveSession, speaker: str
+    ) -> tuple[str, ...]:
+        emissions: list[tuple[str, dict[str, Any]]] = []
         async with provider_session.transcript_lock:
             current_task = asyncio.current_task()
-            task = provider_session.transcript_flush_task
+            task = (
+                provider_session.user_transcript_flush_task
+                if speaker == "user"
+                else provider_session.assistant_transcript_flush_task
+            )
             if task is not None and task is not current_task and not task.done():
                 task.cancel()
-            provider_session.transcript_flush_task = None
-            fragments = provider_session.user_fragments
-            provider_session.user_fragments = []
+            if speaker == "user":
+                provider_session.user_transcript_flush_task = None
+                fragments = provider_session.user_fragments
+                provider_session.user_fragments = []
+            else:
+                provider_session.assistant_transcript_flush_task = None
+                fragments = provider_session.assistant_fragments
+                provider_session.assistant_fragments = []
             if not fragments:
-                return None
-            ordered = sorted(
-                fragments,
-                key=lambda fragment: (
-                    fragment.start_ms is None,
-                    fragment.start_ms if fragment.start_ms is not None else fragment.arrival,
-                    fragment.arrival,
-                ),
-            )
-            transcript = "".join(fragment.delta for fragment in ordered)
-            if not transcript.strip():
-                return None
-            provider_session.transcript_segment += 1
-            item_id = (
-                f"live-user:{provider_session.provider_session_id}:"
-                f"{provider_session.transcript_segment}"
-            )
-            starts = [fragment.start_ms for fragment in ordered if fragment.start_ms is not None]
-            ends = [fragment.end_ms for fragment in ordered if fragment.end_ms is not None]
-            await self._emit(
-                provider_session,
-                "user_transcript",
-                {
+                return ()
+            for group in _group_transcript_fragments(fragments):
+                transcript = "".join(fragment.delta for fragment in group)
+                if not transcript.strip():
+                    continue
+                if speaker == "user":
+                    provider_session.user_transcript_segment += 1
+                    segment_number = provider_session.user_transcript_segment
+                else:
+                    provider_session.assistant_transcript_segment += 1
+                    segment_number = provider_session.assistant_transcript_segment
+                item_id = (
+                    f"live-{speaker}:{provider_session.provider_session_id}:"
+                    f"{segment_number}"
+                )
+                starts = [fragment.start_ms for fragment in group if fragment.start_ms is not None]
+                ends = [fragment.end_ms for fragment in group if fragment.end_ms is not None]
+                start_ms = min(starts) if starts else None
+                end_ms = max(ends) if ends else None
+                payload = {
                     "item_id": item_id,
                     "transcript": transcript,
-                    "start_ms": min(starts) if starts else None,
-                    "end_ms": max(ends) if ends else None,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
                     "fragments": [
                         {
                             "delta": fragment.delta,
                             "start_ms": fragment.start_ms,
                             "end_ms": fragment.end_ms,
                         }
-                        for fragment in ordered
+                        for fragment in group
                     ],
-                },
-                event_id=f"live-user-transcript:{item_id}",
+                }
+                emissions.append((item_id, payload))
+                if speaker == "user":
+                    provider_session.user_segments.append(
+                        _TranscriptSegment(item_id=item_id, start_ms=start_ms, end_ms=end_ms)
+                    )
+        for item_id, payload in emissions:
+            await self._emit(
+                provider_session,
+                f"{speaker}_transcript",
+                payload,
+                event_id=f"live-{speaker}-transcript:{item_id}",
             )
-            provider_session.unassigned_user_segments.append(item_id)
-            return item_id
+        if speaker == "user" and emissions:
+            await self._resolve_delegation_origins(provider_session)
+        return tuple(item_id for item_id, _payload in emissions)
 
-    async def _claim_user_segment(self, provider_session: _LiveSession) -> str | None:
-        await self._flush_user_transcript(provider_session)
-        if not provider_session.unassigned_user_segments:
-            return None
-        item_id = provider_session.unassigned_user_segments[-1]
-        provider_session.unassigned_user_segments.clear()
-        return item_id
+    def _observe_delegation(
+        self,
+        provider_session: _LiveSession,
+        delegation_id: str,
+        response_id: str,
+        outer: dict[str, Any],
+        inner: dict[str, Any],
+    ) -> _DelegatedResponse:
+        delegated = provider_session.responses.setdefault(
+            (delegation_id, response_id),
+            _DelegatedResponse(
+                delegation_id=delegation_id,
+                response_id=response_id,
+                origin_correlation_id=(
+                    "live-delegation:"
+                    + hashlib.sha256(
+                        f"{provider_session.provider_session_id}\0{delegation_id}".encode("utf-8")
+                    ).hexdigest()[:32]
+                ),
+            ),
+        )
+        start_ms = _optional_int(outer.get("start_ms"))
+        end_ms = _optional_int(outer.get("end_ms"))
+        if start_ms is None:
+            start_ms = _optional_int(inner.get("start_ms"))
+        if end_ms is None:
+            end_ms = _optional_int(inner.get("end_ms"))
+        if start_ms is not None:
+            delegated.timeline_start_ms = (
+                start_ms
+                if delegated.timeline_start_ms is None
+                else min(delegated.timeline_start_ms, start_ms)
+            )
+        if end_ms is not None:
+            delegated.timeline_end_ms = (
+                end_ms
+                if delegated.timeline_end_ms is None
+                else max(delegated.timeline_end_ms, end_ms)
+            )
+        return delegated
+
+    async def _resolve_delegation_origins(self, provider_session: _LiveSession) -> None:
+        by_correlation: dict[str, list[_DelegatedResponse]] = {}
+        for delegated in provider_session.responses.values():
+            by_correlation.setdefault(delegated.origin_correlation_id, []).append(delegated)
+        used_segments = {
+            delegated.origin_item_id
+            for delegated in provider_session.responses.values()
+            if delegated.origin_item_id is not None
+        }
+        candidate_rows: list[tuple[int, str, _TranscriptSegment]] = []
+        ambiguous: set[str] = set()
+        top_claims: dict[tuple[str, int], list[str]] = {}
+        for correlation_id, responses in by_correlation.items():
+            if any(response.origin_item_id is not None for response in responses):
+                continue
+            starts = [
+                response.timeline_start_ms
+                for response in responses
+                if response.timeline_start_ms is not None
+            ]
+            if not starts:
+                continue
+            anchor = min(starts)
+            candidates: list[tuple[int, _TranscriptSegment]] = []
+            for segment in provider_session.user_segments:
+                if segment.item_id in used_segments or segment.end_ms is None:
+                    continue
+                if segment.start_ms is not None and segment.start_ms > anchor + 250:
+                    continue
+                distance = abs(anchor - segment.end_ms)
+                if distance <= _DELEGATION_MATCH_WINDOW_MS:
+                    candidates.append((distance, segment))
+            candidates.sort(key=lambda item: (item[0], item[1].item_id))
+            if not candidates:
+                continue
+            if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+                ambiguous.add(correlation_id)
+                continue
+            top_claims.setdefault(
+                (candidates[0][1].item_id, candidates[0][0]), []
+            ).append(correlation_id)
+            candidate_rows.extend(
+                (distance, correlation_id, segment)
+                for distance, segment in candidates
+            )
+        for correlations in top_claims.values():
+            if len(correlations) > 1:
+                ambiguous.update(correlations)
+        assigned_correlations: set[str] = set()
+        for _distance, correlation_id, segment in sorted(
+            candidate_rows, key=lambda item: (item[0], item[1], item[2].item_id)
+        ):
+            if correlation_id in ambiguous or correlation_id in assigned_correlations:
+                continue
+            if segment.item_id in used_segments:
+                continue
+            responses = by_correlation[correlation_id]
+            for response in responses:
+                response.origin_item_id = segment.item_id
+            used_segments.add(segment.item_id)
+            assigned_correlations.add(correlation_id)
+            starts = [
+                response.timeline_start_ms
+                for response in responses
+                if response.timeline_start_ms is not None
+            ]
+            ends = [
+                response.timeline_end_ms
+                for response in responses
+                if response.timeline_end_ms is not None
+            ]
+            await self._emit(
+                provider_session,
+                "delegation_origin_resolved",
+                {
+                    "delegation_id": responses[0].delegation_id,
+                    "origin_correlation_id": correlation_id,
+                    "origin_item_id": segment.item_id,
+                    "delegation_timeline": {
+                        "start_ms": min(starts) if starts else None,
+                        "end_ms": max(ends) if ends else None,
+                    },
+                    "transcript_timeline": {
+                        "start_ms": segment.start_ms,
+                        "end_ms": segment.end_ms,
+                    },
+                },
+                event_id=f"live-origin:{correlation_id}:{segment.item_id}",
+            )
 
     @staticmethod
     def _mark_meaningful_activity(provider_session: _LiveSession) -> None:
@@ -576,7 +747,8 @@ class OpenAILiveAdapter:
     ) -> None:
         if provider_session.closing:
             return
-        await self._flush_user_transcript(provider_session)
+        await self._flush_transcript(provider_session, "user")
+        await self._flush_transcript(provider_session, "assistant")
         provider_session.closing = True
         if provider_session.started and not provider_session.closed.is_set():
             try:
@@ -592,10 +764,13 @@ class OpenAILiveAdapter:
         if idle_task is not None and idle_task is not asyncio.current_task() and not idle_task.done():
             idle_task.cancel()
             await asyncio.gather(idle_task, return_exceptions=True)
-        transcript_task = provider_session.transcript_flush_task
-        if transcript_task is not None and transcript_task is not asyncio.current_task() and not transcript_task.done():
-            transcript_task.cancel()
-            await asyncio.gather(transcript_task, return_exceptions=True)
+        for transcript_task in (
+            provider_session.user_transcript_flush_task,
+            provider_session.assistant_transcript_flush_task,
+        ):
+            if transcript_task is not None and transcript_task is not asyncio.current_task() and not transcript_task.done():
+                transcript_task.cancel()
+                await asyncio.gather(transcript_task, return_exceptions=True)
         await provider_session.socket.close(code=1000, reason=reason[:120])
         if emit_event and not provider_session.closed.is_set():
             await self._emit(provider_session, "disconnected", {"reason": reason})
@@ -752,6 +927,37 @@ def _parse_arguments(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _group_transcript_fragments(
+    fragments: list[_TranscriptFragment],
+) -> list[list[_TranscriptFragment]]:
+    ordered = sorted(
+        fragments,
+        key=lambda fragment: (
+            fragment.start_ms is None,
+            fragment.start_ms if fragment.start_ms is not None else fragment.arrival,
+            fragment.arrival,
+        ),
+    )
+    groups: list[list[_TranscriptFragment]] = []
+    for fragment in ordered:
+        if not groups:
+            groups.append([fragment])
+            continue
+        previous_ends = [
+            item.end_ms for item in groups[-1] if item.end_ms is not None
+        ]
+        previous_end = max(previous_ends) if previous_ends else None
+        if (
+            fragment.start_ms is not None
+            and previous_end is not None
+            and fragment.start_ms - previous_end > _TRANSCRIPT_TIMELINE_GAP_MS
+        ):
+            groups.append([fragment])
+        else:
+            groups[-1].append(fragment)
+    return groups
 
 
 def _optional_int(value: Any) -> int | None:

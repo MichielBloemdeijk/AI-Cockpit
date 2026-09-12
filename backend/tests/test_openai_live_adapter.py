@@ -142,7 +142,7 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
         "type": "session.input_transcript.delta", "delta": "tasks", "start_ms": 20, "end_ms": 30,
     })
     await adapter.handle_event("s", 1, {
-        "type": "response.event", "delegation_id": "delegation-a",
+        "type": "response.event", "delegation_id": "delegation-a", "start_ms": 40,
         "event": {"type": "response.created", "response": {"id": "resp-1"}},
     })
     for call_id in ("call-1", "call-2"):
@@ -157,14 +157,16 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
         await adapter.handle_event("s", 1, event)
     assert [event.kind for event in events].count("shell_call") == 2
     assert {event.payload["delegation_id"] for event in events if event.kind == "shell_call"} == {"delegation-a"}
+    shell_events = [event for event in events if event.kind == "shell_call"]
+    assert all(event.payload["origin_item_id"] is None for event in shell_events)
+    assert len({event.payload["origin_correlation_id"] for event in shell_events}) == 1
+    await adapter._flush_transcript(adapter._sessions[("s", 1)], "user")
     transcript = next(event for event in events if event.kind == "user_transcript")
     assert transcript.payload["transcript"] == "list tasks"
     assert transcript.payload["start_ms"] == 10
     assert transcript.payload["end_ms"] == 30
-    assert all(
-        event.payload["origin_item_id"] == transcript.payload["item_id"]
-        for event in events if event.kind == "shell_call"
-    )
+    resolved = next(event for event in events if event.kind == "delegation_origin_resolved")
+    assert resolved.payload["origin_item_id"] == transcript.payload["item_id"]
 
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-1", output={"ok": True})
     await adapter.send_tool_result(session_id="s", generation=1, call_id="call-1", output={"ok": True})
@@ -207,11 +209,13 @@ async def test_live_transcripts_and_final_usage_are_normalized(monkeypatch) -> N
     })
     await adapter.handle_event("s", 3, {"type": "session.closed", "usage": {"duration": 8}})
     assert [event.kind for event in events] == [
-        "user_transcript_delta", "assistant_transcript_delta", "user_transcript", "usage", "disconnected"
+        "user_transcript_delta", "assistant_transcript_delta", "user_transcript",
+        "assistant_transcript", "usage", "disconnected"
     ]
     assert events[2].payload["fragments"] == [
         {"delta": "hello", "start_ms": 100, "end_ms": 300}
     ]
+    assert events[3].payload["transcript"] == "hi"
     await adapter.close(session_id="s", generation=3, reason="test", emit_event=False)
 
 
@@ -283,3 +287,130 @@ async def test_silent_sideband_events_do_not_extend_idle_activity(monkeypatch) -
     })
     assert provider_session.last_activity_monotonic > before
     await adapter.close(session_id="s", generation=5, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_late_out_of_order_transcripts_match_multiple_delegation_timelines(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+    events: list[VoiceProviderEvent] = []
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_match"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=6, context={}, on_event=on_event, sdp_offer="offer")
+    for delegation_id, response_id, call_id, start_ms in (
+        ("delegation-1", "response-1", "call-1", 500),
+        ("delegation-2", "response-2", "call-2", 1_700),
+    ):
+        await adapter.handle_event("s", 6, {
+            "type": "response.event", "delegation_id": delegation_id, "start_ms": start_ms,
+            "event": {"type": "response.created", "response": {"id": response_id}},
+        })
+        await adapter.handle_event("s", 6, {
+            "type": "response.event", "delegation_id": delegation_id, "start_ms": start_ms + 10,
+            "event": {
+                "type": "response.output_item.done", "response_id": response_id,
+                "item": {"type": "function_call", "call_id": call_id, "name": "list_tasks", "arguments": "{}"},
+            },
+        })
+    assert all(
+        event.payload["origin_item_id"] is None
+        for event in events if event.kind == "shell_call"
+    )
+
+    # Network arrival order is intentionally the reverse of timeline order.
+    await adapter.handle_event("s", 6, {
+        "type": "session.input_transcript.delta", "delta": "second", "start_ms": 1_300, "end_ms": 1_500,
+    })
+    await adapter.handle_event("s", 6, {
+        "type": "session.input_transcript.delta", "delta": "first", "start_ms": 100, "end_ms": 400,
+    })
+    await adapter._flush_transcript(adapter._sessions[("s", 6)], "user")
+
+    transcripts = {
+        event.payload["transcript"]: event.payload["item_id"]
+        for event in events if event.kind == "user_transcript"
+    }
+    resolutions = {
+        event.payload["delegation_id"]: event.payload["origin_item_id"]
+        for event in events if event.kind == "delegation_origin_resolved"
+    }
+    assert resolutions == {
+        "delegation-1": transcripts["first"],
+        "delegation-2": transcripts["second"],
+    }
+    await adapter.close(session_id="s", generation=6, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_timeline_match_stays_unattributed(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+    events: list[VoiceProviderEvent] = []
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_ambiguous"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=7, context={}, on_event=on_event, sdp_offer="offer")
+    await adapter.handle_event("s", 7, {
+        "type": "response.event", "delegation_id": "ambiguous", "start_ms": 2_000,
+        "event": {"type": "response.created", "response": {"id": "response"}},
+    })
+    await adapter.handle_event("s", 7, {
+        "type": "session.input_transcript.delta", "delta": "before", "start_ms": 0, "end_ms": 1_000,
+    })
+    await adapter.handle_event("s", 7, {
+        "type": "session.input_transcript.delta", "delta": "overlap", "start_ms": 1_800, "end_ms": 3_000,
+    })
+    await adapter._flush_transcript(adapter._sessions[("s", 7)], "user")
+    assert not any(event.kind == "delegation_origin_resolved" for event in events)
+    await adapter.close(session_id="s", generation=7, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_response_completion_does_not_end_assistant_transcript(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+    events: list[VoiceProviderEvent] = []
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_assistant"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=8, context={}, on_event=on_event, sdp_offer="offer")
+    await adapter.handle_event("s", 8, {
+        "type": "session.output_transcript.delta", "delta": "Still speaking", "start_ms": 100, "end_ms": 300,
+    })
+    await adapter.handle_event("s", 8, {
+        "type": "response.event", "delegation_id": "d", "start_ms": 150,
+        "event": {"type": "response.completed", "response": {"id": "r"}},
+    })
+    assert not any(event.kind == "assistant_transcript" for event in events)
+    await adapter.handle_event("s", 8, {
+        "type": "session.output_transcript.delta", "delta": " after completion", "start_ms": 300, "end_ms": 500,
+    })
+    await adapter.handle_event("s", 8, {"type": "session.closed"})
+    segment = next(event for event in events if event.kind == "assistant_transcript")
+    assert segment.payload["transcript"] == "Still speaking after completion"
+    await adapter.close(session_id="s", generation=8, reason="test", emit_event=False)

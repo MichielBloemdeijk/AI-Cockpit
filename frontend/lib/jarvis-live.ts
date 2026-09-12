@@ -264,6 +264,57 @@ interface LiveActivationBridge {
 }
 
 const MAX_ACTIVATION_REPLAY_SAMPLES = 16_000 * 30;
+const ACTIVATION_TARGET_BACKLOG_MS = 250;
+const ACTIVATION_RETAINED_SILENCE_MS = 500;
+const CONFIDENT_SILENCE_PEAK = 0.0015;
+const CONFIDENT_SILENCE_RMS = 0.00075;
+
+class ActivationSilenceCompactor {
+  private retainedSilenceSamples = 0;
+
+  constructor(private readonly sampleRate: number) {}
+
+  compact(samples: Float32Array, pressureSamples: number): Float32Array[] {
+    const frameSamples = Math.max(1, Math.round(this.sampleRate * 0.02));
+    const targetSamples = Math.round(this.sampleRate * ACTIVATION_TARGET_BACKLOG_MS / 1_000);
+    const retainedSamples = Math.round(this.sampleRate * ACTIVATION_RETAINED_SILENCE_MS / 1_000);
+    const output: Float32Array[] = [];
+    for (let offset = 0; offset < samples.length; offset += frameSamples) {
+      const frame = samples.slice(offset, Math.min(samples.length, offset + frameSamples));
+      if (!isConfidentSilence(frame)) {
+        this.retainedSilenceSamples = 0;
+        output.push(frame);
+        continue;
+      }
+      const required = Math.max(0, retainedSamples - this.retainedSilenceSamples);
+      if (required > 0) {
+        const keep = Math.min(required, frame.length);
+        output.push(frame.slice(0, keep));
+        this.retainedSilenceSamples += keep;
+        if (keep < frame.length && pressureSamples <= targetSamples) {
+          output.push(frame.slice(keep));
+        }
+        continue;
+      }
+      if (pressureSamples <= targetSamples) output.push(frame);
+    }
+    samples.fill(0);
+    return output;
+  }
+}
+
+function isConfidentSilence(samples: Float32Array): boolean {
+  if (samples.length === 0) return true;
+  let peak = 0;
+  let squareSum = 0;
+  for (const sample of samples) {
+    const magnitude = Math.abs(sample);
+    peak = Math.max(peak, magnitude);
+    squareSum += sample * sample;
+  }
+  return peak <= CONFIDENT_SILENCE_PEAK
+    && Math.sqrt(squareSum / samples.length) <= CONFIDENT_SILENCE_RMS;
+}
 
 async function createLiveActivationBridge(
   candidate: JarvisCandidateAudio,
@@ -278,12 +329,17 @@ async function createLiveActivationBridge(
   let started = false;
   let overflow = false;
   let destroyed = false;
+  const compactor = new ActivationSilenceCompactor(candidate.sampleRate);
   const failOverflow = (samples?: Float32Array) => {
     overflow = true;
     samples?.fill(0);
     candidate.close("audio_backlog_overflow");
   };
-  const schedule = (samples: Float32Array) => {
+  const scheduledBacklogSamples = () => Math.max(
+    0,
+    Math.round((scheduledAt - context.currentTime) * candidate.sampleRate),
+  );
+  const scheduleFrame = (samples: Float32Array) => {
     if (destroyed || overflow) {
       samples.fill(0);
       return;
@@ -308,13 +364,16 @@ async function createLiveActivationBridge(
     source.start(startAt);
     scheduledAt = endAt;
   };
+  const schedule = (samples: Float32Array, pressureSamples = scheduledBacklogSamples()) => {
+    for (const frame of compactor.compact(samples, pressureSamples)) scheduleFrame(frame);
+  };
   const unsubscribe = candidate.subscribe((chunk) => {
     if (destroyed || overflow) {
       chunk.samples.fill(0);
       return;
     }
     if (started) {
-      schedule(chunk.samples);
+      schedule(chunk.samples, scheduledBacklogSamples());
       return;
     }
     queuedSamples += chunk.samples.length;
@@ -337,7 +396,7 @@ async function createLiveActivationBridge(
       candidate.promoteToConversation();
       for (const samples of queued) {
         queuedSamples -= samples.length;
-        schedule(samples);
+        schedule(samples, Math.max(queuedSamples + samples.length, scheduledBacklogSamples()));
       }
       queued.length = 0;
       if (overflow) {

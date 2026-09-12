@@ -170,6 +170,45 @@ describe("JarvisLiveController", () => {
     expect(activation.unsubscribe).not.toHaveBeenCalled();
   });
 
+  it("catches up only through confidently silent activation audio", async () => {
+    const { pc, channel } = fakePc();
+    const audio = fakeAudioContext();
+    const activation = candidateAudio(new Float32Array(16_000));
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+      audioContext: () => audio.context,
+    });
+    const pending = controller.startWithOptions({ candidateAudio: activation.candidate });
+    await vi.waitFor(() => expect(channel.onmessage).toBeTypeOf("function"));
+    channel.onmessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    await pending;
+
+    expect(audio.buffers.reduce((total, samples) => total + samples.length, 0)).toBe(8_000);
+  });
+
+  it("preserves uninterrupted quiet speech instead of forcing catch-up", async () => {
+    const { pc, channel } = fakePc();
+    const audio = fakeAudioContext();
+    const quietSpeech = new Float32Array(16_000).fill(0.002);
+    const activation = candidateAudio(quietSpeech);
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+      audioContext: () => audio.context,
+    });
+    const pending = controller.startWithOptions({ candidateAudio: activation.candidate });
+    await vi.waitFor(() => expect(channel.onmessage).toBeTypeOf("function"));
+    channel.onmessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    await pending;
+
+    expect(audio.buffers.reduce((total, samples) => total + samples.length, 0)).toBe(16_000);
+  });
+
   it("does not extend idle life for silent or housekeeping events", async () => {
     const { pc, channel } = fakePc();
     const scheduled: Array<{ callback: () => void; delay: number }> = [];

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import (
+    ConversationEvent,
     JarvisLiveEvent,
     NotificationOutbox,
     RealtimeSession,
@@ -678,12 +679,23 @@ async def test_live_tool_call_uses_correlated_transcript_turn_not_older_history(
     await jarvis_coordinator.inject_fake_event(
         session_id=session.id,
         generation=session.generation,
+        event_id="live-origin-current",
+        kind="delegation_origin_resolved",
+        payload={
+            "origin_correlation_id": "live-delegation:current",
+            "origin_item_id": "live-user:current",
+        },
+    )
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
         event_id="live-shell-current",
         kind="shell_call",
         payload={
             "call_id": "live-call-current",
             "name": "dispatch_task",
             "origin_item_id": "live-user:current",
+            "origin_correlation_id": "live-delegation:current",
             "arguments": {"goal": "Prepare the correlated launch note"},
         },
     )
@@ -726,6 +738,139 @@ async def test_live_commentary_submission_is_not_persisted_as_heard_delivery() -
     assert len(deliveries) == before
     refreshed = await jarvis_coordinator.get_session(session.id)
     assert refreshed is not None and refreshed.floor_state == "listening"
+
+
+@pytest.mark.asyncio
+async def test_live_tool_executes_unattributed_then_repairs_from_delegation_match() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "An older request that must not be reused",
+        idempotency_key="live-late-origin-old",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    correlation_id = "live-delegation:provider:late"
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
+        event_id="live-shell-before-transcript",
+        kind="shell_call",
+        payload={
+            "call_id": "live-call-before-transcript",
+            "name": "dispatch_task",
+            "origin_correlation_id": correlation_id,
+            "origin_timeline": {"start_ms": 900, "end_ms": 950},
+            "arguments": {"goal": "Prepare the late-correlated brief"},
+        },
+    )
+    tasks = await task_service.list_tasks()
+    created = next(item.task for item in tasks if item.task.goal == "Prepare the late-correlated brief")
+    assert created.origin_turn_id is None
+    assert created.origin_turn_id != accepted.message.id
+
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
+        event_id="live-late-transcript",
+        kind="user_transcript",
+        payload={
+            "item_id": "live-user:late",
+            "transcript": "Prepare the late-correlated brief",
+            "start_ms": 100,
+            "end_ms": 850,
+        },
+    )
+    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
+    current_turn = next(item for item in messages if item.content == "Prepare the late-correlated brief")
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
+        event_id="live-late-origin-resolution",
+        kind="delegation_origin_resolved",
+        payload={
+            "origin_correlation_id": correlation_id,
+            "origin_item_id": "live-user:late",
+            "delegation_timeline": {"start_ms": 900, "end_ms": 950},
+            "transcript_timeline": {"start_ms": 100, "end_ms": 850},
+        },
+    )
+    tasks = await task_service.list_tasks()
+    repaired = next(item.task for item in tasks if item.task.id == created.id)
+    assert repaired.origin_turn_id == current_turn.id
+
+
+@pytest.mark.asyncio
+async def test_live_assistant_transcript_is_history_not_delivery_evidence() -> None:
+    accepted = await jarvis_coordinator.accept_text_turn(
+        "Tell me the generated answer",
+        idempotency_key="live-assistant-history",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    task = await task_service.dispatch(
+        goal="Keep generated speech separate from delivery",
+        origin_surface="jarvis",
+        origin_conversation_id=accepted.conversation.id,
+        origin_turn_id=accepted.message.id,
+        idempotency_key="live-assistant-history-task",
+    )
+    await task_service.complete(
+        task.task.id,
+        summary="The generated-speech check is complete.",
+        idempotency_key="live-assistant-history-task-complete",
+    )
+    reservation = await task_presentation_service.reserve(
+        session_id=session.id,
+        generation=session.generation,
+        user_owns_floor=False,
+    )
+    assert reservation is not None
+    async with session_scope() as db:
+        before = len(list((await db.execute(
+            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+        )).scalars().all()))
+
+    await jarvis_coordinator.inject_fake_event(
+        session_id=session.id,
+        generation=session.generation,
+        event_id="live-assistant-segment",
+        kind="assistant_transcript",
+        payload={
+            "item_id": "live-assistant:segment-1",
+            "transcript": "This text was generated, but playback is unverified.",
+            "start_ms": 1_000,
+            "end_ms": 1_800,
+            "fragments": [
+                {
+                    "delta": "This text was generated, but playback is unverified.",
+                    "start_ms": 1_000,
+                    "end_ms": 1_800,
+                }
+            ],
+        },
+    )
+
+    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
+    generated = next(
+        item for item in messages
+        if item.content == "This text was generated, but playback is unverified."
+    )
+    assert generated.role == "assistant"
+    assert generated.communication_state == "generated"
+    async with session_scope() as db:
+        deliveries = list((await db.execute(
+            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+        )).scalars().all())
+        persisted = (await db.execute(
+            select(ConversationEvent).where(ConversationEvent.id == generated.source_event_id)
+        )).scalar_one()
+    assert len(deliveries) == before
+    assert persisted.payload_json["playback_verified"] is False
+    detail = await task_service.get_task(task.task.id)
+    assert detail is not None
+    presentation = next(
+        item for item in detail.presentations if item.id in reservation.presentation_ids
+    )
+    assert presentation.state == "reserved"
 
 
 @pytest.mark.asyncio

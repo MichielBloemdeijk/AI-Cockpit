@@ -8,12 +8,15 @@ import java.util.ArrayDeque
 
 internal class LiveActivationAudioBuffer(
     private val maxSamples: Int = SAMPLE_RATE * MAX_SECONDS,
+    private val targetBacklogSamples: Int = SAMPLE_RATE * TARGET_BACKLOG_MS / 1_000,
+    private val retainedSilenceSamples: Int = SAMPLE_RATE * RETAINED_SILENCE_MS / 1_000,
 ) {
     private val queued = ArrayDeque<Short>()
     private var activationId: String? = null
     private var releaseRequested = false
     private var recorderReleased = false
     private var claimed = false
+    private var retainedSilenceInRun = 0
     var overflowed: Boolean = false
         private set
 
@@ -61,7 +64,18 @@ internal class LiveActivationAudioBuffer(
     fun replaceWithQueued(current: ShortArray): Boolean {
         if (!claimed || overflowed || current.isEmpty()) return false
         current.forEach(queued::addLast)
+        while (queued.size - current.size > targetBacklogSamples) {
+            val inspectCount = minOf(current.size, queued.size - current.size)
+            if (inspectCount <= 0 || !frontIsConfidentSilence(inspectCount)) {
+                retainedSilenceInRun = 0
+                break
+            }
+            if (retainedSilenceInRun < retainedSilenceSamples) break
+            repeat(inspectCount) { queued.removeFirst() }
+        }
         current.indices.forEach { current[it] = queued.removeFirst() }
+        if (isConfidentSilence(current)) retainedSilenceInRun += current.size
+        else retainedSilenceInRun = 0
         return true
     }
 
@@ -88,12 +102,42 @@ internal class LiveActivationAudioBuffer(
         releaseRequested = false
         recorderReleased = false
         claimed = false
+        retainedSilenceInRun = 0
         overflowed = false
+    }
+
+    private fun frontIsConfidentSilence(count: Int): Boolean {
+        var peak = 0
+        var squareSum = 0.0
+        val iterator = queued.iterator()
+        repeat(count) {
+            val value = iterator.next().toInt()
+            peak = maxOf(peak, kotlin.math.abs(value))
+            squareSum += value.toDouble() * value
+        }
+        return peak <= CONFIDENT_SILENCE_PEAK &&
+            kotlin.math.sqrt(squareSum / count) <= CONFIDENT_SILENCE_RMS
+    }
+
+    private fun isConfidentSilence(samples: ShortArray): Boolean {
+        var peak = 0
+        var squareSum = 0.0
+        samples.forEach { sample ->
+            val value = sample.toInt()
+            peak = maxOf(peak, kotlin.math.abs(value))
+            squareSum += value.toDouble() * value
+        }
+        return peak <= CONFIDENT_SILENCE_PEAK &&
+            kotlin.math.sqrt(squareSum / samples.size) <= CONFIDENT_SILENCE_RMS
     }
 
     companion object {
         const val SAMPLE_RATE = 16_000
         const val MAX_SECONDS = 30
+        const val TARGET_BACKLOG_MS = 250
+        const val RETAINED_SILENCE_MS = 500
+        const val CONFIDENT_SILENCE_PEAK = 48
+        const val CONFIDENT_SILENCE_RMS = 20.0
     }
 }
 

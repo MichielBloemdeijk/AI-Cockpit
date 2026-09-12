@@ -14,9 +14,10 @@ Baseline commit: `a58bbf2`
 - AI Cockpit owns authorization, tool execution, idempotency, durable tasks, and notifications.
 - Browser and Android expose an experimental engine selector that applies to the next session.
 - Local wake detection opens a Live conversation directly; transcript-based intent gating is not part of this migration.
-- Browser wake and follow-up audio share one continuous, bounded 30-second queue that starts feeding the negotiated WebRTC microphone track as soon as the connection is ready; overflow requires an explicit retry.
-- Android carries a bounded wake/startup PCM buffer into the Live WebRTC microphone path before continuing with current capture.
-- Timestamped Live transcript fragments are persisted as conversation turns and used to attribute delegated tool calls to the originating request.
+- Browser wake and follow-up audio share one continuous, bounded 30-second queue that starts feeding the negotiated WebRTC microphone track as soon as the connection is ready. It catches up only through conservatively classified silence, retains 500 ms of each pause for natural turn detection, and preserves uninterrupted speech; overflow requires an explicit retry.
+- Android carries a bounded wake/startup PCM buffer into the Live WebRTC microphone path and applies the same silence-only catch-up policy before continuing with current capture.
+- Timestamped Live transcript fragments are segmented by timeline rather than arrival order. Stable delegation correlations let tools execute immediately without borrowing an older turn, then repair task links only when a unique timeline match arrives; ambiguous matches remain unattributed.
+- Timestamped assistant transcript segments are saved as generated conversation history independently of speech-delivery and notification-heard evidence. Response completion is only a hint; remaining fragments flush on session close.
 - Live sessions close after 60 seconds without meaningful conversational activity once router/tool exchanges settle; silent media and housekeeping events do not extend the session.
 
 ## Delivery checkpoints
@@ -33,9 +34,10 @@ Baseline commit: `a58bbf2`
 
 ## Verification evidence
 
-- Backend: full pytest suite, `297 passed`.
-- Browser: Vitest `194 passed`, ESLint clean, production Next.js build successful.
+- Backend: full pytest suite, `302 passed`.
+- Browser: Vitest `196 passed`, ESLint clean, production Next.js build successful.
 - Android: Gradle `test` successful.
+- Physical Android latency: blocked on 2026-09-12 because ADB reported no attached USB or wireless device; no emulator result is substituted for this gate.
 - Evaluation runner: `python scripts/compare-jarvis-voice-engines.py observations.jsonl`.
 
 ## Unresolved failures

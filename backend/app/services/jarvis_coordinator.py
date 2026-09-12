@@ -59,6 +59,7 @@ FLOOR_EVENT_TYPES = {
     "assistant_generating": "thinking",
     "assistant_speaking": "assistant_speaking",
     "assistant_transcript_delta": "assistant_speaking",
+    "assistant_transcript": "listening",
     "assistant_update_submitted": "listening",
     "assistant_response": "listening",
     "assistant_interrupted": "listening",
@@ -206,6 +207,8 @@ class JarvisCoordinator:
         self._activation_index_limit = 1_024
         self._handled_input_items: dict[tuple[str, int], dict[str, float]] = {}
         self._provider_input_turns: dict[tuple[str, int, str], str] = {}
+        self._provider_correlation_turns: dict[tuple[str, int, str], str] = {}
+        self._provider_correlation_tasks: dict[tuple[str, int, str], set[str]] = {}
         self._barge_in_keys: set[tuple[str, int, str, str]] = set()
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
@@ -267,6 +270,8 @@ class JarvisCoordinator:
         self._activation_index.clear()
         self._handled_input_items.clear()
         self._provider_input_turns.clear()
+        self._provider_correlation_turns.clear()
+        self._provider_correlation_tasks.clear()
         self._barge_in_keys.clear()
         response_tasks: list[asyncio.Task[None]] = []
         for gate in self._response_gates.values():
@@ -1525,7 +1530,9 @@ class JarvisCoordinator:
                 speech_event_id=event.event_id,
                 speech_item_id=str(event.payload.get("item_id") or "") or None,
             )
-        shell_call: tuple[str, dict[str, Any], str, str | None] | None = None
+        shell_call: tuple[
+            str, dict[str, Any], str, str | None, str | None, dict[str, Any]
+        ] | None = None
         presentation_action: tuple[tuple[str, ...], DeliveryRecord, str, str] | None = None
         requeue_presentations: tuple[str, ...] = ()
         release_reservations = False
@@ -1690,6 +1697,25 @@ class JarvisCoordinator:
                         else:
                             activation.response_requested = True
                             queue_user_response = True
+            elif event.kind == "assistant_transcript":
+                await self._persist_assistant_transcript(session, realtime, event)
+            elif event.kind == "delegation_origin_resolved":
+                correlation_id = str(payload.get("origin_correlation_id") or "")
+                origin_item_id = str(payload.get("origin_item_id") or "")
+                turn_id = self._provider_input_turns.get(
+                    (session_id, generation, origin_item_id)
+                )
+                if correlation_id and turn_id:
+                    correlation_key = (session_id, generation, correlation_id)
+                    self._provider_correlation_turns[correlation_key] = turn_id
+                    task_ids = self._provider_correlation_tasks.get(correlation_key, set())
+                    if task_ids:
+                        tasks = list((await session.execute(
+                            select(Task).where(Task.id.in_(task_ids))
+                        )).scalars().all())
+                        for task in tasks:
+                            if task.origin_turn_id is None:
+                                task.origin_turn_id = turn_id
             elif event.kind == "user_input_committed":
                 activation = self._wake_activations.get((session_id, generation))
                 if activation is None:
@@ -1812,7 +1838,22 @@ class JarvisCoordinator:
                     arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
                     call_id = str(payload.get("call_id") or event.event_id)
                     origin_item_id = str(payload.get("origin_item_id") or "") or None
-                    shell_call = (tool_name, dict(arguments), call_id, origin_item_id)
+                    origin_correlation_id = (
+                        str(payload.get("origin_correlation_id") or "") or None
+                    )
+                    origin_timeline = (
+                        dict(payload.get("origin_timeline"))
+                        if isinstance(payload.get("origin_timeline"), dict)
+                        else {}
+                    )
+                    shell_call = (
+                        tool_name,
+                        dict(arguments),
+                        call_id,
+                        origin_item_id,
+                        origin_correlation_id,
+                        origin_timeline,
+                    )
                     raw_presentation_ids = payload.get("presentation_ids")
                     requeue_presentations = tuple(
                         str(item)
@@ -1857,6 +1898,7 @@ class JarvisCoordinator:
                 generation=generation,
                 error=f"provider_{event.kind}",
             )
+            self._clear_provider_session_mappings(session_id, generation)
 
         if response_finished:
             await self._finish_controlled_response(
@@ -1908,7 +1950,14 @@ class JarvisCoordinator:
                 await self._queue_controlled_response(session_id, generation, "task_update")
 
         if shell_call is not None:
-            tool_name, arguments, call_id, origin_item_id = shell_call
+            (
+                tool_name,
+                arguments,
+                call_id,
+                origin_item_id,
+                origin_correlation_id,
+                origin_timeline,
+            ) = shell_call
             await self._execute_shell_call(
                 session_id=session_id,
                 generation=generation,
@@ -1916,6 +1965,8 @@ class JarvisCoordinator:
                 arguments=arguments,
                 call_id=call_id,
                 origin_item_id=origin_item_id,
+                origin_correlation_id=origin_correlation_id,
+                origin_timeline=origin_timeline,
             )
 
     def _schedule_background_response(
@@ -2170,15 +2221,11 @@ class JarvisCoordinator:
             emit_event=True,
         )
         await self._drop_response_gate(session_id, generation)
+        self._clear_provider_session_mappings(session_id, generation)
         self._tombstone_activation_ids(session_id, generation)
         self._clear_wake_activation(session_id, generation)
 
     async def _drop_response_gate(self, session_id: str, generation: int) -> None:
-        for key in [
-            key for key in self._provider_input_turns
-            if key[0] == session_id and key[1] == generation
-        ]:
-            self._provider_input_turns.pop(key, None)
         gate = self._response_gates.pop((session_id, generation), None)
         if gate is None:
             return
@@ -2193,6 +2240,18 @@ class JarvisCoordinator:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _clear_provider_session_mappings(self, session_id: str, generation: int) -> None:
+        for mapping in (
+            self._provider_input_turns,
+            self._provider_correlation_turns,
+            self._provider_correlation_tasks,
+        ):
+            for key in [
+                key for key in mapping
+                if key[0] == session_id and key[1] == generation
+            ]:
+                mapping.pop(key, None)
 
     async def replay_session_events(
         self,
@@ -2254,14 +2313,29 @@ class JarvisCoordinator:
         arguments: dict[str, Any],
         call_id: str,
         origin_item_id: str | None = None,
+        origin_correlation_id: str | None = None,
+        origin_timeline: dict[str, Any] | None = None,
     ) -> None:
+        correlation_key = (
+            (session_id, generation, origin_correlation_id)
+            if origin_correlation_id is not None
+            else None
+        )
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             controller_device = (
                 None if not realtime.controller_id else await session.get(JarvisDevice, realtime.controller_id)
             )
             controller_locked = controller_device is not None and controller_device.lock_state == "locked"
-            if origin_item_id is not None:
+            if correlation_key is not None:
+                # Live delegation identity exists before transcript delivery.
+                # Missing or ambiguous matches intentionally stay unattributed.
+                last_turn_id = self._provider_correlation_turns.get(correlation_key)
+                if last_turn_id is None and origin_item_id is not None:
+                    last_turn_id = self._provider_input_turns.get(
+                        (session_id, generation, origin_item_id)
+                    )
+            elif origin_item_id is not None:
                 # Live supplies the transcript segment that caused this
                 # delegated response. Never fall back to an older historical
                 # user turn when that correlation is present but unresolved.
@@ -2309,6 +2383,15 @@ class JarvisCoordinator:
 
         async with session_scope() as session:
             await self._require_current_generation(session, session_id, generation)
+            internal_task_id = str(durable_output.get("internal_task_id") or "")
+            if correlation_key is not None and internal_task_id:
+                self._provider_correlation_tasks.setdefault(correlation_key, set()).add(
+                    internal_task_id
+                )
+                resolved_turn_id = self._provider_correlation_turns.get(correlation_key)
+                task = await session.get(Task, internal_task_id)
+                if task is not None and task.origin_turn_id is None and resolved_turn_id:
+                    task.origin_turn_id = resolved_turn_id
             await JarvisDomainRepository(session).append_session_event(
                 session_id=session_id,
                 event_type="brain.tool.result",
@@ -2317,6 +2400,9 @@ class JarvisCoordinator:
                     "name": tool_name,
                     "ok": ok,
                     "output": durable_output,
+                    "origin_item_id": origin_item_id,
+                    "origin_correlation_id": origin_correlation_id,
+                    "origin_timeline": origin_timeline or {},
                 },
                 idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
             )
@@ -2438,8 +2524,8 @@ class JarvisCoordinator:
         realtime: RealtimeSession,
         event: VoiceProviderEvent,
     ) -> None:
-        transcript = str(event.payload.get("transcript") or "").strip()
-        if not transcript:
+        transcript = str(event.payload.get("transcript") or "")
+        if not transcript.strip():
             return
         item_id = str(event.payload.get("item_id") or event.event_id)
         repo = ConversationRepository(session)
@@ -2463,6 +2549,18 @@ class JarvisCoordinator:
         )
         existing_turn_id = str((conversation_event.payload_json or {}).get("turn_id") or "")
         if existing_turn_id:
+            existing_message = await session.get(ConversationMessage, existing_turn_id)
+            if existing_message is not None:
+                existing_message.content = transcript
+            conversation_event.payload_json = {
+                **(conversation_event.payload_json or {}),
+                "content": transcript,
+                "timeline": {
+                    "start_ms": event.payload.get("start_ms"),
+                    "end_ms": event.payload.get("end_ms"),
+                    "fragments": event.payload.get("fragments", []),
+                },
+            }
             self._provider_input_turns[(realtime.id, realtime.generation, item_id)] = existing_turn_id
             return
         message = await repo.create_message(
@@ -2480,6 +2578,65 @@ class JarvisCoordinator:
             "turn_id": message.id,
         }
         self._provider_input_turns[(realtime.id, realtime.generation, item_id)] = message.id
+        await repo.touch_conversation(realtime.conversation_id, updated_at=utc_now())
+
+    async def _persist_assistant_transcript(
+        self,
+        session,
+        realtime: RealtimeSession,
+        event: VoiceProviderEvent,
+    ) -> None:
+        transcript = str(event.payload.get("transcript") or "")
+        if not transcript.strip():
+            return
+        item_id = str(event.payload.get("item_id") or event.event_id)
+        timeline = {
+            "start_ms": event.payload.get("start_ms"),
+            "end_ms": event.payload.get("end_ms"),
+            "fragments": event.payload.get("fragments", []),
+        }
+        repo = ConversationRepository(session)
+        conversation_event = await repo.append_event(
+            conversation_id=realtime.conversation_id,
+            run_id=None,
+            actor_kind="assistant",
+            event_type="conversation.assistant.message.generated",
+            payload_json={
+                "content": transcript,
+                "modality": "voice",
+                "provider_item_id": item_id,
+                "timeline": timeline,
+                "playback_verified": False,
+            },
+            branch_key="main",
+            idempotency_key=f"provider-assistant-transcript:{realtime.id}:{item_id}",
+        )
+        existing_turn_id = str((conversation_event.payload_json or {}).get("turn_id") or "")
+        if existing_turn_id:
+            existing_message = await session.get(ConversationMessage, existing_turn_id)
+            if existing_message is not None:
+                existing_message.content = transcript
+            conversation_event.payload_json = {
+                **(conversation_event.payload_json or {}),
+                "content": transcript,
+                "timeline": timeline,
+                "playback_verified": False,
+            }
+            return
+        message = await repo.create_message(
+            conversation_id=realtime.conversation_id,
+            source_event_id=conversation_event.id,
+            role="assistant",
+            author_label="Jarvis",
+            content=transcript,
+            modality="voice",
+            execution_mode="jarvis_shell",
+            communication_state="generated",
+        )
+        conversation_event.payload_json = {
+            **(conversation_event.payload_json or {}),
+            "turn_id": message.id,
+        }
         await repo.touch_conversation(realtime.conversation_id, updated_at=utc_now())
 
     @staticmethod
