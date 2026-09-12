@@ -44,6 +44,7 @@ import nl.sander.aicockpit.jarvis.appfunctions.AppFunctionsProbe
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.CredentialStore
 import nl.sander.aicockpit.jarvis.data.JarvisAssistantStatus
+import nl.sander.aicockpit.jarvis.data.VoiceEngine
 import nl.sander.aicockpit.jarvis.notifications.JarvisEventStream
 import nl.sander.aicockpit.jarvis.wake.WakeForegroundService
 import nl.sander.aicockpit.jarvis.web.JarvisWebViewActivity
@@ -88,6 +89,7 @@ class MainActivity : ComponentActivity() {
         var wakeAfterBoot by remember { mutableStateOf(store.wakeAfterBoot) }
         var assistOptIn by remember { mutableStateOf(store.assistStructureOptIn) }
         var appFunctions by remember { mutableStateOf(store.appFunctionsEnabled) }
+        var selectedVoiceEngine by remember { mutableStateOf(store.voiceEngine) }
         var assistantHealth by remember { mutableStateOf<JarvisAssistantStatus?>(null) }
         val scope = rememberCoroutineScope()
         val paired = store.credential() != null
@@ -146,6 +148,30 @@ class MainActivity : ComponentActivity() {
                         },
                     ) { Text(if (paired) "Pair again" else "Pair") }
                     Text(status, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Experimental voice engine", style = MaterialTheme.typography.titleMedium)
+                    Text("Applies to the next assistant session.", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                selectedVoiceEngine = VoiceEngine.REALTIME
+                                store.voiceEngine = selectedVoiceEngine
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (selectedVoiceEngine == VoiceEngine.REALTIME) "✓ Realtime" else "Realtime") }
+                        OutlinedButton(
+                            onClick = {
+                                selectedVoiceEngine = VoiceEngine.GPT_LIVE
+                                store.voiceEngine = selectedVoiceEngine
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (selectedVoiceEngine == VoiceEngine.GPT_LIVE) "✓ GPT-Live" else "GPT-Live") }
+                    }
+                    Text("Selected: ${store.voiceEngine.name.replace('_', '-')}", style = MaterialTheme.typography.bodySmall)
                 }
             }
 

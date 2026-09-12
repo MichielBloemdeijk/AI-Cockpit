@@ -112,7 +112,7 @@ class JarvisFreshLogResponse(BaseModel):
 class JarvisRealtimeCallRequest(BaseModel):
     controller_id: str = Field(min_length=1, max_length=255)
     role: Literal["controller", "observer"] = "controller"
-    provider_adapter: Literal["fake", "openai"] = "fake"
+    provider_adapter: Literal["fake", "openai", "openai_live"] = "fake"
     sdp_offer: str | None = Field(default=None, min_length=1, max_length=1_000_000)
     client_context: "JarvisClientContext | None" = None
     activation_context: "JarvisRealtimeActivationContext | None" = None
@@ -125,6 +125,7 @@ class JarvisRealtimeCallResponse(BaseModel):
     sdp_answer: str | None = None
     rotate_after_seconds: int | None = None
     audio_policy: "JarvisRealtimeAudioPolicy | None" = None
+    provider_capabilities: dict[str, bool] = Field(default_factory=dict)
     server_received_at: datetime
     server_responded_at: datetime
 

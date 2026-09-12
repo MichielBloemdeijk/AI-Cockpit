@@ -24,12 +24,34 @@ class VoiceSessionConnection:
     """Safe connection material returned to the coordinator/browser boundary."""
 
     sdp_answer: str | None = None
+    provider_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceProviderCapabilities:
+    """Lifecycle differences the coordinator and clients must not guess."""
+
+    continuous_conversation: bool
+    application_controlled_turns: bool
+    supports_candidate_audio_append: bool
+    supports_manual_response: bool
+    supports_sideband: bool
+
+    def as_dict(self) -> dict[str, bool]:
+        return {
+            "continuous_conversation": self.continuous_conversation,
+            "application_controlled_turns": self.application_controlled_turns,
+            "supports_candidate_audio_append": self.supports_candidate_audio_append,
+            "supports_manual_response": self.supports_manual_response,
+            "supports_sideband": self.supports_sideband,
+        }
 
 
 class VoiceSessionAdapter(Protocol):
     """The coordinator-facing surface implemented by any realtime provider."""
 
     name: str
+    capabilities: VoiceProviderCapabilities
 
     async def connect(
         self,
@@ -110,6 +132,13 @@ class FakeVoiceSessionAdapter:
     """
 
     name = "fake"
+    capabilities = VoiceProviderCapabilities(
+        continuous_conversation=False,
+        application_controlled_turns=True,
+        supports_candidate_audio_append=False,
+        supports_manual_response=True,
+        supports_sideband=False,
+    )
 
     def __init__(self) -> None:
         self._handlers: dict[tuple[str, int], ProviderEventHandler] = {}
@@ -381,4 +410,7 @@ def get_voice_session_adapter(name: str) -> VoiceSessionAdapter:
         from app.services.openai_realtime_adapter import openai_realtime_adapter
 
         return openai_realtime_adapter
+    if name == "openai_live":
+        from app.services.openai_live_adapter import openai_live_adapter
+        return openai_live_adapter
     raise ValueError(f"Unsupported voice session adapter: {name}")

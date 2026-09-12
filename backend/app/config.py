@@ -204,6 +204,13 @@ class Settings(BaseSettings):
     openai_realtime_connect_timeout_seconds: float = 12.0
     openai_realtime_rotation_minutes: int = 55
     openai_realtime_transcript_margin_ms: int = 250
+    # Experimental GPT-Live provider (kept separate from Realtime defaults).
+    openai_live_base_url: str = "https://api.openai.com/v1"
+    openai_live_model: str = "gpt-live-1"
+    openai_live_voice: str = "marin"
+    openai_live_responses_model: str = "gpt-5.6-luna"
+    openai_live_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    openai_live_idle_timeout_seconds: int = 60
     jarvis_update_poll_seconds: float = 0.2
     jarvis_notification_grace_seconds: float = 8.0
     jarvis_notification_floor_stale_seconds: float = 30.0

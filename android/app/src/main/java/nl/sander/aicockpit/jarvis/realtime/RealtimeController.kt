@@ -5,8 +5,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.RealtimeCall
+import nl.sander.aicockpit.jarvis.data.VoiceEngine
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -20,6 +22,7 @@ import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.audio.JavaAudioDeviceModule
 import kotlin.coroutines.resume
+import java.util.UUID
 
 class RealtimeController(context: Context, private val api: CockpitApi) : AutoCloseable {
     private val audioModule = JavaAudioDeviceModule.builder(context).createAudioDeviceModule()
@@ -29,10 +32,17 @@ class RealtimeController(context: Context, private val api: CockpitApi) : AutoCl
     private var audioTrack: AudioTrack? = null
     private var call: RealtimeCall? = null
     private var iceReady = CompletableDeferred<Unit>()
+    private var liveStarted = CompletableDeferred<Unit>()
+    private var liveClosed = CompletableDeferred<Unit>()
+    private var eventsChannel: DataChannel? = null
+    private var activeEngine: VoiceEngine = VoiceEngine.REALTIME
 
-    suspend fun connect(wakeScore: Float? = null, onState: (String) -> Unit = {}): RealtimeCall = withContext(Dispatchers.Main) {
+    suspend fun connect(wakeScore: Float? = null, engine: VoiceEngine = VoiceEngine.REALTIME, onState: (String) -> Unit = {}): RealtimeCall = withContext(Dispatchers.Main) {
         closePeerOnly()
         iceReady = CompletableDeferred()
+        liveStarted = CompletableDeferred()
+        liveClosed = CompletableDeferred()
+        activeEngine = engine
         val observer = object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState) = onState("signaling:${state.name}")
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = onState("ice:${state.name}")
@@ -47,7 +57,7 @@ class RealtimeController(context: Context, private val api: CockpitApi) : AutoCl
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
-            override fun onDataChannel(channel: DataChannel) = Unit
+            override fun onDataChannel(channel: DataChannel) { channel.registerObserver(eventObserver(channel, onState)) }
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) = Unit
         }
@@ -62,24 +72,55 @@ class RealtimeController(context: Context, private val api: CockpitApi) : AutoCl
         audioTrack = factory.createAudioTrack("jarvis-microphone", audioSource).also {
             connection.addTrack(it, listOf("jarvis"))
         }
+        // Live requires the event transport to exist before the SDP offer is made.
+        val events = connection.createDataChannel("oai-events", DataChannel.Init())
+        eventsChannel = events
+        events.registerObserver(eventObserver(events, onState))
+        val activationId = UUID.randomUUID().toString()
         val offer = connection.createOfferAwait(MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
         })
         connection.setLocalDescriptionAwait(offer)
         runCatching { withTimeout(750) { iceReady.await() } }
         val local = connection.localDescription ?: offer
-        val established = api.createRealtimeCall(local.description, wakeScore)
+        val established = api.createRealtimeCall(local.description, wakeScore, engine, activationId)
         connection.setRemoteDescriptionAwait(
             SessionDescription(SessionDescription.Type.ANSWER, established.sdpAnswer)
         )
+        if (engine == VoiceEngine.GPT_LIVE) {
+            withTimeout(15_000) { liveStarted.await() }
+        }
         call = established
         onState("connected")
         established
     }
 
+    private fun eventObserver(channel: DataChannel, onState: (String) -> Unit) = object : DataChannel.Observer {
+        override fun onBufferedAmountChange(previousAmount: Long) = Unit
+        override fun onStateChange() = Unit
+        override fun onMessage(buffer: DataChannel.Buffer) {
+            val bytes = ByteArray(buffer.data.remaining()); buffer.data.get(bytes)
+            val event = String(bytes, Charsets.UTF_8)
+            val reduced = reduceLiveEvent(LiveEventState(), event)
+            if (reduced.started) {
+                liveStarted.complete(Unit)
+                onState("session.started")
+            }
+            if (reduced.closed) {
+                liveClosed.complete(Unit)
+                onState("session.closed")
+            }
+        }
+    }
+
     suspend fun disconnect() {
         val active = call
         call = null
+        if (activeEngine == VoiceEngine.GPT_LIVE && eventsChannel?.state() == DataChannel.State.OPEN) {
+            val closeJson = "{\"type\":\"session.close\"}".toByteArray(Charsets.UTF_8)
+            eventsChannel?.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(closeJson), false))
+            withTimeoutOrNull(2_000) { liveClosed.await() }
+        }
         if (active != null) runCatching { api.closeRealtime(active.sessionId, active.generation) }
         withContext(Dispatchers.Main) { closePeerOnly() }
     }
@@ -91,6 +132,7 @@ class RealtimeController(context: Context, private val api: CockpitApi) : AutoCl
     }
 
     private fun closePeerOnly() {
+        eventsChannel?.close(); eventsChannel?.dispose(); eventsChannel = null
         audioTrack?.dispose(); audioTrack = null
         audioSource?.dispose(); audioSource = null
         peer?.close(); peer?.dispose(); peer = null

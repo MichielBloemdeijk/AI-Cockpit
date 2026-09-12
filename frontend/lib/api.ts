@@ -766,7 +766,7 @@ export async function getTaskEvents(after = 0): Promise<TaskEventReplayResponse>
 export async function createJarvisRealtimeCall(
   controllerId: string,
   role: "controller" | "observer" = "controller",
-  providerAdapter: "fake" | "openai" = "fake",
+  providerAdapter: "fake" | "openai" | "openai_live" = "fake",
   sdpOffer?: string,
   clientContext: JarvisClientContext = currentJarvisClientContext(),
   activationContext?: JarvisRealtimeActivationContext,
@@ -1266,6 +1266,7 @@ export interface JarvisRealtimeCallResponse {
   sdp_answer: string | null;
   rotate_after_seconds: number | null;
   audio_policy: JarvisRealtimeAudioPolicy | null;
+  provider_capabilities: Record<string, boolean>;
   server_received_at: string;
   server_responded_at: string;
 }

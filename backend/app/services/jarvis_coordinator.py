@@ -118,6 +118,7 @@ class ControllerBootstrap:
     session: SessionRecord
     audio_policy: RealtimeAudioPolicy
     sdp_answer: str | None = None
+    provider_capabilities: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1233,6 +1234,11 @@ class JarvisCoordinator:
     ) -> ControllerBootstrap:
         adapter = get_voice_session_adapter(adapter_name)
         wake_activation = self._wake_activation(activation_context)
+        if wake_activation is not None and adapter_name == "openai_live":
+            # The local wake detector already admitted the activation and Live
+            # receives it on the one primary microphone path. Realtime's
+            # transcript-verification gate does not apply to GPT-Live.
+            wake_activation.verification_state = "accepted"
         audio_policy = build_realtime_audio_policy(settings)
         if wake_activation is not None:
             self._prune_activation_index()
@@ -1341,7 +1347,11 @@ class JarvisCoordinator:
                             "activation_id": wake_activation.activation_id,
                             "wake_score": wake_activation.wake_score,
                             "gate_mode": wake_activation.gate_mode,
-                            "reason": "developer_immediate",
+                            "reason": (
+                                "live_primary_audio_path"
+                                if adapter_name == "openai_live"
+                                else "developer_immediate"
+                            ),
                             "session_id": realtime.id,
                             "generation": realtime.generation,
                             "configuration_id": audio_policy.configuration_id,
@@ -1432,6 +1442,7 @@ class JarvisCoordinator:
             session=refreshed,
             audio_policy=audio_policy,
             sdp_answer=connection.sdp_answer,
+            provider_capabilities=adapter.capabilities.as_dict(),
         )
 
     def _schedule_provider_cleanup(
@@ -2294,11 +2305,12 @@ class JarvisCoordinator:
                 call_id=call_id,
                 output={"ok": ok, "result": output},
             )
-            await self._queue_controlled_response(
-                session_id,
-                generation,
-                "tool_continuation",
-            )
+            if adapter.capabilities.supports_manual_response:
+                await self._queue_controlled_response(
+                    session_id,
+                    generation,
+                    "tool_continuation",
+                )
         elif control == "start_new_jarvis_log":
             await self.start_fresh_log(idempotency_key=f"brain:{call_id}:fresh")
         elif control == "end_voice_session":

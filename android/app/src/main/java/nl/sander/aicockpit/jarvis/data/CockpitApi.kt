@@ -15,6 +15,7 @@ import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
+import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -101,7 +102,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .patch(payload.toString().toRequestBody(json)).build()).close()
     }
 
-    suspend fun createRealtimeCall(offer: String, wakeScore: Float? = null): RealtimeCall {
+    suspend fun createRealtimeCall(offer: String, wakeScore: Float? = null, engine: VoiceEngine = VoiceEngine.REALTIME, activationId: String? = null): RealtimeCall {
         val observedAt = Instant.now()
         val timeZone = ZoneId.systemDefault()
         val clientContext = JSONObject()
@@ -111,13 +112,16 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
         val payload = JSONObject()
             .put("controller_id", store.deviceId)
             .put("role", "controller")
-            .put("provider_adapter", "openai")
+            .put("provider_adapter", if (engine == VoiceEngine.GPT_LIVE) "openai_live" else "openai")
             .put("client_context", clientContext)
             .put("sdp_offer", offer)
         wakeScore?.let {
             payload.put(
                 "activation_context",
-                JSONObject().put("source", "wake_word").put("wake_score", it),
+                JSONObject()
+                    .put("source", "wake_word")
+                    .put("wake_score", it)
+                    .put("activation_id", activationId ?: UUID.randomUUID().toString()),
             )
         }
         val response = execute(authenticated("/api/jarvis/realtime/calls")

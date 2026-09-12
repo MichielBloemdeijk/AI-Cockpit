@@ -457,6 +457,7 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         request_id=request_id,
         session=_session_view(bootstrap.session),
         audio_policy=_audio_policy_view(bootstrap.audio_policy),
+        provider_capabilities=bootstrap.provider_capabilities,
         sdp_answer=bootstrap.sdp_answer,
         rotate_after_seconds=(
             settings.openai_realtime_rotation_minutes * 60

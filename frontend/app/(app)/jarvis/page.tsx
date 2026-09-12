@@ -55,6 +55,9 @@ import {
   JarvisRealtimeController,
   type JarvisRealtimeSnapshot,
 } from "@/lib/jarvis-realtime";
+import { JarvisLiveController } from "@/lib/jarvis-live";
+import { loadJarvisVoiceEngine } from "@/lib/jarvis-voice-engine";
+import type { JarvisVoiceEngine, JarvisVoiceSnapshot } from "@/lib/jarvis-voice-client";
 import {
   configuredJarvisWakeModel,
 } from "@/lib/jarvis-wake-protocol";
@@ -126,6 +129,7 @@ export default function JarvisPage() {
   const [provisionalUser, setProvisionalUser] = useState<ProvisionalTranscript | null>(null);
   const [provisionalAssistant, setProvisionalAssistant] = useState<ProvisionalTranscript | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [voiceEngine, setVoiceEngine] = useState<JarvisVoiceEngine>("realtime");
   const [realtime, setRealtime] = useState<JarvisRealtimeSnapshot>({
     status: "idle",
     attempt: 0,
@@ -147,6 +151,8 @@ export default function JarvisPage() {
   const sessionIdRef = useRef<string | null>(null);
   const controllerIdRef = useRef("");
   const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
+  const liveControllerRef = useRef<JarvisLiveController | null>(null);
+  const voiceEngineRef = useRef<JarvisVoiceEngine>("realtime");
   const wakeLifecycleRef = useRef<JarvisWakeLifecycle | null>(null);
   const wakeRuntimeRef = useRef<JarvisWakeRuntime | null>(null);
   const wakeGateModeRef = useRef<JarvisWakeGateMode>("transcript_rules");
@@ -260,7 +266,77 @@ export default function JarvisPage() {
 
   useEffect(() => {
     let disposed = false;
+    const selectedVoiceEngine = loadJarvisVoiceEngine();
+    voiceEngineRef.current = selectedVoiceEngine;
+    setVoiceEngine(selectedVoiceEngine);
     controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`;
+    const handleProviderEvent = (event: Record<string, unknown>) => {
+      const eventType = typeof event.type === "string" ? event.type : "";
+      if (FOLLOW_UP_ACTIVITY_EVENTS.has(eventType) || eventType.startsWith("session.")) {
+        wakeLifecycleRef.current?.noteActivity();
+      }
+      if (["conversation.item.input_audio_transcription.delta", "session.input_transcript.delta"].includes(eventType)) {
+        setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+          id: String(event.item_id ?? "live-user"),
+          delta: String(event.delta ?? ""),
+          afterMessageId: newestMessageIdRef.current,
+        }));
+      } else if (eventType === "conversation.item.input_audio_transcription.completed") {
+        setProvisionalUser((current) => mergeProvisionalTranscript(current, {
+          id: String(event.item_id ?? current?.id ?? "live-user"),
+          transcript: String(event.transcript ?? ""),
+          replace: true,
+          afterMessageId: newestMessageIdRef.current,
+        }));
+      } else if (["response.output_audio_transcript.delta", "response.output_text.delta", "session.output_transcript.delta"].includes(eventType)) {
+        setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
+          id: String(event.response_id ?? event.item_id ?? "assistant-live"),
+          delta: String(event.delta ?? ""),
+          afterMessageId: newestMessageIdRef.current,
+        }));
+      } else if (["response.output_audio_transcript.done", "response.output_text.done"].includes(eventType)) {
+        setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
+          id: String(event.response_id ?? event.item_id ?? current?.id ?? "assistant-live"),
+          transcript: String(event.transcript ?? event.text ?? ""),
+          replace: true,
+          afterMessageId: newestMessageIdRef.current,
+        }));
+      }
+    };
+    const handleRemoteStream = (stream: MediaStream | null) => {
+      const audio = remoteAudioRef.current;
+      if (!audio) return;
+      audio.srcObject = stream;
+      if (stream) {
+        audio.muted = false;
+        void audio.play().catch(() => undefined);
+      }
+    };
+    const handleLiveSnapshot = (snapshot: JarvisVoiceSnapshot) => {
+      if (disposed) return;
+      const status: JarvisRealtimeSnapshot["status"] = snapshot.status === "connecting"
+        ? "connecting"
+        : snapshot.status === "connected" || snapshot.status === "interrupted"
+          ? "connected"
+          : snapshot.status === "error"
+            ? "text_fallback"
+            : "idle";
+      setRealtime((current) => ({
+        status,
+        attempt: snapshot.status === "connecting" ? current.attempt + 1 : current.attempt,
+        session: current.session,
+        error: snapshot.error,
+      }));
+    };
+    const liveController = new JarvisLiveController(
+      controllerIdRef.current,
+      {
+        onSnapshot: handleLiveSnapshot,
+        onRemoteStream: handleRemoteStream,
+        onProviderEvent: handleProviderEvent,
+      },
+    );
+    liveControllerRef.current = liveController;
     const realtimeController = new JarvisRealtimeController({
       controllerId: controllerIdRef.current,
       onSnapshot: setRealtime,
@@ -296,39 +372,7 @@ export default function JarvisPage() {
             : `${activationId}: requested ${requestedGateMode}, backend used ${backendGateMode} (${configurationId})`,
         );
       },
-      onProviderEvent: (event) => {
-        const eventType = typeof event.type === "string" ? event.type : "";
-        if (FOLLOW_UP_ACTIVITY_EVENTS.has(eventType)) {
-          wakeLifecycleRef.current?.noteActivity();
-        }
-        if (eventType === "conversation.item.input_audio_transcription.delta") {
-          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
-            id: String(event.item_id ?? "live-user"),
-            delta: String(event.delta ?? ""),
-            afterMessageId: newestMessageIdRef.current,
-          }));
-        } else if (eventType === "conversation.item.input_audio_transcription.completed") {
-          setProvisionalUser((current) => mergeProvisionalTranscript(current, {
-            id: String(event.item_id ?? current?.id ?? "live-user"),
-            transcript: String(event.transcript ?? ""),
-            replace: true,
-            afterMessageId: newestMessageIdRef.current,
-          }));
-        } else if (["response.output_audio_transcript.delta", "response.output_text.delta"].includes(eventType)) {
-          setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
-            id: String(event.response_id ?? event.item_id ?? "assistant-live"),
-            delta: String(event.delta ?? ""),
-            afterMessageId: newestMessageIdRef.current,
-          }));
-        } else if (["response.output_audio_transcript.done", "response.output_text.done"].includes(eventType)) {
-          setProvisionalAssistant((current) => mergeProvisionalTranscript(current, {
-            id: String(event.response_id ?? event.item_id ?? current?.id ?? "assistant-live"),
-            transcript: String(event.transcript ?? event.text ?? ""),
-            replace: true,
-            afterMessageId: newestMessageIdRef.current,
-          }));
-        }
-      },
+      onProviderEvent: handleProviderEvent,
     });
     realtimeControllerRef.current = realtimeController;
     const handlePageHide = () => realtimeController.handlePageHide();
@@ -341,6 +385,7 @@ export default function JarvisPage() {
     const runtime = new JarvisWakeRuntime({
       onTrace: (kind, detail) => realtimeController.recordClientSignal(kind, detail),
       onReady: (stream) => {
+        if (voiceEngineRef.current === "openai_live") return;
         void realtimeController.arm(stream).catch((cause) => {
           if (disposed) return;
           wakeLifecycleRef.current?.fail(cause);
@@ -367,17 +412,25 @@ export default function JarvisPage() {
           developerModeRef.current,
           wakeGateModeRef.current,
         );
-        void realtimeController.start({
-          audioHandoff: handoff,
-          activationContext: handoff.wakeProbability === null
-            ? undefined
-            : {
+        const activationContext = handoff.wakeProbability === null
+          ? undefined
+          : {
                 source: "wake_word",
                 wake_score: handoff.wakeProbability,
                 activation_id: activationId,
                 gate_mode: effectiveGateMode,
-              },
-        })
+              } as const;
+        const liveCandidateAudio = handoff.candidateAudio && "observeEndpoint" in handoff.candidateAudio
+          ? handoff.candidateAudio
+          : undefined;
+        const connection = voiceEngineRef.current === "openai_live"
+          ? liveController.startWithOptions({
+              stream: handoff.localStream,
+              activationContext,
+              candidateAudio: liveCandidateAudio,
+            })
+          : realtimeController.start({ audioHandoff: handoff, activationContext });
+        void connection
           .then((snapshot) => {
             if (!disposed && snapshot.status === "connected") lifecycle.connected();
           })
@@ -391,7 +444,11 @@ export default function JarvisPage() {
     wakeRuntimeRef.current = runtime;
     rearmWakeRef.current = async () => {
       try {
-        if (realtimeController.current().status !== "standby") {
+        if (voiceEngineRef.current === "openai_live") {
+          if (!["idle", "closed"].includes(liveController.current().status)) {
+            await liveController.stop();
+          }
+        } else if (realtimeController.current().status !== "standby") {
           await realtimeController.stop();
         }
         await runtime.rearm();
@@ -416,8 +473,9 @@ export default function JarvisPage() {
       window.clearInterval(timer);
       window.removeEventListener("pagehide", handlePageHide);
       lifecycle.destroy();
-      void realtimeController.stop().finally(() => runtime.stop());
+      void Promise.all([realtimeController.stop(), liveController.stop()]).finally(() => runtime.stop());
       realtimeControllerRef.current = null;
+      liveControllerRef.current = null;
       wakeLifecycleRef.current = null;
       wakeRuntimeRef.current = null;
     };
@@ -437,7 +495,7 @@ export default function JarvisPage() {
       if (event.event_type === "provider.user_transcript_delta") {
         setProvisionalUser((current) => mergeProvisionalTranscript(current, {
           id: String(event.payload?.item_id ?? "live-user"),
-          transcript: String(event.payload?.transcript ?? ""),
+          delta: String(event.payload?.delta ?? event.payload?.transcript ?? ""),
           afterMessageId: newestMessageIdRef.current,
         }));
         return;
@@ -658,16 +716,19 @@ export default function JarvisPage() {
 
   const armVoice = async () => {
     if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
-    if (!realtimeControllerRef.current) throw new Error("Realtime controller is unavailable");
+    if (!realtimeControllerRef.current || !liveControllerRef.current) throw new Error("Voice controller is unavailable");
     const runtime = wakeRuntimeRef.current;
     const lifecycle = wakeLifecycleRef.current;
     if (runtime?.current().status === "ready" && lifecycle?.current().status === "armed") {
       lifecycle.detected();
       lifecycle.connecting();
       try {
-        await realtimeControllerRef.current.start({
-          audioHandoff: runtime.manualHandoff(),
-        });
+        const handoff = runtime.manualHandoff();
+        if (voiceEngineRef.current === "openai_live") {
+          await liveControllerRef.current.startWithOptions({ stream: handoff.localStream });
+        } else {
+          await realtimeControllerRef.current.start({ audioHandoff: handoff });
+        }
         lifecycle.connected();
       } catch (cause) {
         lifecycle.fail(cause);
@@ -676,7 +737,8 @@ export default function JarvisPage() {
     } else {
       await runtime?.stop();
       lifecycle?.reset();
-      await realtimeControllerRef.current.start();
+      if (voiceEngineRef.current === "openai_live") await liveControllerRef.current.startWithOptions();
+      else await realtimeControllerRef.current.start();
     }
   };
 
@@ -689,7 +751,8 @@ export default function JarvisPage() {
     ) {
       wakeLifecycleRef.current.sleep();
     } else if (realtime.status !== "idle") {
-      await realtimeControllerRef.current?.stop();
+      if (voiceEngineRef.current === "openai_live") await liveControllerRef.current?.stop();
+      else await realtimeControllerRef.current?.stop();
     } else if (session) {
       await closeJarvisRealtimeSession(session.id, session.generation);
     }
@@ -741,7 +804,7 @@ export default function JarvisPage() {
           </button>
           {statusOpen && (
             <div className="mb-2 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-xs">
-              <div><span className="text-zinc-500">Voice</span><p className="mt-1 capitalize text-zinc-200">{preferences?.voice ?? "marin"}</p></div>
+              <div><span className="text-zinc-500">Voice</span><p className="mt-1 capitalize text-zinc-200">{preferences?.voice ?? "marin"} · {voiceEngine === "openai_live" ? "GPT-Live" : "Realtime"}</p></div>
               <div><span className="text-zinc-500">Wake</span><p className="mt-1 capitalize text-zinc-200">{wake.status.replaceAll("_", " ")}</p></div>
               <div><span className="text-zinc-500">Worker</span><p className={`mt-1 capitalize ${state?.worker_health.status === "online" ? "text-emerald-300" : "text-amber-200"}`}>{state?.worker_health.status ?? "offline"}</p></div>
               <div><span className="text-zinc-500">Systems</span><p className={`mt-1 ${degradedComponents.length ? "text-amber-200" : "text-emerald-300"}`}>{degradedComponents.length ? `${degradedComponents.length} degraded` : "Healthy"}</p></div>
@@ -779,6 +842,9 @@ export default function JarvisPage() {
               </span>
               <span className={state?.worker_health.status === "online" ? "text-xs text-emerald-400" : "text-xs text-zinc-500"}>
                 worker {state?.worker_health.status || "offline"}
+              </span>
+              <span className="text-xs text-zinc-500">
+                {voiceEngine === "openai_live" ? "GPT-Live experimental" : "Realtime 2.1"}
               </span>
               {!!degradedComponents.length && (
                 <span className="text-xs text-amber-300" title={degradedComponents.map(([name, value]) => `${name}: ${value.detail || value.status}`).join("\n")}>

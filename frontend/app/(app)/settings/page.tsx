@@ -5,6 +5,8 @@ import Link from "next/link";
 import { Settings, Bell, Cpu, Save, AudioLines } from "lucide-react";
 import { ConversationSessionMetadata, createJarvisPairingCode, getChatSettings, getJarvisPreferences, updateChatSettings, updateJarvisPreferences, type JarvisPairingCode, type JarvisPreferences } from "@/lib/api";
 import { enablePushNotifications, inspectPushNotifications, type PushNotificationState } from "@/lib/push-notifications";
+import { loadJarvisVoiceEngine, saveJarvisVoiceEngine } from "@/lib/jarvis-voice-engine";
+import type { JarvisVoiceEngine } from "@/lib/jarvis-voice-client";
 
 export default function SettingsPage() {
   const [models, setModels] = useState<string[]>([]);
@@ -16,6 +18,7 @@ export default function SettingsPage() {
   const [developerLabSaving, setDeveloperLabSaving] = useState(false);
   const [developerLabStatus, setDeveloperLabStatus] = useState<"saved" | "error" | null>(null);
   const [pairingCode, setPairingCode] = useState<JarvisPairingCode | null>(null);
+  const [voiceEngine, setVoiceEngine] = useState<JarvisVoiceEngine>("realtime");
 
   useEffect(() => {
     getChatSettings().then((response) => {
@@ -24,6 +27,7 @@ export default function SettingsPage() {
       setTaskAgentModel(response.task_agent_model);
     }).catch(() => {});
     getJarvisPreferences().then(setJarvisPreferences).catch(() => {});
+    setVoiceEngine(loadJarvisVoiceEngine());
   }, []);
 
   useEffect(() => {
@@ -270,6 +274,14 @@ export default function SettingsPage() {
           </p>
         </section>
       </div>
+      <section className="border-b border-zinc-800 p-4">
+        <h2 className="text-sm font-medium text-zinc-100">Jarvis voice engine</h2>
+        <p className="mt-1 text-xs text-zinc-500">Experimental engine applies to the next voice session. Realtime remains the default.</p>
+        <select value={voiceEngine} onChange={(event) => { const next = event.target.value as JarvisVoiceEngine; setVoiceEngine(next); saveJarvisVoiceEngine(next); }} className="mt-3 min-h-10 rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-200">
+          <option value="realtime">Realtime (default)</option>
+          <option value="openai_live">GPT-Live (experimental)</option>
+        </select>
+      </section>
     </div>
   );
 }

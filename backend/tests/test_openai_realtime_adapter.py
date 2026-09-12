@@ -995,6 +995,14 @@ async def test_openai_call_api_returns_only_internal_session_and_sdp(
             "server_received_at",
             "server_responded_at",
             "audio_policy",
+            "provider_capabilities",
+        }
+        assert body["provider_capabilities"] == {
+            "continuous_conversation": False,
+            "application_controlled_turns": True,
+            "supports_candidate_audio_append": True,
+            "supports_manual_response": True,
+            "supports_sideband": True,
         }
         assert body["audio_policy"] == {
             "configuration_id": "server_vad:s350:t0.5:p300",
