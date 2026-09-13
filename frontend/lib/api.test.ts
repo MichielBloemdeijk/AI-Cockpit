@@ -248,6 +248,7 @@ describe("Jarvis daily-log api", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/jarvis/realtime/sessions/session%2F1?generation=2", {
       method: "DELETE",
       credentials: "include",
+      keepalive: true,
     });
   });
 });

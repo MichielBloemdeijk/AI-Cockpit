@@ -953,6 +953,7 @@ export async function closeJarvisRealtimeSession(sessionId: string, generation: 
   const res = await fetch(`${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}?${params}`, {
     method: "DELETE",
     credentials: "include",
+    keepalive: true,
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
