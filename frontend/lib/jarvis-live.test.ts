@@ -151,6 +151,41 @@ function candidateAudio(initial: Float32Array) {
 }
 
 describe("JarvisLiveController", () => {
+  it("retains the native browser receiver for startup timers", async () => {
+    const { pc } = fakePc();
+    const nativeSetTimeout = globalThis.setTimeout;
+    const nativeClearTimeout = globalThis.clearTimeout;
+    const strictSetTimeout = function (
+      this: typeof globalThis,
+      callback: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return nativeSetTimeout(callback, delay, ...args);
+    } as typeof globalThis.setTimeout;
+    const strictClearTimeout = function (
+      this: typeof globalThis,
+      timer?: ReturnType<typeof globalThis.setTimeout>,
+    ) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return nativeClearTimeout(timer);
+    } as typeof globalThis.clearTimeout;
+    vi.stubGlobal("setTimeout", strictSetTimeout);
+    vi.stubGlobal("clearTimeout", strictClearTimeout);
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc,
+      getUserMedia: async () => fakeMediaStream(),
+      waitForBackendReady: async () => undefined,
+      createCall: async () => fakeCall(),
+    });
+    vi.stubGlobal("setTimeout", nativeSetTimeout);
+    vi.stubGlobal("clearTimeout", nativeClearTimeout);
+
+    await expect(controller.start()).resolves.toMatchObject({ status: "connected" });
+    vi.unstubAllGlobals();
+  });
+
   it("connects when backend readiness precedes SDP and transport without a browser session.started", async () => {
     const remote = deferred<void>();
     const { pc } = fakePc({ remoteDescription: remote.promise });

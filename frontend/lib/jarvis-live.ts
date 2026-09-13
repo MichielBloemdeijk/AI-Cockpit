@@ -96,8 +96,11 @@ export class JarvisLiveController implements JarvisVoiceClient {
       peerConnection: dependencies.peerConnection ?? (() => new RTCPeerConnection()),
       audio: dependencies.audio ?? (() => document.createElement("audio")),
       audioContext: dependencies.audioContext ?? (() => new AudioContext()),
-      setTimeout: dependencies.setTimeout ?? globalThis.setTimeout,
-      clearTimeout: dependencies.clearTimeout ?? globalThis.clearTimeout,
+      // Window timers are Web-IDL methods in browsers and must retain their
+      // native receiver. Node's timers are permissive, which can hide this
+      // failure in unit tests.
+      setTimeout: dependencies.setTimeout ?? globalThis.setTimeout.bind(globalThis),
+      clearTimeout: dependencies.clearTimeout ?? globalThis.clearTimeout.bind(globalThis),
     };
   }
 
