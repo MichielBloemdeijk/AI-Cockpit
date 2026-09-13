@@ -38,6 +38,23 @@ async def test_page_load_does_not_create_an_empty_log() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_fresh_start_creates_the_first_log_on_a_new_database() -> None:
+    fresh = await jarvis_daily_service.start_fresh_log(
+        requested_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        idempotency_key="first-fresh-log",
+    )
+
+    assert fresh.title == "Jarvis — 2026-08-27"
+    assert fresh.jarvis_day_sequence == 1
+    assert fresh.updated_at is not None
+    state = await jarvis_daily_service.get_state(
+        now=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
+    )
+    assert state.current_log is not None
+    assert state.current_log.id == fresh.id
+
+
+@pytest.mark.asyncio
 async def test_first_text_turn_lazily_creates_daily_log_with_truth_metadata() -> None:
     accepted = await jarvis_daily_service.accept_text_turn(
         "Jarvis, status check",

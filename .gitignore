@@ -35,6 +35,9 @@ node_modules/
 .next/
 out/
 .npm/
+frontend/playwright-report/
+frontend/test-results/
+frontend/.next-live-smoke/
 
 # Logs and local reports
 *.log

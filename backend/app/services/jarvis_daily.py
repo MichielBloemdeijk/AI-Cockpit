@@ -206,6 +206,10 @@ class JarvisDailyService:
                 )
             self._point_state(state, new_log)
             await session.flush()
+            # SQLite server defaults (notably updated_at) are expired after
+            # the insert. Refresh before building the detached API record so
+            # a brand-new database does not trigger async lazy loading.
+            await session.refresh(new_log)
             return _conversation_record(new_log)
 
     async def _lock_state(self, session: AsyncSession) -> JarvisState:

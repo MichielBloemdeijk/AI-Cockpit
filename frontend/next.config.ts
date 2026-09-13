@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 import { getAllowedDevOrigins, getRootEnvValue } from "./lib/dev-origins";
 
 const jarvisWakeModelUrl = getRootEnvValue("NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL");
+const apiProxyUrl = process.env.AI_COCKPIT_API_PROXY_URL?.trim().replace(/\/$/, "")
+  || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   distDir: process.env.AI_COCKPIT_NEXT_DIST_DIR || ".next",
@@ -27,7 +29,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: "http://127.0.0.1:8000/api/:path*",
+        destination: `${apiProxyUrl}/api/:path*`,
       },
     ];
   },
