@@ -28,6 +28,7 @@ export interface JarvisWakeHandoff {
   utterance: Promise<Float32Array>;
   sampleRate: number;
   wakeProbability: number | null;
+  wakeDetectedMonotonicMs?: number;
   activationId?: string;
   /** Candidate audio starts with `preRoll`, then arrives through `subscribe`. */
   candidateAudio?: JarvisWakeCandidateStream | JarvisCandidateAudio;
@@ -186,6 +187,7 @@ export class JarvisWakeRuntime {
       utterance: Promise.resolve(new Float32Array(0)),
       sampleRate: JARVIS_WAKE_SAMPLE_RATE,
       wakeProbability: null,
+      wakeDetectedMonotonicMs: typeof performance !== "undefined" ? performance.now() : Date.now(),
     };
   }
 
@@ -214,6 +216,7 @@ export class JarvisWakeRuntime {
       return;
     }
     if (event.type === "detected") {
+      const wakeDetectedMonotonicMs = typeof performance !== "undefined" ? performance.now() : Date.now();
       const splitActivationId = event.activationId;
       if (
         this.snapshot.status !== "ready"
@@ -245,6 +248,7 @@ export class JarvisWakeRuntime {
           utterance: Promise.resolve(new Float32Array(0)),
           sampleRate: JARVIS_WAKE_SAMPLE_RATE,
           wakeProbability: event.probability,
+          wakeDetectedMonotonicMs,
           activationId: splitActivationId,
           candidateAudio: activationAudio,
         });
@@ -270,6 +274,7 @@ export class JarvisWakeRuntime {
         utterance,
         sampleRate: JARVIS_WAKE_SAMPLE_RATE,
         wakeProbability: event.probability,
+        wakeDetectedMonotonicMs,
         candidateAudio: candidate.stream,
       });
       return;

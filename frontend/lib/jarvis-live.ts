@@ -2,6 +2,8 @@ import {
   closeJarvisRealtimeSession,
   createJarvisRealtimeCall,
   getJarvisState,
+  type JarvisLiveEvent,
+  type JarvisStateResponse,
   type JarvisRealtimeActivationContext,
   type JarvisRealtimeCallResponse,
   type JarvisSession,
@@ -13,6 +15,7 @@ export interface JarvisLiveStartOptions {
   stream?: MediaStream;
   activationContext?: JarvisRealtimeActivationContext;
   candidateAudio?: JarvisCandidateAudio;
+  wakeDetectedMonotonicMs?: number;
 }
 
 export interface JarvisLiveDependencies {
@@ -25,7 +28,7 @@ export interface JarvisLiveDependencies {
   ) => Promise<JarvisRealtimeCallResponse>;
   closeCall?: (sessionId: string, generation: number) => Promise<unknown>;
   getUserMedia?: () => Promise<MediaStream>;
-  waitForBackendReady?: (session: JarvisSession, signal?: AbortSignal) => Promise<void>;
+  getBackendState?: () => Promise<JarvisStateResponse>;
   peerConnection?: () => RTCPeerConnection;
   audio?: () => HTMLAudioElement;
   audioContext?: () => AudioContext;
@@ -50,6 +53,27 @@ export interface JarvisLiveDiagnostic {
   detail?: Record<string, unknown>;
 }
 
+type BackendReadinessState = "ready" | "failed";
+
+interface BackendReadinessRecord {
+  state: BackendReadinessState;
+  message?: string;
+}
+
+interface PreparedLiveTransport {
+  stream: MediaStream;
+  ownsStream: boolean;
+  pc: RTCPeerConnection;
+  events: RTCDataChannel;
+  activationBridge: LiveActivationBridge;
+  localOffer: string;
+  peerConnected: boolean;
+  dataChannelOpen: boolean;
+  claimed: boolean;
+  prepareEpoch: number;
+  cleanups: Array<() => void>;
+}
+
 const IDLE_CLOSE_MS = 60_000;
 const START_TIMEOUT_MS = 15_000;
 
@@ -70,6 +94,16 @@ export class JarvisLiveController implements JarvisVoiceClient {
   private attemptEpoch = 0;
   private closedBackendSessions = new Set<string>();
   private startupAbort: AbortController | null = null;
+  private prepared: PreparedLiveTransport | null = null;
+  private preparation: Promise<PreparedLiveTransport> | null = null;
+  private preparationStream: MediaStream | null = null;
+  private preparationEpoch = 0;
+  private activeReadiness: LiveStartupReadiness | null = null;
+  private activeDiagnose: ((event: string, detail?: Record<string, unknown>) => void) | null = null;
+  private backendStreamOpen = false;
+  private backendRecords = new Map<string, BackendReadinessRecord>();
+  private backendWaiters = new Map<string, Set<(record: BackendReadinessRecord) => void>>();
+  private backendObserverCleanup: (() => void) | null = null;
   private snapshot: JarvisVoiceSnapshot = {
     status: "idle",
     engine: "openai_live",
@@ -92,7 +126,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
       )),
       closeCall: dependencies.closeCall ?? closeJarvisRealtimeSession,
       getUserMedia: dependencies.getUserMedia ?? (() => navigator.mediaDevices.getUserMedia({ audio: true })),
-      waitForBackendReady: dependencies.waitForBackendReady ?? waitForBackendReady,
+      getBackendState: dependencies.getBackendState ?? getJarvisState,
       peerConnection: dependencies.peerConnection ?? (() => new RTCPeerConnection()),
       audio: dependencies.audio ?? (() => document.createElement("audio")),
       audioContext: dependencies.audioContext ?? (() => new AudioContext()),
@@ -111,6 +145,88 @@ export class JarvisLiveController implements JarvisVoiceClient {
   onSnapshot(listener: (snapshot: JarvisVoiceSnapshot) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Build every local WebRTC/audio primitive while wake listening is armed. */
+  async prepare(stream: MediaStream, reason = "wake_armed"): Promise<void> {
+    if (["connecting", "connected", "interrupted"].includes(this.snapshot.status)) return;
+    if (this.prepared?.stream === stream && !this.prepared.claimed) return;
+    if (this.preparation && this.preparationStream === stream) {
+      await this.preparation;
+      return;
+    }
+    const prepareEpoch = ++this.preparationEpoch;
+    const startedAt = monotonicNow();
+    this.emitPreparationDiagnostic("transport_preparation_started", { reason });
+    await this.discardPreparedTransport();
+    this.preparationStream = stream;
+    const pending = this.buildPreparedTransport(stream, false, prepareEpoch);
+    this.preparation = pending;
+    try {
+      const prepared = await pending;
+      if (prepareEpoch !== this.preparationEpoch) {
+        await destroyPreparedTransport(prepared);
+        return;
+      }
+      this.prepared = prepared;
+      this.emitPreparationDiagnostic("transport_preparation_ready", {
+        reason,
+        preparation_ms: roundMs(monotonicNow() - startedAt),
+        offer_bytes: prepared.localOffer.length,
+      });
+    } finally {
+      if (this.preparation === pending) {
+        this.preparation = null;
+        this.preparationStream = null;
+      }
+    }
+  }
+
+  async refreshPreparation(reason: "microphone_change" | "network_change"): Promise<void> {
+    const stream = this.prepared?.stream ?? this.preparationStream;
+    if (!stream || ["connecting", "connected", "interrupted"].includes(this.snapshot.status)) return;
+    ++this.preparationEpoch;
+    this.preparation = null;
+    this.preparationStream = null;
+    await this.discardPreparedTransport();
+    await this.prepare(stream, reason);
+  }
+
+  recordBackendEvent(event: JarvisLiveEvent): boolean {
+    if (event.source_domain !== "session") return false;
+    const payload = event.payload ?? {};
+    const sessionId = String(payload.session_id ?? event.source_id ?? "");
+    const payloadGeneration = Number(payload.generation ?? 0);
+    const generation = payloadGeneration > 0
+      ? payloadGeneration
+      : this.session?.id === sessionId
+        ? this.session.generation
+        : 0;
+    if (!sessionId || !Number.isFinite(generation) || generation <= 0) return false;
+    let record: BackendReadinessRecord | null = null;
+    if (event.event_type === "provider.ready") {
+      record = { state: "ready" };
+    } else if ([
+      "provider.disconnected",
+      "provider.provider_error",
+      "session.disconnected",
+      "session.superseded",
+      "session.connection_failed",
+    ].includes(event.event_type)) {
+      record = {
+        state: "failed",
+        message: event.event_type === "session.superseded"
+          ? "GPT-Live session was replaced during startup"
+          : "GPT-Live backend sideband disconnected during startup",
+      };
+    }
+    if (!record) return false;
+    this.publishBackendRecord(sessionId, generation, record);
+    return true;
+  }
+
+  recordLiveStreamState(state: "opened" | "errored"): void {
+    this.backendStreamOpen = state === "opened";
   }
 
   start(stream?: MediaStream): Promise<JarvisVoiceSnapshot> {
@@ -148,99 +264,49 @@ export class JarvisLiveController implements JarvisVoiceClient {
     try {
       const stream = options.stream ?? await this.deps.getUserMedia();
       assertCurrent();
+      let transport = this.prepared?.stream === stream ? this.prepared : null;
+      if (!transport && this.preparation && this.preparationStream === stream) {
+        transport = await this.preparation;
+      }
+      if (transport && transport.prepareEpoch !== this.preparationEpoch) transport = null;
+      const reusedPreparation = Boolean(transport && !transport.claimed);
+      transport ??= await this.buildPreparedTransport(stream, !options.stream, ++this.preparationEpoch);
+      assertCurrent();
+      transport.claimed = true;
+      if (this.prepared === transport) this.prepared = null;
+      this.pc = transport.pc;
+      this.events = transport.events;
       this.localStream = stream;
-      this.ownsLocalStream = !options.stream;
-      const activationBridge = options.candidateAudio
-        ? await createLiveActivationBridge(options.candidateAudio, this.deps.audioContext)
-        : null;
-      this.activationBridge = activationBridge;
-      const providerStream = activationBridge?.stream ?? stream;
-      const pc = this.pc = this.deps.peerConnection();
-      const observePeerState = () => {
-        if (attempt !== this.attemptEpoch) return;
-        const state = pc.connectionState;
-        diagnose("peer_state", { state });
-        if (state === "connected") readiness.markPeerConnected();
-        if (state === "failed" || state === "closed") {
-          readiness.fail(new Error(`GPT-Live WebRTC connection ${state} during startup`));
-        }
-      };
-      const observeIceState = () => {
-        if (attempt !== this.attemptEpoch) return;
-        const state = pc.iceConnectionState;
-        diagnose("ice_state", { state });
-        if (state === "failed" || state === "closed") {
-          readiness.fail(new Error(`GPT-Live ICE connection ${state} during startup`));
-        }
-      };
-      pc.addEventListener?.("connectionstatechange", observePeerState);
-      pc.addEventListener?.("iceconnectionstatechange", observeIceState);
-      providerStream.getAudioTracks().forEach((track) => pc.addTrack(track, providerStream));
-      pc.ontrack = (event) => {
-        const remote = event.streams[0] ?? new MediaStream([event.track]);
-        this.options.onRemoteStream?.(remote);
-        if (!this.options.onRemoteStream) {
-          const audio = this.remoteAudio = this.deps.audio();
-          audio.autoplay = true;
-          audio.srcObject = remote;
-          void audio.play().catch(() => undefined);
-        }
-        this.publish({ ...this.snapshot, playbackActive: true });
-      };
-
-      // GPT-Live requires oai-events to be negotiated in the original offer.
-      const events = this.events = pc.createDataChannel("oai-events");
-      const observeEventsOpen = () => {
-        if (attempt !== this.attemptEpoch) return;
-        diagnose("data_channel_open");
-        readiness.markDataChannelOpen();
-      };
-      events.onopen = observeEventsOpen;
-      events.onclose = () => {
-        if (attempt !== this.attemptEpoch) return;
-        diagnose("data_channel_closed");
-        readiness.fail(new Error("GPT-Live events channel closed during startup"));
-      };
-      events.onmessage = (message) => {
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(String(message.data)) as Record<string, unknown>;
-        } catch {
-          return;
-        }
-        const type = typeof event.type === "string" ? event.type : "";
-        // A stop invalidates the startup attempt before waiting for this ack.
-        if (type === "session.closed") this.closeWaiter?.();
-        if (attempt !== this.attemptEpoch) return;
-        this.options.onProviderEvent?.(event);
-        if (type === "session.started") {
-          diagnose("browser_session_started");
-          readiness.markBrowserSessionStarted();
-        }
-        if (type === "response.event") this.trackDelegation(event);
-        if (isMeaningfulLiveEvent(event)) this.touch();
-      };
-      events.onerror = () => {
-        if (attempt !== this.attemptEpoch) return;
-        diagnose("data_channel_error");
-        readiness.fail(new Error("GPT-Live events channel failed during startup"));
-      };
-      if (events.readyState === "open") observeEventsOpen();
-
-      const offer = await pc.createOffer();
-      assertCurrent();
-      await pc.setLocalDescription(offer);
-      assertCurrent();
-      await waitForIceGathering(pc);
-      assertCurrent();
-      const localOffer = pc.localDescription?.sdp ?? offer.sdp ?? "";
+      this.ownsLocalStream = transport.ownsStream;
+      this.activationBridge = transport.activationBridge;
+      this.activeReadiness = readiness;
+      this.activeDiagnose = diagnose;
+      const bufferStart = transport.activationBridge.attach(options.candidateAudio);
+      diagnose("activation_audio_buffering", bufferStart);
+      if (transport.peerConnected) readiness.markPeerConnected();
+      if (transport.dataChannelOpen || transport.events.readyState === "open") readiness.markDataChannelOpen();
+      diagnose(reusedPreparation ? "transport_prepared_reused" : "transport_prepared_on_demand", {
+        wake_to_transport_claim_ms: options.wakeDetectedMonotonicMs === undefined
+          ? undefined
+          : roundMs(monotonicNow() - options.wakeDetectedMonotonicMs),
+      });
+      const pc = transport.pc;
+      const requestStartedAt = monotonicNow();
+      diagnose("connection_request_started", {
+        wake_to_request_ms: options.wakeDetectedMonotonicMs === undefined
+          ? undefined
+          : roundMs(requestStartedAt - options.wakeDetectedMonotonicMs),
+      });
       const response = await this.deps.createCall(
         this.controllerId,
         "controller",
         "openai_live",
-        localOffer,
+        transport.localOffer,
         options.activationContext,
       );
+      diagnose("connection_material_received", {
+        request_ms: roundMs(monotonicNow() - requestStartedAt),
+      });
       const responseSession = response.session;
       const sdpAnswer = response.sdp_answer;
       acceptedSession = responseSession;
@@ -252,20 +318,12 @@ export class JarvisLiveController implements JarvisVoiceClient {
         await this.closeBackendSession(responseSession);
         throw new LiveStartupCancelledError();
       }
-      // Retain the accepted identity before either readiness wait so every
-      // failure/cancellation closes this exact backend attempt.
-      void this.deps.waitForBackendReady(responseSession, startupAbort.signal).then(
-        () => {
-          if (attempt !== this.attemptEpoch) return;
-          diagnose("backend_ready");
-          readiness.markBackendReady();
-        },
-        (cause) => {
-          if (attempt !== this.attemptEpoch) return;
-          const error = cause instanceof Error ? cause : new Error("GPT-Live backend readiness failed");
-          diagnose("backend_readiness_failed", { message: error.message });
-          readiness.fail(error);
-        },
+      this.backendObserverCleanup = this.observeBackendReadiness(
+        responseSession,
+        readiness,
+        diagnose,
+        startupAbort.signal,
+        attempt,
       );
       await withTimeout(
         (async () => {
@@ -273,32 +331,31 @@ export class JarvisLiveController implements JarvisVoiceClient {
           assertCurrent();
           diagnose("sdp_applied");
           readiness.markSdpApplied();
-          observePeerState();
-          observeIceState();
-          if (events.readyState === "open") observeEventsOpen();
+          this.observePreparedTransportState(transport);
           await readiness.ready;
-          // Backend readiness may precede a slow WebRTC connection. Re-read it
-          // at the combined boundary so a failed sideband cannot be mistaken
-          // for a healthy session merely because it was healthy earlier.
-          await this.deps.waitForBackendReady(responseSession, startupAbort.signal);
-          diagnose("backend_health_confirmed");
         })(),
         START_TIMEOUT_MS,
         this.deps,
         () => {
           const missing = readiness.missing();
           return new Error(
-            `GPT-Live startup timed out; missing ${(
-              missing.length ? missing : ["backend sideband health confirmation"]
-            ).join(", ")}`,
+            `GPT-Live startup timed out; missing ${(missing.length ? missing : ["readiness signal"]).join(", ")}`,
           );
         },
       );
       assertCurrent();
-      await activationBridge?.start();
+      const backendRecord = this.backendRecords.get(backendSessionKey(responseSession.id, responseSession.generation));
+      if (backendRecord?.state === "failed") {
+        throw new Error(backendRecord.message ?? "GPT-Live backend sideband disconnected during startup");
+      }
+      const release = await transport.activationBridge.release();
       diagnose("activation_audio_released", {
-        buffered: Boolean(activationBridge),
+        buffered: Boolean(options.candidateAudio),
         browser_session_started: readiness.browserSessionStarted,
+        ...release,
+        wake_to_release_ms: options.wakeDetectedMonotonicMs === undefined
+          ? undefined
+          : roundMs(monotonicNow() - options.wakeDetectedMonotonicMs),
       });
       this.publish({ ...this.snapshot, status: "connected", micEnabled: true });
       this.touch();
@@ -328,6 +385,10 @@ export class JarvisLiveController implements JarvisVoiceClient {
   async stop(): Promise<void> {
     this.attemptEpoch += 1;
     this.startupAbort?.abort();
+    ++this.preparationEpoch;
+    this.preparation = null;
+    this.preparationStream = null;
+    await this.discardPreparedTransport();
     const channel = this.events;
     if (channel?.readyState === "open") {
       channel.send(JSON.stringify({ type: "session.close" }));
@@ -363,10 +424,220 @@ export class JarvisLiveController implements JarvisVoiceClient {
     }, IDLE_CLOSE_MS);
   }
 
+  private async buildPreparedTransport(
+    stream: MediaStream,
+    ownsStream: boolean,
+    prepareEpoch: number,
+  ): Promise<PreparedLiveTransport> {
+    const activationBridge = await createLiveActivationBridge(stream, this.deps.audioContext);
+    const pc = this.deps.peerConnection();
+    const events = pc.createDataChannel("oai-events");
+    const transport: PreparedLiveTransport = {
+      stream,
+      ownsStream,
+      pc,
+      events,
+      activationBridge,
+      localOffer: "",
+      peerConnected: pc.connectionState === "connected",
+      dataChannelOpen: events.readyState === "open",
+      claimed: false,
+      prepareEpoch,
+      cleanups: [],
+    };
+    const observePeerState = () => this.observePreparedTransportState(transport);
+    const observeIceState = () => this.observePreparedTransportState(transport);
+    pc.addEventListener?.("connectionstatechange", observePeerState);
+    pc.addEventListener?.("iceconnectionstatechange", observeIceState);
+    transport.cleanups.push(
+      () => pc.removeEventListener?.("connectionstatechange", observePeerState),
+      () => pc.removeEventListener?.("iceconnectionstatechange", observeIceState),
+    );
+    activationBridge.stream.getAudioTracks().forEach((track) => pc.addTrack(track, activationBridge.stream));
+    pc.ontrack = (event) => {
+      if (this.pc !== pc) return;
+      const remote = event.streams[0] ?? new MediaStream([event.track]);
+      this.options.onRemoteStream?.(remote);
+      if (!this.options.onRemoteStream) {
+        const audio = this.remoteAudio = this.deps.audio();
+        audio.autoplay = true;
+        audio.srcObject = remote;
+        void audio.play().catch(() => undefined);
+      }
+      this.publish({ ...this.snapshot, playbackActive: true });
+    };
+    events.onopen = () => {
+      transport.dataChannelOpen = true;
+      if (this.events !== events) return;
+      this.activeDiagnose?.("data_channel_open");
+      this.activeReadiness?.markDataChannelOpen();
+    };
+    events.onclose = () => {
+      if (this.events !== events) return;
+      this.activeDiagnose?.("data_channel_closed");
+      this.failActiveTransport(new Error("GPT-Live events channel closed"));
+    };
+    events.onerror = () => {
+      if (this.events !== events) return;
+      this.activeDiagnose?.("data_channel_error");
+      this.failActiveTransport(new Error("GPT-Live events channel failed"));
+    };
+    events.onmessage = (message) => {
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(String(message.data)) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      const type = typeof event.type === "string" ? event.type : "";
+      if (type === "session.closed") this.closeWaiter?.();
+      if (this.events !== events) return;
+      this.options.onProviderEvent?.(event);
+      if (type === "session.started") {
+        this.activeDiagnose?.("browser_session_started");
+        this.activeReadiness?.markBrowserSessionStarted();
+      }
+      if (type === "response.event") this.trackDelegation(event);
+      if (isMeaningfulLiveEvent(event)) this.touch();
+    };
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGathering(pc);
+      transport.localOffer = pc.localDescription?.sdp ?? offer.sdp ?? "";
+      return transport;
+    } catch (cause) {
+      await destroyPreparedTransport(transport);
+      throw cause;
+    }
+  }
+
+  private observePreparedTransportState(transport: PreparedLiveTransport): void {
+    const { pc } = transport;
+    const peerState = pc.connectionState;
+    const iceState = pc.iceConnectionState;
+    transport.peerConnected = peerState === "connected";
+    if (this.pc !== pc) return;
+    this.activeDiagnose?.("peer_state", { state: peerState });
+    this.activeDiagnose?.("ice_state", { state: iceState });
+    if (transport.peerConnected) this.activeReadiness?.markPeerConnected();
+    if (peerState === "failed" || peerState === "closed") {
+      this.failActiveTransport(new Error(`GPT-Live WebRTC connection ${peerState}`));
+    }
+    if (iceState === "failed" || iceState === "closed") {
+      this.failActiveTransport(new Error(`GPT-Live ICE connection ${iceState}`));
+    }
+  }
+
+  private failActiveTransport(error: Error): void {
+    this.activeReadiness?.fail(error);
+    if (!["connected", "interrupted"].includes(this.snapshot.status)) return;
+    this.publish({ ...this.snapshot, status: "error", micEnabled: false, error: error.message });
+    void this.dispose(true);
+  }
+
+  private observeBackendReadiness(
+    session: JarvisSession,
+    readiness: LiveStartupReadiness,
+    diagnose: (event: string, detail?: Record<string, unknown>) => void,
+    signal: AbortSignal,
+    attempt: number,
+  ): () => void {
+    const key = backendSessionKey(session.id, session.generation);
+    let cancelled = false;
+    const receive = (record: BackendReadinessRecord) => {
+      if (cancelled || signal.aborted || attempt !== this.attemptEpoch) return;
+      if (record.state === "ready") {
+        diagnose("backend_ready", { source: this.backendStreamOpen ? "event_stream" : "snapshot" });
+        readiness.markBackendReady();
+        return;
+      }
+      const error = new Error(record.message ?? "GPT-Live backend readiness failed");
+      diagnose("backend_readiness_failed", { message: error.message });
+      readiness.fail(error);
+      if (this.snapshot.status === "connected") {
+        void this.dispose(true).finally(() => {
+          this.publish({ ...this.snapshot, status: "error", micEnabled: false, error: error.message });
+        });
+      }
+    };
+    const listeners = this.backendWaiters.get(key) ?? new Set();
+    listeners.add(receive);
+    this.backendWaiters.set(key, listeners);
+    const cached = this.backendRecords.get(key);
+    if (cached) queueMicrotask(() => receive(cached));
+    const pollSnapshot = async () => {
+      while (!cancelled && !signal.aborted && attempt === this.attemptEpoch) {
+        if (!this.backendStreamOpen) {
+          try {
+            const state = await this.deps.getBackendState();
+            if (cancelled || signal.aborted) return;
+            const current = state.session;
+            if (current?.id === session.id && current.generation === session.generation) {
+              if (current.lifecycle_state === "ready") {
+                this.publishBackendRecord(session.id, session.generation, { state: "ready" });
+              } else if (current.lifecycle_state === "disconnected") {
+                this.publishBackendRecord(session.id, session.generation, {
+                  state: "failed",
+                  message: "GPT-Live backend sideband disconnected during startup",
+                });
+              }
+            } else if (current) {
+              this.publishBackendRecord(session.id, session.generation, {
+                state: "failed",
+                message: "GPT-Live session was replaced during startup",
+              });
+            }
+          } catch {
+            // The existing durable event replay may recover readiness. Retry
+            // snapshots only while that stream is unavailable.
+          }
+        }
+        await delay(100, this.deps, signal).catch(() => undefined);
+      }
+    };
+    void pollSnapshot();
+    return () => {
+      cancelled = true;
+      const current = this.backendWaiters.get(key);
+      current?.delete(receive);
+      if (current?.size === 0) this.backendWaiters.delete(key);
+    };
+  }
+
+  private publishBackendRecord(
+    sessionId: string,
+    generation: number,
+    record: BackendReadinessRecord,
+  ): void {
+    const key = backendSessionKey(sessionId, generation);
+    this.backendRecords.set(key, record);
+    this.backendWaiters.get(key)?.forEach((listener) => listener(record));
+  }
+
+  private emitPreparationDiagnostic(event: string, detail?: Record<string, unknown>): void {
+    this.options.onDiagnostic?.({
+      event,
+      observedAt: new Date().toISOString(),
+      attempt: 0,
+      ...(detail ? { detail } : {}),
+    });
+  }
+
+  private async discardPreparedTransport(): Promise<void> {
+    const prepared = this.prepared;
+    this.prepared = null;
+    if (prepared) await destroyPreparedTransport(prepared);
+  }
+
   private async dispose(closeBackend: boolean): Promise<void> {
     if (this.idleTimer) this.deps.clearTimeout(this.idleTimer);
     this.idleTimer = null;
     this.closeWaiter = null;
+    this.backendObserverCleanup?.();
+    this.backendObserverCleanup = null;
+    this.activeReadiness = null;
+    this.activeDiagnose = null;
     const session = this.session;
     this.session = null;
     if (closeBackend && session) {
@@ -464,7 +735,8 @@ class LiveStartupReadiness {
 
 interface LiveActivationBridge {
   stream: MediaStream;
-  start(): Promise<void>;
+  attach(candidate?: JarvisCandidateAudio): Record<string, unknown>;
+  release(): Promise<Record<string, unknown>>;
   destroy(): Promise<void>;
 }
 
@@ -522,11 +794,12 @@ function isConfidentSilence(samples: Float32Array): boolean {
 }
 
 async function createLiveActivationBridge(
-  candidate: JarvisCandidateAudio,
+  liveStream: MediaStream,
   createAudioContext: () => AudioContext,
 ): Promise<LiveActivationBridge> {
   const context = createAudioContext();
   const destination = context.createMediaStreamDestination();
+  const liveSource = context.createMediaStreamSource(liveStream);
   const queued: Float32Array[] = [];
   const replaySources = new Set<AudioBufferSourceNode>();
   let queuedSamples = 0;
@@ -534,15 +807,21 @@ async function createLiveActivationBridge(
   let started = false;
   let overflow = false;
   let destroyed = false;
-  const compactor = new ActivationSilenceCompactor(candidate.sampleRate);
+  let candidate: JarvisCandidateAudio | null = null;
+  let unsubscribe: (() => void) | null = null;
+  let compactor: ActivationSilenceCompactor | null = null;
+  let totalInputSamples = 0;
+  let totalScheduledSamples = 0;
+  let queuedAtRelease = 0;
+  let firstCaptureMonotonicMs: number | undefined;
   const failOverflow = (samples?: Float32Array) => {
     overflow = true;
     samples?.fill(0);
-    candidate.close("audio_backlog_overflow");
+    candidate?.close("audio_backlog_overflow");
   };
   const scheduledBacklogSamples = () => Math.max(
     0,
-    Math.round((scheduledAt - context.currentTime) * candidate.sampleRate),
+    Math.round((scheduledAt - context.currentTime) * (candidate?.sampleRate ?? 16_000)),
   );
   const scheduleFrame = (samples: Float32Array) => {
     if (destroyed || overflow) {
@@ -550,12 +829,13 @@ async function createLiveActivationBridge(
       return;
     }
     const startAt = Math.max(scheduledAt, context.currentTime + 0.03);
-    const endAt = startAt + samples.length / candidate.sampleRate;
-    if ((endAt - context.currentTime) * candidate.sampleRate > MAX_ACTIVATION_REPLAY_SAMPLES) {
+    const sampleRate = candidate?.sampleRate ?? 16_000;
+    const endAt = startAt + samples.length / sampleRate;
+    if ((endAt - context.currentTime) * sampleRate > MAX_ACTIVATION_REPLAY_SAMPLES) {
       failOverflow(samples);
       return;
     }
-    const buffer = context.createBuffer(1, samples.length, candidate.sampleRate);
+    const buffer = context.createBuffer(1, samples.length, sampleRate);
     buffer.getChannelData(0).set(samples);
     samples.fill(0);
     const source = context.createBufferSource();
@@ -568,37 +848,68 @@ async function createLiveActivationBridge(
     };
     source.start(startAt);
     scheduledAt = endAt;
+    totalScheduledSamples += samples.length;
   };
   const schedule = (samples: Float32Array, pressureSamples = scheduledBacklogSamples()) => {
+    if (!compactor) {
+      samples.fill(0);
+      return;
+    }
     for (const frame of compactor.compact(samples, pressureSamples)) scheduleFrame(frame);
   };
-  const unsubscribe = candidate.subscribe((chunk) => {
-    if (destroyed || overflow) {
-      chunk.samples.fill(0);
-      return;
-    }
-    if (started) {
-      schedule(chunk.samples, scheduledBacklogSamples());
-      return;
-    }
-    queuedSamples += chunk.samples.length;
-    if (queuedSamples > MAX_ACTIVATION_REPLAY_SAMPLES) {
-      failOverflow(chunk.samples);
-      return;
-    }
-    queued.push(chunk.samples.slice());
-    chunk.samples.fill(0);
-  });
   return {
     stream: destination.stream,
-    start: async () => {
+    attach: (nextCandidate) => {
+      if (destroyed) throw new Error("GPT-Live activation bridge is closed");
+      if (!nextCandidate || candidate === nextCandidate) {
+        return { buffered: Boolean(candidate), queued_audio_ms: 0 };
+      }
+      if (candidate) throw new Error("GPT-Live activation audio is already attached");
+      candidate = nextCandidate;
+      compactor = new ActivationSilenceCompactor(candidate.sampleRate);
+      unsubscribe = candidate.subscribe((chunk) => {
+        firstCaptureMonotonicMs ??= chunk.capturedMonotonicMs;
+        totalInputSamples += chunk.samples.length;
+        if (destroyed || overflow) {
+          chunk.samples.fill(0);
+          return;
+        }
+        if (started) {
+          schedule(chunk.samples, scheduledBacklogSamples());
+          return;
+        }
+        queuedSamples += chunk.samples.length;
+        if (queuedSamples > MAX_ACTIVATION_REPLAY_SAMPLES) {
+          failOverflow(chunk.samples);
+          return;
+        }
+        queued.push(chunk.samples.slice());
+        chunk.samples.fill(0);
+      });
+      return {
+        buffered: true,
+        queued_audio_ms: roundMs(queuedSamples / candidate.sampleRate * 1_000),
+        first_capture_monotonic_ms: firstCaptureMonotonicMs,
+      };
+    },
+    release: async () => {
       if (destroyed) throw new Error("GPT-Live activation bridge is closed");
       if (overflow) {
         throw new Error("GPT-Live activation audio exceeded the 30-second handoff limit; please retry");
       }
       if (context.state === "suspended") await context.resume();
       started = true;
+      if (!candidate) {
+        liveSource.connect(destination);
+        return {
+          queued_audio_ms: 0,
+          scheduled_audio_ms: 0,
+          silence_removed_ms: 0,
+          estimated_tail_delay_ms: 0,
+        };
+      }
       candidate.promoteToConversation();
+      queuedAtRelease = queuedSamples;
       for (const samples of queued) {
         queuedSamples -= samples.length;
         schedule(samples, Math.max(queuedSamples + samples.length, scheduledBacklogSamples()));
@@ -607,11 +918,18 @@ async function createLiveActivationBridge(
       if (overflow) {
         throw new Error("GPT-Live activation audio exceeded the 30-second handoff limit; please retry");
       }
+      const sampleRate = candidate.sampleRate;
+      return {
+        queued_audio_ms: roundMs(queuedAtRelease / sampleRate * 1_000),
+        scheduled_audio_ms: roundMs(totalScheduledSamples / sampleRate * 1_000),
+        silence_removed_ms: roundMs((totalInputSamples - totalScheduledSamples) / sampleRate * 1_000),
+        estimated_tail_delay_ms: roundMs(Math.max(0, scheduledAt - context.currentTime) * 1_000),
+      };
     },
     destroy: async () => {
       if (destroyed) return;
       destroyed = true;
-      unsubscribe();
+      unsubscribe?.();
       for (const samples of queued) samples.fill(0);
       queued.length = 0;
       for (const source of replaySources) {
@@ -619,6 +937,7 @@ async function createLiveActivationBridge(
         source.disconnect();
       }
       replaySources.clear();
+      try { liveSource.disconnect(); } catch { /* Never connected. */ }
       destination.stream.getTracks().forEach((track) => track.stop());
       await context.close();
     },
@@ -667,24 +986,46 @@ async function withTimeout<T>(
   });
 }
 
-async function waitForBackendReady(session: JarvisSession, signal?: AbortSignal): Promise<void> {
-  while (!signal?.aborted) {
-    const state = await getJarvisState();
-    if (
-      state.session?.id === session.id
-      && state.session.generation === session.generation
-      && state.session.lifecycle_state === "ready"
-    ) return;
-    if (state.session?.id === session.id && state.session.lifecycle_state === "disconnected") {
-      throw new Error("GPT-Live backend sideband disconnected during startup");
-    }
-    if (
-      state.session
-      && (state.session.id !== session.id || state.session.generation !== session.generation)
-    ) {
-      throw new Error("GPT-Live session was replaced during startup");
-    }
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
-  }
-  throw new LiveStartupCancelledError();
+async function destroyPreparedTransport(transport: PreparedLiveTransport): Promise<void> {
+  for (const cleanup of transport.cleanups) cleanup();
+  transport.events.onopen = null;
+  transport.events.onclose = null;
+  transport.events.onerror = null;
+  transport.events.onmessage = null;
+  transport.events.close();
+  transport.pc.ontrack = null;
+  transport.pc.close();
+  await transport.activationBridge.destroy();
+  if (transport.ownsStream) transport.stream.getTracks().forEach((track) => track.stop());
+}
+
+function backendSessionKey(sessionId: string, generation: number): string {
+  return `${sessionId}:${generation}`;
+}
+
+function monotonicNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function roundMs(value: number): number {
+  return Math.round(value * 1_000) / 1_000;
+}
+
+async function delay(
+  milliseconds: number,
+  deps: Pick<Required<JarvisLiveDependencies>, "setTimeout" | "clearTimeout">,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new LiveStartupCancelledError();
+  await new Promise<void>((resolve, reject) => {
+    const timer = deps.setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    const abort = () => {
+      deps.clearTimeout(timer);
+      reject(new LiveStartupCancelledError());
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }

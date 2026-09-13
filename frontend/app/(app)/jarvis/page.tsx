@@ -348,7 +348,7 @@ export default function JarvisPage() {
           );
           const traceId = diagnostic.activationId
             ?? diagnostic.sessionId
-            ?? `live-startup-${controllerIdRef.current}-${diagnostic.attempt}`;
+            ?? `live-${controllerIdRef.current.slice(-36)}-${diagnostic.attempt}`;
           void submitJarvisRealtimeTelemetry([{
             trace_id: traceId,
             client_sequence: ++liveDiagnosticSequenceRef.current,
@@ -413,7 +413,14 @@ export default function JarvisPage() {
     const runtime = new JarvisWakeRuntime({
       onTrace: (kind, detail) => realtimeController.recordClientSignal(kind, detail),
       onReady: (stream) => {
-        if (voiceEngineRef.current === "openai_live") return;
+        if (voiceEngineRef.current === "openai_live") {
+          void liveController.prepare(stream).catch((cause) => {
+            if (disposed) return;
+            wakeLifecycleRef.current?.fail(cause);
+            setError(cause instanceof Error ? cause.message : "Unable to prepare GPT-Live transport");
+          });
+          return;
+        }
         void realtimeController.arm(stream).catch((cause) => {
           if (disposed) return;
           wakeLifecycleRef.current?.fail(cause);
@@ -456,6 +463,7 @@ export default function JarvisPage() {
               stream: handoff.localStream,
               activationContext,
               candidateAudio: liveCandidateAudio,
+              wakeDetectedMonotonicMs: handoff.wakeDetectedMonotonicMs,
             })
           : realtimeController.start({ audioHandoff: handoff, activationContext });
         void connection
@@ -470,6 +478,32 @@ export default function JarvisPage() {
       },
     });
     wakeRuntimeRef.current = runtime;
+    const refreshLivePreparation = (reason: "microphone_change" | "network_change") => {
+      if (voiceEngineRef.current !== "openai_live") return;
+      void liveController.refreshPreparation(reason).catch((cause) => {
+        if (!disposed) setError(cause instanceof Error ? cause.message : "Unable to refresh GPT-Live transport");
+      });
+    };
+    const handleDeviceChange = () => {
+      if (
+        voiceEngineRef.current !== "openai_live"
+        || !WAKE_MODEL_CONFIGURATION
+        || runtime.current().status !== "ready"
+        || !["idle", "closed"].includes(liveController.current().status)
+      ) return;
+      void runtime.stop()
+        .then(() => runtime.start(WAKE_MODEL_CONFIGURATION))
+        .catch((cause) => {
+          if (!disposed) setError(cause instanceof Error ? cause.message : "Unable to refresh the microphone");
+        });
+    };
+    const handleNetworkChange = () => refreshLivePreparation("network_change");
+    navigator.mediaDevices?.addEventListener?.("devicechange", handleDeviceChange);
+    window.addEventListener("online", handleNetworkChange);
+    const networkInformation = (navigator as Navigator & {
+      connection?: { addEventListener?: (type: string, listener: () => void) => void; removeEventListener?: (type: string, listener: () => void) => void };
+    }).connection;
+    networkInformation?.addEventListener?.("change", handleNetworkChange);
     rearmWakeRef.current = async () => {
       try {
         if (voiceEngineRef.current === "openai_live") {
@@ -500,6 +534,9 @@ export default function JarvisPage() {
       disposed = true;
       window.clearInterval(timer);
       window.removeEventListener("pagehide", handlePageHide);
+      navigator.mediaDevices?.removeEventListener?.("devicechange", handleDeviceChange);
+      window.removeEventListener("online", handleNetworkChange);
+      networkInformation?.removeEventListener?.("change", handleNetworkChange);
       lifecycle.destroy();
       void Promise.all([realtimeController.stop(), liveController.stop()]).finally(() => runtime.stop());
       realtimeControllerRef.current = null;
@@ -518,6 +555,7 @@ export default function JarvisPage() {
 
     const deliver = (event: JarvisLiveEvent) => {
       if (event.sequence <= liveCursorRef.current) return;
+      liveControllerRef.current?.recordBackendEvent(event);
       const gateHandled = realtimeControllerRef.current?.recordBackendEvent(event) ?? false;
       liveCursorRef.current = event.sequence;
       if (event.event_type === "provider.user_transcript_delta") {
@@ -593,6 +631,7 @@ export default function JarvisPage() {
       if (disposed) return;
       source = new EventSource(jarvisLiveUrl(liveCursorRef.current), { withCredentials: true });
       source.onopen = () => {
+        liveControllerRef.current?.recordLiveStreamState("opened");
         realtimeControllerRef.current?.recordLiveStreamState(
           "opened",
           liveCursorRef.current,
@@ -607,6 +646,7 @@ export default function JarvisPage() {
         }
       });
       source.onerror = () => {
+        liveControllerRef.current?.recordLiveStreamState("errored");
         realtimeControllerRef.current?.recordLiveStreamState(
           "errored",
           liveCursorRef.current,

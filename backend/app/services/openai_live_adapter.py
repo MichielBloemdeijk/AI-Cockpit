@@ -105,6 +105,27 @@ class _LiveSession:
     user_transcript_segment: int = 0
     assistant_transcript_segment: int = 0
     last_activity_monotonic: float = field(default_factory=time.monotonic)
+    connect_started: float = 0.0
+    provider_call_started: float = 0.0
+    provider_call_finished: float = 0.0
+    sideband_started: float = 0.0
+    sideband_finished: float = 0.0
+
+
+@dataclass(slots=True)
+class _PendingLiveConnection:
+    session_id: str
+    generation: int
+    provider_session_id: str
+    api_key: str
+    context: dict[str, Any]
+    on_event: ProviderEventHandler
+    connect_started: float
+    provider_call_started: float
+    provider_call_finished: float
+    task: asyncio.Task[None] | None = None
+    socket: LiveSocket | None = None
+    closing: bool = False
 
 
 _TRANSCRIPT_GAP_SECONDS = 0.75
@@ -137,6 +158,7 @@ class OpenAILiveAdapter:
         self._http_client: httpx.AsyncClient | None = None
         self._http_client_lock = asyncio.Lock()
         self._sessions: dict[tuple[str, int], _LiveSession] = {}
+        self._pending_connections: dict[tuple[str, int], _PendingLiveConnection] = {}
 
     async def connect(
         self,
@@ -152,39 +174,96 @@ class OpenAILiveAdapter:
             raise OpenAILiveConfigurationError("OPENAI_API_KEY is not configured on the backend")
         if not (sdp_offer or "").strip():
             raise OpenAILiveConfigurationError("An SDP offer is required for GPT-Live")
+        connect_started = time.monotonic()
+        provider_call_started = time.monotonic()
         created = await self._session_creator(
             api_key=api_key,
             sdp_offer=sdp_offer,
             session_config=self._session_config(context),
         )
+        provider_call_finished = time.monotonic()
         provider_session_id, sdp_answer = self._parse_creation_response(created)
-        socket = await self._websocket_connector(
-            self._sideband_url(provider_session_id),
-            additional_headers={"Authorization": f"Bearer {api_key}"},
-            open_timeout=settings.openai_realtime_connect_timeout_seconds,
-        )
-        provider_session = _LiveSession(
+        pending = _PendingLiveConnection(
             session_id=session_id,
             generation=generation,
             provider_session_id=provider_session_id,
-            socket=socket,
+            api_key=api_key,
+            context=context,
             on_event=on_event,
-            activation_id=str(context.get("activation_id") or "") or None,
+            connect_started=connect_started,
+            provider_call_started=provider_call_started,
+            provider_call_finished=provider_call_finished,
         )
         key = (session_id, generation)
+        previous_pending = self._pending_connections.pop(key, None)
+        if previous_pending is not None:
+            await self._close_pending(previous_pending, reason="replaced")
         previous = self._sessions.pop(key, None)
         if previous is not None:
             await self._close_session(previous, reason="replaced", emit_event=False)
-        self._sessions[key] = provider_session
-        provider_session.receiver_task = asyncio.create_task(
-            self._receive(provider_session),
-            name=f"jarvis-openai-live-{session_id}-{generation}",
-        )
-        provider_session.idle_task = asyncio.create_task(
-            self._watch_idle(provider_session),
-            name=f"jarvis-openai-live-idle-{session_id}-{generation}",
+        self._pending_connections[key] = pending
+        pending.task = asyncio.create_task(
+            self._establish_sideband(pending),
+            name=f"jarvis-openai-live-setup-{session_id}-{generation}",
         )
         return VoiceSessionConnection(sdp_answer=sdp_answer, provider_session_id=provider_session_id)
+
+    async def _establish_sideband(self, pending: _PendingLiveConnection) -> None:
+        key = (pending.session_id, pending.generation)
+        provider_session: _LiveSession | None = None
+        try:
+            sideband_started = time.monotonic()
+            socket = await self._websocket_connector(
+                self._sideband_url(pending.provider_session_id),
+                additional_headers={"Authorization": f"Bearer {pending.api_key}"},
+                open_timeout=settings.openai_realtime_connect_timeout_seconds,
+            )
+            pending.socket = socket
+            sideband_finished = time.monotonic()
+            if pending.closing or self._pending_connections.get(key) is not pending:
+                await socket.close(code=1000, reason="connection_cancelled")
+                return
+            provider_session = _LiveSession(
+                session_id=pending.session_id,
+                generation=pending.generation,
+                provider_session_id=pending.provider_session_id,
+                socket=socket,
+                on_event=pending.on_event,
+                activation_id=str(pending.context.get("activation_id") or "") or None,
+                connect_started=pending.connect_started,
+                provider_call_started=pending.provider_call_started,
+                provider_call_finished=pending.provider_call_finished,
+                sideband_started=sideband_started,
+                sideband_finished=sideband_finished,
+            )
+            self._sessions[key] = provider_session
+            self._pending_connections.pop(key, None)
+            provider_session.receiver_task = asyncio.create_task(
+                self._receive(provider_session),
+                name=f"jarvis-openai-live-{pending.session_id}-{pending.generation}",
+            )
+            provider_session.idle_task = asyncio.create_task(
+                self._watch_idle(provider_session),
+                name=f"jarvis-openai-live-idle-{pending.session_id}-{pending.generation}",
+            )
+        except asyncio.CancelledError:
+            if pending.socket is not None:
+                await pending.socket.close(code=1000, reason="connection_cancelled")
+            raise
+        except Exception as exc:
+            self._pending_connections.pop(key, None)
+            self._sessions.pop(key, None)
+            if pending.socket is not None:
+                await pending.socket.close(code=1011, reason="sideband_setup_failed")
+            if not pending.closing:
+                await self._notify_pending_best_effort(
+                    pending,
+                    VoiceProviderEvent(
+                        event_id=f"openai-live-sideband-setup-error:{uuid4()}",
+                        kind="provider_error",
+                        payload={"reason": type(exc).__name__, "stage": "sideband_setup"},
+                    ),
+                )
 
     async def send_user_text(self, *, session_id: str, generation: int, turn_id: str, text: str) -> None:
         provider_session = self._require_session(session_id, generation)
@@ -287,11 +366,19 @@ class OpenAILiveAdapter:
     async def close(
         self, *, session_id: str, generation: int, reason: str, emit_event: bool = True
     ) -> None:
-        provider_session = self._sessions.pop((session_id, generation), None)
+        key = (session_id, generation)
+        pending = self._pending_connections.pop(key, None)
+        if pending is not None:
+            await self._close_pending(pending, reason=reason)
+        provider_session = self._sessions.pop(key, None)
         if provider_session is not None:
             await self._close_session(provider_session, reason=reason, emit_event=emit_event)
 
     async def shutdown(self) -> None:
+        pending_connections = list(self._pending_connections.values())
+        self._pending_connections.clear()
+        for pending in pending_connections:
+            await self._close_pending(pending, reason="backend_shutdown")
         sessions = list(self._sessions.values())
         self._sessions.clear()
         for provider_session in sessions:
@@ -304,6 +391,9 @@ class OpenAILiveAdapter:
     async def handle_event(
         self, session_id: str, generation: int, event: dict[str, Any]
     ) -> None:
+        pending = self._pending_connections.get((session_id, generation))
+        if pending is not None and pending.task is not None:
+            await asyncio.shield(pending.task)
         provider_session = self._sessions.get((session_id, generation))
         if provider_session is not None and not provider_session.closing:
             await self._handle_event(provider_session, event)
@@ -316,6 +406,12 @@ class OpenAILiveAdapter:
                 event = json.loads(raw)
                 if isinstance(event, dict):
                     await self._handle_event(provider_session, event)
+            if self._sessions.get(key) is provider_session and not provider_session.closing:
+                await self._emit(
+                    provider_session,
+                    "provider_error",
+                    {"reason": "sideband_closed", "stage": "sideband_receive"},
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -338,6 +434,21 @@ class OpenAILiveAdapter:
                         "provider_session_id": provider_session.provider_session_id,
                         "activation_id": provider_session.activation_id,
                         "defer_initial_updates": True,
+                        "timing_ms": {
+                            "provider_call": round(
+                                (provider_session.provider_call_finished - provider_session.provider_call_started)
+                                * 1_000,
+                                3,
+                            ),
+                            "sideband_connect": round(
+                                (provider_session.sideband_finished - provider_session.sideband_started) * 1_000,
+                                3,
+                            ),
+                            "total_to_sideband_ready": round(
+                                (time.monotonic() - provider_session.connect_started) * 1_000,
+                                3,
+                            ),
+                        },
                     },
                     event_id=str(outer.get("event_id") or "") or None,
                 )
@@ -806,7 +917,7 @@ class OpenAILiveAdapter:
             try:
                 await provider_session.socket.send(json.dumps({"type": "session.close", "event_id": f"jarvis-live-close:{uuid4()}"}))
                 await asyncio.wait_for(provider_session.closed.wait(), timeout=2.0)
-            except (TimeoutError, OSError):
+            except Exception:
                 pass
         task = provider_session.receiver_task
         if task is not None and task is not asyncio.current_task() and not task.done():
@@ -826,6 +937,25 @@ class OpenAILiveAdapter:
         await provider_session.socket.close(code=1000, reason=reason[:120])
         if emit_event and not provider_session.closed.is_set():
             await self._emit(provider_session, "disconnected", {"reason": reason})
+
+    async def _close_pending(self, pending: _PendingLiveConnection, *, reason: str) -> None:
+        pending.closing = True
+        task = pending.task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if pending.socket is not None:
+            await pending.socket.close(code=1000, reason=reason[:120])
+
+    @staticmethod
+    async def _notify_pending_best_effort(
+        pending: _PendingLiveConnection,
+        event: VoiceProviderEvent,
+    ) -> None:
+        try:
+            await pending.on_event(pending.session_id, pending.generation, event)
+        except Exception:
+            return
 
     async def _send(self, provider_session: _LiveSession, payload: dict[str, Any]) -> None:
         if provider_session.closing:

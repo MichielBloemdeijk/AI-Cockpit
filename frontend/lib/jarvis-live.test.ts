@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { JarvisRealtimeCallResponse } from "./api";
 import { JarvisLiveController } from "./jarvis-live";
@@ -15,6 +15,16 @@ function fakeCall(): JarvisRealtimeCallResponse {
     server_received_at: new Date().toISOString(),
     server_responded_at: new Date().toISOString(),
   };
+}
+
+function fakeBackendState(lifecycleState = "ready") {
+  return {
+    session: {
+      id: "session-1",
+      generation: 1,
+      lifecycle_state: lifecycleState,
+    },
+  } as Awaited<ReturnType<NonNullable<import("./jarvis-live").JarvisLiveDependencies["getBackendState"]>>>;
 }
 
 function fakeMediaStream(): MediaStream {
@@ -100,6 +110,7 @@ function fakeAudioContext() {
     currentTime: 1,
     state: "running",
     createMediaStreamDestination: () => destination,
+    createMediaStreamSource: () => ({ connect: vi.fn(), disconnect: vi.fn() }),
     createBuffer: (_channels: number, length: number) => {
       const values = new Float32Array(length);
       buffers.push(values as unknown as number[]);
@@ -151,6 +162,11 @@ function candidateAudio(initial: Float32Array) {
 }
 
 describe("JarvisLiveController", () => {
+  beforeEach(() => {
+    vi.stubGlobal("AudioContext", vi.fn(() => fakeAudioContext().context));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
   it("retains the native browser receiver for startup timers", async () => {
     const { pc } = fakePc();
     const nativeSetTimeout = globalThis.setTimeout;
@@ -176,7 +192,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
     });
     vi.stubGlobal("setTimeout", nativeSetTimeout);
@@ -195,10 +211,16 @@ describe("JarvisLiveController", () => {
     }, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: vi.fn(async () => fakeBackendState()),
       createCall: async () => fakeCall(),
     });
+    controller.recordLiveStreamState("opened");
     const pending = controller.start();
+    await vi.waitFor(() => expect((pc.createOffer as ReturnType<typeof vi.fn>)).toHaveBeenCalled());
+    controller.recordBackendEvent({
+      source_domain: "session", source_id: "session-1", event_type: "provider.ready",
+      payload: { session_id: "session-1", generation: 1 }, sequence: 1,
+    } as never);
     await vi.waitFor(() => expect(diagnostics).toContain("backend_ready"));
     expect(controller.current().status).toBe("connecting");
     remote.resolve();
@@ -210,6 +232,53 @@ describe("JarvisLiveController", () => {
     expect(diagnostics).not.toContain("browser_session_started");
   });
 
+  it("prepares the audio graph, data channel, offer, and ICE before creating a billable session", async () => {
+    const stream = fakeMediaStream();
+    const { pc } = fakePc();
+    const audio = fakeAudioContext();
+    const createCall = vi.fn(async () => fakeCall());
+    const diagnostics: string[] = [];
+    const controller = new JarvisLiveController("c", {
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.event),
+    }, {
+      peerConnection: () => pc,
+      audioContext: () => audio.context,
+      getBackendState: async () => fakeBackendState(),
+      createCall,
+    });
+
+    await controller.prepare(stream);
+    expect(pc.createDataChannel).toHaveBeenCalledWith("oai-events");
+    expect(pc.createOffer).toHaveBeenCalledOnce();
+    expect(pc.setLocalDescription).toHaveBeenCalledOnce();
+    expect(createCall).not.toHaveBeenCalled();
+    expect(diagnostics).toContain("transport_preparation_ready");
+
+    await controller.startWithOptions({ stream });
+    expect(pc.createOffer).toHaveBeenCalledOnce();
+    expect(createCall).toHaveBeenCalledOnce();
+    expect(diagnostics).toContain("transport_prepared_reused");
+  });
+
+  it("refreshes an unclaimed preparation after a network change", async () => {
+    const stream = fakeMediaStream();
+    const first = fakePc();
+    const second = fakePc();
+    const peers = [first.pc, second.pc];
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => peers.shift()!,
+      audioContext: () => fakeAudioContext().context,
+      getBackendState: async () => fakeBackendState(),
+      createCall: async () => fakeCall(),
+    });
+
+    await controller.prepare(stream);
+    await controller.refreshPreparation("network_change");
+    expect(first.pc.close).toHaveBeenCalledOnce();
+    expect(second.pc.createOffer).toHaveBeenCalledOnce();
+    await controller.stop();
+  });
+
   it("negotiates oai-events before the offer and accepts backend readiness after transport", async () => {
     const { pc, channel } = fakePc();
     const backend = deferred<void>();
@@ -217,7 +286,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: () => backend.promise,
+      getBackendState: async () => { await backend.promise; return fakeBackendState(); },
       createCall,
     });
     const pending = controller.start();
@@ -241,7 +310,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
       closeCall,
       setTimeout,
@@ -258,31 +327,40 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => { throw new Error("sideband failed"); },
+      getBackendState: async () => fakeBackendState("disconnected"),
       createCall: async () => fakeCall(),
       closeCall,
     });
 
-    await expect(controller.start()).rejects.toThrow("sideband failed");
+    await expect(controller.start()).rejects.toThrow("sideband disconnected");
     expect(closeCall).toHaveBeenCalledWith("session-1", 1);
   });
 
-  it("rechecks sideband health when transport becomes ready", async () => {
+  it("continuously observes sideband health without a final snapshot request", async () => {
     const { pc } = fakePc();
     const closeCall = vi.fn(async () => undefined);
-    const waitForBackendReady = vi.fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("sideband disconnected after ready"));
+    const getBackendState = vi.fn(async () => fakeBackendState());
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady,
+      getBackendState,
       createCall: async () => fakeCall(),
       closeCall,
     });
-
-    await expect(controller.start()).rejects.toThrow("sideband disconnected after ready");
-    expect(waitForBackendReady).toHaveBeenCalledTimes(2);
+    controller.recordLiveStreamState("opened");
+    const pending = controller.start();
+    await vi.waitFor(() => expect((pc.createOffer as ReturnType<typeof vi.fn>)).toHaveBeenCalled());
+    controller.recordBackendEvent({
+      source_domain: "session", source_id: "session-1", event_type: "provider.ready",
+      payload: { session_id: "session-1", generation: 1 }, sequence: 1,
+    } as never);
+    await pending;
+    expect(getBackendState).not.toHaveBeenCalled();
+    controller.recordBackendEvent({
+      source_domain: "session", source_id: "session-1", event_type: "provider.disconnected",
+      payload: { session_id: "session-1", generation: 1 }, sequence: 2,
+    } as never);
+    await vi.waitFor(() => expect(controller.current().status).toBe("error"));
     expect(closeCall).toHaveBeenCalledWith("session-1", 1);
   });
 
@@ -293,7 +371,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: () => response.promise,
       closeCall,
     });
@@ -317,7 +395,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => controllers.shift()!,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: vi.fn()
         .mockImplementationOnce(() => firstResponse.promise)
         .mockImplementationOnce(async () => fakeCall()),
@@ -343,7 +421,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
     });
     const pending = controller.start();
@@ -365,7 +443,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
       audioContext: () => audio.context,
     });
@@ -390,7 +468,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
       audioContext: () => audio.context,
     });
@@ -410,7 +488,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
       audioContext: () => audio.context,
     });
@@ -433,7 +511,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
       getUserMedia: async () => fakeMediaStream(),
-      waitForBackendReady: async () => undefined,
+      getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
       setTimeout,
       clearTimeout,

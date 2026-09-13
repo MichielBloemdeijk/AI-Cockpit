@@ -38,6 +38,14 @@ class FakeLiveSocket:
         await self.incoming.put(None)
 
 
+async def wait_for_sideband(adapter: OpenAILiveAdapter, key: tuple[str, int]) -> None:
+    for _ in range(20):
+        if key in adapter._sessions:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("Live sideband did not attach")
+
+
 @pytest.mark.asyncio
 async def test_default_creator_posts_documented_session_and_transport(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
@@ -100,6 +108,7 @@ async def test_connect_uses_live_session_shape_and_waits_for_real_started_event(
         on_event=on_event,
         sdp_offer="offer-sdp",
     )
+    await wait_for_sideband(adapter, ("local", 2))
     assert connection.sdp_answer == "answer-sdp"
     assert connection.provider_session_id == "live_opaque/id"
     assert created_args["sdp_offer"] == "offer-sdp"
@@ -116,6 +125,73 @@ async def test_connect_uses_live_session_shape_and_waits_for_real_started_event(
     assert [event.kind for event in events] == ["ready"]
     await adapter.close(session_id="local", generation=2, reason="test", emit_event=False)
     assert socket.closed
+
+
+@pytest.mark.asyncio
+async def test_connect_returns_sdp_while_live_sideband_attaches(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+    attachment_started = asyncio.Event()
+    release_attachment = asyncio.Event()
+    events: list[VoiceProviderEvent] = []
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_overlap"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        attachment_started.set()
+        await release_attachment.wait()
+        return socket
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    connection = await asyncio.wait_for(
+        adapter.connect(session_id="s", generation=10, context={}, on_event=on_event, sdp_offer="offer"),
+        timeout=0.1,
+    )
+    assert connection.sdp_answer == "answer"
+    await asyncio.wait_for(attachment_started.wait(), timeout=0.1)
+    assert ("s", 10) in adapter._pending_connections
+    assert ("s", 10) not in adapter._sessions
+    assert events == []
+
+    release_attachment.set()
+    await wait_for_sideband(adapter, ("s", 10))
+    await adapter.handle_event("s", 10, {"type": "session.started"})
+    assert events[-1].kind == "ready"
+    assert events[-1].payload["timing_ms"]["sideband_connect"] >= 0
+    await adapter.close(session_id="s", generation=10, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_sideband_setup_failure_is_reported_after_sdp_return(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    events: list[VoiceProviderEvent] = []
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_failure"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        raise RuntimeError("attach failed")
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    connection = await adapter.connect(
+        session_id="s", generation=11, context={}, on_event=on_event, sdp_offer="offer",
+    )
+    assert connection.sdp_answer == "answer"
+    for _ in range(20):
+        if events:
+            break
+        await asyncio.sleep(0)
+    assert events[-1].kind == "provider_error"
+    assert events[-1].payload == {"reason": "RuntimeError", "stage": "sideband_setup"}
+    assert ("s", 11) not in adapter._pending_connections
+    assert ("s", 11) not in adapter._sessions
 
 
 @pytest.mark.asyncio
@@ -297,6 +373,7 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
 
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=4, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("s", 4))
     await adapter.create_response(
         session_id="s",
         generation=4,
@@ -337,6 +414,7 @@ async def test_silent_sideband_events_do_not_extend_idle_activity(monkeypatch) -
 
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
     await adapter.connect(session_id="s", generation=5, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("s", 5))
     provider_session = adapter._sessions[("s", 5)]
     provider_session.last_activity_monotonic -= 10
     before = provider_session.last_activity_monotonic

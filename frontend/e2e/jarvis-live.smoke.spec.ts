@@ -193,7 +193,6 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
         && entry.diagnostics.includes("live.sdp_applied")
         && entry.diagnostics.includes("live.data_channel_open")
         && entry.diagnostics.includes("live.backend_ready")
-        && entry.diagnostics.includes("live.backend_health_confirmed")
         && entry.diagnostics.includes("live.activation_audio_released"),
       45_000,
     );
