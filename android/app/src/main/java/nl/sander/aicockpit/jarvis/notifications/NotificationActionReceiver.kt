@@ -50,25 +50,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 context.stopService(Intent(context, WakeForegroundService::class.java))
                 if (notificationId != 0) context.getSystemService(NotificationManager::class.java).cancel(notificationId)
             }
-            "snooze" -> {
-                val pending = goAsync()
-                val label = intent.getStringExtra("task_label").orEmpty()
-                CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-                    try {
-                        runCatching { CockpitApi(CredentialStore(context)).snoozeByDescription(label) }
-                            .onSuccess {
-                                if (deliveryId.isNotBlank()) {
-                                    runCatching {
-                                        CockpitApi(CredentialStore(context)).acknowledgeDelivery(deliveryId, "snoozed")
-                                    }
-                                }
-                                if (notificationId != 0) context.getSystemService(NotificationManager::class.java).cancel(notificationId)
-                            }
-                    } finally {
-                        pending.finish()
-                    }
-                }
-            }
             "stop" -> {
                 JarvisVoiceInteractionSession.stopActive()
                 if (notificationId != 0) context.getSystemService(NotificationManager::class.java).cancel(notificationId)

@@ -1,6 +1,6 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
-import nl.sander.aicockpit.jarvis.data.RealtimeSessionState
+import nl.sander.aicockpit.jarvis.data.LiveSessionState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,7 +9,7 @@ import org.junit.Test
 
 class LiveStartupReadinessTest {
     private fun readyState(id: String = "session-1", generation: Int = 1) =
-        RealtimeSessionState(id, generation, "ready")
+        LiveSessionState(id, generation, "ready")
 
     @Test fun backendMayBecomeReadyBeforeTransportWithoutBrowserStarted() {
         val readiness = LiveStartupReadiness("session-1", 1)
@@ -47,7 +47,7 @@ class LiveStartupReadinessTest {
 
     @Test fun sidebandFailureIsTerminal() {
         val readiness = LiveStartupReadiness("session-1", 1)
-        readiness.observeBackend(RealtimeSessionState("session-1", 1, "disconnected"))
+        readiness.observeBackend(LiveSessionState("session-1", 1, "disconnected"))
         assertEquals("GPT-Live backend sideband disconnected during startup", readiness.current().failure)
     }
 
@@ -59,7 +59,7 @@ class LiveStartupReadinessTest {
         readiness.observeBackend(readyState())
         assertTrue(readiness.current().ready)
 
-        readiness.observeBackend(RealtimeSessionState("session-1", 1, "disconnected"))
+        readiness.observeBackend(LiveSessionState("session-1", 1, "disconnected"))
         assertFalse(readiness.current().ready)
         assertEquals("GPT-Live backend sideband disconnected during startup", readiness.current().failure)
     }

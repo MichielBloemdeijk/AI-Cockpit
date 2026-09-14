@@ -143,12 +143,34 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {"type": "function", "name": "list_reminders", "description": "List durable reminders.", "parameters": object_schema},
         {
             "type": "function",
-            "name": "snooze_reminder",
-            "description": "Snooze an unambiguous reminder.",
+            "name": "get_attention_checklist",
+            "description": (
+                "Read pending Jarvis updates. Mention an item naturally before acknowledging it; "
+                "do not read internal identifiers aloud. Quiet context does not require an immediate announcement."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"task_reference": task_reference, "timing": reminder_timing},
-                "required": ["task_reference", "timing"],
+                "properties": {
+                    "cursor": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "name": "acknowledge_task_update",
+            "description": (
+                "Mark exactly one pending update handled after communicating it. Use the opaque presentation_id "
+                "and exposure_token returned by get_attention_checklist. Bookkeeping does not require spoken confirmation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "presentation_id": {"type": "string"},
+                    "exposure_token": {"type": "string"},
+                },
+                "required": ["presentation_id", "exposure_token"],
+                "additionalProperties": False,
             },
         },
         {

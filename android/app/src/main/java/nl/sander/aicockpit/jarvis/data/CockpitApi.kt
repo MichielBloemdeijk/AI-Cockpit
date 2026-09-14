@@ -14,14 +14,13 @@ import okhttp3.sse.EventSources
 import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
-import java.time.temporal.ChronoUnit
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
-data class RealtimeCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
-data class RealtimeSessionState(val sessionId: String, val generation: Int, val lifecycleState: String)
+data class LiveCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
+data class LiveSessionState(val sessionId: String, val generation: Int, val lifecycleState: String)
 data class JarvisComponentIssue(val name: String, val status: String, val detail: String?)
 data class JarvisAssistantStatus(
     val workerStatus: String,
@@ -103,7 +102,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .patch(payload.toString().toRequestBody(json)).build()).close()
     }
 
-    suspend fun createRealtimeCall(offer: String, wakeScore: Float? = null, engine: VoiceEngine = VoiceEngine.REALTIME, activationId: String? = null): RealtimeCall {
+    suspend fun createLiveCall(offer: String, wakeScore: Float? = null, activationId: String? = null): LiveCall {
         val observedAt = Instant.now()
         val timeZone = ZoneId.systemDefault()
         val clientContext = JSONObject()
@@ -113,7 +112,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
         val payload = JSONObject()
             .put("controller_id", store.deviceId)
             .put("role", "controller")
-            .put("provider_adapter", if (engine == VoiceEngine.GPT_LIVE) "openai_live" else "openai")
+            .put("provider_adapter", "openai_live")
             .put("client_context", clientContext)
             .put("sdp_offer", offer)
         wakeScore?.let {
@@ -125,28 +124,28 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
                     .put("activation_id", activationId ?: UUID.randomUUID().toString()),
             )
         }
-        val response = execute(authenticated("/api/jarvis/realtime/calls")
+        val response = execute(authenticated("/api/jarvis/live/calls")
             .post(payload.toString().toRequestBody(json)).build())
         val body = JSONObject(response.body?.string().orEmpty())
         val session = body.getJSONObject("session")
-        return RealtimeCall(session.getString("id"), session.getInt("generation"), body.getString("sdp_answer"))
+        return LiveCall(session.getString("id"), session.getInt("generation"), body.getString("sdp_answer"))
     }
 
-    suspend fun closeRealtime(sessionId: String, generation: Int) {
-        execute(authenticated("/api/jarvis/realtime/sessions/$sessionId?generation=$generation").delete().build()).close()
+    suspend fun closeLive(sessionId: String, generation: Int) {
+        execute(authenticated("/api/jarvis/live/sessions/$sessionId?generation=$generation").delete().build()).close()
     }
 
-    suspend fun realtimeSessionState(): RealtimeSessionState? {
+    suspend fun liveSessionState(): LiveSessionState? {
         val response = execute(authenticated("/api/jarvis/state").get().build())
         val session = JSONObject(response.body?.string().orEmpty()).optJSONObject("session") ?: return null
-        return RealtimeSessionState(
+        return LiveSessionState(
             session.getString("id"),
             session.getInt("generation"),
             session.optString("lifecycle_state"),
         )
     }
 
-    suspend fun submitRealtimeDiagnostic(
+    suspend fun submitLiveDiagnostic(
         traceId: String,
         eventType: String,
         activationId: String? = null,
@@ -165,23 +164,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
         sessionId?.let { event.put("session_id", it) }
         generation?.let { event.put("generation", it) }
         val payload = JSONObject().put("events", org.json.JSONArray().put(event))
-        execute(authenticated("/api/jarvis/realtime/telemetry")
-            .post(payload.toString().toRequestBody(json)).build()).close()
-    }
-
-    suspend fun snoozeByDescription(description: String, minutes: Long = 10) {
-        val resolvePayload = JSONObject().put("reference", description).put("active_only", false)
-        val resolvedResponse = execute(authenticated("/api/jarvis/tasks/resolve")
-            .post(resolvePayload.toString().toRequestBody(json)).build())
-        val resolved = JSONObject(resolvedResponse.body?.string().orEmpty())
-        if (!resolved.optBoolean("resolved") || resolved.optBoolean("ambiguous")) {
-            error(resolved.optString("clarification", "Unable to resolve that reminder"))
-        }
-        val internalTaskId = resolved.getString("internal_task_id")
-        val payload = JSONObject()
-            .put("due_at", Instant.now().plus(minutes, ChronoUnit.MINUTES).toString())
-            .put("idempotency_key", "android-snooze-${System.currentTimeMillis()}")
-        execute(authenticated("/api/jarvis/reminders/$internalTaskId/snooze")
+        execute(authenticated("/api/jarvis/live/telemetry")
             .post(payload.toString().toRequestBody(json)).build()).close()
     }
 

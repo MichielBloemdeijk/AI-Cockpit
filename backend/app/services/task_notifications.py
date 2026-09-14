@@ -145,7 +145,25 @@ async def schedule_task_notification(outbox_id: str, *, delay_seconds: float = 0
 
 
 async def recover_pending_task_notifications() -> int:
+    recoveries: list[tuple[str, float]] = []
     async with session_scope() as session:
+        await _reconcile_outbox_attention(session)
+        closed_attention = (
+            select(TaskPresentation.source_task_event_id)
+            .where(TaskPresentation.state.in_(["handled", "superseded"]))
+            .where(TaskPresentation.source_task_event_id.is_not(None))
+        )
+        await session.execute(
+            update(NotificationOutbox)
+            .where(NotificationOutbox.status == "sending")
+            .where(
+                or_(
+                    NotificationOutbox.task_event_id.is_(None),
+                    NotificationOutbox.task_event_id.in_(closed_attention),
+                )
+            )
+            .values(status="superseded", next_attempt_at=None)
+        )
         await session.execute(
             update(NotificationOutbox)
             .where(NotificationOutbox.status == "sending")
@@ -158,7 +176,9 @@ async def recover_pending_task_notifications() -> int:
         )).scalars().all())
         for row in rows:
             row.next_attempt_at = None
-    await route_pending_task_notifications(voice_connected=False)
+            recoveries.append((row.id, 0.0))
+    for outbox_id, delay in recoveries:
+        await schedule_task_notification(outbox_id, delay_seconds=delay)
     return len(rows)
 
 
@@ -171,22 +191,41 @@ async def route_pending_task_notifications(
     now = utc_now()
     due_ids: list[str] = []
     async with session_scope() as session:
+        await _reconcile_outbox_attention(session)
         rows = list((await session.execute(
             select(NotificationOutbox)
             .where(NotificationOutbox.status.in_(["queued", "failed"]))
-            .where(NotificationOutbox.acknowledged_at.is_(None))
             .where(NotificationOutbox.attempts < settings.notification_retry_limit)
             .order_by(NotificationOutbox.created_at.asc(), NotificationOutbox.id.asc())
         )).scalars().all())
         for row in rows:
+            if row.id in _scheduled_outbox_ids:
+                continue
+            created_at = row.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            grace_deadline = created_at + timedelta(
+                seconds=max(0.0, settings.jarvis_notification_grace_seconds)
+            )
+            hard_deadline = created_at + timedelta(seconds=30.0)
             if voice_connected and voice_floor_held:
-                row.next_attempt_at = None
+                next_attempt = hard_deadline
+                row.next_attempt_at = next_attempt
+                if next_attempt <= now:
+                    due_ids.append(row.id)
                 continue
             if voice_connected:
-                if row.next_attempt_at is None:
-                    row.next_attempt_at = now + timedelta(
-                        seconds=max(0.0, settings.jarvis_notification_grace_seconds)
+                next_attempt = grace_deadline
+                if row.next_attempt_at is not None:
+                    existing_due = row.next_attempt_at
+                    if existing_due.tzinfo is None:
+                        existing_due = existing_due.replace(tzinfo=timezone.utc)
+                    next_attempt = (
+                        min(max(grace_deadline, existing_due), hard_deadline)
+                        if row.status == "failed"
+                        else min(existing_due, grace_deadline)
                     )
+                row.next_attempt_at = next_attempt
             elif row.status == "queued" or row.next_attempt_at is None:
                 row.next_attempt_at = now
             next_attempt = row.next_attempt_at or now
@@ -202,11 +241,19 @@ async def route_pending_task_notifications(
 async def _send_outbox_by_id(outbox_id: str) -> None:
     now = utc_now()
     async with session_scope() as session:
+        await _reconcile_outbox_attention(session, outbox_id=outbox_id)
         claimed = await session.execute(
             update(NotificationOutbox)
             .where(NotificationOutbox.id == outbox_id)
             .where(NotificationOutbox.status.in_(["queued", "failed"]))
             .where(NotificationOutbox.attempts < settings.notification_retry_limit)
+            .where(
+                NotificationOutbox.task_event_id.in_(
+                    select(TaskPresentation.source_task_event_id)
+                    .where(TaskPresentation.state == "pending")
+                    .where(TaskPresentation.source_task_event_id.is_not(None))
+                )
+            )
             .where(
                 or_(
                     NotificationOutbox.next_attempt_at.is_(None),
@@ -220,6 +267,10 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
         outbox = await session.get(NotificationOutbox, outbox_id)
         subscriptions = list((await session.execute(select(PushSubscription))).scalars().all())
         if outbox is None:
+            return
+        if await _attention_is_closed(session, outbox.task_event_id):
+            outbox.status = "superseded"
+            outbox.next_attempt_at = None
             return
         notification_payload = payload_for_task_notification(outbox)
         await session.execute(
@@ -285,6 +336,14 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
         if row is None or row.status != "sending":
             return
         row.attempts += 1
+        attention_closed = await _attention_is_closed(session, row.task_event_id)
+        # If a push actually left the process while attention was handled,
+        # retain the transport outcome as history.  Only an unsuccessful
+        # in-flight attempt is suppressed so it cannot resurrect retries.
+        if attention_closed and not successes:
+            row.status = "superseded"
+            row.next_attempt_at = None
+            return
         if successes:
             row.status = "delivered"
             row.delivered_at = utc_now()
@@ -301,32 +360,43 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
 
 
 async def acknowledge_task_notification(delivery_id: str, state: str) -> bool:
-    if state not in {"opened", "spoken", "snoozed"}:
-        raise ValueError("Delivery state must be opened, spoken, or snoozed")
-    async with session_scope() as session:
-        row = await session.get(NotificationOutbox, delivery_id)
-        if row is None:
-            return False
-        if row.acknowledged_at is None:
-            row.acknowledged_at = utc_now()
-            row.status = "acknowledged"
-            row.acknowledgement_state = state
-            payload = dict(row.payload_json or {})
-            payload["acknowledgement_state"] = state
-            row.payload_json = payload
-            if row.task_event_id:
-                candidates = list((await session.execute(
-                    select(TaskPresentation)
-                    .where(TaskPresentation.source_task_event_id == row.task_event_id)
-                    .where(TaskPresentation.state.in_(["pending", "reserved"]))
-                )).scalars().all())
-                for candidate in candidates:
-                    candidate.state = "acknowledged"
-                    candidate.reserved_session_id = None
-                    candidate.reserved_generation = None
-                    candidate.reserved_at = None
-                    candidate.defer_until = None
+    if state != "opened":
+        raise ValueError("Delivery state must be opened")
+    from app.services.task_presentations import task_presentation_service
+
+    return await task_presentation_service.acknowledge_notification(delivery_id=delivery_id)
+
+
+async def _attention_is_closed(session, task_event_id: str | None) -> bool:
+    if not task_event_id:
+        # Legacy transport rows without an exact task-event link cannot be
+        # safely associated with current attention and are never eligible for
+        # a new send after the migration.
         return True
+    state = (await session.execute(
+        select(TaskPresentation.state)
+        .where(TaskPresentation.source_task_event_id == task_event_id)
+        .limit(1)
+    )).scalar_one_or_none()
+    return state in {"handled", "superseded"}
+
+
+async def _reconcile_outbox_attention(session, *, outbox_id: str | None = None) -> None:
+    query = (
+        update(NotificationOutbox)
+        .where(NotificationOutbox.status.in_(["queued", "failed"]))
+        .where(
+            NotificationOutbox.task_event_id.in_(
+                select(TaskPresentation.source_task_event_id)
+                .where(TaskPresentation.state.in_(["handled", "superseded"]))
+                .where(TaskPresentation.source_task_event_id.is_not(None))
+            )
+        )
+        .values(status="superseded", next_attempt_at=None)
+    )
+    if outbox_id:
+        query = query.where(NotificationOutbox.id == outbox_id)
+    await session.execute(query)
 
 
 __all__ = [

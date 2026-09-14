@@ -25,8 +25,8 @@ import {
   acceptJarvisTextTurn,
   answerTaskQuestion,
   cancelTask,
-  closeJarvisRealtimeSession,
-  createJarvisRealtimeCall,
+  closeJarvisLiveSession,
+  createJarvisLiveCall,
   getJarvisLogEvents,
   getJarvisLiveEvents,
   getJarvisPreferences,
@@ -37,7 +37,7 @@ import {
   injectFakeJarvisEvent,
   retryTask,
   startFreshJarvisLog,
-  submitJarvisRealtimeTelemetry,
+  submitJarvisLiveTelemetry,
   updateJarvisPreferences,
   type JarvisFakeProviderEventRequest,
   type JarvisLiveEvent,
@@ -52,13 +52,8 @@ import {
   resetJarvisSessionStream,
   type JarvisLiveStreamState,
 } from "@/lib/jarvis-live-state";
-import {
-  JarvisRealtimeController,
-  type JarvisRealtimeSnapshot,
-} from "@/lib/jarvis-realtime";
 import { JarvisLiveController } from "@/lib/jarvis-live";
-import { loadJarvisVoiceEngine } from "@/lib/jarvis-voice-engine";
-import type { JarvisVoiceEngine, JarvisVoiceSnapshot } from "@/lib/jarvis-voice-client";
+import type { JarvisVoiceSnapshot } from "@/lib/jarvis-voice-client";
 import {
   configuredJarvisWakeModel,
 } from "@/lib/jarvis-wake-protocol";
@@ -130,11 +125,10 @@ export default function JarvisPage() {
   const [provisionalUser, setProvisionalUser] = useState<ProvisionalTranscript | null>(null);
   const [provisionalAssistant, setProvisionalAssistant] = useState<ProvisionalTranscript | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [voiceEngine, setVoiceEngine] = useState<JarvisVoiceEngine>("realtime");
-  const [realtime, setRealtime] = useState<JarvisRealtimeSnapshot>({
+  const [voice, setVoice] = useState<JarvisVoiceSnapshot>({
     status: "idle",
-    attempt: 0,
-    session: null,
+    micEnabled: false,
+    playbackActive: false,
     error: null,
   });
   const [wake, setWake] = useState<JarvisWakeSnapshot>({
@@ -151,9 +145,7 @@ export default function JarvisPage() {
   const logIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const controllerIdRef = useRef("");
-  const realtimeControllerRef = useRef<JarvisRealtimeController | null>(null);
   const liveControllerRef = useRef<JarvisLiveController | null>(null);
-  const voiceEngineRef = useRef<JarvisVoiceEngine>("realtime");
   const wakeLifecycleRef = useRef<JarvisWakeLifecycle | null>(null);
   const wakeRuntimeRef = useRef<JarvisWakeRuntime | null>(null);
   const wakeGateModeRef = useRef<JarvisWakeGateMode>("transcript_rules");
@@ -268,9 +260,6 @@ export default function JarvisPage() {
 
   useEffect(() => {
     let disposed = false;
-    const selectedVoiceEngine = loadJarvisVoiceEngine();
-    voiceEngineRef.current = selectedVoiceEngine;
-    setVoiceEngine(selectedVoiceEngine);
     controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`;
     const handleProviderEvent = (event: Record<string, unknown>) => {
       const eventType = typeof event.type === "string" ? event.type : "";
@@ -316,19 +305,7 @@ export default function JarvisPage() {
     };
     const handleLiveSnapshot = (snapshot: JarvisVoiceSnapshot) => {
       if (disposed) return;
-      const status: JarvisRealtimeSnapshot["status"] = snapshot.status === "connecting"
-        ? "connecting"
-        : snapshot.status === "connected" || snapshot.status === "interrupted"
-          ? "connected"
-          : snapshot.status === "error"
-            ? "text_fallback"
-            : "idle";
-      setRealtime((current) => ({
-        status,
-        attempt: snapshot.status === "connecting" ? current.attempt + 1 : current.attempt,
-        session: current.session,
-        error: snapshot.error,
-      }));
+      setVoice(snapshot);
     };
     const liveController = new JarvisLiveController(
       controllerIdRef.current,
@@ -337,19 +314,10 @@ export default function JarvisPage() {
         onRemoteStream: handleRemoteStream,
         onProviderEvent: handleProviderEvent,
         onDiagnostic: (diagnostic) => {
-          realtimeControllerRef.current?.recordClientSignal(
-            `live.${diagnostic.event}`,
-            {
-              attempt: diagnostic.attempt,
-              session_id: diagnostic.sessionId,
-              generation: diagnostic.generation,
-              ...diagnostic.detail,
-            },
-          );
           const traceId = diagnostic.activationId
             ?? diagnostic.sessionId
             ?? `live-${controllerIdRef.current.slice(-36)}-${diagnostic.attempt}`;
-          void submitJarvisRealtimeTelemetry([{
+          void submitJarvisLiveTelemetry([{
             trace_id: traceId,
             client_sequence: ++liveDiagnosticSequenceRef.current,
             activation_id: diagnostic.activationId,
@@ -365,45 +333,7 @@ export default function JarvisPage() {
       },
     );
     liveControllerRef.current = liveController;
-    const realtimeController = new JarvisRealtimeController({
-      controllerId: controllerIdRef.current,
-      onSnapshot: setRealtime,
-      onRemoteStream: (stream) => {
-        const audio = remoteAudioRef.current;
-        if (!audio) return;
-        audio.srcObject = stream;
-        if (stream) {
-          audio.muted = false;
-          void audio.play()
-            .then(() => realtimeControllerRef.current?.recordPlaybackSignal(
-              "audio_play_resolved",
-              `media_current_time_ms:${Math.round(audio.currentTime * 1_000)}`,
-            ))
-            .catch(() => undefined);
-        }
-      },
-      onPlaybackMuted: (muted) => {
-        const audio = remoteAudioRef.current;
-        if (!audio) return;
-        audio.muted = muted;
-        realtimeControllerRef.current?.recordPlaybackSignal(
-          muted ? "audio_element_muted" : "audio_element_unmuted",
-          `media_current_time_ms:${Math.round(audio.currentTime * 1_000)}`,
-        );
-      },
-      onActivationPolicy: ({ activationId, requestedGateMode, backendGateMode, configurationId }) => {
-        if (disposed) return;
-        setWakeGateBackendMode(backendGateMode);
-        setWakeGateMismatch(
-          requestedGateMode === backendGateMode
-            ? null
-            : `${activationId}: requested ${requestedGateMode}, backend used ${backendGateMode} (${configurationId})`,
-        );
-      },
-      onProviderEvent: handleProviderEvent,
-    });
-    realtimeControllerRef.current = realtimeController;
-    const handlePageHide = () => realtimeController.handlePageHide();
+    const handlePageHide = () => { void liveController.stop(); };
     window.addEventListener("pagehide", handlePageHide);
     const lifecycle = new JarvisWakeLifecycle({
       onSnapshot: setWake,
@@ -411,20 +341,12 @@ export default function JarvisPage() {
     });
     wakeLifecycleRef.current = lifecycle;
     const runtime = new JarvisWakeRuntime({
-      onTrace: (kind, detail) => realtimeController.recordClientSignal(kind, detail),
+      onTrace: () => undefined,
       onReady: (stream) => {
-        if (voiceEngineRef.current === "openai_live") {
-          void liveController.prepare(stream).catch((cause) => {
-            if (disposed) return;
-            wakeLifecycleRef.current?.fail(cause);
-            setError(cause instanceof Error ? cause.message : "Unable to prepare GPT-Live transport");
-          });
-          return;
-        }
-        void realtimeController.arm(stream).catch((cause) => {
+        void liveController.prepare(stream).catch((cause) => {
           if (disposed) return;
           wakeLifecycleRef.current?.fail(cause);
-          setError(cause instanceof Error ? cause.message : "Unable to prepare Jarvis voice");
+          setError(cause instanceof Error ? cause.message : "Unable to prepare GPT-Live transport");
         });
       },
       onSnapshot: (snapshot) => {
@@ -458,14 +380,12 @@ export default function JarvisPage() {
         const liveCandidateAudio = handoff.candidateAudio && "observeEndpoint" in handoff.candidateAudio
           ? handoff.candidateAudio
           : undefined;
-        const connection = voiceEngineRef.current === "openai_live"
-          ? liveController.startWithOptions({
-              stream: handoff.localStream,
-              activationContext,
-              candidateAudio: liveCandidateAudio,
-              wakeDetectedMonotonicMs: handoff.wakeDetectedMonotonicMs,
-            })
-          : realtimeController.start({ audioHandoff: handoff, activationContext });
+        const connection = liveController.startWithOptions({
+          stream: handoff.localStream,
+          activationContext,
+          candidateAudio: liveCandidateAudio,
+          wakeDetectedMonotonicMs: handoff.wakeDetectedMonotonicMs,
+        });
         void connection
           .then((snapshot) => {
             if (!disposed && snapshot.status === "connected") lifecycle.connected();
@@ -479,15 +399,13 @@ export default function JarvisPage() {
     });
     wakeRuntimeRef.current = runtime;
     const refreshLivePreparation = (reason: "microphone_change" | "network_change") => {
-      if (voiceEngineRef.current !== "openai_live") return;
       void liveController.refreshPreparation(reason).catch((cause) => {
         if (!disposed) setError(cause instanceof Error ? cause.message : "Unable to refresh GPT-Live transport");
       });
     };
     const handleDeviceChange = () => {
       if (
-        voiceEngineRef.current !== "openai_live"
-        || !WAKE_MODEL_CONFIGURATION
+        !WAKE_MODEL_CONFIGURATION
         || runtime.current().status !== "ready"
         || !["idle", "closed"].includes(liveController.current().status)
       ) return;
@@ -506,12 +424,8 @@ export default function JarvisPage() {
     networkInformation?.addEventListener?.("change", handleNetworkChange);
     rearmWakeRef.current = async () => {
       try {
-        if (voiceEngineRef.current === "openai_live") {
-          if (!["idle", "closed"].includes(liveController.current().status)) {
-            await liveController.stop();
-          }
-        } else if (realtimeController.current().status !== "standby") {
-          await realtimeController.stop();
+        if (!["idle", "closed"].includes(liveController.current().status)) {
+          await liveController.stop();
         }
         await runtime.rearm();
         if (!disposed && lifecycle.current().status === "arming") lifecycle.armed();
@@ -538,8 +452,7 @@ export default function JarvisPage() {
       window.removeEventListener("online", handleNetworkChange);
       networkInformation?.removeEventListener?.("change", handleNetworkChange);
       lifecycle.destroy();
-      void Promise.all([realtimeController.stop(), liveController.stop()]).finally(() => runtime.stop());
-      realtimeControllerRef.current = null;
+      void liveController.stop().finally(() => runtime.stop());
       liveControllerRef.current = null;
       wakeLifecycleRef.current = null;
       wakeRuntimeRef.current = null;
@@ -556,7 +469,6 @@ export default function JarvisPage() {
     const deliver = (event: JarvisLiveEvent) => {
       if (event.sequence <= liveCursorRef.current) return;
       liveControllerRef.current?.recordBackendEvent(event);
-      const gateHandled = realtimeControllerRef.current?.recordBackendEvent(event) ?? false;
       liveCursorRef.current = event.sequence;
       if (event.event_type === "provider.user_transcript_delta") {
         setProvisionalUser((current) => mergeProvisionalTranscript(current, {
@@ -564,19 +476,6 @@ export default function JarvisPage() {
           delta: String(event.payload?.delta ?? event.payload?.transcript ?? ""),
           afterMessageId: newestMessageIdRef.current,
         }));
-        return;
-      }
-      if (event.event_type === "wake.gate.rejected" || event.event_type === "wake.gate.timed_out") {
-        if (!gateHandled) return;
-        const lifecycle = wakeLifecycleRef.current;
-        const controller = realtimeControllerRef.current;
-        if (lifecycle && controller && lifecycle.current().status !== "destroyed") {
-          void controller.waitForWakeGateStandby().then(() => {
-            if (lifecycle.current().status === "destroyed") return;
-            if (["triggered", "connecting"].includes(lifecycle.current().status)) lifecycle.sleep();
-          });
-        }
-        setProvisionalUser(null);
         return;
       }
       if (event.event_type === "provider.user_transcript") {
@@ -608,9 +507,6 @@ export default function JarvisPage() {
         )));
         return;
       }
-      if (event.event_type === "session.rotation_requested") {
-        void realtimeControllerRef.current?.stop().then(() => realtimeControllerRef.current?.start());
-      }
       if (event.source_domain !== "session" || event.event_type.startsWith("task.")) {
         void refresh();
       }
@@ -632,11 +528,6 @@ export default function JarvisPage() {
       source = new EventSource(jarvisLiveUrl(liveCursorRef.current), { withCredentials: true });
       source.onopen = () => {
         liveControllerRef.current?.recordLiveStreamState("opened");
-        realtimeControllerRef.current?.recordLiveStreamState(
-          "opened",
-          liveCursorRef.current,
-          source?.readyState,
-        );
       };
       source.addEventListener("jarvis", (raw) => {
         try {
@@ -647,11 +538,6 @@ export default function JarvisPage() {
       });
       source.onerror = () => {
         liveControllerRef.current?.recordLiveStreamState("errored");
-        realtimeControllerRef.current?.recordLiveStreamState(
-          "errored",
-          liveCursorRef.current,
-          source?.readyState,
-        );
         source?.close();
         if (!disposed) retry = window.setTimeout(connect, 1000);
       };
@@ -729,26 +615,6 @@ export default function JarvisPage() {
     });
   };
 
-  const downloadRealtimeTrace = () => {
-    const controller = realtimeControllerRef.current;
-    const entries = controller?.traceSnapshot() ?? [];
-    const url = URL.createObjectURL(new Blob(
-      [JSON.stringify({
-        schema: "jarvis.realtime_trace.v2",
-        captured_at: new Date().toISOString(),
-        browser: navigator.userAgent,
-        timing_summary: controller?.timingSummary() ?? null,
-        entries,
-      }, null, 2)],
-      { type: "application/json" },
-    ));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `jarvis-realtime-trace-${Date.now()}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
   const inject = async (
     kind: JarvisFakeProviderEventRequest["kind"],
     payload: Record<string, unknown> = {},
@@ -767,8 +633,8 @@ export default function JarvisPage() {
   const session = state?.session ?? null;
   const sessionReady = session?.lifecycle_state === "ready";
   const ownsController = session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
-  const realtimeBusy = realtime.status === "connecting" || realtime.status === "reconnecting";
-  const voiceActive = realtime.status !== "idle";
+  const voiceBusy = voice.status === "connecting";
+  const voiceActive = !["idle", "closed", "error"].includes(voice.status);
   const effectiveWakeGateMode = resolveJarvisWakeGateMode(
     preferences?.developer_mode === true,
     wakeGateMode,
@@ -784,7 +650,7 @@ export default function JarvisPage() {
 
   const armVoice = async () => {
     if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
-    if (!realtimeControllerRef.current || !liveControllerRef.current) throw new Error("Voice controller is unavailable");
+    if (!liveControllerRef.current) throw new Error("Voice controller is unavailable");
     const runtime = wakeRuntimeRef.current;
     const lifecycle = wakeLifecycleRef.current;
     if (runtime?.current().status === "ready" && lifecycle?.current().status === "armed") {
@@ -792,11 +658,7 @@ export default function JarvisPage() {
       lifecycle.connecting();
       try {
         const handoff = runtime.manualHandoff();
-        if (voiceEngineRef.current === "openai_live") {
-          await liveControllerRef.current.startWithOptions({ stream: handoff.localStream });
-        } else {
-          await realtimeControllerRef.current.start({ audioHandoff: handoff });
-        }
+        await liveControllerRef.current.startWithOptions({ stream: handoff.localStream });
         lifecycle.connected();
       } catch (cause) {
         lifecycle.fail(cause);
@@ -805,8 +667,7 @@ export default function JarvisPage() {
     } else {
       await runtime?.stop();
       lifecycle?.reset();
-      if (voiceEngineRef.current === "openai_live") await liveControllerRef.current.startWithOptions();
-      else await realtimeControllerRef.current.start();
+      await liveControllerRef.current.startWithOptions();
     }
   };
 
@@ -818,11 +679,10 @@ export default function JarvisPage() {
       && wakeLifecycleRef.current
     ) {
       wakeLifecycleRef.current.sleep();
-    } else if (realtime.status !== "idle") {
-      if (voiceEngineRef.current === "openai_live") await liveControllerRef.current?.stop();
-      else await realtimeControllerRef.current?.stop();
+    } else if (voice.status !== "idle") {
+      await liveControllerRef.current?.stop();
     } else if (session) {
-      await closeJarvisRealtimeSession(session.id, session.generation);
+      await closeJarvisLiveSession(session.id, session.generation);
     }
   };
 
@@ -842,14 +702,6 @@ export default function JarvisPage() {
         autoPlay
         className="hidden"
         aria-hidden="true"
-        onPlaying={(event) => realtimeControllerRef.current?.recordPlaybackSignal(
-          "audio_element_playing",
-          `media_current_time_ms:${Math.round(event.currentTarget.currentTime * 1_000)}`,
-        )}
-        onPause={(event) => realtimeControllerRef.current?.recordPlaybackSignal(
-          "audio_element_paused",
-          `media_current_time_ms:${Math.round(event.currentTarget.currentTime * 1_000)}`,
-        )}
       />
       <header className="shrink-0 border-b border-zinc-800 bg-zinc-900/95 px-3 py-2 md:px-5 md:py-3">
         <div className="md:hidden">
@@ -860,7 +712,7 @@ export default function JarvisPage() {
             aria-expanded={statusOpen}
           >
             <span className="flex min-w-0 items-center gap-3">
-              <span className={`h-2.5 w-2.5 rounded-full ${sessionReady || realtime.status === "connected" ? "bg-emerald-400" : "bg-zinc-600"}`} />
+              <span className={`h-2.5 w-2.5 rounded-full ${sessionReady || voice.status === "connected" ? "bg-emerald-400" : "bg-zinc-600"}`} />
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold">Jarvis</span>
                 <span className="block truncate text-xs capitalize text-zinc-400">
@@ -872,7 +724,7 @@ export default function JarvisPage() {
           </button>
           {statusOpen && (
             <div className="mb-2 grid grid-cols-2 gap-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-xs">
-              <div><span className="text-zinc-500">Voice</span><p className="mt-1 capitalize text-zinc-200">{preferences?.voice ?? "marin"} · {voiceEngine === "openai_live" ? "GPT-Live" : "Realtime"}</p></div>
+              <div><span className="text-zinc-500">Voice</span><p className="mt-1 capitalize text-zinc-200">{preferences?.voice ?? "marin"} · GPT-Live</p></div>
               <div><span className="text-zinc-500">Wake</span><p className="mt-1 capitalize text-zinc-200">{wake.status.replaceAll("_", " ")}</p></div>
               <div><span className="text-zinc-500">Worker</span><p className={`mt-1 capitalize ${state?.worker_health.status === "online" ? "text-emerald-300" : "text-amber-200"}`}>{state?.worker_health.status ?? "offline"}</p></div>
               <div><span className="text-zinc-500">Systems</span><p className={`mt-1 ${degradedComponents.length ? "text-amber-200" : "text-emerald-300"}`}>{degradedComponents.length ? `${degradedComponents.length} degraded` : "Healthy"}</p></div>
@@ -912,16 +764,16 @@ export default function JarvisPage() {
                 worker {state?.worker_health.status || "offline"}
               </span>
               <span className="text-xs text-zinc-500">
-                {voiceEngine === "openai_live" ? "GPT-Live experimental" : "Realtime 2.1"}
+                GPT-Live
               </span>
               {!!degradedComponents.length && (
                 <span className="text-xs text-amber-300" title={degradedComponents.map(([name, value]) => `${name}: ${value.detail || value.status}`).join("\n")}>
                   {degradedNames}{degradedComponents.length > 2 ? ` +${degradedComponents.length - 2}` : ""}
                 </span>
               )}
-              {realtime.status !== "idle" && (
-                <span className={realtime.status === "connected" ? "text-xs text-emerald-400" : realtime.status === "text_fallback" ? "text-xs text-amber-300" : "text-xs text-violet-300"}>
-                  voice {realtime.status.replaceAll("_", " ")}{realtimeBusy ? ` · attempt ${realtime.attempt}` : ""}
+              {voice.status !== "idle" && (
+                <span className={voice.status === "connected" ? "text-xs text-emerald-400" : voice.status === "error" ? "text-xs text-amber-300" : "text-xs text-violet-300"}>
+                  voice {voice.status.replaceAll("_", " ")}
                 </span>
               )}
               <span
@@ -952,7 +804,7 @@ export default function JarvisPage() {
             <button
               type="button"
               onClick={() => void run(toggleVoice)}
-              disabled={submitting || realtimeBusy || (!voiceActive && !currentLog)}
+              disabled={submitting || voiceBusy || (!voiceActive && !currentLog)}
               aria-pressed={voiceActive}
               className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs disabled:opacity-40 ${
                 voiceActive
@@ -1014,9 +866,8 @@ export default function JarvisPage() {
               <LabButton label="Direct reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_response", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This is a deterministic direct response." }))} />
               <LabButton label="Interrupt reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_interrupted", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This response was interrupted before it finished.", heard_transcript: "This response was interrupted" }))} />
               <LabButton label="Delegate demo" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("shell_call", { call_id: `lab-${crypto.randomUUID()}`, name: "dispatch_task", arguments: { goal: "Prepare the developer lab report" } }))} />
-              <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisRealtimeCall(controllerIdRef.current, "controller"); })} />
+              <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisLiveCall(controllerIdRef.current, "controller"); })} />
               <LabButton label="Provider error" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("provider_error", { reason: "simulated_failure" }))} />
-              <LabButton label="Download voice trace" disabled={realtime.status === "idle"} onClick={downloadRealtimeTrace} />
             </div>
           )}
         </div>
@@ -1096,7 +947,7 @@ export default function JarvisPage() {
               <button
                 type="button"
                 onClick={() => void run(toggleVoice)}
-                disabled={submitting || realtimeBusy || (!voiceActive && !currentLog)}
+                disabled={submitting || voiceBusy || (!voiceActive && !currentLog)}
                 aria-label={voiceActive ? "Put Jarvis to sleep" : "Arm Jarvis"}
                 aria-pressed={voiceActive}
                 title={voiceActive ? "Sleep" : "Arm"}
@@ -1152,7 +1003,7 @@ export default function JarvisPage() {
             ))}
             {!!state?.pending_presentations.length && (
               <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-                <p className="text-xs font-medium text-amber-200">{state.pending_presentations.length} update{state.pending_presentations.length === 1 ? "" : "s"} waiting for a safe boundary</p>
+                <p className="text-xs font-medium text-amber-200">{state.pending_presentations.length} pending update{state.pending_presentations.length === 1 ? "" : "s"}</p>
               </div>
             )}
           </div>

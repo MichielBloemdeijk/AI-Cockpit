@@ -103,7 +103,6 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
     };
     Object.defineProperty(window, "__jarvisLiveSmoke", { configurable: true, value: bridge });
     try {
-      window.localStorage.setItem("jarvis.voice_engine", "openai_live");
     } catch {
       // about:blank has an opaque origin; the same script runs again on the app origin.
     }
@@ -111,7 +110,7 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/api/jarvis/realtime/telemetry") && typeof init?.body === "string") {
+      if (url.includes("/api/jarvis/live/telemetry") && typeof init?.body === "string") {
         try {
           const payload = JSON.parse(init.body) as { events?: Array<{ event_type?: string }> };
           for (const event of payload.events ?? []) {
@@ -236,7 +235,7 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
         && payload.session.lifecycle_state !== "disconnected"
       ) {
         await page.request.delete(
-          `/api/jarvis/realtime/sessions/${encodeURIComponent(acceptedSession.id)}?generation=${acceptedSession.generation}`,
+          `/api/jarvis/live/sessions/${encodeURIComponent(acceptedSession.id)}?generation=${acceptedSession.generation}`,
         );
       }
     }

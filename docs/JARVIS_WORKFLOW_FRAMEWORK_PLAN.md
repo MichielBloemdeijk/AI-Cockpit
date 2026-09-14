@@ -38,7 +38,7 @@ No in-app workflow authoring, automatic optimization, or separate Windows/Linux 
 - Preserve one owner for voice response generation. Change the current silence policy specifically for asynchronous startup: acknowledgment may describe accepted work, but must not claim capture or completion before those events occur.
 - Speech interruption stops the acknowledgment, not an already accepted task. Explicit cancellation cancels the task.
 
-This uses Realtime's existing function-call/result mechanism; it does not require replacing GPT-Realtime 2.1. [Realtime function calling](https://developers.openai.com/api/docs/guides/realtime-conversations#function-calling)
+The Live delegated Responses model uses the existing typed function-call/result gateway; workflow execution remains owned by Cockpit. [Live delegation](https://developers.openai.com/api/docs/guides/live-delegation)
 
 ## 3. Result pages, research, and updates
 

@@ -15,9 +15,7 @@ from app.db.tables import (
     ConversationMessage,
     JarvisPreference,
     JarvisState,
-    NotificationOutbox,
-    RealtimeSession,
-    SpeechDelivery,
+    LiveSession,
     Task,
     TaskEvent,
     TaskPresentation,
@@ -87,7 +85,7 @@ class JarvisSituationProjector:
             await session.refresh(state)
 
         preferences = await session.get(JarvisPreference, "current")
-        realtime = await session.get(RealtimeSession, session_id) if session_id else None
+        realtime = await session.get(LiveSession, session_id) if session_id else None
         active_time_zone = (
             realtime.client_time_zone
             if realtime is not None and realtime.client_time_zone
@@ -128,26 +126,15 @@ class JarvisSituationProjector:
 
         pending_presentations = list((await session.execute(
             select(TaskPresentation)
-            .where(TaskPresentation.state.in_(["pending", "reserved"]))
+            .where(TaskPresentation.state == "pending")
             .order_by(TaskPresentation.created_at.asc(), TaskPresentation.id.asc())
         )).scalars().all())
         delivered_presentations = list((await session.execute(
             select(TaskPresentation)
-            .where(TaskPresentation.state.in_(["presented", "acknowledged"]))
-            .order_by(TaskPresentation.presented_at.desc(), TaskPresentation.created_at.desc())
+            .where(TaskPresentation.state == "handled")
+            .order_by(TaskPresentation.handled_at.desc(), TaskPresentation.created_at.desc())
             .limit(10)
         )).scalars().all())
-        deliveries = list((await session.execute(
-            select(SpeechDelivery)
-            .order_by(SpeechDelivery.created_at.desc())
-            .limit(12)
-        )).scalars().all())
-        notifications = list((await session.execute(
-            select(NotificationOutbox)
-            .order_by(NotificationOutbox.created_at.desc())
-            .limit(12)
-        )).scalars().all())
-
         messages = list((await session.execute(
             select(ConversationMessage)
             .where(ConversationMessage.conversation_id == conversation_id)
@@ -230,13 +217,20 @@ class JarvisSituationProjector:
             }
 
         def presentation_value(item: TaskPresentation) -> dict[str, Any]:
+            facts = dict(item.required_facts_json or {})
+            facts.pop("required_spoken_phrase", None)
             return {
                 "presentation_id": item.id,
                 "task_id": item.task_id,
                 "type": item.candidate_type,
                 "state": item.state,
-                "facts": item.required_facts_json,
-                "presented_at": None if item.presented_at is None else _aware(item.presented_at).isoformat(),
+                "facts": facts,
+                "priority": item.importance,
+                "summary": str(
+                    facts.get("summary") or facts.get("question") or facts.get("event_type") or "Task update"
+                ),
+                "handled_at": None if item.handled_at is None else _aware(item.handled_at).isoformat(),
+                "handled_by": item.handled_by,
             }
 
         upcoming = [task_value(task) for task in reminders if task.status == "waiting_until" and not task_value(task)["overdue"]]
@@ -266,30 +260,12 @@ class JarvisSituationProjector:
                 for item in questions
             ],
             "presentations": [presentation_value(item) for item in pending_presentations],
+            "attention_checklist": [presentation_value(item) for item in pending_presentations],
             "recently_delivered_presentations": [
                 presentation_value(item) for item in delivered_presentations
             ],
-            "speech_deliveries": [
-                {
-                    "delivery_id": item.id,
-                    "state": item.state,
-                    "heard_transcript": item.heard_transcript,
-                    "presentation_id": item.presentation_id,
-                    "completed_at": None if item.completed_at is None else _aware(item.completed_at).isoformat(),
-                }
-                for item in deliveries
-            ],
-            "notification_deliveries": [
-                {
-                    "delivery_id": item.id,
-                    "task_id": item.task_id,
-                    "task_event_id": item.task_event_id,
-                    "status": item.status,
-                    "acknowledgement_state": item.acknowledgement_state,
-                    "acknowledged_at": None if item.acknowledged_at is None else _aware(item.acknowledged_at).isoformat(),
-                }
-                for item in notifications
-            ],
+            # Playback and transport rows remain queryable history, but they
+            # are intentionally not presented as competing attention state.
             "focus": {
                 "focused_task_id": state.focused_task_id,
                 "recent_task_refs": list(state.recent_task_refs_json or []),

@@ -57,7 +57,7 @@ The Android client handles invocation, listening, notifications, and presentatio
 - Show provisional user text only when the provider supplies reliable transcription deltas.
 - Default Jarvis to one or two short sentences, elaborating when requested or required for safety or clarity.
 - Persist voice selection per user. Provide Marin as the current/feminine default and Cedar as the alternate/masculine voice, changeable through settings or `set_jarvis_voice`.
-- Rotate the Realtime session at a safe boundary when changing voice.
+- Apply voice changes to the next Live session at a safe boundary.
 - Make streaming deltas participate in newest-message scrolling and interruption reconciliation.
 
 Phone-first redesign:
@@ -76,17 +76,17 @@ Phone-first redesign:
 - Add `waiting_until`, `resume_at`, wait reason, and ordered wait/resume events.
 - Add the task-agent-only `task_wait_until` control.
 - Run an independent scheduler that leases due tasks, survives restarts, and delivers overdue reminders exactly once using idempotency keys.
-- Support one-shot relative and absolute reminders, plus list, cancel, and snooze.
+- Support one-shot relative and absolute reminders, plus list and cancel.
 - Store UTC instants and interpret unqualified times using Europe/Amsterdam.
 - Ask a concise clarification only when the requested time is genuinely ambiguous.
-- When Jarvis is active, present the reminder naturally at a safe boundary. When inactive, issue a notification only.
+- When Jarvis is active, provide reminder context through the attention checklist. When inactive, issue a notification only.
 - Keep the PC-online requirement. The phone does not independently mirror the schedule.
 
 ### Phase 3 — Natural task continuity, grep-shaped recall, and reviewed memory
 
 Natural task references:
 
-- Store a durable internal Jarvis focus containing the currently discussed task and a recency-ordered task-reference stack. Restore it after refresh, app restart, device handoff, or Realtime reconnection.
+- Store a durable internal Jarvis focus containing the currently discussed task and a recency-ordered task-reference stack. Restore it after refresh, app restart, device handoff, or Live reconnection.
 - Update focus whenever Jarvis:
   - creates or delegates a task;
   - discusses a task's progress or result;
@@ -99,7 +99,7 @@ Natural task references:
   - “last completed task” means the most recently completed task;
   - descriptions such as “the wake-word task” search task goals, summaries, questions, and user-visible updates.
 - If two plausible tasks remain, ask a descriptive clarification such as “Do you mean the wake-word tuning or the Android assistant work?” Never present or request task IDs.
-- Use the same resolver for status questions and follow-up actions such as cancel, retry, answer, or snooze. Mutating actions must not proceed when the reference is ambiguous.
+- Use the same resolver for status questions and follow-up actions such as cancel, retry, or answer. Mutating actions must not proceed when the reference is ambiguous.
 - Keep task IDs in database relations, internal tool results, URLs, traces, and diagnostics only. Never speak them or render them in normal Jarvis responses, task cards, notifications, or clarification questions.
 - Add an explicit acceptance requirement that the user can retrieve any active or historical task using natural recency, status, title, or subject references without knowing its ID.
 
@@ -126,7 +126,7 @@ Fast recall:
 - Follow `rg [OPTIONS] PATTERN [PATH...]` syntax with virtual paths such as `conversation/**`, `task/**`, and `memory/**`.
 - Parse commands internally without invoking a shell or filesystem `rg`. Bound result counts, scan time, and regex execution.
 - Return structured matches containing internal source identity, timestamp, descriptive title, matching text, and requested context.
-- Give the Realtime shell direct access for narrow lookups. Delegate broad multi-result synthesis to a background task using the same service.
+- Give the Live voice session direct access for narrow lookups. Delegate broad multi-result synthesis to a background task using the same service.
 - Target p95 search below 500ms at 100,000 messages and 10,000 tasks, with narrow voice lookups answered within three seconds.
 - The `rg`-shaped interface uses familiar conventions based on OpenAI's documented shell-tool and constrained custom-tool support. [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.2)
 
@@ -162,14 +162,14 @@ Reviewed memory:
   - separate session service and session UI;
   - Compose assistant overlay;
   - WebView-hosted phone UI;
-  - native microphone, wake inference, Realtime audio, notifications, and pairing.
+  - native microphone, wake inference, Live audio, notifications, and pairing.
 - Request the assistant role through `RoleManager`. Once selected, Jarvis replaces Gemini and can be invoked through supported assist gestures, assistant buttons, or long-press power mappings. Exact gestures remain device-dependent. [Assistant role](https://developer.android.com/reference/androidx/core/role/RoleManagerCompat), [VoiceInteractionService](https://developer.android.com/reference/android/service/voice/VoiceInteractionService)
 - Enable keyguard invocation. While locked, allow conversation, reminders, and read-only history/task/memory lookup; block other task creation and mutations.
 - Request foreground-app assist structure only after explicit opt-in. Do not request screenshots by default or persist screen context unless explicitly requested. [VoiceInteractionSession](https://developer.android.com/reference/android/service/voice/VoiceInteractionSession)
 - Use the selected assistant service as the primary background wake host, with a user-started microphone foreground service as the fallback where required by the device.
 - Persist Sleep state. Wake listening after reboot is opt-in.
 - Maintain an authenticated resumable event stream for task updates and reminder notifications.
-- Add Stop, Sleep, Snooze, and Open Task notification actions. Notifications use descriptive task labels and never expose IDs.
+- Add Stop, Sleep, and Open Task notification actions. Notifications use descriptive task labels and never expose IDs.
 - Probe AppFunctions as a caller for authorized read-only device-state functions. Keep this feature-gated because AppFunctions remains experimental and allowlisted. [AppFunctions](https://developer.android.com/ai/appfunctions)
 - Do not build against Gemini's private automation or Android Computer Control, which currently requires an OEM-preloaded privileged assistant. [Android Computer Control](https://developer.android.com/ai/computer-control)
 
@@ -198,7 +198,7 @@ Reviewed memory:
 ## Test and Acceptance Plan
 
 - Run complete backend and frontend suites at every phase gate.
-- Test streaming order, reconnection, barge-in reconciliation, voice rotation, and concise responses.
+- Test streaming order, reconnection, interruption reconciliation, voice changes on the next session, and concise responses.
 - Test natural requests including:
   - “How is that going?”
   - “What is the current task doing?”
@@ -210,7 +210,7 @@ Reviewed memory:
 - Test multiple active tasks, stale focus, ambiguous descriptions, restart restoration, device handoff, and mutation refusal after ambiguous references.
 - Assert that normal assistant text, speech, notifications, task cards, and clarification prompts never contain raw task IDs.
 - Add mobile tests at 320/360/390/430px for navigation, sheets, safe areas, keyboard behavior, streaming scroll, and accessibility.
-- Test reminders across restarts, DST, overdue startup, cancellation, snooze, and duplicate scheduler runs.
+- Test reminders across restarts, DST, overdue startup, cancellation, and duplicate scheduler runs.
 - Test every grep option, escaping, virtual paths, regex limits, injection attempts, rebuilds, and scale targets.
 - Evaluate wake/address models on held-out quiet, distant, noisy, incidental-mention, media, and multi-speaker samples.
 - Test Android assistant selection, gesture invocation, keyguard, screen-off listening, notifications, process death, network loss, battery drain, and credential revocation.

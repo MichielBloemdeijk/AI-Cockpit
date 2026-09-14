@@ -1,4 +1,4 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
 data class LiveEventState(val started: Boolean = false, val closed: Boolean = false, val listening: Boolean = false, val playing: Boolean = false, val usageSeconds: Double? = null)
 

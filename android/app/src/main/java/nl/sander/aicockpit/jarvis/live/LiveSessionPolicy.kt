@@ -1,4 +1,4 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
 /** Pure lifecycle rules shared by the Android Live transport and deterministic tests. */
 class LiveSessionPolicy(private val idleLimitMs: Long = 60_000L) {

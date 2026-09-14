@@ -109,10 +109,7 @@ async def test_cancelled_task_enqueues_once() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ack_state", ["opened", "snoozed"])
-async def test_notification_acknowledgement_suppresses_pending_voice_recap(
-    ack_state: str,
-) -> None:
+async def test_notification_opening_handles_exact_pending_attention() -> None:
     snapshot = await task_service.dispatch(
         goal="Keep delivery truth separate",
         idempotency_key="notification-ack-task",
@@ -134,17 +131,16 @@ async def test_notification_acknowledgement_suppresses_pending_voice_recap(
             )
         ).scalar_one()
 
-    assert await acknowledge_delivery(row.id, ack_state) is True
+    assert await acknowledge_delivery(row.id, "opened") is True
 
     async with session_scope() as session:
         acknowledged = await session.get(NotificationOutbox, row.id)
         acknowledged_presentation = await session.get(TaskPresentation, presentation.id)
-    assert acknowledged is not None and acknowledged.acknowledged_at is not None
-    assert acknowledged.status == "acknowledged"
-    assert acknowledged.acknowledgement_state == ack_state
+    assert acknowledged is not None and acknowledged.status == "superseded"
     assert acknowledged_presentation is not None
-    assert acknowledged_presentation.state == "acknowledged"
-    assert acknowledged_presentation.presented_at is None
+    assert acknowledged_presentation.state == "handled"
+    assert acknowledged_presentation.handled_at is not None
+    assert acknowledged_presentation.handled_by == "notification_opened"
 
 
 @pytest.mark.asyncio
@@ -197,7 +193,12 @@ async def test_inactive_delivery_publishes_resumable_notification_event() -> Non
     row = (await _outbox())[0]
 
     assert await task_notifications.route_pending_task_notifications(voice_connected=False) == 1
-    await asyncio.sleep(0.05)
+    for _ in range(20):
+        await asyncio.sleep(0.05)
+        async with session_scope() as session:
+            delivered = await session.get(NotificationOutbox, row.id)
+        if delivered is not None and delivered.status == "delivered":
+            break
     async with session_scope() as session:
         delivered = await session.get(NotificationOutbox, row.id)
         live_event = (
@@ -244,7 +245,7 @@ async def test_connected_voice_holds_fallback_until_disconnect(
     assert scheduled == []
     async with session_scope() as session:
         held = await session.get(NotificationOutbox, row.id)
-        assert held is not None and held.next_attempt_at is None
+        assert held is not None and held.next_attempt_at is not None
 
     assert await task_notifications.route_pending_task_notifications(
         voice_connected=True,
@@ -253,8 +254,92 @@ async def test_connected_voice_holds_fallback_until_disconnect(
     async with session_scope() as session:
         eligible = await session.get(NotificationOutbox, row.id)
         assert eligible is not None and eligible.next_attempt_at is not None
+        eligible.next_attempt_at = task_notifications.utc_now() - timedelta(seconds=1)
     assert await task_notifications.route_pending_task_notifications(voice_connected=False) == 1
     assert scheduled == [(row.id, 0.0)]
+
+
+@pytest.mark.asyncio
+async def test_busy_voice_floor_defers_until_thirty_second_hard_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = await task_service.dispatch(
+        goal="Bound the busy-floor fallback",
+        idempotency_key="notification-hard-cap-task",
+        origin_surface="test",
+    )
+    await task_service.complete(
+        snapshot.task.id,
+        summary="Hard cap result.",
+        idempotency_key="notification-hard-cap-complete",
+    )
+    await task_presentation_service.sync_candidates()
+    row = (await _outbox())[0]
+    scheduled: list[str] = []
+
+    async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
+        scheduled.append(outbox_id)
+
+    monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
+    async with session_scope() as session:
+        stored = await session.get(NotificationOutbox, row.id)
+        assert stored is not None
+        stored.created_at = task_notifications.utc_now() - timedelta(seconds=29)
+    assert await task_notifications.route_pending_task_notifications(
+        voice_connected=True,
+        voice_floor_held=True,
+    ) == 0
+    assert scheduled == []
+
+    async with session_scope() as session:
+        stored = await session.get(NotificationOutbox, row.id)
+        assert stored is not None
+        stored.created_at = task_notifications.utc_now() - timedelta(seconds=31)
+    assert await task_notifications.route_pending_task_notifications(
+        voice_connected=True,
+        voice_floor_held=True,
+    ) == 1
+    assert scheduled == [row.id]
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_separates_open_and_closed_sending_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: list[NotificationOutbox] = []
+    for index in range(2):
+        snapshot = await task_service.dispatch(
+            goal=f"Startup recovery {index}",
+            idempotency_key=f"notification-startup-task-{index}",
+            origin_surface="test",
+        )
+        await task_service.complete(
+            snapshot.task.id,
+            summary=f"Startup result {index}.",
+            idempotency_key=f"notification-startup-complete-{index}",
+        )
+    await task_presentation_service.sync_candidates()
+    rows = await _outbox()
+    async with session_scope() as session:
+        for row in rows:
+            stored = await session.get(NotificationOutbox, row.id)
+            assert stored is not None
+            stored.status = "sending"
+    assert await acknowledge_delivery(rows[0].id, "opened") is True
+
+    scheduled: list[str] = []
+
+    async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
+        scheduled.append(outbox_id)
+
+    monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
+    assert await task_notifications.recover_pending_task_notifications() == 1
+    async with session_scope() as session:
+        closed = await session.get(NotificationOutbox, rows[0].id)
+        open_row = await session.get(NotificationOutbox, rows[1].id)
+        assert closed is not None and closed.status == "superseded"
+        assert open_row is not None and open_row.status == "queued"
+    assert scheduled == [rows[1].id]
 
 
 @pytest.mark.asyncio

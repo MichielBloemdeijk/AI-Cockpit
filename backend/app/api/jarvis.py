@@ -19,19 +19,13 @@ from app.models.jarvis import (
     JarvisPresentationView,
     JarvisPreferencesPatch,
     JarvisPreferencesView,
-    JarvisRealtimeCallRequest,
-    JarvisRealtimeCallResponse,
-    JarvisRealtimeAudioPolicy,
-    JarvisRealtimeActivationRequest,
-    JarvisRealtimeActivationResponse,
-    JarvisBargeInRequest,
-    JarvisBargeInResponse,
-    JarvisRealtimeTelemetryAccepted,
-    JarvisRealtimeTelemetryBatch,
+    JarvisLiveCallRequest,
+    JarvisLiveCallResponse,
+    JarvisLiveTelemetryAccepted,
+    JarvisLiveTelemetryBatch,
     JarvisLiveEventReplayResponse,
     JarvisLiveEventView,
     ReminderCreateRequest,
-    ReminderSnoozeRequest,
     JarvisSessionEventReplayResponse,
     JarvisSessionEventView,
     JarvisSessionView,
@@ -49,12 +43,12 @@ from app.services.conversation_read_model import conversation_read_model
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.jarvis_live import jarvis_live_service
-from app.services.jarvis_realtime_telemetry import jarvis_realtime_telemetry
+from app.services.jarvis_live_telemetry import jarvis_live_telemetry
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.jarvis_situation import jarvis_situation_projector
 from app.services.natural_task_resolver import natural_task_resolver, task_title
 from app.services.reminder_scheduler import reminder_scheduler
-from app.services.openai_realtime_adapter import OpenAIRealtimeConfigurationError
+from app.services.openai_live_adapter import OpenAILiveConfigurationError
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import ACTIVE_TASK_STATUSES, task_service
 from app.models.tasks import TaskSummaryView, WorkerHealthView
@@ -65,18 +59,6 @@ router = APIRouter(prefix="/api/jarvis", tags=["jarvis"], dependencies=[Depends(
 
 def _session_view(session) -> JarvisSessionView | None:
     return None if session is None else JarvisSessionView.model_validate(session, from_attributes=True)
-
-
-def _audio_policy_view(policy) -> JarvisRealtimeAudioPolicy | None:
-    if policy is None:
-        return None
-    if isinstance(policy, JarvisRealtimeAudioPolicy):
-        return policy
-    if hasattr(policy, "as_dict"):
-        return JarvisRealtimeAudioPolicy.model_validate(policy.as_dict())
-    if isinstance(policy, dict):
-        return JarvisRealtimeAudioPolicy.model_validate(policy)
-    return None
 
 
 def _task_summary(snapshot) -> TaskSummaryView:
@@ -110,7 +92,7 @@ def _task_summary(snapshot) -> TaskSummaryView:
 def _http_error(exc: ValueError) -> HTTPException:
     if isinstance(exc, StaleSessionError):
         return HTTPException(status_code=409, detail=str(exc))
-    if isinstance(exc, OpenAIRealtimeConfigurationError):
+    if isinstance(exc, OpenAILiveConfigurationError):
         return HTTPException(status_code=503, detail=str(exc))
     return HTTPException(
         status_code=404 if "not found" in str(exc).lower() else 409,
@@ -179,6 +161,9 @@ async def get_jarvis_state() -> JarvisStateResponse:
                 state=item.state,
                 required_facts=item.required_facts_json,
                 created_at=item.created_at,
+                handled_at=item.handled_at,
+                handled_by=item.handled_by,
+                presented_at=item.handled_at,
             )
             for item in presentations
         ],
@@ -215,11 +200,9 @@ async def get_jarvis_preferences() -> JarvisPreferencesView:
 
 @router.patch("/preferences", response_model=JarvisPreferencesView)
 async def patch_jarvis_preferences(request: JarvisPreferencesPatch) -> JarvisPreferencesView:
-    preferences, voice_changed = await jarvis_preferences_service.patch(
+    preferences, _voice_changed = await jarvis_preferences_service.patch(
         request.model_dump(exclude_unset=True)
     )
-    if voice_changed:
-        await jarvis_coordinator.request_voice_rotation(preferences.voice)
     return JarvisPreferencesView(
         voice=preferences.voice,
         concision=preferences.concision,
@@ -310,21 +293,10 @@ async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
     return _task_summary(snapshot)
 
 
-@router.post("/reminders/{task_id}/snooze", response_model=TaskSummaryView)
-async def snooze_reminder(task_id: str, request: ReminderSnoozeRequest) -> TaskSummaryView:
-    preferences = await jarvis_preferences_service.get()
-    try:
-        snapshot = await reminder_scheduler.snooze(
-            task_id,
-            due_at=request.due_at,
-            timing=request.timing,
-            active_time_zone=preferences.time_zone,
-            idempotency_key=request.idempotency_key,
-        )
-    except ValueError as exc:
-        raise _http_error(exc) from exc
-    await natural_task_resolver.touch(snapshot.task.id)
-    return _task_summary(snapshot)
+@router.post("/reminders/{task_id}/snooze")
+async def snooze_reminder(task_id: str) -> None:
+    """Compatibility tombstone for the removed reminder snooze action."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reminder snooze has been removed")
 
 
 @router.delete("/reminders/{task_id}", response_model=TaskSummaryView)
@@ -393,14 +365,14 @@ async def replay_jarvis_log_events(
     )
 
 
-@router.post("/realtime/calls", response_model=JarvisRealtimeCallResponse)
-async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisRealtimeCallResponse:
+@router.post("/live/calls", response_model=JarvisLiveCallResponse)
+async def create_live_call(request: JarvisLiveCallRequest) -> JarvisLiveCallResponse:
     request_id = str(uuid4())
     request_started = time.monotonic()
     server_received_at = datetime.now(timezone.utc)
     activation_id = None if request.activation_context is None else request.activation_context.activation_id
     trace_id = activation_id or request_id
-    jarvis_realtime_telemetry.record({
+    jarvis_live_telemetry.record({
         "trace_id": trace_id,
         "activation_id": activation_id,
         "session_id": None,
@@ -417,13 +389,10 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
     if request.role == "observer":
         observed_record = await jarvis_coordinator.observe()
         observed_session = _session_view(observed_record)
-        return JarvisRealtimeCallResponse(
+        return JarvisLiveCallResponse(
             role="observer",
             request_id=request_id,
             session=observed_session,
-            audio_policy=_audio_policy_view(
-                None if observed_record is None else observed_record.audio_policy
-            ),
             server_received_at=server_received_at,
             server_responded_at=datetime.now(timezone.utc),
         )
@@ -449,25 +418,19 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Realtime provider connection failed",
+            detail="Live provider connection failed",
         ) from exc
     server_responded_at = datetime.now(timezone.utc)
-    result = JarvisRealtimeCallResponse(
+    result = JarvisLiveCallResponse(
         role="controller",
         request_id=request_id,
         session=_session_view(bootstrap.session),
-        audio_policy=_audio_policy_view(bootstrap.audio_policy),
         provider_capabilities=bootstrap.provider_capabilities,
         sdp_answer=bootstrap.sdp_answer,
-        rotate_after_seconds=(
-            settings.openai_realtime_rotation_minutes * 60
-            if request.provider_adapter == "openai"
-            else None
-        ),
         server_received_at=server_received_at,
         server_responded_at=server_responded_at,
     )
-    jarvis_realtime_telemetry.record({
+    jarvis_live_telemetry.record({
         "trace_id": trace_id,
         "activation_id": activation_id,
         "session_id": bootstrap.session.id,
@@ -480,19 +443,17 @@ async def create_realtime_call(request: JarvisRealtimeCallRequest) -> JarvisReal
         "monotonic_ms": None,
         "duration_ms": round((time.monotonic() - request_started) * 1_000, 3),
         "detail_json": {
-            "configuration_id": bootstrap.audio_policy.configuration_id,
-            "turn_mode": bootstrap.audio_policy.turn_mode,
-            "commit_owner": bootstrap.audio_policy.commit_owner,
+            "provider_adapter": request.provider_adapter,
         },
     })
     return result
 
 
-@router.post("/realtime/telemetry", response_model=JarvisRealtimeTelemetryAccepted, status_code=202)
-async def ingest_realtime_telemetry(
-    request: JarvisRealtimeTelemetryBatch,
-) -> JarvisRealtimeTelemetryAccepted:
-    accepted = jarvis_realtime_telemetry.record_many([
+@router.post("/live/telemetry", response_model=JarvisLiveTelemetryAccepted, status_code=202)
+async def ingest_live_telemetry(
+    request: JarvisLiveTelemetryBatch,
+) -> JarvisLiveTelemetryAccepted:
+    accepted = jarvis_live_telemetry.record_many([
         {
             "trace_id": event.trace_id,
             "client_sequence": event.client_sequence,
@@ -511,73 +472,11 @@ async def ingest_realtime_telemetry(
         }
         for event in request.events
     ])
-    return JarvisRealtimeTelemetryAccepted(accepted=accepted)
-
-
-@router.post(
-    "/realtime/sessions/{session_id}/activations",
-    response_model=JarvisRealtimeActivationResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def register_realtime_activation(
-    session_id: str,
-    request: JarvisRealtimeActivationRequest,
-) -> JarvisRealtimeActivationResponse:
-    preferences = await jarvis_preferences_service.get()
-    if request.gate_mode == "immediate" and not preferences.developer_mode:
-        raise HTTPException(status_code=403, detail="Immediate wake gate is restricted to developer mode")
-    if (request.benchmark_run_id or request.benchmark_fixture) and not preferences.developer_mode:
-        raise HTTPException(status_code=403, detail="Benchmark metadata is restricted to developer mode")
-    try:
-        registration = await jarvis_coordinator.register_wake_activation(
-            session_id=session_id,
-            generation=request.generation,
-            activation_id=request.activation_id,
-            wake_score=request.wake_score,
-            gate_mode=request.gate_mode,
-            allow_immediate=preferences.developer_mode,
-            benchmark_run_id=request.benchmark_run_id,
-            benchmark_fixture=request.benchmark_fixture,
-        )
-    except ValueError as exc:
-        raise _http_error(exc) from exc
-    return JarvisRealtimeActivationResponse(
-        session_id=session_id,
-        generation=request.generation,
-        activation_id=registration.activation.activation_id,
-        gate_state=registration.activation.verification_state,
-        gate_mode=registration.activation.gate_mode,
-        gate_timeout_ms=2000,
-        audio_policy=_audio_policy_view(registration.audio_policy),
-    )
-
-
-@router.post(
-    "/realtime/sessions/{session_id}/barge-in",
-    response_model=JarvisBargeInResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def register_realtime_barge_in(
-    session_id: str,
-    request: JarvisBargeInRequest,
-) -> JarvisBargeInResponse:
-    try:
-        accepted = await jarvis_coordinator.capture_barge_in_intent(
-            session_id=session_id,
-            generation=request.generation,
-            speech_event_id=request.speech_event_id,
-            source=request.source,
-            request_id=request.request_id,
-            response_id=request.response_id,
-            input_item_id=request.input_item_id,
-        )
-    except ValueError as exc:
-        raise _http_error(exc) from exc
-    return JarvisBargeInResponse(accepted=accepted)
+    return JarvisLiveTelemetryAccepted(accepted=accepted)
 
 
 @router.get(
-    "/sessions/{session_id}/events",
+    "/live/sessions/{session_id}/events",
     response_model=JarvisSessionEventReplayResponse,
 )
 async def replay_session_events(
@@ -628,8 +527,8 @@ async def inject_fake_provider_event(
     return {"accepted": True}
 
 
-@router.delete("/realtime/sessions/{session_id}", status_code=204)
-async def close_realtime_session(
+@router.delete("/live/sessions/{session_id}", status_code=204)
+async def close_live_session(
     session_id: str,
     generation: int = Query(gt=0),
 ) -> None:

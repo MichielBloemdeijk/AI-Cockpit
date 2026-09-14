@@ -10,6 +10,7 @@ from app.services.task_update_policy import CRITICAL_ONLY
 
 
 TaskUpdatePolicy = Literal["critical_only", "follow_progress", "silent"]
+AttentionState = Literal["pending", "handled", "superseded"]
 
 
 class TaskSummaryView(BaseModel):
@@ -102,9 +103,12 @@ class TaskPresentationView(BaseModel):
     candidate_type: str
     coalescing_key: str
     importance: str
-    state: str
+    state: AttentionState
     source_task_event_id: str | None = None
     created_at: datetime
+    handled_at: datetime | None = None
+    handled_by: str | None = None
+    # Deprecated compatibility alias; new clients should use handled_at.
     presented_at: datetime | None = None
 
 

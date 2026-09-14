@@ -380,13 +380,16 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
         request_id="update-1",
         response_kind="task_update",
         presentation_ids=(),
-        facts=({"required_spoken_phrase": "The report is ready."},),
+        facts=({"summary": "The report is ready.", "commentary": True},),
         context={},
     )
+    delegated_update = socket.sent[-2]
+    assert delegated_update["type"] == "session.update"
+    assert delegated_update["session"]["delegation"]["type"] == "responses"
     commentary = socket.sent[-1]
     assert commentary["type"] == "session.commentary.append"
     assert commentary["delegation_id"] is None
-    assert commentary["content"].endswith("The report is ready.")
+    assert "The report is ready." in commentary["content"]
     assert "commentary" not in commentary
     await adapter.handle_event("s", 4, {
         "type": "session.commentary.appended",

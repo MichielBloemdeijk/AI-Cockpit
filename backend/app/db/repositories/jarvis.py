@@ -10,10 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.tables import (
     Conversation,
     ConversationEvent,
-    RealtimeSession,
+    LiveSession,
     Task,
     TaskEvent,
-    VoiceSessionEvent,
+    LiveSessionEvent,
 )
 
 
@@ -21,7 +21,7 @@ from app.db.tables import (
 class DomainSnapshot:
     conversation: Conversation
     tasks: tuple[Task, ...]
-    realtime_session: RealtimeSession | None
+    live_session: LiveSession | None
     conversation_cursor: int
     task_cursor: int
     session_cursor: int
@@ -29,7 +29,7 @@ class DomainSnapshot:
 
 @dataclass(frozen=True)
 class SessionEventAppendResult:
-    event: VoiceSessionEvent
+    event: LiveSessionEvent
     created: bool
 
 
@@ -44,7 +44,7 @@ class JarvisDomainRepository:
         event_type: str,
         payload_json: dict | None = None,
         idempotency_key: str | None = None,
-    ) -> VoiceSessionEvent:
+    ) -> LiveSessionEvent:
         return (
             await self.append_session_event_once(
                 session_id=session_id,
@@ -66,19 +66,19 @@ class JarvisDomainRepository:
         # Checking the idempotency key while holding that lock prevents a
         # concurrent retry from consuming a sequence or creating a gap.
         lock_statement = (
-            update(RealtimeSession)
-            .where(RealtimeSession.id == session_id)
-            .values(last_event_sequence=RealtimeSession.last_event_sequence)
+            update(LiveSession)
+            .where(LiveSession.id == session_id)
+            .values(last_event_sequence=LiveSession.last_event_sequence)
         )
         lock_result = await self.session.execute(lock_statement)
         if lock_result.rowcount != 1:
-            raise ValueError(f"Realtime session not found: {session_id}")
+            raise ValueError(f"Live session not found: {session_id}")
 
         if idempotency_key is not None:
             existing_result = await self.session.execute(
-                select(VoiceSessionEvent)
-                .where(VoiceSessionEvent.session_id == session_id)
-                .where(VoiceSessionEvent.idempotency_key == idempotency_key)
+                select(LiveSessionEvent)
+                .where(LiveSessionEvent.session_id == session_id)
+                .where(LiveSessionEvent.idempotency_key == idempotency_key)
                 .limit(1)
             )
             existing = existing_result.scalar_one_or_none()
@@ -86,15 +86,15 @@ class JarvisDomainRepository:
                 return SessionEventAppendResult(event=existing, created=False)
 
         counter_statement = (
-            update(RealtimeSession)
-            .where(RealtimeSession.id == session_id)
-            .values(last_event_sequence=RealtimeSession.last_event_sequence + 1)
+            update(LiveSession)
+            .where(LiveSession.id == session_id)
+            .values(last_event_sequence=LiveSession.last_event_sequence + 1)
         )
         await self.session.execute(counter_statement)
         sequence_result = await self.session.execute(
-            select(RealtimeSession.last_event_sequence).where(RealtimeSession.id == session_id)
+            select(LiveSession.last_event_sequence).where(LiveSession.id == session_id)
         )
-        event = VoiceSessionEvent(
+        event = LiveSessionEvent(
             id=str(uuid4()),
             session_id=session_id,
             sequence=int(sequence_result.scalar_one()),
@@ -133,15 +133,15 @@ class JarvisDomainRepository:
         )
         task_cursor_result = await self.session.execute(select(func.max(TaskEvent.sequence)))
 
-        realtime_session = None
+        live_session = None
         session_cursor = 0
         if session_id is not None:
-            realtime_session = await self.session.get(RealtimeSession, session_id)
-            if realtime_session is None or realtime_session.conversation_id != conversation_id:
-                raise ValueError(f"Realtime session not found for conversation: {session_id}")
+            live_session = await self.session.get(LiveSession, session_id)
+            if live_session is None or live_session.conversation_id != conversation_id:
+                raise ValueError(f"Live session not found for conversation: {session_id}")
             session_cursor_result = await self.session.execute(
-                select(func.max(VoiceSessionEvent.sequence)).where(
-                    VoiceSessionEvent.session_id == session_id
+                select(func.max(LiveSessionEvent.sequence)).where(
+                    LiveSessionEvent.session_id == session_id
                 )
             )
             session_cursor = int(session_cursor_result.scalar_one_or_none() or 0)
@@ -149,7 +149,7 @@ class JarvisDomainRepository:
         return DomainSnapshot(
             conversation=conversation,
             tasks=tasks,
-            realtime_session=realtime_session,
+            live_session=live_session,
             conversation_cursor=int(conversation_cursor_result.scalar_one_or_none() or 0),
             task_cursor=int(task_cursor_result.scalar_one_or_none() or 0),
             session_cursor=session_cursor,

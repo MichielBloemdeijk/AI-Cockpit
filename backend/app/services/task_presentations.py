@@ -2,27 +2,34 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import re
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import aliased
 
+from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
 from app.db.tables import (
     NotificationOutbox,
-    RealtimeSession,
+    JarvisLiveEvent,
+    LiveSession,
     Task,
     TaskEvent,
     TaskPresentation,
     TaskProjectionCheckpoint,
     TaskQuestion,
+    LiveSessionEvent,
 )
 from app.services.task_notifications import enqueue_task_notification
-from app.services.task_error_messages import failure_category, public_failure_summary
+from app.services.task_error_messages import public_failure_summary
 from app.services.runtime_health import runtime_health_service
-from app.services.task_service import GENERIC_REMINDER_TEXT
 from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
 
 
@@ -35,7 +42,16 @@ PRESENTABLE_EVENT_TYPES = {
     "task.cancelled": "terminal_result",
     "task.reminder.due": "reminder",
 }
-UNFINISHED_PRESENTATION_STATES = {"pending", "reserved"}
+ATTENTION_STATES = {"pending", "handled", "superseded"}
+UNFINISHED_PRESENTATION_STATES = {"pending"}
+DEFAULT_LEASE_SECONDS = 30
+MAX_APPEND_TOKENS = 500
+# Every model token contains at least one UTF-8 byte. Keeping the serialized
+# append at or below this byte ceiling is therefore a conservative, explicit
+# upper bound of MAX_APPEND_TOKENS even without a model-specific tokenizer.
+# Reserve room for the short routing sentence wrapped around the JSON by each
+# provider adapter, so the complete append remains under 500 UTF-8 bytes.
+MAX_APPEND_UTF8_BYTES = 400
 
 
 def utc_now() -> datetime:
@@ -47,6 +63,22 @@ class PresentationReservation:
     presentation_ids: tuple[str, ...]
     facts: tuple[dict, ...]
     total_pending: int
+    exposure_tokens: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionChecklist:
+    items: tuple[dict, ...]
+    next_cursor: str | None
+    total_pending: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionContextUpdate:
+    items: tuple[dict, ...]
+    total_pending: int
+    next_cursor: str | None
+    deltas: tuple[dict, ...] = ()
 
 
 class TaskPresentationService:
@@ -58,21 +90,23 @@ class TaskPresentationService:
         self._projection_detail = "Awaiting the first projection pass."
 
     async def recover_reservations(self) -> int:
-        recovered = 0
         async with session_scope() as session:
-            candidates = list((await session.execute(
-                select(TaskPresentation).where(TaskPresentation.state == "reserved")
-            )).scalars().all())
-            for candidate in candidates:
-                candidate.state = "pending"
-                candidate.reserved_session_id = None
-                candidate.reserved_generation = None
-                candidate.reserved_at = None
-                candidate.defer_until = None
-                candidate.retry_count += 1
-                candidate.last_error = "process_restarted"
-                recovered += 1
-        return recovered
+            recovered = await session.execute(
+                update(TaskPresentation)
+                .where(TaskPresentation.state == "pending")
+                .where(TaskPresentation.lease_token.is_not(None))
+                .values(
+                    reserved_session_id=None,
+                    reserved_generation=None,
+                    reserved_at=None,
+                    lease_token=None,
+                    defer_until=None,
+                    retry_count=TaskPresentation.retry_count + 1,
+                    last_error="process_restarted",
+                    updated_at=utc_now(),
+                )
+            )
+            return int(recovered.rowcount or 0)
 
     async def sync_candidates(self) -> int:
         try:
@@ -179,13 +213,13 @@ class TaskPresentationService:
             if not event_id:
                 return
             for row in notifications_by_event.get(event_id, []):
-                if row.status in {"queued", "failed", "sending"}:
+                if row.status in {"queued", "failed"}:
                     row.status = "superseded"
                     row.next_attempt_at = None
             await session.execute(
                 update(NotificationOutbox)
                 .where(NotificationOutbox.task_event_id == event_id)
-                .where(NotificationOutbox.status.in_(["queued", "failed", "sending"]))
+                .where(NotificationOutbox.status.in_(["queued", "failed"]))
                 .values(status="superseded", next_attempt_at=None)
             )
 
@@ -194,7 +228,28 @@ class TaskPresentationService:
             candidate.reserved_session_id = None
             candidate.reserved_generation = None
             candidate.reserved_at = None
+            candidate.lease_token = None
             await supersede_notification(candidate.source_task_event_id)
+            active_sessions = list((await session.execute(
+                select(LiveSession)
+                .where(LiveSession.lifecycle_state.in_(["connecting", "ready"]))
+            )).scalars().all())
+            domain = JarvisDomainRepository(session)
+            for realtime in active_sessions:
+                await domain.append_session_event_once(
+                    session_id=realtime.id,
+                    event_type="attention.superseded",
+                    payload_json={
+                        "presentation_id": candidate.id,
+                        "source_task_event_id": candidate.source_task_event_id,
+                        "state": "superseded",
+                        "session_id": realtime.id,
+                        "generation": realtime.generation,
+                    },
+                    idempotency_key=(
+                        f"attention-superseded:{realtime.id}:{realtime.generation}:{candidate.id}"
+                    ),
+                )
 
         created = 0
         for event in relevant:
@@ -214,6 +269,41 @@ class TaskPresentationService:
                 continue
             candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
             existing = by_event.get(event.id)
+            if event.event_type == "task.reminder.due":
+                cutoff = int((await session.execute(
+                    text(
+                        "SELECT task_event_cutoff FROM attention_migration_state "
+                        "WHERE id = 'current'"
+                    )
+                )).scalar_one_or_none() or 0)
+                if cutoff and event.sequence <= cutoff:
+                    if existing is None:
+                        retired = TaskPresentation(
+                            id=str(uuid4()),
+                            task_id=task.id,
+                            candidate_type=candidate_type,
+                            coalescing_key=f"task:{task.id}:{candidate_type}",
+                            importance=task.importance,
+                            state="handled",
+                            source_task_event_id=event.id,
+                            required_facts_json=self._facts(event, task),
+                            handled_at=utc_now(),
+                            handled_by="migration_legacy_retired",
+                            last_error="legacy_attention_retired_at_migration",
+                            idempotency_key=f"task-event-presentation:{event.id}",
+                        )
+                        session.add(retired)
+                        retired.handled_event_id = await self._append_handled_audit(
+                            session,
+                            retired,
+                            handled_by="migration_legacy_retired",
+                            idempotency_key=f"attention-migration-retired:{retired.id}",
+                            payload={"reason": "projector_lag_cutoff"},
+                        )
+                        presentations.append(retired)
+                        by_event[event.id] = retired
+                        by_task.setdefault(task.id, []).append(retired)
+                    continue
             policy = normalize_task_update_policy(task.presentation_policy)
             if task.presentation_policy != policy:
                 task.presentation_policy = policy
@@ -241,7 +331,7 @@ class TaskPresentationService:
             elif candidate_type == "progress":
                 if any(
                     candidate.candidate_type == "terminal_result"
-                    and candidate.state in {"pending", "reserved", "presented"}
+                    and candidate.state in {"pending"}
                     for candidate in task_presentations
                 ):
                     continue
@@ -280,6 +370,117 @@ class TaskPresentationService:
             )
             return tuple(sorted(result.scalars().all(), key=self._delivery_priority))
 
+    @classmethod
+    def semantic_fingerprint(cls, candidates: tuple[TaskPresentation, ...]) -> str:
+        """Hash only facts that change the model's authoritative attention view."""
+        payload = [
+            {
+                "id": item.id,
+                "state": item.state,
+                "source_task_event_id": item.source_task_event_id,
+                "importance": item.importance,
+                "facts": item.required_facts_json or {},
+                "handled_at": None if item.handled_at is None else item.handled_at.isoformat(),
+                "handled_by": item.handled_by,
+                "handled_event_id": item.handled_event_id,
+            }
+            for item in sorted(candidates, key=cls._delivery_priority)
+        ]
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def semantic_item_fingerprint(candidate: TaskPresentation) -> str:
+        payload = {
+            "id": candidate.id,
+            "state": candidate.state,
+            "source_task_event_id": candidate.source_task_event_id,
+            "importance": candidate.importance,
+            "facts": candidate.required_facts_json or {},
+            "handled_at": (
+                None if candidate.handled_at is None else candidate.handled_at.isoformat()
+            ),
+            "handled_by": candidate.handled_by,
+            "handled_event_id": candidate.handled_event_id,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    async def build_attention_context(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        limit: int = 20,
+    ) -> AttentionContextUpdate:
+        """Build the bounded checklist that will actually be supplied to a model."""
+        async with session_scope() as session:
+            return await self.build_attention_context_in_session(
+                session,
+                session_id=session_id,
+                generation=generation,
+                limit=limit,
+            )
+
+    async def build_attention_context_in_session(
+        self,
+        session,
+        *,
+        session_id: str,
+        generation: int,
+        limit: int = 20,
+    ) -> AttentionContextUpdate:
+        realtime = await session.get(LiveSession, session_id)
+        if (
+            realtime is None
+            or realtime.generation != generation
+            or realtime.lifecycle_state not in {"connecting", "ready"}
+        ):
+            raise ValueError("Live session generation is stale")
+        all_rows = list((await session.execute(
+            select(TaskPresentation).where(TaskPresentation.state == "pending")
+        )).scalars().all())
+        ordered = sorted(all_rows, key=self._delivery_priority)
+        bounded_limit = min(max(int(limit or 20), 1), 50)
+        rows = ordered[:bounded_limit]
+        domain = JarvisDomainRepository(session)
+        items: list[dict] = []
+        for row in rows:
+            exposure = await domain.append_session_event_once(
+                session_id=session_id,
+                event_type="attention.context_exposed",
+                payload_json={
+                    "presentation_id": row.id,
+                    "source_task_event_id": row.source_task_event_id,
+                    "session_id": session_id,
+                    "generation": generation,
+                },
+                idempotency_key=f"attention-exposed:{session_id}:{generation}:{row.id}",
+            )
+            facts = self._context_fact(
+                row,
+                exposure_token=exposure.event.id,
+                commentary=False,
+            )
+            items.append({
+                "presentation_id": row.id,
+                "task_id": row.task_id,
+                "summary": self._checklist_summary(facts),
+                "facts": facts,
+                "priority": row.importance,
+                "exposure_token": exposure.event.id,
+                "state": row.state,
+            })
+        return AttentionContextUpdate(
+            items=tuple(items),
+            total_pending=len(ordered),
+            next_cursor=(
+                self._encode_checklist_cursor(rows[-1])
+                if len(ordered) > len(rows) and rows
+                else None
+            ),
+        )
+
     async def reserve(
         self,
         *,
@@ -306,48 +507,570 @@ class TaskPresentationService:
         generation: int,
         user_owns_floor: bool,
         limit: int = 3,
+        commentary: bool = False,
+        exclude_presentation_ids: frozenset[str] = frozenset(),
     ) -> PresentationReservation | None:
-        """Reserve pending facts in the same transaction as a situation snapshot."""
+        """Claim one short transport lease without changing attention state."""
         if user_owns_floor:
             return None
-        realtime = await session.get(RealtimeSession, session_id)
+        realtime = await session.get(LiveSession, session_id)
         if (
             realtime is None
             or realtime.generation != generation
             or realtime.lifecycle_state != "ready"
         ):
-            raise ValueError("Realtime session generation is stale")
+            raise ValueError("Live session generation is stale")
+        now = utc_now()
+        # Expired leases are transport state, not attention state.
+        await session.execute(
+            update(TaskPresentation)
+            .where(TaskPresentation.state == "pending")
+            .where(TaskPresentation.lease_token.is_not(None))
+            .where(TaskPresentation.reserved_at < now - timedelta(seconds=DEFAULT_LEASE_SECONDS))
+            .values(
+                lease_token=None,
+                reserved_session_id=None,
+                reserved_generation=None,
+                reserved_at=None,
+            )
+        )
         result = await session.execute(
             select(TaskPresentation)
             .where(TaskPresentation.state == "pending")
+            .where(TaskPresentation.lease_token.is_(None))
             .order_by(
                 TaskPresentation.created_at.asc(),
                 TaskPresentation.id.asc(),
             )
         )
         pending = sorted(result.scalars().all(), key=self._delivery_priority)
-        candidates = pending[:limit]
+        # A voice session can have at most one proactive append lease. The
+        # checklist can still expose all pending items independently.
+        candidates = [
+            candidate for candidate in pending
+            if candidate.id not in exclude_presentation_ids
+        ][: min(max(1, limit), 1)]
         if not candidates:
             return None
-        now = utc_now()
         facts: list[dict] = []
+        claimed_ids: list[str] = []
+        exposure_tokens: list[str] = []
+        domain = JarvisDomainRepository(session)
+        lease_owner = aliased(TaskPresentation)
         for candidate in candidates:
-            candidate.state = "reserved"
-            candidate.reserved_session_id = session_id
-            candidate.reserved_generation = generation
-            candidate.reserved_at = now
-            candidate.updated_at = now
-            fact = dict(candidate.required_facts_json or {})
-            if candidate.last_error == "contradictory_spoken_delivery":
-                fact["delivery"] = {"correction_required": True}
+            lease_token = str(uuid4())
+            commentary_attempt = commentary and self._requires_commentary(candidate)
+            claimed = await session.execute(
+                update(TaskPresentation)
+                .where(TaskPresentation.id == candidate.id)
+                .where(TaskPresentation.state == "pending")
+                .where(TaskPresentation.lease_token.is_(None))
+                .where(
+                    ~select(lease_owner.id)
+                    .where(lease_owner.state == "pending")
+                    .where(lease_owner.lease_token.is_not(None))
+                    .where(lease_owner.reserved_session_id == session_id)
+                    .exists()
+                )
+                .values(
+                    reserved_session_id=session_id,
+                    reserved_generation=generation,
+                    reserved_at=now,
+                    lease_token=lease_token,
+                    commentary_attempted_at=(
+                        now
+                        if (
+                            commentary_attempt
+                            and candidate.commentary_attempted_at is None
+                        )
+                        else candidate.commentary_attempted_at
+                    ),
+                    updated_at=now,
+                )
+            )
+            if claimed.rowcount != 1:
+                continue
+            claimed_ids.append(candidate.id)
+            await session.refresh(candidate)
+            exposure = await domain.append_session_event_once(
+                session_id=session_id,
+                event_type="attention.context_exposed",
+                payload_json={
+                    "presentation_id": candidate.id,
+                    "source_task_event_id": candidate.source_task_event_id,
+                    "session_id": session_id,
+                    "generation": generation,
+                },
+                idempotency_key=f"attention-exposed:{session_id}:{generation}:{candidate.id}",
+            )
+            exposure_tokens.append(exposure.event.id)
+            fact = self._context_fact(
+                candidate,
+                exposure_token=exposure.event.id,
+                commentary=commentary_attempt,
+            )
             facts.append(fact)
+        if not facts:
+            return None
         return PresentationReservation(
-            presentation_ids=tuple(item.id for item in candidates),
+            presentation_ids=tuple(claimed_ids),
             facts=tuple(facts),
             total_pending=len(pending),
+            exposure_tokens=tuple(exposure_tokens),
         )
 
-    async def mark_presented(
+    async def get_attention_checklist(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> AttentionChecklist:
+        """Expose pending attention with a session-bound acknowledgement token."""
+        bounded_limit = min(max(int(limit or 20), 1), 50)
+        async with session_scope() as session:
+            realtime = await session.get(LiveSession, session_id)
+            if (
+                realtime is None
+                or realtime.generation != generation
+                or realtime.lifecycle_state not in {"connecting", "ready"}
+            ):
+                raise ValueError("Live session generation is stale")
+            query = (
+                select(TaskPresentation)
+                .where(TaskPresentation.state == "pending")
+                .order_by(TaskPresentation.created_at.asc(), TaskPresentation.id.asc())
+            )
+            if cursor:
+                decoded = self._decode_checklist_cursor(str(cursor))
+                if decoded is None:
+                    # Accept the pre-opaque id cursor during the compatibility
+                    # release, while all newly issued cursors are stable
+                    # created-at/id pairs.
+                    query = query.where(TaskPresentation.id > str(cursor))
+                else:
+                    created_at, presentation_id = decoded
+                    query = query.where(
+                        or_(
+                            TaskPresentation.created_at > created_at,
+                            and_(
+                                TaskPresentation.created_at == created_at,
+                                TaskPresentation.id > presentation_id,
+                            ),
+                        )
+                    )
+            rows = list((await session.execute(query.limit(bounded_limit + 1))).scalars().all())
+            has_more = len(rows) > bounded_limit
+            rows = rows[:bounded_limit]
+            domain = JarvisDomainRepository(session)
+            items: list[dict] = []
+            for row in rows:
+                exposure = await domain.append_session_event_once(
+                    session_id=session_id,
+                    event_type="attention.context_exposed",
+                    payload_json={
+                        "presentation_id": row.id,
+                        "source_task_event_id": row.source_task_event_id,
+                        "session_id": session_id,
+                        "generation": generation,
+                    },
+                    idempotency_key=f"attention-exposed:{session_id}:{generation}:{row.id}",
+                )
+                facts = dict(row.required_facts_json or {})
+                facts.pop("required_spoken_phrase", None)
+                facts["presentation_id"] = row.id
+                facts["exposure_token"] = exposure.event.id
+                items.append({
+                    "presentation_id": row.id,
+                    "task_id": row.task_id,
+                    "summary": self._checklist_summary(facts),
+                    "facts": facts,
+                    "priority": row.importance,
+                    "exposure_token": exposure.event.id,
+                    "state": row.state,
+                })
+            return AttentionChecklist(
+                items=tuple(items),
+                next_cursor=(self._encode_checklist_cursor(rows[-1]) if has_more and rows else None),
+                total_pending=int((await session.execute(
+                    select(func.count()).select_from(TaskPresentation).where(
+                        TaskPresentation.state == "pending"
+                    )
+                )).scalar_one()),
+            )
+
+    async def acknowledge_task_update(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        presentation_id: str,
+        exposure_token: str,
+        provider_event_id: str | None = None,
+        provider_call_id: str | None = None,
+    ) -> dict:
+        """Trust one valid model self-report in a standalone transaction."""
+        async with session_scope() as session:
+            return await self.acknowledge_task_update_in_session(
+                session,
+                session_id=session_id,
+                generation=generation,
+                presentation_id=presentation_id,
+                exposure_token=exposure_token,
+                provider_event_id=provider_event_id,
+                provider_call_id=provider_call_id,
+            )
+
+    async def acknowledge_task_update_in_session(
+        self,
+        session,
+        *,
+        session_id: str,
+        generation: int,
+        presentation_id: str,
+        exposure_token: str,
+        provider_event_id: str | None = None,
+        provider_call_id: str | None = None,
+    ) -> dict:
+        """Transition attention without committing the caller's transaction."""
+        realtime = await session.get(LiveSession, session_id)
+        if (
+            realtime is None
+            or realtime.generation != generation
+            or realtime.lifecycle_state not in {"connecting", "ready"}
+        ):
+            return {"status": "invalid_exposure", "attention": None}
+        exposure = await session.get(LiveSessionEvent, str(exposure_token))
+        if (
+            exposure is None
+            or exposure.session_id != session_id
+            or exposure.event_type != "attention.context_exposed"
+            or int((exposure.payload_json or {}).get("generation") or 0) != generation
+            or str((exposure.payload_json or {}).get("presentation_id") or "") != presentation_id
+        ):
+            return {"status": "invalid_exposure", "attention": None}
+        candidate = await session.get(TaskPresentation, presentation_id)
+        if candidate is None:
+            return {"status": "invalid_exposure", "attention": None}
+        if candidate.state == "superseded":
+            return {"status": "superseded", "attention": self._attention_value(candidate)}
+        if candidate.state == "handled":
+            return {"status": "already_handled", "attention": self._attention_value(candidate)}
+
+        now = utc_now()
+        transitioned = await session.execute(
+            update(TaskPresentation)
+            .where(TaskPresentation.id == candidate.id)
+            .where(TaskPresentation.state == "pending")
+            .values(
+                state="handled",
+                handled_at=now,
+                handled_by="model_report",
+                handled_turn_id=None,
+                reserved_session_id=None,
+                reserved_generation=None,
+                reserved_at=None,
+                lease_token=None,
+                updated_at=now,
+            )
+        )
+        if transitioned.rowcount != 1:
+            await session.refresh(candidate)
+            if candidate.state == "superseded":
+                return {"status": "superseded", "attention": self._attention_value(candidate)}
+            return {"status": "already_handled", "attention": self._attention_value(candidate)}
+        await session.refresh(candidate)
+        candidate.handled_event_id = await self._append_handled_audit(
+            session,
+            candidate,
+            handled_by="model_report",
+            idempotency_key=(
+                f"attention-handled:{session_id}:{generation}:{candidate.id}:{exposure.id}"
+            ),
+            payload={
+                "session_id": session_id,
+                "generation": generation,
+                "exposure_token": exposure.id,
+                "provider_event_id": provider_event_id,
+                "provider_call_id": provider_call_id,
+            },
+        )
+        if candidate.source_task_event_id:
+            await session.execute(
+                update(NotificationOutbox)
+                .where(NotificationOutbox.task_event_id == candidate.source_task_event_id)
+                .where(NotificationOutbox.status.in_(["queued", "failed"]))
+                .values(status="superseded", next_attempt_at=None)
+            )
+        return {"status": "handled", "attention": self._attention_value(candidate)}
+
+    async def acknowledge_notification(
+        self,
+        *,
+        delivery_id: str,
+    ) -> bool:
+        """Handle the exact task event represented by an opened notification."""
+        async with session_scope() as session:
+            return await self.acknowledge_notification_in_session(
+                session,
+                delivery_id=delivery_id,
+            )
+
+    async def acknowledge_notification_in_session(self, session, *, delivery_id: str) -> bool:
+        row = await session.get(NotificationOutbox, delivery_id)
+        if row is None:
+            return False
+        if not row.task_event_id:
+            if row.status in {"queued", "failed"}:
+                row.status = "superseded"
+                row.next_attempt_at = None
+            return True
+        presentation = (await session.execute(
+            select(TaskPresentation)
+            .where(TaskPresentation.source_task_event_id == row.task_event_id)
+            .where(TaskPresentation.state == "pending")
+            .limit(1)
+        )).scalar_one_or_none()
+        if presentation is None:
+            if row.status in {"queued", "failed"}:
+                row.status = "superseded"
+                row.next_attempt_at = None
+            return True
+        now = utc_now()
+        transitioned = await session.execute(
+            update(TaskPresentation)
+            .where(TaskPresentation.id == presentation.id)
+            .where(TaskPresentation.state == "pending")
+            .values(
+                state="handled",
+                handled_at=now,
+                handled_by="notification_opened",
+                handled_turn_id=None,
+                reserved_session_id=None,
+                reserved_generation=None,
+                reserved_at=None,
+                lease_token=None,
+                updated_at=now,
+            )
+        )
+        await session.refresh(presentation)
+        if row.status in {"queued", "failed"}:
+            row.status = "superseded"
+            row.next_attempt_at = None
+        if transitioned.rowcount != 1:
+            return True
+        presentation.handled_event_id = await self._append_handled_audit(
+            session,
+            presentation,
+            handled_by="notification_opened",
+            idempotency_key=f"attention-notification-opened:{delivery_id}",
+            payload={"notification_delivery_id": delivery_id},
+        )
+        return True
+
+    @staticmethod
+    def _checklist_summary(facts: dict) -> str:
+        return str(
+            facts.get("summary")
+            or facts.get("question")
+            or facts.get("status")
+            or facts.get("event_type")
+            or "Task update"
+        ).strip()
+
+    @staticmethod
+    async def _append_handled_audit(
+        session,
+        candidate: TaskPresentation,
+        *,
+        handled_by: str,
+        idempotency_key: str,
+        payload: dict | None = None,
+    ) -> str:
+        event_id = str(uuid4())
+        event_payload = {
+            "presentation_id": candidate.id,
+            "task_id": candidate.task_id,
+            "source_task_event_id": candidate.source_task_event_id,
+            "handled_by": handled_by,
+            **(payload or {}),
+        }
+        await session.execute(
+            sqlite_insert(JarvisLiveEvent)
+            .values(
+                id=event_id,
+                event_type="attention.handled",
+                source_domain="attention",
+                source_id=candidate.id,
+                source_sequence=None,
+                payload_json=event_payload,
+                idempotency_key=idempotency_key,
+                created_at=candidate.handled_at or utc_now(),
+            )
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+        )
+        stored_id = (await session.execute(
+            select(JarvisLiveEvent.id).where(
+                JarvisLiveEvent.idempotency_key == idempotency_key
+            )
+        )).scalar_one()
+        return str(stored_id)
+
+    @staticmethod
+    def _context_fact(
+        candidate: TaskPresentation,
+        *,
+        exposure_token: str,
+        commentary: bool,
+    ) -> dict[str, object]:
+        """Build one bounded append item without truncating opaque IDs."""
+        raw = dict(candidate.required_facts_json or {})
+        # Legacy projections may still contain the old canonical phrase. It
+        # is diagnostic migration residue, never model-facing attention data.
+        raw.pop("required_spoken_phrase", None)
+
+        def text_value(value: object, limit: int = 320) -> str | None:
+            normalized = " ".join(str(value or "").split())
+            if not normalized:
+                return None
+            return normalized if len(normalized) <= limit else normalized[: limit - 1].rstrip() + "…"
+
+        task = raw.get("task") if isinstance(raw.get("task"), dict) else {}
+        source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+        presentation = raw.get("presentation") if isinstance(raw.get("presentation"), dict) else {}
+        fact = {
+            "schema": "jarvis.task_update.v1",
+            "task_id": candidate.task_id,
+            "goal": text_value(raw.get("goal") or task.get("goal")),
+            "status": raw.get("status") or task.get("status"),
+            "event_type": raw.get("event_type"),
+            "kind": raw.get("kind"),
+            "summary": text_value(raw.get("summary")),
+            "question": text_value(raw.get("question")),
+            "importance": candidate.importance,
+            "source": {
+                "task_event_id": source.get("task_event_id"),
+                "sequence": source.get("sequence"),
+            },
+            "presentation": {
+                "candidate_type": presentation.get("candidate_type") or candidate.candidate_type,
+                "coalescing_key": presentation.get("coalescing_key") or candidate.coalescing_key,
+            },
+            "presentation_id": candidate.id,
+            "exposure_token": exposure_token,
+            "commentary": commentary,
+        }
+        return TaskPresentationService._bounded_append_fact(
+            {key: value for key, value in fact.items() if value is not None}
+        )
+
+    @staticmethod
+    def _bounded_append_fact(fact: dict[str, object]) -> dict[str, object]:
+        """Conservatively guarantee that one serialized append is <=500 tokens."""
+        bounded = json.loads(json.dumps(fact, ensure_ascii=False))
+
+        def size() -> int:
+            return len(
+                json.dumps(
+                    bounded,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+
+        text_keys = ("goal", "summary", "question")
+        while size() > MAX_APPEND_UTF8_BYTES:
+            candidates = [
+                key for key in text_keys
+                if isinstance(bounded.get(key), str) and bounded.get(key)
+            ]
+            if not candidates:
+                break
+            key = max(candidates, key=lambda item: len(str(bounded[item]).encode("utf-8")))
+            value = str(bounded[key])
+            encoded = value.encode("utf-8")
+            if len(encoded) <= 24:
+                bounded.pop(key, None)
+                continue
+            shortened = encoded[: max(1, len(encoded) - 32)].decode("utf-8", errors="ignore").rstrip()
+            bounded[key] = shortened + "…"
+
+        for key in ("status", "kind", "schema"):
+            if size() <= MAX_APPEND_UTF8_BYTES:
+                break
+            bounded.pop(key, None)
+        source = bounded.get("source")
+        if size() > MAX_APPEND_UTF8_BYTES and isinstance(source, dict):
+            source.pop("sequence", None)
+        presentation = bounded.get("presentation")
+        if size() > MAX_APPEND_UTF8_BYTES and isinstance(presentation, dict):
+            presentation.pop("coalescing_key", None)
+        if size() > MAX_APPEND_UTF8_BYTES:
+            bounded.pop("presentation", None)
+        if size() > MAX_APPEND_UTF8_BYTES:
+            raise ValueError("Attention append identifiers exceed the 500-token safety bound")
+        return bounded
+
+    @staticmethod
+    def _encode_checklist_cursor(row: TaskPresentation) -> str:
+        value = json.dumps(
+            {
+                "created_at": row.created_at.isoformat(),
+                "id": row.id,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_checklist_cursor(value: str) -> tuple[datetime, str] | None:
+        try:
+            padded = value + "=" * (-len(value) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+            created_at = datetime.fromisoformat(str(decoded["created_at"]))
+            presentation_id = str(decoded["id"])
+            if not presentation_id:
+                return None
+            return created_at, presentation_id
+        except (ValueError, TypeError, KeyError, UnicodeDecodeError, binascii.Error, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _requires_commentary(candidate: TaskPresentation) -> bool:
+        if candidate.commentary_attempted_at is not None:
+            return False
+        facts = candidate.required_facts_json if isinstance(candidate.required_facts_json, dict) else {}
+        event_type = str(facts.get("event_type") or "")
+        return (
+            event_type in {"task.reminder.due", "task.requires_input"}
+            or (
+                event_type in {
+                    "task.completed",
+                    "task.failed",
+                    "task.interrupted",
+                    "task.cancelled",
+                }
+                and str(candidate.importance or "normal") == "high"
+            )
+        )
+
+    @staticmethod
+    def _attention_value(candidate: TaskPresentation) -> dict:
+        facts = dict(candidate.required_facts_json or {})
+        return {
+            "presentation_id": candidate.id,
+            "task_id": candidate.task_id,
+            "state": candidate.state,
+            "summary": TaskPresentationService._checklist_summary(facts),
+            "priority": candidate.importance,
+            "handled_at": None if candidate.handled_at is None else candidate.handled_at.isoformat(),
+            "handled_by": candidate.handled_by,
+            "source_task_event_id": candidate.source_task_event_id,
+        }
+
+    async def release_append_lease(
         self,
         *,
         presentation_ids: tuple[str, ...],
@@ -359,25 +1082,25 @@ class TaskPresentationService:
     ) -> None:
         now = utc_now()
         async with session_scope() as session:
-            for presentation_id in presentation_ids:
-                candidate = await session.get(TaskPresentation, presentation_id)
-                if candidate is None:
-                    raise ValueError(f"Task presentation not found: {presentation_id}")
-                if allow_superseded and candidate.state == "superseded":
-                    continue
-                if (
-                    candidate.state != "reserved"
-                    or candidate.reserved_session_id != session_id
-                    or candidate.reserved_generation != generation
-                ):
-                    raise ValueError("Task presentation reservation is stale")
-                candidate.state = "presented"
-                candidate.presented_turn_id = turn_id
-                candidate.presented_delivery_id = delivery_id
-                candidate.presented_at = now
-                candidate.updated_at = now
+            if not presentation_ids:
+                return
+            query = (
+                update(TaskPresentation)
+                .where(TaskPresentation.id.in_(presentation_ids))
+                .where(TaskPresentation.state == "pending")
+                .where(TaskPresentation.reserved_session_id == session_id)
+                .where(TaskPresentation.reserved_generation == generation)
+                .values(
+                    reserved_session_id=None,
+                    reserved_generation=None,
+                    reserved_at=None,
+                    lease_token=None,
+                    updated_at=now,
+                )
+            )
+            await session.execute(query)
 
-    async def settle_delivery(
+    async def release_transport_leases(
         self,
         *,
         presentation_ids: tuple[str, ...],
@@ -388,65 +1111,27 @@ class TaskPresentationService:
         heard_transcript: str,
         response_kind: str | None = None,
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Acknowledge only complete, non-contradictory speech of required facts."""
+        """Release append ownership without changing authoritative attention."""
         now = utc_now()
-        normalized_heard = self._normalize_spoken_text(heard_transcript)
-        delivered: list[str] = []
-        requeued: list[str] = []
         async with session_scope() as session:
-            for presentation_id in presentation_ids:
-                candidate = await session.get(TaskPresentation, presentation_id)
-                if candidate is None or candidate.state in {"superseded", "acknowledged"}:
-                    continue
-                if (
-                    candidate.state != "reserved"
-                    or candidate.reserved_session_id != session_id
-                    or candidate.reserved_generation != generation
-                ):
-                    continue
-                phrase = str(
-                    (candidate.required_facts_json or {}).get("required_spoken_phrase") or ""
-                ).strip()
-                normalized_phrase = self._normalize_spoken_text(phrase)
-                delivery_error = self._delivery_error(
-                    facts=dict(candidate.required_facts_json or {}),
-                    normalized_heard=normalized_heard,
-                    normalized_phrase=normalized_phrase,
-                    require_exact=(
-                        response_kind == "task_update"
-                        and len(presentation_ids) == 1
-                        and candidate.candidate_type == "reminder"
-                    ),
+            if not presentation_ids:
+                return (), ()
+            await session.execute(
+                update(TaskPresentation)
+                .where(TaskPresentation.id.in_(presentation_ids))
+                .where(TaskPresentation.state == "pending")
+                .where(TaskPresentation.reserved_session_id == session_id)
+                .where(TaskPresentation.reserved_generation == generation)
+                .values(
+                    reserved_session_id=None,
+                    reserved_generation=None,
+                    reserved_at=None,
+                    lease_token=None,
+                    defer_until=None,
+                    updated_at=now,
                 )
-                if delivery_error is None:
-                    candidate.state = "presented"
-                    candidate.presented_turn_id = turn_id
-                    candidate.presented_delivery_id = delivery_id
-                    candidate.presented_at = now
-                    candidate.last_error = None
-                    delivered.append(candidate.id)
-                    if candidate.source_task_event_id:
-                        rows = list((await session.execute(
-                            select(NotificationOutbox).where(
-                                NotificationOutbox.task_event_id == candidate.source_task_event_id
-                            )
-                        )).scalars().all())
-                        for row in rows:
-                            if row.acknowledged_at is None:
-                                row.acknowledged_at = now
-                                row.acknowledgement_state = "spoken"
-                                row.status = "acknowledged"
-                else:
-                    candidate.state = "pending"
-                    candidate.retry_count += 1
-                    candidate.last_error = delivery_error
-                    requeued.append(candidate.id)
-                candidate.reserved_session_id = None
-                candidate.reserved_generation = None
-                candidate.reserved_at = None
-                candidate.defer_until = None
-                candidate.updated_at = now
-        return tuple(delivered), tuple(requeued)
+            )
+        return (), ()
 
     async def requeue(
         self,
@@ -459,26 +1144,25 @@ class TaskPresentationService:
     ) -> None:
         now = utc_now()
         async with session_scope() as session:
-            for presentation_id in presentation_ids:
-                candidate = await session.get(TaskPresentation, presentation_id)
-                if candidate is None:
-                    continue
-                if allow_superseded and candidate.state == "superseded":
-                    continue
-                if (
-                    candidate.state != "reserved"
-                    or candidate.reserved_session_id != session_id
-                    or candidate.reserved_generation != generation
-                ):
-                    raise ValueError("Task presentation reservation is stale")
-                candidate.state = "pending"
-                candidate.reserved_session_id = None
-                candidate.reserved_generation = None
-                candidate.reserved_at = None
-                candidate.retry_count += 1
-                candidate.defer_until = None
-                candidate.last_error = error
-                candidate.updated_at = now
+            if not presentation_ids:
+                return
+            await session.execute(
+                update(TaskPresentation)
+                .where(TaskPresentation.id.in_(presentation_ids))
+                .where(TaskPresentation.state == "pending")
+                .where(TaskPresentation.reserved_session_id == session_id)
+                .where(TaskPresentation.reserved_generation == generation)
+                .values(
+                    reserved_session_id=None,
+                    reserved_generation=None,
+                    reserved_at=None,
+                    lease_token=None,
+                    retry_count=TaskPresentation.retry_count + 1,
+                    defer_until=None,
+                    last_error=error,
+                    updated_at=now,
+                )
+            )
 
     async def release_session_reservations(
         self,
@@ -491,22 +1175,23 @@ class TaskPresentationService:
         now = utc_now()
         released = 0
         async with session_scope() as session:
-            candidates = list((await session.execute(
-                select(TaskPresentation)
-                .where(TaskPresentation.state == "reserved")
+            result = await session.execute(
+                update(TaskPresentation)
+                .where(TaskPresentation.state == "pending")
                 .where(TaskPresentation.reserved_session_id == session_id)
                 .where(TaskPresentation.reserved_generation == generation)
-            )).scalars().all())
-            for candidate in candidates:
-                candidate.state = "pending"
-                candidate.reserved_session_id = None
-                candidate.reserved_generation = None
-                candidate.reserved_at = None
-                candidate.defer_until = now
-                candidate.retry_count += 1
-                candidate.last_error = error
-                candidate.updated_at = now
-                released += 1
+                .values(
+                    reserved_session_id=None,
+                    reserved_generation=None,
+                    reserved_at=None,
+                    lease_token=None,
+                    defer_until=now,
+                    retry_count=TaskPresentation.retry_count + 1,
+                    last_error=error,
+                    updated_at=now,
+                )
+            )
+            released = int(result.rowcount or 0)
         return released
 
     @staticmethod
@@ -521,6 +1206,8 @@ class TaskPresentationService:
             candidate.state = "superseded"
             candidate.reserved_session_id = None
             candidate.reserved_generation = None
+            candidate.reserved_at = None
+            candidate.lease_token = None
             if candidate.source_task_event_id:
                 await TaskPresentationService._supersede_notification(
                     session, candidate.source_task_event_id
@@ -543,6 +1230,8 @@ class TaskPresentationService:
                 candidate.state = "superseded"
                 candidate.reserved_session_id = None
                 candidate.reserved_generation = None
+                candidate.reserved_at = None
+                candidate.lease_token = None
                 if candidate.source_task_event_id:
                     await TaskPresentationService._supersede_notification(
                         session, candidate.source_task_event_id
@@ -553,7 +1242,7 @@ class TaskPresentationService:
         rows = list((await session.execute(
             select(NotificationOutbox)
             .where(NotificationOutbox.task_event_id == task_event_id)
-            .where(NotificationOutbox.status.in_(["queued", "failed", "sending"]))
+            .where(NotificationOutbox.status.in_(["queued", "failed"]))
         )).scalars().all())
         for row in rows:
             row.status = "superseded"
@@ -572,6 +1261,7 @@ class TaskPresentationService:
     @staticmethod
     def _facts(event: TaskEvent, task: Task) -> dict:
         payload = dict(event.payload_json or {})
+        payload.pop("required_spoken_phrase", None)
         if event.event_type in {"task.failed", "task.interrupted"}:
             raw_failure = str(payload.get("summary") or task.terminal_summary or "")
             payload["summary"] = public_failure_summary(raw_failure)
@@ -585,7 +1275,6 @@ class TaskPresentationService:
             "terminal_result": "result",
             "reminder": "reminder",
         }[candidate_type]
-        spoken_phrase = TaskPresentationService._spoken_phrase(event, task, payload)
         coalescing_key = f"task:{task.id}:{candidate_type}"
         return {
             "task_id": task.id,
@@ -594,7 +1283,6 @@ class TaskPresentationService:
             **payload,
             "schema": "jarvis.task_update.v1",
             "kind": kind,
-            "required_spoken_phrase": spoken_phrase,
             "task": {
                 "id": task.id,
                 "goal": task.goal,
@@ -619,98 +1307,26 @@ class TaskPresentationService:
         }
 
     @staticmethod
-    def _spoken_phrase(event: TaskEvent, task: Task, payload: dict) -> str:
-        goal = " ".join(str(task.goal or "Task").split()).strip() or "Task"
-        if goal.lower().startswith("remind me:"):
-            goal = goal.split(":", 1)[1].strip() or "Reminder"
-        goal = goal[:96].rstrip()
-        summary = " ".join(
-            str(payload.get("summary") or task.terminal_summary or "").split()
-        ).strip()
-        if event.event_type == "task.reminder.due":
-            if not summary or summary == GENERIC_REMINDER_TEXT:
-                return GENERIC_REMINDER_TEXT
-            return f"Reminder: {summary}"[:240].rstrip()
-        if event.event_type == "task.requires_input":
-            question = " ".join(str(payload.get("question") or "").split()).strip()
-            return f"{goal} needs your input: {question}"[:240].rstrip()
-        if event.event_type == "task.completed":
-            detail = summary or "It finished successfully."
-            return f"{goal} is complete: {detail}"[:240].rstrip()
-        if event.event_type in {"task.failed", "task.interrupted"}:
-            category = failure_category(
-                str((event.payload_json or {}).get("summary") or task.terminal_summary or "")
-            )
-            if category:
-                short_goal = goal[:56].rstrip()
-                if len(goal) > 56:
-                    short_goal = short_goal.rstrip(" ,;:-") + "…"
-                return f"{short_goal} failed because of {category}."[:240].rstrip()
-            detail = summary or "It could not finish."
-            return f"{goal} failed: {detail}"[:240].rstrip()
-        if event.event_type == "task.cancelled":
-            return f"{goal} was cancelled."
-        detail = summary or "Progress is available."
-        return f"{goal}: {detail}"[:240].rstrip()
-
-    @staticmethod
-    def _normalize_spoken_text(value: str) -> str:
-        return " ".join(re.sub(r"[^\w]+", " ", str(value or "").casefold()).split())
-
-    @staticmethod
-    def _delivery_error(
-        *,
-        facts: dict,
-        normalized_heard: str,
-        normalized_phrase: str,
-        require_exact: bool,
-    ) -> str | None:
-        if not normalized_phrase or normalized_phrase not in normalized_heard:
-            return "required_spoken_phrase_not_heard"
-        if require_exact and normalized_heard != normalized_phrase:
-            return "proactive_reminder_not_exact"
-
-        remainder = normalized_heard.replace(normalized_phrase, " ", 1)
-        event_type = str(facts.get("event_type") or "")
-        contradictory_phrases = {
-            "task.reminder.due": (
-                "queued", "scheduled", "will remind", "not due", "still waiting",
-            ),
-            "task.completed": (
-                "still queued", "still running", "not complete", "not completed",
-                "not finished", "has not started", "hasn t started", "is waiting",
-            ),
-            "task.failed": (
-                "completed successfully", "is complete", "succeeded", "still running",
-                "still queued",
-            ),
-            "task.interrupted": (
-                "completed successfully", "is complete", "still running", "still queued",
-            ),
-            "task.cancelled": (
-                "still running", "still queued", "will continue", "not cancelled",
-            ),
-            "task.requires_input": (
-                "no input needed", "does not need your input", "doesn t need your input",
-            ),
-        }.get(event_type, ())
-        padded_remainder = f" {remainder} "
-        if any(f" {phrase} " in padded_remainder for phrase in contradictory_phrases):
-            return "contradictory_spoken_delivery"
-        return None
-
-    @staticmethod
     def _delivery_priority(candidate: TaskPresentation) -> tuple[int, datetime, str]:
         event_type = str((candidate.required_facts_json or {}).get("event_type") or "")
-        rank = {
-            "task.reminder.due": 0,
-            "task.requires_input": 1,
-            "task.failed": 2,
-            "task.interrupted": 2,
-            "task.cancelled": 2,
-            "task.completed": 3,
-            "task.progress": 4,
-        }.get(event_type, 5)
+        terminal = event_type in {
+            "task.failed",
+            "task.interrupted",
+            "task.cancelled",
+            "task.completed",
+        }
+        if event_type == "task.reminder.due":
+            rank = 0
+        elif event_type == "task.requires_input":
+            rank = 1
+        elif terminal and str(candidate.importance or "normal") == "high":
+            rank = 2
+        elif terminal:
+            rank = 3
+        elif event_type == "task.progress":
+            rank = 4
+        else:
+            rank = 5
         return rank, candidate.created_at, candidate.id
 
 

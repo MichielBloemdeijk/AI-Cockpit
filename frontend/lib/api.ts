@@ -588,6 +588,8 @@ export interface TaskQuestion {
   answered_at: string | null;
 }
 
+export type AttentionState = "pending" | "handled" | "superseded";
+
 export interface TaskArtifact {
   id: string;
   attempt_id: string | null;
@@ -614,9 +616,12 @@ export interface TaskPresentation {
   candidate_type: string;
   coalescing_key: string;
   importance: string;
-  state: string;
+  state: AttentionState;
   source_task_event_id: string | null;
   created_at: string;
+  handled_at: string | null;
+  handled_by: string | null;
+  /** @deprecated Use handled_at. */
   presented_at: string | null;
 }
 
@@ -745,7 +750,7 @@ export async function getJarvisSessionEvents(
   after = 0,
 ): Promise<JarvisSessionEventReplayResponse> {
   const params = new URLSearchParams({ after: String(after) });
-  const res = await fetch(`${BASE}/api/jarvis/sessions/${encodeURIComponent(sessionId)}/events?${params}`, {
+  const res = await fetch(`${BASE}/api/jarvis/live/sessions/${encodeURIComponent(sessionId)}/events?${params}`, {
     credentials: "include",
     cache: "no-store",
   });
@@ -763,15 +768,15 @@ export async function getTaskEvents(after = 0): Promise<TaskEventReplayResponse>
   return res.json();
 }
 
-export async function createJarvisRealtimeCall(
+export async function createJarvisLiveCall(
   controllerId: string,
   role: "controller" | "observer" = "controller",
-  providerAdapter: "fake" | "openai" | "openai_live" = "fake",
+  providerAdapter: "fake" | "openai_live" = "fake",
   sdpOffer?: string,
   clientContext: JarvisClientContext = currentJarvisClientContext(),
-  activationContext?: JarvisRealtimeActivationContext,
-): Promise<JarvisRealtimeCallResponse> {
-  const res = await fetch(`${BASE}/api/jarvis/realtime/calls`, {
+  activationContext?: JarvisLiveActivationContext,
+): Promise<JarvisLiveCallResponse> {
+  const res = await fetch(`${BASE}/api/jarvis/live/calls`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -798,7 +803,7 @@ export interface JarvisClientContext {
   observed_at: string;
 }
 
-export interface JarvisRealtimeActivationContext {
+export interface JarvisLiveActivationContext {
   source: "wake_word";
   wake_score: number;
   activation_id: string;
@@ -809,92 +814,7 @@ export interface JarvisRealtimeActivationContext {
   benchmark_fixture?: string | null;
 }
 
-export interface JarvisRealtimeActivationRequest {
-  generation: number;
-  wake_score: number;
-  activation_id: string;
-  wake_detected_at?: string;
-  local_speech_started_at?: string;
-  gate_mode?: "transcript_rules" | "immediate";
-  benchmark_run_id?: string | null;
-  benchmark_fixture?: string | null;
-}
-
-export interface JarvisRealtimeActivationResponse {
-  session_id: string;
-  generation: number;
-  activation_id: string;
-  gate_state: "pending" | "accepted" | "rejected" | "timed_out";
-  gate_mode: "transcript_rules" | "immediate";
-  gate_timeout_ms: number;
-  audio_policy: JarvisRealtimeAudioPolicy;
-}
-
-export interface JarvisRealtimeAudioPolicy {
-  configuration_id: string;
-  turn_mode: "server_vad" | "semantic_vad" | "client_vad";
-  commit_owner: "provider" | "client";
-  silence_duration_ms: number | null;
-  vad_threshold: number | null;
-  prefix_padding_ms: number | null;
-  semantic_eagerness: "low" | "medium" | "high" | "auto" | null;
-  create_response: false;
-  interrupt_response: false;
-}
-
-export interface JarvisBargeInRequest {
-  generation: number;
-  speech_event_id: string;
-  source: "browser_local_vad" | "browser_provider_vad";
-  request_id: string;
-  response_id: string | null;
-  input_item_id: string | null;
-}
-
-export interface JarvisBargeInResponse {
-  accepted: boolean;
-}
-
-export async function registerJarvisRealtimeActivation(
-  sessionId: string,
-  request: JarvisRealtimeActivationRequest,
-): Promise<JarvisRealtimeActivationResponse> {
-  const res = await fetch(`${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}/activations`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(request),
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try { detail = (await res.json() as { detail?: string }).detail || detail; } catch {}
-    throw new Error(detail);
-  }
-  return res.json();
-}
-
-export async function bargeInJarvisRealtime(
-  sessionId: string,
-  request: JarvisBargeInRequest,
-): Promise<JarvisBargeInResponse> {
-  const res = await fetch(
-    `${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}/barge-in`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(request),
-    },
-  );
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try { detail = (await res.json() as { detail?: string }).detail || detail; } catch {}
-    throw new Error(detail);
-  }
-  return res.json();
-}
-
-export interface JarvisRealtimeTelemetryEvent {
+export interface JarvisLiveTelemetryEvent {
   trace_id: string;
   client_sequence?: number;
   activation_id?: string;
@@ -911,11 +831,11 @@ export interface JarvisRealtimeTelemetryEvent {
   detail?: Record<string, unknown>;
 }
 
-export async function submitJarvisRealtimeTelemetry(
-  events: JarvisRealtimeTelemetryEvent[],
+export async function submitJarvisLiveTelemetry(
+  events: JarvisLiveTelemetryEvent[],
 ): Promise<number> {
   if (!events.length) return 0;
-  const res = await fetch(`${BASE}/api/jarvis/realtime/telemetry`, {
+  const res = await fetch(`${BASE}/api/jarvis/live/telemetry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -948,9 +868,9 @@ export async function injectFakeJarvisEvent(
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
-export async function closeJarvisRealtimeSession(sessionId: string, generation: number): Promise<void> {
+export async function closeJarvisLiveSession(sessionId: string, generation: number): Promise<void> {
   const params = new URLSearchParams({ generation: String(generation) });
-  const res = await fetch(`${BASE}/api/jarvis/realtime/sessions/${encodeURIComponent(sessionId)}?${params}`, {
+  const res = await fetch(`${BASE}/api/jarvis/live/sessions/${encodeURIComponent(sessionId)}?${params}`, {
     method: "DELETE",
     credentials: "include",
     keepalive: true,
@@ -1229,9 +1149,13 @@ export interface JarvisPresentation {
   task_id: string;
   candidate_type: string;
   importance: string;
-  state: string;
+  state: AttentionState;
   required_facts: Record<string, unknown> | null;
   created_at: string;
+  handled_at: string | null;
+  handled_by: string | null;
+  /** @deprecated Use handled_at. */
+  presented_at: string | null;
 }
 
 export interface JarvisSessionEvent {
@@ -1260,13 +1184,11 @@ export interface TaskEventReplayResponse {
   events: TaskEvent[];
 }
 
-export interface JarvisRealtimeCallResponse {
+export interface JarvisLiveCallResponse {
   role: "controller" | "observer";
   request_id?: string | null;
   session: JarvisSession | null;
   sdp_answer: string | null;
-  rotate_after_seconds: number | null;
-  audio_policy: JarvisRealtimeAudioPolicy | null;
   provider_capabilities: Record<string, boolean>;
   server_received_at: string;
   server_responded_at: string;
@@ -1316,7 +1238,7 @@ export async function savePushSubscription(subscription: PushSubscription): Prom
   return res.json();
 }
 
-export async function acknowledgePushDelivery(deliveryId: string, state: "opened" | "spoken"): Promise<void> {
+export async function acknowledgePushDelivery(deliveryId: string, state: "opened" = "opened"): Promise<void> {
   await fetch(`${BASE}/api/notifications/deliveries/${encodeURIComponent(deliveryId)}/ack`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

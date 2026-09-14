@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptJarvisTextTurn,
   cancelTask,
-  closeJarvisRealtimeSession,
-  createJarvisRealtimeCall,
+  closeJarvisLiveSession,
+  createJarvisLiveCall,
   createGeneratedApp,
   getGeneratedAppBySlug,
   getJarvisState,
@@ -21,7 +21,7 @@ import {
   login,
   streamChat,
   streamConversationEvents,
-  submitJarvisRealtimeTelemetry,
+  submitJarvisLiveTelemetry,
   startFreshJarvisLog,
   dispatchTask,
   type ConversationEventView,
@@ -91,7 +91,7 @@ describe("global task api", () => {
   });
 });
 
-describe("realtime telemetry api", () => {
+describe("Live telemetry api", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -104,7 +104,7 @@ describe("realtime telemetry api", () => {
     } satisfies Partial<Response>);
     vi.stubGlobal("fetch", fetchMock);
 
-    const accepted = await submitJarvisRealtimeTelemetry([{
+    const accepted = await submitJarvisLiveTelemetry([{
       trace_id: "trace-1",
       client_sequence: 4,
       source: "browser",
@@ -113,7 +113,7 @@ describe("realtime telemetry api", () => {
     }]);
 
     expect(accepted).toBe(1);
-    expect(fetchMock).toHaveBeenCalledWith("/api/jarvis/realtime/telemetry", expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith("/api/jarvis/live/telemetry", expect.objectContaining({
       keepalive: true,
     }));
   });
@@ -200,7 +200,7 @@ describe("Jarvis daily-log api", () => {
     await getJarvisLogEvents("log/1", 4);
     await getTaskEvents(8);
     await getJarvisSessionEvents("session/1", 3);
-    await createJarvisRealtimeCall("browser-1", "controller", "fake", undefined, {
+    await createJarvisLiveCall("browser-1", "controller", "fake", undefined, {
       time_zone: "Europe/Amsterdam",
       utc_offset_minutes: 120,
       observed_at: "2026-09-02T20:00:00.000Z",
@@ -210,7 +210,7 @@ describe("Jarvis daily-log api", () => {
       event_id: "event-1",
       kind: "user_speaking",
     });
-    await closeJarvisRealtimeSession("session/1", 2);
+    await closeJarvisLiveSession("session/1", 2);
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/jarvis/logs/log%2F1/events?after=4", {
       credentials: "include",
@@ -220,11 +220,11 @@ describe("Jarvis daily-log api", () => {
       credentials: "include",
       cache: "no-store",
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/jarvis/sessions/session%2F1/events?after=3", {
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/jarvis/live/sessions/session%2F1/events?after=3", {
       credentials: "include",
       cache: "no-store",
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/jarvis/realtime/calls", {
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/jarvis/live/calls", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
@@ -245,7 +245,7 @@ describe("Jarvis daily-log api", () => {
       credentials: "include",
       body: JSON.stringify({ generation: 2, event_id: "event-1", kind: "user_speaking" }),
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/jarvis/realtime/sessions/session%2F1?generation=2", {
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/jarvis/live/sessions/session%2F1?generation=2", {
       method: "DELETE",
       credentials: "include",
       keepalive: true,

@@ -216,7 +216,7 @@ class OpenAILiveAdapter:
             socket = await self._websocket_connector(
                 self._sideband_url(pending.provider_session_id),
                 additional_headers={"Authorization": f"Bearer {pending.api_key}"},
-                open_timeout=settings.openai_realtime_connect_timeout_seconds,
+                open_timeout=settings.openai_live_connect_timeout_seconds,
             )
             pending.socket = socket
             sideband_finished = time.monotonic()
@@ -330,24 +330,81 @@ class OpenAILiveAdapter:
         provider_session = self._require_session(session_id, generation)
         if response_kind != "task_update":
             return
-        phrases = [
-            str(fact.get("required_spoken_phrase") or fact.get("summary") or fact.get("question") or fact.get("status") or "").strip()
-            for fact in facts
-        ]
-        verified = " ".join(phrase for phrase in phrases if phrase)
-        if not verified:
-            return
-        event_id = f"jarvis-live-update:{request_id}"
-        provider_session.pending_commentary[event_id] = (request_id, presentation_ids, verified)
+        attention_context = (
+            context.get("attention_context")
+            if isinstance(context.get("attention_context"), dict)
+            else {"items": [], "total_pending": 0, "next_cursor": None, "deltas": []}
+        )
+        checklist = json.dumps(
+            {"schema": "jarvis.attention_context.v1", **attention_context},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        # Keep the delegated Responses model's checklist view authoritative
+        # without replacing its fixed routing instructions.
         await self._send(
             provider_session,
             {
-                "type": "session.commentary.append",
-                "event_id": event_id,
-                "delegation_id": None,
-                "content": "Give this verified application update naturally and concisely. Do not add unverified claims: " + verified,
+                "type": "session.update",
+                "event_id": f"jarvis-live-attention-context:{request_id}",
+                "session": {
+                    "delegation": {
+                        "type": "responses",
+                        "responses": {
+                            "instructions": (
+                                self._router_instructions(context)
+                                + " Use the current attention checklist below as authoritative application context. "
+                                "Mention items naturally, never read identifiers aloud, and acknowledge exactly one "
+                                "item after communicating it. Quiet context does not require speech. "
+                                f"CURRENT_ATTENTION_CHECKLIST={checklist}"
+                            )
+                        }
+                    }
+                },
             },
         )
+        append_items: list[tuple[dict[str, Any], tuple[str, ...], bool]] = [
+            (fact, (str(fact.get("presentation_id") or ""),), bool(fact.get("commentary")))
+            for fact in facts
+        ]
+        raw_deltas = attention_context.get("deltas")
+        if isinstance(raw_deltas, list):
+            append_items.extend(
+                (dict(delta), (), False)
+                for delta in raw_deltas
+                if isinstance(delta, dict)
+            )
+        if not append_items:
+            append_items.append(({
+                "schema": "jarvis.attention_delta.v1",
+                "state": "empty",
+                "total_pending": int(attention_context.get("total_pending") or 0),
+            }, (), False))
+        for index, (item, item_ids, item_commentary) in enumerate(append_items):
+            verified = json.dumps(item, separators=(",", ":"), ensure_ascii=False)
+            event_id = f"jarvis-live-update:{request_id}:{index}"
+            provider_session.pending_commentary[event_id] = (
+                request_id,
+                tuple(value for value in item_ids if value),
+                verified,
+            )
+            append_type = (
+                "session.commentary.append" if item_commentary else "session.thinking.append"
+            )
+            content = (
+                "Speak this update naturally, then acknowledge it. "
+                if item_commentary
+                else "Quiet application context. Do not announce this solely because it was appended. "
+            ) + verified
+            await self._send(
+                provider_session,
+                {
+                    "type": append_type,
+                    "event_id": event_id,
+                    "delegation_id": None,
+                    "content": content,
+                },
+            )
 
     async def cancel_response(self, *, session_id: str, generation: int, response_id: str | None = None) -> None:
         # Full-duplex Live handles speech interruption. Explicit task cancellation
@@ -469,7 +526,7 @@ class OpenAILiveAdapter:
         if event_type == "session.output_transcript.delta":
             await self._handle_transcript_delta(provider_session, "assistant", outer)
             return
-        if event_type == "session.commentary.appended":
+        if event_type in {"session.commentary.appended", "session.thinking.appended"}:
             client_event_id = str(outer.get("client_event_id") or "")
             pending = provider_session.pending_commentary.pop(client_event_id, None)
             if pending is not None:
@@ -484,6 +541,7 @@ class OpenAILiveAdapter:
                         "response_kind": "task_update",
                         "submitted_transcript": transcript,
                         "submission_ack": "context_appended",
+                        "append_type": event_type,
                     },
                     event_id=f"live-commentary-ack:{client_event_id}",
                 )
@@ -1038,18 +1096,23 @@ class OpenAILiveAdapter:
             "You are Jarvis, a concise spoken assistant. Keep listening while speaking. "
             "Acknowledge actionable requests quickly, then delegate work needing tools or "
             "authoritative application state. Never claim success until the backend returns a "
-            "verified result. Speech interruption does not cancel durable work."
+            "verified result. Speech interruption does not cancel durable work. "
+            "Use the attention checklist for pending updates: mention an item naturally before "
+            "calling acknowledge_task_update with its opaque exposure token. Do not read identifiers aloud. "
+            "Quiet context does not require an immediate announcement, bookkeeping needs no spoken confirmation, "
+            "and handled or superseded items are not announced proactively again."
         )
-        router_prompt = (
-            "Interpret actionable requests and use only the supplied Jarvis tools. The application "
-            "owns authorization, execution, and durable state. Prefer dispatch_task for substantial "
-            "work. Return concise speech-ready facts and never invent task state or success."
+        attention_context = (
+            context.get("attention_context")
+            if isinstance(context.get("attention_context"), dict)
+            else {"items": [], "total_pending": 0, "next_cursor": None}
         )
-        situation = context.get("situation")
-        if isinstance(situation, dict) and situation:
-            router_prompt += " Current application context: " + json.dumps(
-                situation, separators=(",", ":"), ensure_ascii=False
-            )[:8_000]
+        conversation_prompt += " CURRENT_ATTENTION_CHECKLIST=" + json.dumps(
+            attention_context,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        router_prompt = OpenAILiveAdapter._router_instructions(context)
         return {
             "model": settings.openai_live_model,
             "instructions": conversation_prompt,
@@ -1066,6 +1129,30 @@ class OpenAILiveAdapter:
                 },
             },
         }
+
+    @staticmethod
+    def _router_instructions(context: dict[str, Any]) -> str:
+        router_prompt = (
+            "Interpret actionable requests and use only the supplied Jarvis tools. The application "
+            "owns authorization, execution, and durable state. Prefer dispatch_task for substantial "
+            "work. Return concise speech-ready facts and never invent task state or success. "
+            "When reviewing pending attention, use get_attention_checklist, mention updates naturally, "
+            "and call acknowledge_task_update only after communicating exactly one item. Quiet context does not "
+            "require immediate speech; do not announce handled or superseded items or read identifiers aloud."
+        )
+        situation = context.get("situation")
+        if isinstance(situation, dict) and situation:
+            router_prompt += " Current application context: " + json.dumps(
+                situation, separators=(",", ":"), ensure_ascii=False
+            )[:8_000]
+        attention_context = context.get("attention_context")
+        if isinstance(attention_context, dict):
+            router_prompt += " CURRENT_ATTENTION_CHECKLIST=" + json.dumps(
+                attention_context,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        return router_prompt
 
     async def _default_session_creator(
         self, *, api_key: str, sdp_offer: str, session_config: dict[str, Any]

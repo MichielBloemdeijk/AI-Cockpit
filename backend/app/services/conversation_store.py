@@ -472,7 +472,7 @@ class ConversationStore:
             repo = ConversationRepository(session)
             state = await repo.get_jarvis_state()
             is_current = state is not None and state.current_log_id == conversation_id
-            is_live = is_current and await repo.has_live_realtime_session(conversation_id)
+            is_live = is_current and await repo.has_live_session(conversation_id)
             return is_current, is_live
 
     async def list_conversations(

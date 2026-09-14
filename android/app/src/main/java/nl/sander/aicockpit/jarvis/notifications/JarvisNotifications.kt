@@ -47,7 +47,6 @@ object JarvisNotifications {
         notificationId: Int,
         taskPath: String? = null,
         deliveryId: String? = null,
-        snoozable: Boolean = false,
     ): Notification {
         val builder = NotificationCompat.Builder(context, UPDATE_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -59,9 +58,6 @@ object JarvisNotifications {
             .addAction(0, "Open task", open(context, taskPath, deliveryId, notificationId))
             .addAction(0, "Stop", action(context, "stop", taskLabel, notificationId, deliveryId))
             .addAction(0, "Sleep", action(context, "sleep", taskLabel, notificationId, deliveryId))
-        if (snoozable) {
-            builder.addAction(0, "Snooze 10m", action(context, "snooze", taskLabel, notificationId, deliveryId))
-        }
         return builder.build()
     }
 

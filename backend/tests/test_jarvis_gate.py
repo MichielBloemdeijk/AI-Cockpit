@@ -1,72 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 import app.services.jarvis_coordinator as coordinator_module
 from app.db.session import session_scope
-from app.db.tables import VoiceSessionEvent
+from app.db.tables import LiveSessionEvent
 from app.services.conversation_store import conversation_store
-from app.main import app
 from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services.voice_session_adapter import VoiceProviderEvent, fake_voice_session_adapter
-
-
-@pytest.mark.asyncio
-async def test_standby_activation_api_registers_gate_and_restricts_immediate_mode() -> None:
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        assert (await client.post("/api/auth/login", json={"password": "dev"})).status_code == 200
-        created = await client.post(
-            "/api/jarvis/turns/text",
-            json={"content": "API gate setup", "idempotency_key": "api-gate-setup"},
-        )
-        assert created.status_code == 202
-        state = (await client.get("/api/jarvis/state")).json()
-        session = state["session"]
-
-        activation = await client.post(
-            f"/api/jarvis/realtime/sessions/{session['id']}/activations",
-            json={
-                "generation": session["generation"],
-                "activation_id": "api-activation-1",
-                "wake_score": 0.81,
-            },
-        )
-        assert activation.status_code == 202
-        assert activation.json() == {
-            "session_id": session["id"],
-            "generation": session["generation"],
-            "activation_id": "api-activation-1",
-            "gate_state": "pending",
-            "gate_mode": "transcript_rules",
-            "gate_timeout_ms": 2000,
-            "audio_policy": {
-                "configuration_id": "server_vad:s350:t0.5:p300",
-                "turn_mode": "server_vad",
-                "commit_owner": "provider",
-                "silence_duration_ms": 350,
-                "vad_threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "semantic_eagerness": None,
-                "create_response": False,
-                "interrupt_response": False,
-            },
-        }
-
-        immediate = await client.post(
-            f"/api/jarvis/realtime/sessions/{session['id']}/activations",
-            json={
-                "generation": session["generation"],
-                "activation_id": "api-activation-2",
-                "wake_score": 0.81,
-                "gate_mode": "immediate",
-            },
-        )
-        assert immediate.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -212,9 +155,9 @@ async def test_rejected_candidate_transcript_is_redacted_and_not_in_conversation
     async with session_scope() as db_session:
         event = (
             await db_session.execute(
-                select(VoiceSessionEvent)
-                .where(VoiceSessionEvent.session_id == session.id)
-                .where(VoiceSessionEvent.event_type == "provider.user_transcript")
+                select(LiveSessionEvent)
+                .where(LiveSessionEvent.session_id == session.id)
+                .where(LiveSessionEvent.event_type == "provider.user_transcript")
             )
         ).scalar_one()
         assert event.payload_json is not None

@@ -1,16 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { JarvisRealtimeCallResponse } from "./api";
+import type { JarvisLiveCallResponse } from "./api";
 import { JarvisLiveController } from "./jarvis-live";
 import type { JarvisAudioChunk, JarvisCandidateAudio } from "./jarvis-activation-audio";
 
-function fakeCall(): JarvisRealtimeCallResponse {
+function fakeCall(): JarvisLiveCallResponse {
   return {
     role: "controller",
-    session: { id: "session-1", generation: 1 } as JarvisRealtimeCallResponse["session"],
+    session: { id: "session-1", generation: 1 } as JarvisLiveCallResponse["session"],
     sdp_answer: "answer",
-    rotate_after_seconds: null,
-    audio_policy: null,
     provider_capabilities: { continuous_conversation: true },
     server_received_at: new Date().toISOString(),
     server_responded_at: new Date().toISOString(),
@@ -366,7 +364,7 @@ describe("JarvisLiveController", () => {
 
   it("closes an accepted call that arrives after startup cancellation", async () => {
     const { pc, channel } = fakePc();
-    const response = deferred<JarvisRealtimeCallResponse>();
+    const response = deferred<JarvisLiveCallResponse>();
     const closeCall = vi.fn(async () => undefined);
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,
@@ -390,7 +388,7 @@ describe("JarvisLiveController", () => {
   it("ignores stale transport and provider callbacks after cancellation", async () => {
     const first = fakePc({ autoConnect: false });
     const second = fakePc();
-    const firstResponse = deferred<JarvisRealtimeCallResponse>();
+    const firstResponse = deferred<JarvisLiveCallResponse>();
     const controllers = [first.pc, second.pc];
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => controllers.shift()!,
@@ -416,7 +414,7 @@ describe("JarvisLiveController", () => {
     expect(controller.current().status).toBe("connected");
   });
 
-  it("does not send raw audio or Realtime cancellation events", async () => {
+  it("does not send raw audio or legacy cancellation events", async () => {
     const { pc, channel } = fakePc();
     const controller = new JarvisLiveController("c", {}, {
       peerConnection: () => pc,

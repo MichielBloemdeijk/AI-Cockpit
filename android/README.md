@@ -1,6 +1,6 @@
 # Jarvis Android companion
 
-Jarvis targets Android 17/API 37. The native companion owns system-assistant invocation, local wake detection, Realtime audio, task/reminder notifications, and the phone WebView. AI Cockpit remains the durable source of truth.
+Jarvis targets Android 17/API 37. The native companion owns system-assistant invocation, local wake detection, GPT-Live audio, task/reminder notifications, and the phone WebView. AI Cockpit remains the durable source of truth.
 
 ## Build
 

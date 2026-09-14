@@ -2,7 +2,7 @@
 
 Status: architecture recorded incrementally on 2026-09-10/11; feature implementation has not started in this documentation pass. Scope: [agreed framework plan](JARVIS_WORKFLOW_FRAMEWORK_PLAN.md).
 
-**2026-09-11 update:** The user requested a GPT-Live 1 assessment before continuing. See [the assessment and recommended migration gate](JARVIS_GPT_LIVE_ASSESSMENT.md). D1-D7 below describe the Realtime-grounded design already investigated; D4 is a fallback design, not the proposed Live implementation. D8 remains pending the provider decision. No runtime provider was changed.
+**2026-09-11 update:** The GPT-Live evaluation is complete; see [the evaluation record](JARVIS_GPT_LIVE_ASSESSMENT.md). D1-D7 below describe provider-independent workflow guarantees and Live integration points. D8 tracks final migrations and acceptance.
 
 This document records decisions against the current working tree, including existing uncommitted voice-latency work. Those changes must be preserved. Each decision will include implementation contracts, integration points, failure behavior, and verification before the next decision is developed.
 
@@ -11,7 +11,7 @@ This document records decisions against the current working tree, including exis
 - [x] D1. Workflow packages, shared capabilities, and routing
 - [x] D2. Durable task state, interactive worker ownership, and recovery
 - [x] D3. Android activation context, transport, and lifetime
-- [x] D4. Realtime dispatch and acknowledgment overlap
+- [x] D4. Live dispatch and acknowledgment overlap
 - [x] D5. Model/search adapters and bounded reference workflows
 - [x] D6. Result identity, revisions, rendering, and notifications
 - [x] D7. Codex authoring, Android emulator demos, and evidence
@@ -27,7 +27,7 @@ This document records decisions against the current working tree, including exis
 - D5 resolved: give interactive workflows a direct Responses API adapter and bounded source retrieval. Keep the existing text-only chat/OpenRouter abstraction unchanged; choose source-backed quality over inventing content to meet a deadline.
 - D6 resolved: publish versioned result data through a maintained Apps route; keep generated-code apps intact. Task artifacts record each publication, and device/browser page context identifies the intended revision for edits.
 - D7 resolved: provide one Codex-facing CLI, isolated backend fixtures/live runs, and a real Android-emulator integration demo. The installed WebRTC library exposes input-buffer and playback-sample hooks, so prerecorded audio can use the actual RTP path without a second audio transport.
-- 2026-09-11: Paused final sequencing at the user's request to assess GPT-Live 1. Recommended a bounded migration comparison before Realtime-specific voice work; provider-independent workflow decisions remain reusable. See the linked assessment for evidence and unresolved measured outcomes.
+- 2026-09-11: Completed the GPT-Live evaluation and adopted the Live voice path. Provider-independent workflow decisions remain reusable; see the linked evaluation record for the resulting boundaries.
 
 ## D1. Workflow packages, shared capabilities, and routing
 
@@ -92,9 +92,9 @@ Exercise simultaneous registrations (same lane rejects one; different lanes both
 
 ### Existing integration gaps
 
-`JarvisVoiceInteractionService.onReady` currently disables screenshots, `invokeFromWake` does not request screenshot context, and `JarvisVoiceInteractionSession.onHandleScreenshot` discards the callback. The settings UI says screenshots are always disabled. All four must change together. `CockpitApi.createRealtimeCall` currently sends only source/score for Android wake activation; align it with the existing backend activation ID/telemetry contract rather than introducing a second unrelated identifier.
+`JarvisVoiceInteractionService.onReady` currently disables screenshots, `invokeFromWake` does not request screenshot context, and `JarvisVoiceInteractionSession.onHandleScreenshot` discards the callback. The settings UI says screenshots are always disabled. All four must change together. `CockpitApi.createLiveCall` currently sends only source/score for Android wake activation; align it with the existing backend activation ID/telemetry contract rather than introducing a second unrelated identifier.
 
-`/api/jarvis/live` and its replay endpoint currently authenticate broadly; screen requests need server-side recipient filtering. `create_realtime_call` also needs the HTTP-authenticated device identity, rather than treating a caller-provided `controller_id` as proof of device ownership.
+`/api/jarvis/live` and its replay endpoint currently authenticate broadly; screen requests need server-side recipient filtering. `create_live_call` also needs the HTTP-authenticated device identity, rather than treating a caller-provided `controller_id` as proof of device ownership.
 
 ### Android lifecycle
 
@@ -129,15 +129,15 @@ Test two paired devices, forged controller IDs, filtered SSE/replay cursors, upl
 
 Android documents that screenshots are supplied for the foreground app at assistant invocation and may be null: [VoiceInteractionSession](https://developer.android.com/reference/android/service/voice/VoiceInteractionSession#onHandleScreenshot(android.graphics.Bitmap)). This does not establish callback timing or OEM reliability; those remain emulator and physical-phone acceptance checks.
 
-## D4. Realtime dispatch and acknowledgment overlap
+## D4. Live dispatch and acknowledgment overlap
 
 ### Critical repository behavior
 
-The current adapter extracts calls only from `response.done` and returns early when calls exist. The coordinator treats `shell_call` as `response_finished=True`, then awaits the gateway, sends a result, and queues `tool_continuation`. Moving the same event earlier without changing ownership would release the response arbiter while the provider is still generating. `_execute_shell_call` also assigns the latest transcribed user message, which can be the wrong turn when a call arrives before transcription.
+The Live adapter normalizes delegated function calls and the coordinator separates function readiness, generation completion, and audible delivery. Dispatching a call must not release response ownership while the provider is still generating, and task admission must retain the originating activation/call correlation even when transcription arrives later.
 
 ### Event handling decision
 
-Handle `response.output_item.done` for function-call items with explicit `status=completed` as the early execution point for `start_workflow`. Parse and validate the full JSON object against the tool schema; retain call/item/response/activation/input-item correlation. Do not dispatch on argument deltas or on `response.function_call_arguments.done` alone: the official SDK documents that the latter is also emitted for interrupted/incomplete/cancelled responses. [Official argument event definition](https://github.com/openai/openai-python/blob/main/src/openai/types/realtime/response_function_call_arguments_done_event.py), [item event definition](https://github.com/openai/openai-python/blob/main/src/openai/types/realtime/response_output_item_done_event.py).
+Handle completed delegated function items as the early execution point for workflow admission. Parse and validate the full JSON object against the tool schema; retain call, response, activation, and input-item correlation. Never dispatch partial arguments or an interrupted/incomplete function item.
 
 Keep `response.done` as the completed-call fallback, running through the same normalizer and deduplication path. If an item lacks an explicit completion status, defer execution to the completed response fallback. Existing other tools retain terminal-response dispatch initially. Do not convert malformed JSON into an executable empty argument object.
 

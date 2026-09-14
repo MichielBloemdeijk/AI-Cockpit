@@ -15,9 +15,9 @@ from app.db.tables import (
     ConversationEvent,
     JarvisLiveEvent,
     NotificationOutbox,
-    RealtimeSession,
+    LiveSession,
     SpeechDelivery,
-    VoiceSessionEvent,
+    LiveSessionEvent,
 )
 from app.main import app
 from app.services import task_notifications
@@ -63,9 +63,9 @@ async def test_provider_connection_failure_is_recorded_without_secrets(
     async with session_scope() as session:
         failed = (
             await session.execute(
-                select(VoiceSessionEvent)
-                .where(VoiceSessionEvent.event_type == "session.connection_failed")
-                .order_by(VoiceSessionEvent.created_at.desc())
+                select(LiveSessionEvent)
+                .where(LiveSessionEvent.event_type == "session.connection_failed")
+                .order_by(LiveSessionEvent.created_at.desc())
                 .limit(1)
             )
         ).scalar_one()
@@ -88,7 +88,7 @@ async def test_superseded_provider_cleanup_does_not_block_replacement_connect(
     current = await jarvis_coordinator.get_active_session()
     assert current is not None
     async with session_scope() as session:
-        realtime = await session.get(RealtimeSession, current.id)
+        realtime = await session.get(LiveSession, current.id)
         assert realtime is not None
         realtime.provider_adapter = "slow-test-adapter"
 
@@ -715,7 +715,7 @@ async def test_live_commentary_submission_is_not_persisted_as_heard_delivery() -
     assert session is not None
     async with session_scope() as db:
         before = len(list((await db.execute(
-            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+            select(SpeechDelivery).where(SpeechDelivery.live_session_id == session.id)
         )).scalars().all()))
     await jarvis_coordinator.handle_provider_event(
         session.id,
@@ -733,9 +733,30 @@ async def test_live_commentary_submission_is_not_persisted_as_heard_delivery() -
     )
     async with session_scope() as db:
         deliveries = list((await db.execute(
-            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+            select(SpeechDelivery).where(SpeechDelivery.live_session_id == session.id)
         )).scalars().all())
     assert len(deliveries) == before
+    refreshed = await jarvis_coordinator.get_session(session.id)
+    assert refreshed is not None and refreshed.floor_state == "listening"
+
+
+@pytest.mark.asyncio
+async def test_provider_usage_does_not_take_the_voice_floor() -> None:
+    await jarvis_coordinator.accept_text_turn(
+        "Keep the floor idle",
+        idempotency_key="provider-usage-neutral-floor",
+    )
+    session = await jarvis_coordinator.get_active_session()
+    assert session is not None
+    await jarvis_coordinator.handle_provider_event(
+        session.id,
+        session.generation,
+        VoiceProviderEvent(
+            event_id="provider-usage-neutral-floor",
+            kind="usage",
+            payload={"usage": {"seconds": 1.0}},
+        ),
+    )
     refreshed = await jarvis_coordinator.get_session(session.id)
     assert refreshed is not None and refreshed.floor_state == "listening"
 
@@ -826,7 +847,7 @@ async def test_live_assistant_transcript_is_history_not_delivery_evidence() -> N
     assert reservation is not None
     async with session_scope() as db:
         before = len(list((await db.execute(
-            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+            select(SpeechDelivery).where(SpeechDelivery.live_session_id == session.id)
         )).scalars().all()))
 
     await jarvis_coordinator.inject_fake_event(
@@ -858,7 +879,7 @@ async def test_live_assistant_transcript_is_history_not_delivery_evidence() -> N
     assert generated.communication_state == "generated"
     async with session_scope() as db:
         deliveries = list((await db.execute(
-            select(SpeechDelivery).where(SpeechDelivery.realtime_session_id == session.id)
+            select(SpeechDelivery).where(SpeechDelivery.live_session_id == session.id)
         )).scalars().all())
         persisted = (await db.execute(
             select(ConversationEvent).where(ConversationEvent.id == generated.source_event_id)
@@ -870,7 +891,7 @@ async def test_live_assistant_transcript_is_history_not_delivery_evidence() -> N
     presentation = next(
         item for item in detail.presentations if item.id in reservation.presentation_ids
     )
-    assert presentation.state == "reserved"
+    assert presentation.state == "pending"
 
 
 @pytest.mark.asyncio
@@ -1019,7 +1040,7 @@ async def test_progress_is_quiet_by_default_and_opted_in_progress_coalesces() ->
     pending = next(item for item in followed_detail.presentations if item.state == "pending")
     assert pending.required_facts_json is not None
     assert pending.required_facts_json["summary"] == "Reviewing"
-    assert pending.required_facts_json["required_spoken_phrase"]
+    assert "required_spoken_phrase" not in pending.required_facts_json
 
 
 @pytest.mark.asyncio
@@ -1079,12 +1100,11 @@ async def test_pending_update_merges_into_the_next_user_response() -> None:
     detail = await task_service.get_task(task.task.id)
     assert detail is not None
     candidate = next(item for item in detail.presentations if item.candidate_type == "terminal_result")
-    assert candidate.state == "presented"
+    assert candidate.state == "pending"
     assert candidate.required_facts_json is not None
-    phrase = candidate.required_facts_json["required_spoken_phrase"]
     messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
     assert messages[-2].content == "What changed?"
-    assert messages[-1].content == f"I understand. {phrase}"
+    assert messages[-1].role == "assistant"
 
 
 @pytest.mark.asyncio
@@ -1137,7 +1157,7 @@ async def test_update_arriving_after_response_start_waits_for_completion() -> No
         ),
     )
     delivered = await task_service.get_task(task.task.id)
-    assert delivered is not None and delivered.presentations[0].state == "presented"
+    assert delivered is not None and delivered.presentations[0].state == "pending"
 
 
 @pytest.mark.asyncio
@@ -1163,7 +1183,6 @@ async def test_interrupted_update_is_requeued_until_required_phrase_is_heard() -
         user_owns_floor=False,
     )
     assert reservation is not None
-    phrase = reservation.facts[0]["required_spoken_phrase"]
     await jarvis_coordinator.handle_provider_event(
         session.id,
         session.generation,
@@ -1173,7 +1192,7 @@ async def test_interrupted_update_is_requeued_until_required_phrase_is_heard() -
             payload={
                 "response_id": "retry-response-1",
                 "item_id": "retry-item-1",
-                "transcript": phrase,
+                "transcript": "The retry task is complete.",
                 "heard_transcript": "The retry task",
                 "presentation_ids": list(reservation.presentation_ids),
             },
@@ -1194,7 +1213,7 @@ async def test_interrupted_update_is_requeued_until_required_phrase_is_heard() -
             payload={
                 "response_id": "retry-response-2",
                 "item_id": "retry-item-2",
-                "transcript": phrase,
+                "transcript": "The retry task is complete.",
                 "presentation_ids": list(retry.presentation_ids),
             },
         ),
@@ -1202,91 +1221,8 @@ async def test_interrupted_update_is_requeued_until_required_phrase_is_heard() -
     detail = await task_service.get_task(task.task.id)
     assert detail is not None
     candidate = next(item for item in detail.presentations if item.candidate_type == "terminal_result")
-    assert candidate.state == "presented"
-    assert candidate.retry_count == 1
-
-
-@pytest.mark.asyncio
-async def test_contradictory_reminder_speech_is_requeued_and_corrected() -> None:
-    accepted = await jarvis_coordinator.accept_text_turn(
-        "Set a reminder",
-        idempotency_key="contradiction-origin",
-    )
-    session = await jarvis_coordinator.get_active_session()
-    assert session is not None
-    due = datetime.now(timezone.utc) + timedelta(seconds=1)
-    reminder = await reminder_scheduler.create(
-        text="check the oven",
-        due_at=due,
-        idempotency_key="contradiction-reminder",
-        origin_conversation_id=accepted.conversation.id,
-    )
-    assert await reminder_scheduler.run_due(now=due + timedelta(seconds=1)) == 1
-    reservation = await task_presentation_service.reserve(
-        session_id=session.id,
-        generation=session.generation,
-        user_owns_floor=False,
-    )
-    assert reservation is not None
-    phrase = reservation.facts[0]["required_spoken_phrase"]
-
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(
-            event_id="contradictory-reminder-delivery",
-            kind="assistant_response",
-            payload={
-                "response_id": "contradictory-reminder-response",
-                "item_id": "contradictory-reminder-item",
-                "transcript": f"{phrase} It's queued.",
-                "presentation_ids": list(reservation.presentation_ids),
-                "response_kind": "user_turn",
-            },
-        ),
-    )
-
-    rejected = await task_service.get_task(reminder.task.id)
-    assert rejected is not None
-    candidate = rejected.presentations[0]
     assert candidate.state == "pending"
-    assert candidate.last_error == "contradictory_spoken_delivery"
-    async with session_scope() as db:
-        outbox = (await db.execute(
-            select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
-        )).scalar_one()
-        assert outbox.acknowledged_at is None
-
-    correction = await task_presentation_service.reserve(
-        session_id=session.id,
-        generation=session.generation,
-        user_owns_floor=False,
-    )
-    assert correction is not None
-    assert correction.facts[0]["delivery"] == {"correction_required": True}
-    await jarvis_coordinator.handle_provider_event(
-        session.id,
-        session.generation,
-        VoiceProviderEvent(
-            event_id="corrected-reminder-delivery",
-            kind="assistant_response",
-            payload={
-                "response_id": "corrected-reminder-response",
-                "item_id": "corrected-reminder-item",
-                "transcript": phrase,
-                "presentation_ids": list(correction.presentation_ids),
-                "response_kind": "task_update",
-            },
-        ),
-    )
-    corrected = await task_service.get_task(reminder.task.id)
-    assert corrected is not None and corrected.presentations[0].state == "presented"
-    async with session_scope() as db:
-        outbox = (await db.execute(
-            select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
-        )).scalar_one()
-        assert outbox.status == "acknowledged"
-        assert outbox.acknowledgement_state == "spoken"
+    assert candidate.retry_count == 0
 
 
 @pytest.mark.asyncio
@@ -1342,7 +1278,7 @@ async def test_interruption_does_not_release_the_floor_while_user_is_speaking() 
         VoiceProviderEvent(event_id="floor-user-stopped", kind="user_stopped"),
     )
     delivered = await task_service.get_task(task.task.id)
-    assert delivered is not None and delivered.presentations[0].state == "presented"
+    assert delivered is not None and delivered.presentations[0].state == "pending"
 
 
 @pytest.mark.asyncio
@@ -1374,9 +1310,9 @@ async def test_stale_busy_floor_releases_notification_fallback(
     await task_presentation_service.sync_candidates()
     async with session_scope() as db:
         floor_event = (await db.execute(
-            select(VoiceSessionEvent)
-            .where(VoiceSessionEvent.session_id == session.id)
-            .where(VoiceSessionEvent.event_type == "provider.user_speaking")
+            select(LiveSessionEvent)
+            .where(LiveSessionEvent.session_id == session.id)
+            .where(LiveSessionEvent.event_type == "provider.user_speaking")
         )).scalar_one()
         floor_event.created_at = datetime.now(timezone.utc) - timedelta(seconds=31)
         outbox = (await db.execute(
@@ -1455,17 +1391,15 @@ async def test_recap_reserves_urgent_updates_first_and_leaves_the_rest_pending()
         limit=3,
     )
     assert reservation is not None and reservation.total_pending == 4
-    assert [fact["event_type"] for fact in reservation.facts] == [
-        "task.reminder.due",
-        "task.requires_input",
-        "task.failed",
-    ]
+    assert [fact["event_type"] for fact in reservation.facts] == ["task.reminder.due"]
     remaining = await task_presentation_service.list_pending()
-    assert [item.required_facts_json["event_type"] for item in remaining] == ["task.completed"]
+    assert {
+        item.required_facts_json["event_type"] for item in remaining
+    } == {"task.completed", "task.requires_input", "task.failed", "task.reminder.due"}
 
 
 @pytest.mark.asyncio
-async def test_duplicate_reminder_is_spoken_once_without_fallback_notification() -> None:
+async def test_duplicate_reminder_stays_pending_without_model_report() -> None:
     accepted = await jarvis_coordinator.accept_text_turn("Set a reminder", idempotency_key="reminder-origin")
     due = datetime.now(timezone.utc) + timedelta(seconds=1)
     reminder = await reminder_scheduler.create(
@@ -1487,8 +1421,8 @@ async def test_duplicate_reminder_is_spoken_once_without_fallback_notification()
     detail = await task_service.get_task(reminder.task.id)
     assert detail is not None and len(detail.presentations) == 1
     presentation = detail.presentations[0]
-    assert presentation.state == "presented"
-    assert presentation.required_facts_json["required_spoken_phrase"] == "This is your reminder."
+    assert presentation.state == "pending"
+    assert "required_spoken_phrase" not in presentation.required_facts_json
     await route_pending_task_notifications(voice_connected=False)
     await asyncio.sleep(0.05)
     async with session_scope() as db:
@@ -1499,9 +1433,8 @@ async def test_duplicate_reminder_is_spoken_once_without_fallback_notification()
             select(JarvisLiveEvent).where(JarvisLiveEvent.event_type == "notification.available")
         )).scalars().all())
     assert len(outbox) == 1
-    assert outbox[0].status == "acknowledged"
-    assert outbox[0].acknowledgement_state == "spoken"
-    assert live_notifications == []
+    assert outbox[0].status == "delivered"
+    assert len(live_notifications) == 1
 
 
 @pytest.mark.asyncio
@@ -1578,7 +1511,7 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
             params={"after": 0},
         )
         session_events = await client.get(
-            f"/api/jarvis/sessions/{body['session']['id']}/events",
+                f"/api/jarvis/live/sessions/{body['session']['id']}/events",
             params={"after": 0},
         )
         task_events = await client.get("/api/tasks/events", params={"after": 0})
@@ -1587,7 +1520,7 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         assert task_events.json()["latest_sequence"] == body["cursors"]["task"]
 
         observer = await client.post(
-            "/api/jarvis/realtime/calls",
+            "/api/jarvis/live/calls",
             json={"controller_id": "observer-tab", "role": "observer"},
         )
         assert observer.status_code == 200
@@ -1598,7 +1531,7 @@ async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -
         assert server_responded_at >= server_received_at
 
         telemetry = await client.post(
-            "/api/jarvis/realtime/telemetry",
+            "/api/jarvis/live/telemetry",
             json={
                 "events": [{
                     "trace_id": "browser-trace-1",

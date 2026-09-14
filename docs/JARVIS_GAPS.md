@@ -13,7 +13,7 @@ tests exist; it remains open until the real interaction behaves correctly.
 
 - The authoritative-time, reminder-routing, contradiction-checking, and durable
   delivery changes pass automated tests but still need end-to-end phone
-  acceptance with real Realtime audio and notification timing.
+  acceptance with real Live audio and notification timing.
 
 ### Situation awareness and task truth
 
@@ -30,7 +30,7 @@ tests exist; it remains open until the real interaction behaves correctly.
 - Prompt and regression-corpus changes are implemented, but subjective vocal
   delivery and concision still require repeated real-session evaluation.
 
-### Realtime latency and connection reliability
+### Live latency and connection reliability
 
 - Recent browser sessions sometimes took up to ten seconds to connect after the
   wake word, missed turns, or remained stuck on speaking/thinking after the
@@ -63,7 +63,7 @@ The 2026-09-02 production log provides the regression scenario:
 
 ## Implemented, awaiting device acceptance
 
-- Realtime timing metadata is retained for seven days and correlates wake
+- Live timing metadata is retained for seven days and correlates wake
   detection, call creation, provider responses, transcript/audio events, and
   response-gate timings without storing raw audio.
 - A cancelled or failed response now emits a terminal event even when no text
@@ -73,7 +73,7 @@ The 2026-09-02 production log provides the regression scenario:
   delaying a lone delta, keeping streaming responsive while preventing database
   work from blocking the provider socket reader.
 - New connections no longer wait for the previous provider call to hang up.
-  Realtime receives stable session instructions once and a bounded, fresh
+  Live receives stable session instructions once and a bounded, fresh
   situation only at response creation.
 - Web and Android health views now identify each degraded runtime component and
   show its concise recorded reason instead of only showing a count.
@@ -96,7 +96,7 @@ The 2026-09-02 production log provides the regression scenario:
 - The phone layout uses a compact arm/sleep toggle and reduced conversation
   height. Verify that the listening banner, keyboard, composer, and safe-area
   insets require no page scrolling on the Pixel.
-- Android consumes `notification.available` and acknowledges open/snooze
+- Android consumes `notification.available` and acknowledges opened notifications
   actions. Verify one notification, the correct task deep link, and no duplicate
   notification from raw task events.
 - The Android API 37 build succeeds. Assistant-role, lock-screen, screen-off,

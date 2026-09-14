@@ -41,12 +41,9 @@ import kotlinx.coroutines.launch
 import nl.sander.aicockpit.jarvis.JarvisApplication
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.CredentialStore
-import nl.sander.aicockpit.jarvis.data.VoiceEngine
 import nl.sander.aicockpit.jarvis.notifications.JarvisEventStream
-import nl.sander.aicockpit.jarvis.realtime.RealtimeController
-import nl.sander.aicockpit.jarvis.realtime.LiveController
+import nl.sander.aicockpit.jarvis.live.LiveController
 import nl.sander.aicockpit.jarvis.wake.WakeForegroundService
-import nl.sander.aicockpit.jarvis.wake.JarvisAddressGate
 import nl.sander.aicockpit.jarvis.web.JarvisWebViewActivity
 import org.json.JSONObject
 import java.lang.ref.WeakReference
@@ -54,7 +51,6 @@ import java.lang.ref.WeakReference
 class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
     private val store = CredentialStore(context)
     private val api = CockpitApi(store)
-    private val realtime = RealtimeController(context, api)
     private val live = LiveController(context, api)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val main = Handler(Looper.getMainLooper())
@@ -65,8 +61,6 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     private var foregroundApp by mutableStateOf<String?>(null)
     private var pendingWakeScore: Float? = null
     private var pendingActivationId: String? = null
-    private var wakeDetectedAt: Long = 0L
-    private var activeVoiceEngine: VoiceEngine = VoiceEngine.REALTIME
 
     private val eventListener: (JSONObject) -> Unit = { event ->
         main.post { handleEvent(event) }
@@ -112,16 +106,11 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         pendingWakeScore = args?.takeIf { it.getString("source") == "local_wake" }?.getFloat("wake_score")
         pendingActivationId = args?.takeIf { it.getString("source") == "local_wake" }
             ?.getString("activation_id")
-        activeVoiceEngine = store.voiceEngine
-        wakeDetectedAt = android.os.SystemClock.elapsedRealtime()
         status = if (isLocked()) "Listening while locked (read-only)" else "Connecting…"
         scope.launch {
             runCatching { api.updateDevice(if (isLocked()) "locked" else "unlocked", store.eventCursor) }
             runCatching {
-                if (activeVoiceEngine == VoiceEngine.GPT_LIVE) {
-                    live.connect(pendingWakeScore, pendingActivationId) { status = friendlyState(it) }
-                }
-                else realtime.connect(pendingWakeScore) { status = friendlyState(it) }
+                live.connect(pendingWakeScore, pendingActivationId) { status = friendlyState(it) }
             }
                 .onFailure { status = it.message ?: "Unable to connect" }
         }
@@ -135,7 +124,6 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     override fun onDestroy() {
         application.voiceSessionVisible = false
         application.eventStream.removeListener(eventListener)
-        realtime.close()
         live.close()
         scope.cancel()
         if (active.get() === this) active.clear()
@@ -163,20 +151,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
             "provider.user_transcript_delta" -> userTranscript += payload.optString("delta", payload.optString("transcript"))
             "provider.user_transcript" -> {
                 val transcript = payload.optString("transcript")
-                val wakeScore = pendingWakeScore
                 pendingWakeScore = null
-                if (wakeScore != null && activeVoiceEngine != VoiceEngine.GPT_LIVE) {
-                    val decision = JarvisAddressGate.classify(
-                        transcript,
-                        wakeScore,
-                        android.os.SystemClock.elapsedRealtime() - wakeDetectedAt,
-                    )
-                    if (!decision.accepted) {
-                        status = "Wake heard, but Jarvis was not addressed"
-                        finish()
-                        return
-                    }
-                }
                 userTranscript = transcript
             }
             "provider.assistant_transcript_delta" -> assistantTranscript += payload.optString("delta", payload.optString("transcript"))
@@ -187,11 +162,6 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
             "provider.user_speaking" -> status = "Listening"
             "provider.assistant_generating" -> status = "Thinking"
             "provider.assistant_speaking" -> status = "Speaking"
-            "session.rotation_requested" -> scope.launch {
-                if (activeVoiceEngine == VoiceEngine.GPT_LIVE) return@launch
-                status = "Refreshing voice…"
-                runCatching { realtime.disconnect(); realtime.connect { status = friendlyState(it) } }
-            }
             "session.superseded" -> finish()
         }
     }
@@ -200,8 +170,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         application.voiceSessionVisible = false
         application.eventStream.removeListener(eventListener)
         scope.launch {
-            if (activeVoiceEngine == VoiceEngine.GPT_LIVE) live.disconnect()
-            else realtime.disconnect()
+            live.disconnect()
         }
     }
 

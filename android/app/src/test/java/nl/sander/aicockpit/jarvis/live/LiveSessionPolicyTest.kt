@@ -1,4 +1,4 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
 import org.junit.Assert.*
 import org.junit.Test

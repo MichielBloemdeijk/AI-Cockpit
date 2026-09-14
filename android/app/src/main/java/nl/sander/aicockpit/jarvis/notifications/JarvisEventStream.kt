@@ -87,7 +87,6 @@ class JarvisEventStream(private val context: Context) : AutoCloseable {
                 notificationId,
                 taskPath,
                 deliveryId,
-                snoozable = eventKind == "task.reminder.due",
             ),
         )
     }

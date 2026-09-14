@@ -109,7 +109,7 @@ async def test_structured_reminder_tool_persists_resolved_timing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_realtime_session_persists_device_timezone_in_every_context() -> None:
+async def test_live_session_persists_device_timezone_in_every_context() -> None:
     accepted = await jarvis_daily_service.accept_text_turn(
         "Hello",
         idempotency_key="timezone-session",

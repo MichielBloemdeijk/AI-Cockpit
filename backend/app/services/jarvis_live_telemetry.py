@@ -1,4 +1,4 @@
-"""Non-blocking, metadata-only Realtime trace persistence."""
+"""Non-blocking, metadata-only Live trace persistence."""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import delete, insert, select
 
 from app.db.session import session_scope
-from app.db.tables import JarvisRealtimeTraceEvent
+from app.db.tables import JarvisLiveTraceEvent
 
 
 def utc_now() -> datetime:
@@ -19,7 +19,7 @@ def utc_now() -> datetime:
 logger = logging.getLogger(__name__)
 
 
-class JarvisRealtimeTelemetryService:
+class JarvisLiveTelemetryService:
     def __init__(
         self,
         *,
@@ -37,7 +37,7 @@ class JarvisRealtimeTelemetryService:
         if self._task is not None and not self._task.done():
             return
         self._stop = asyncio.Event()
-        self._task = asyncio.create_task(self._run(self._stop), name="jarvis-realtime-telemetry")
+        self._task = asyncio.create_task(self._run(self._stop), name="jarvis-live-telemetry")
 
     async def stop(self) -> None:
         if self._stop is not None:
@@ -76,9 +76,9 @@ class JarvisRealtimeTelemetryService:
             if batch:
                 try:
                     async with session_scope() as session:
-                        await session.execute(insert(JarvisRealtimeTraceEvent), batch)
+                        await session.execute(insert(JarvisLiveTraceEvent), batch)
                 except Exception:
-                    logger.exception("Unable to persist Jarvis Realtime telemetry batch")
+                    logger.exception("Unable to persist Jarvis Live telemetry batch")
                 finally:
                     for _ in batch:
                         self._queue.task_done()
@@ -86,32 +86,32 @@ class JarvisRealtimeTelemetryService:
                 try:
                     await self._prune()
                 except Exception:
-                    logger.exception("Unable to prune Jarvis Realtime telemetry")
+                    logger.exception("Unable to prune Jarvis Live telemetry")
                 next_cleanup = utc_now() + timedelta(hours=24)
 
     async def _prune(self) -> None:
         async with session_scope() as session:
             await session.execute(
-                delete(JarvisRealtimeTraceEvent).where(
-                    JarvisRealtimeTraceEvent.created_at
+                delete(JarvisLiveTraceEvent).where(
+                    JarvisLiveTraceEvent.created_at
                     < utc_now() - timedelta(days=self._retention_days)
                 )
             )
             if self._max_rows <= 0:
-                await session.execute(delete(JarvisRealtimeTraceEvent))
+                await session.execute(delete(JarvisLiveTraceEvent))
                 return
             cutoff = await session.scalar(
-                select(JarvisRealtimeTraceEvent.sequence)
-                .order_by(JarvisRealtimeTraceEvent.sequence.desc())
+                select(JarvisLiveTraceEvent.sequence)
+                .order_by(JarvisLiveTraceEvent.sequence.desc())
                 .offset(self._max_rows - 1)
                 .limit(1)
             )
             if cutoff is not None:
                 await session.execute(
-                    delete(JarvisRealtimeTraceEvent).where(
-                        JarvisRealtimeTraceEvent.sequence < cutoff
+                    delete(JarvisLiveTraceEvent).where(
+                        JarvisLiveTraceEvent.sequence < cutoff
                     )
                 )
 
 
-jarvis_realtime_telemetry = JarvisRealtimeTelemetryService()
+jarvis_live_telemetry = JarvisLiveTelemetryService()

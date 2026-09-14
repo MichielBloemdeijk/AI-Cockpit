@@ -1,6 +1,6 @@
 # AI Cockpit
 
-AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. OpenAI Realtime powers Jarvis audio; delegated tasks default to a loopback OpenAI-compatible server such as llama.cpp, while OpenRouter remains an explicit cloud option.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. GPT-Live powers Jarvis audio; delegated tasks default to a loopback OpenAI-compatible server such as llama.cpp, while OpenRouter remains an explicit cloud option.
 
 This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
@@ -52,7 +52,7 @@ macOS/Linux:
 cp .env.example .env
 ```
 
-Open `.env` and configure the OpenAI Realtime key plus either the local server or optional OpenRouter key:
+Open `.env` and configure the OpenAI key plus either the local server or optional OpenRouter key:
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
@@ -182,14 +182,14 @@ AUTH_PASSWORD_HASH=<generated-bcrypt-hash>
 
 ## Model Configuration and Cost
 
-Jarvis voice uses OpenAI Realtime. Multi-step task turns default to the local provider. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
+Jarvis voice uses GPT-Live. Multi-step task turns default to the local provider. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
 
 The main settings are:
 
 | Variable | Development default | Purpose |
 |---|---|---|
 | `OPENROUTER_API_KEY` | example value | Required only for configured OpenRouter model requests |
-| `OPENAI_API_KEY` | example value | Backend-only key used to create OpenAI Realtime Jarvis calls |
+| `OPENAI_API_KEY` | example value | Backend-only key used to create GPT-Live Jarvis calls |
 | `AVAILABLE_MODELS` | GPT-5.6 Luna/Terra/Sol, Gemini 3.5 Flash, Claude Sonnet/Opus 5, Grok 4.5 | Options shown in the model pickers |
 | `COUNCIL_MODELS` | GPT-5.6 Terra, Gemini 3.5 Flash, Claude Sonnet 5 | Models queried in Council mode |
 | `SYNTHESIZER_MODEL` | Claude Sonnet 5 | Combines Council responses |
@@ -212,17 +212,17 @@ Defaults for future conversations can also be changed from the Settings page aft
 
 ## Jarvis
 
-The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines OpenAI Realtime WebRTC audio with backend-only sideband control, durable daily logs and focus, typed fallback, task delegation, durable reminders, natural task references, provisional transcript streaming, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
+The current voice workspace is [http://localhost:3000/jarvis](http://localhost:3000/jarvis). It combines GPT-Live WebRTC audio with backend-only sideband control, durable daily logs and focus, typed fallback, task delegation, durable reminders, natural task references, provisional transcript streaming, replayable activity, and optional Web Push delivery. The retired `/voice` page permanently redirects here.
 
-Set `OPENAI_API_KEY` in the repository root `.env`, start the backend, separate worker, and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a Realtime session; **Sleep** tears down the browser and provider session. The local model and worker remain necessary for delegated tasks. There is no local STT/TTS fallback; a Realtime failure leaves typed interaction available.
+Set `OPENAI_API_KEY` in the repository root `.env`, start the backend, separate worker, and frontend, then send the first typed turn if today has no log. Click **Arm** and grant microphone permission to begin a GPT-Live session; **Sleep** tears down the browser and provider session. The local model and worker remain necessary for delegated tasks. There is no local STT/TTS fallback; a Live failure leaves typed interaction available.
 
 Before committing Live voice changes, export the browser wake samples from **Settings → Wake calibration**, then run `cd frontend; npm run test:live-smoke -- --audio "C:\\path\\to\\jarvis-calibration-….json"`. The opt-in smoke test selects a positive `normal` sample, feeds it through a real Chromium microphone stream and the installed ONNX wake detector, negotiates GPT-Live over WebRTC, requires combined startup readiness, verifies remote audio plus persisted user and assistant voice segments, and closes the exact session. It runs against temporary backend data and a separate frontend port, so it does not alter the normal Jarvis conversation log. Once an export exists in Downloads, `npm run test:live-smoke` finds the newest export automatically. Use `--headed` to watch the run or `--sample-id <id>` to pin a recording. The test uses the configured OpenAI key and therefore creates a short billable Live session; private recordings and generated test reports remain outside Git.
 
-The browser uses an off-main-thread Hey Buddy/ONNX wake runtime, bounded in-memory pre-roll, a direct-address gate, and one ordered activation audio stream that continues into the conversation. New sessions default to provider-owned `server_vad`: the browser appends audio but does not send a competing manual commit. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Wake calibration samples stay in browser-local IndexedDB and can be reviewed, exported for GPU retraining, or deleted from Settings. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
+The browser uses an off-main-thread Hey Buddy/ONNX wake runtime, bounded in-memory pre-roll, a direct-address gate, and one ordered activation audio stream that continues into the conversation. GPT-Live owns conversational turn detection and interruption behavior. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Wake calibration samples stay in browser-local IndexedDB and can be reviewed, exported for GPU retraining, or deleted from Settings. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
 
-Generate a latency/reliability summary from exported v3 turn records with `cd backend; uv run python ../scripts/report-jarvis-latency.py records.json --json`. Optional `--configuration-id`, `--benchmark-run-id`, `--start`, and `--end` filters keep benchmark cohorts explicit. Measured latency targets are not claimed until the manual/device matrix and measured checkpoint in [the streamlining plan](docs/JARVIS_LATENCY_STREAMLINING_PLAN.md) pass.
+Run the current local Jarvis acceptance benchmark with `python scripts/benchmark-jarvis.py --performance-trials 5`; use `--output <path>` to save the JSON report.
 
-Voice, concision, wake behavior, developer visibility, and Android privacy preferences are persisted by the server. Marin is the default voice and Cedar is the alternate; a voice change rotates the Realtime session at a safe boundary.
+Voice, concision, wake behavior, developer visibility, and Android privacy preferences are persisted by the server. Marin is the default voice and Cedar is the alternate; a voice change applies to the next Live session.
 
 ## Android 17 Companion
 

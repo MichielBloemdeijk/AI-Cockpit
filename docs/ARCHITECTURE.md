@@ -24,8 +24,8 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
 - chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
-- a phone-first `/jarvis` PWA with OpenAI Realtime WebRTC, provisional transcript streaming, durable daily logs and focus, first-class tasks and reminders, natural task references, local wake/address detection, and optional Web Push delivery
-- an Android 17/API 37 companion that can hold the assistant role, invoke a native Compose session, run the same local wake model, stream Realtime audio and durable events, and host the phone UI in a constrained WebView
+- a phone-first `/jarvis` PWA with GPT-Live WebRTC, provisional transcript streaming, durable daily logs and focus, first-class tasks and reminders, natural task references, local wake/address detection, and optional Web Push delivery
+- an Android 17/API 37 companion that can hold the assistant role, invoke a native Compose session, run the same local wake model, stream Live audio and durable events, and host the phone UI in a constrained WebView
 
 ## Required App-Builder Direction
 
@@ -45,7 +45,7 @@ The product is split into a FastAPI backend, a Next.js frontend/PWA, an optional
 ```text
 Browser / Phone PWA ----> Next.js frontend ----> FastAPI backend
                                                    |       |
-Android assistant ---------------------------------+       +-> OpenAI Realtime
+Android assistant ---------------------------------+       +-> GPT-Live
                                                    |       +-> llama.cpp / OpenRouter
                                                    +-> SQLite + FTS5
                                                    +-> workspace folders
@@ -73,7 +73,7 @@ Android assistant ---------------------------------+       +-> OpenAI Realtime
 
 - Targets Android 17/API 37 with Kotlin and Compose.
 - Implements the assistant role through `VoiceInteractionService`, a separate session service, a separate recognition service, and a Compose session overlay.
-- Uses Android Keystore for the paired credential, reports lock state, maintains a resumable SSE cursor, and presents descriptive task/reminder notifications with Open, Stop, Sleep, and reminder-only Snooze actions.
+- Uses Android Keystore for the paired credential, reports lock state, maintains a resumable SSE cursor, and presents descriptive task/reminder notifications with Open, Stop, and Sleep actions.
 - Runs the shared four-model ONNX wake pipeline locally through a user-started microphone foreground service and falls back to manual/system assistant invocation when wake listening is unavailable.
 - Never persists ambient audio. Assist structure is transient and opt-in; screenshot capture is disabled.
 
@@ -116,7 +116,7 @@ It then registers these active routers:
 
 The separate worker process registers through `worker_instances`, heartbeats independently of FastAPI, claims the strict FIFO head, acquires the complete sorted mutable target set, and executes through `AgentExecutionContext` plus `AgentExecutionSink`. Attempt checkpoints, task events, questions, results, and terminal state remain in SQLite, so an API restart has no ownership effect.
 
-The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the OpenAI Realtime sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation across browser and Android, rejects stale callbacks, persists heard delivery truth and provisional transcript events, exposes only the restricted brain allowlist, and binds task-presentation reservations to a session generation. A replaceable timing policy uses text-only out-of-band Realtime responses to choose `PRESENT`, `FOLD`, or `DEFER`; invalid or failed judgements defer safely. OpenAI credentials and provider call IDs remain backend-only.
+The FastAPI process owns live Jarvis coordination but not background execution. `VoiceSessionAdapter` is the provider boundary; the deterministic fake adapter and the GPT-Live sideband adapter emit the same normalized coordinator events. The coordinator enforces one mutable controller generation across browser and Android, rejects stale callbacks, persists playback/transcript history for diagnostics, exposes only the restricted brain allowlist, and binds short transport leases and durable attention exposure tokens to a session generation. Model-reported checklist acknowledgements are the sole voice handling authority; OpenAI credentials and provider call IDs remain backend-only.
 
 ### Configuration
 
@@ -134,7 +134,7 @@ Key configuration areas:
 - conversation compaction, microcompaction, cold-cache pruning, and heavy-content guardrails
 - allowed directories for future file tooling
 - Tailscale host and notification settings
-- local LLM loopback URL/model alias, OpenAI Realtime settings, browser wake-model URL, and VAPID Web Push credentials
+- local LLM loopback URL/model alias, GPT-Live settings, browser wake-model URL, and VAPID Web Push credentials
 - knowledge notes and preferences paths
 
 ### API Surface
@@ -195,11 +195,11 @@ Implemented responsibilities:
 
 #### `backend/app/api/notifications.py`
 
-The notification API stores browser subscriptions and task-delivery acknowledgements. First-class task notifications are written to `notification_outbox` in the same transaction as terminal task states or blocking questions, deduplicated by task-event ID, and delivered with exact `/tasks/{task_id}` or `/tasks/{task_id}?question={question_id}` links. Ordinary progress never enters this outbox. Delivery retries survive process restart, acknowledgement remains independent from audible presentation truth, and disabled or missing VAPID configuration never causes a cloud fallback.
+The notification API stores browser subscriptions and transport history. First-class task notifications are written to `notification_outbox` in the same transaction as terminal task states or blocking questions, deduplicated by task-event ID, and delivered with exact `/tasks/{task_id}` or `/tasks/{task_id}?question={question_id}` links. Ordinary progress never enters this outbox. Opening a notification handles the exact task attention row; push transport remains history and disabled or missing VAPID configuration never causes a cloud fallback.
 
 #### `backend/app/api/jarvis.py`
 
-Provides current Jarvis state, preferences, reminders, typed turns, daily-log lifecycle, Realtime session/call control, resumable live events, natural task resolution, and provider-neutral test controls. Mutable paired-device calls pass through the server's locked-device capability policy.
+Provides current Jarvis state, preferences, reminders, typed turns, daily-log lifecycle, Live session/call control, resumable live events, natural task resolution, and provider-neutral test controls. Mutable paired-device calls pass through the server's locked-device capability policy.
 
 #### `backend/app/api/retrieval.py`, `memory.py`, and `devices.py`
 
@@ -398,7 +398,7 @@ Current behavior:
 - browses recent approved file-backed Wiki documents or matches exact/substring queries, returning excerpts and stored provenance
 - browses or searches standard chats and closed Jarvis daily logs, including archived history while excluding the current/open Jarvis log
 - exposes `wiki_search` and `conversation_search` as read-only Agent tools
-- retains those broad synthesis tools for delegated work while the Realtime shell uses bounded `history_grep` for narrow direct lookups over the unified recall projection
+- retains those broad synthesis tools for delegated work while the Live voice session uses bounded `history_grep` for narrow direct lookups over the unified recall projection
 - leaves all Wiki writes in the existing proposal/review workflow
 
 #### `backend/app/services/task_notifications.py`
@@ -411,13 +411,14 @@ Current behavior:
 - deduplicates each notification intent by its durable task-event ID
 - claims, sends, retries, and recovers queued/failed outbox rows across API restarts
 - removes stale browser subscriptions and preserves queued intent when no active subscription remains
-- records opened/spoken acknowledgement without changing `task_presentations` or heard-speech state
+- treats push as transport-only: opening a notification handles the exact linked
+  `TaskPresentation`, while delivered transport rows remain historical
 
 #### Jarvis v2 continuity services
 
 - `jarvis_live.py` merges conversation, task, and voice-session events into a monotonic resumable SSE stream used by the browser and Android.
-- `jarvis_preferences.py` persists voice, concision, wake behavior, developer visibility, and Android privacy options; voice changes request safe session rotation.
-- `reminder_scheduler.py` models reminders as waiting tasks, leases due work independently of the task worker, handles overdue startup, and deduplicates delivery and snooze transitions.
+- `jarvis_preferences.py` persists voice, concision, wake behavior, developer visibility, and Android privacy options; voice changes apply to the next Live session.
+- `reminder_scheduler.py` models reminders as waiting tasks, leases due work independently of the task worker, handles overdue startup, and deduplicates due transitions.
 - `natural_task_resolver.py` maintains focused/recent task continuity and resolves recency, status, title, and subject references before any mutation. Ambiguous mutations stop for descriptive clarification.
 - `history_retrieval.py` parses the constrained `rg` grammar, searches the FTS recall projection, applies virtual paths/context/sort/limits, never invokes a shell, and provides the idempotent recall rebuild path.
 - `knowledge_extractor.py` and `memory_review_store.py` generate and retain evidence-linked reviewed-memory candidates from closed Jarvis logs and completed tasks.
@@ -566,7 +567,8 @@ Additional metadata tracked on approved or deleted items includes:
 - `tasks` stores waiting/resume timestamps, wait reason, scheduled-delivery metadata, exactly-once delivery state, and normal durable task fields; attempts, events, questions, artifacts, targets, and presentation reservations remain normalized child tables.
 - `recall_documents` stores bounded user-visible text and virtual paths. SQLite-managed `unicode61` and trigram FTS5 tables index this projection without exposing hidden reasoning, secrets, or raw provider payloads.
 - `jarvis_devices` stores hashed/revocable Android credentials, lock/privacy state, and resumable event cursor; `jarvis_pairing_codes` stores hashed one-use codes and expiry/consumption timestamps.
-- `notification_outbox` stores durable browser notification intent separately from spoken presentation truth.
+- `task_presentations` is the sole durable attention authority (`pending`, `handled`, `superseded`); model reports and opened notifications handle one exact row, while transcript/playback and `notification_outbox` remain diagnostics or transport history.
+- `notification_outbox` stores durable browser notification transport intent and outcome separately from attention state.
 
 ### Persistence Design Notes
 
@@ -578,6 +580,18 @@ Additional metadata tracked on approved or deleted items includes:
 - Memory promotion is manual and review-driven.
 - Internal task IDs remain relational keys and diagnostic/URL values; user-facing Jarvis text, task references, clarifications, and native notifications use descriptive labels.
 - SQLite is the canonical local durable store today.
+
+### Attention authority and notification races
+
+`task_presentations` is the only authority for whether Jarvis still owes an update. A valid, session-bound model self-report or an opened notification conditionally changes one row from `pending` to `handled`; task execution state, speech transcripts, playback completion, append acknowledgements, and notification transport state never perform that transition. Every successful transition writes a global `jarvis_live_events` `attention.handled` audit in the same transaction and stores that global event ID in `handled_event_id`. Exposure tokens remain voice-session event IDs because they prove which session generation received the checklist item.
+
+The live model and delegated Responses model receive the same bounded, ordered checklist. Session startup includes the initial page, later semantic changes refresh the complete page and append individual deltas, and an explicit empty snapshot removes stale context. Transport leases, retry counters, timestamps, and outbox status are excluded from the semantic fingerprint. Routine changes use quiet thinking context; due reminders, blocking questions, and high-importance terminal results get one commentary attempt. A reconnect never repeats an attempted commentary item and instead restores it as quiet context.
+
+Notification handling supersedes only `queued` and `failed` transport work. A `sending` row belongs to the sender until it records the real result: a successful in-flight push remains `delivered`, while an unsuccessful one becomes `superseded` if attention closed and otherwise becomes `failed`. Startup recovery is different because no old sender remains: closed `sending` rows become `superseded`, and open ones return to `queued`. Connected idle sessions use the configured eight-second grace; a busy voice floor can defer delivery only until 30 seconds after initial queueing.
+
+The accepted limitation is deliberate: a valid model self-report can be premature or absent. A premature report is trusted, while a missing report leaves attention pending and push-eligible. Transcript matching and a second verifier are intentionally not used.
+
+For the disposable development database after changing migration 0021, stop the API and worker, remove only `backend/data/ai_cockpit_jarvis.db` plus its optional `-wal` and `-shm` companions, then restart the backend (or run `uv run alembic upgrade head` from `backend`). Do not apply that reset procedure to a database whose history must be retained.
 
 ## Frontend Architecture
 
@@ -610,7 +624,7 @@ It currently provides typed functions for:
 - generated app registry reads and writes
 - knowledge review and approved document browsing
 - model discovery
-- Jarvis state, preferences, reminders, natural task resolution, live-event URLs, memory proposals, history recall, Realtime calls, and Android pairing codes
+- Jarvis state, preferences, reminders, natural task resolution, live-event URLs, memory proposals, history recall, Live calls, and Android pairing codes
 
 `frontend/lib/hooks.ts` contains the public composed hooks:
 
@@ -669,8 +683,8 @@ The live workspace lives at `frontend/app/(app)/jarvis` and uses the common conv
 
 Current behavior:
 
-- lazily creates a daily log on the first accepted typed turn and supports either the deterministic fake provider or an armed OpenAI Realtime controller
-- lets the browser own microphone permission, WebRTC offer/answer, remote audio playback, data-channel establishment, bounded reconnect, typed fallback, and 55-minute rotation through normal controller supersession
+- lazily creates a daily log on the first accepted typed turn and supports either the deterministic fake provider or an armed GPT-Live controller
+- lets the browser own microphone permission, WebRTC offer/answer, remote audio playback, data-channel establishment, bounded reconnect, and typed fallback
 - proxies unified-call SDP through the authenticated backend and binds a backend-only sideband socket to the provider call
 - renders provisional assistant transcript deltas immediately, reconciles them with durable completed/interrupted speech, and includes provisional content in newest-message scrolling
 - opens existing logs at their newest message and follows new user or assistant messages automatically
@@ -678,9 +692,9 @@ Current behavior:
 - uses a phone-first conversation surface with safe-area bottom navigation, compact expandable status, and badge-bearing task/activity sheets while retaining the desktop workspace
 - replays one authenticated global live stream with a resumable cursor while preserving domain-specific conversation/session replay where diagnostics require it
 - exposes controller take-over and observer semantics, explicit sleep/fresh-log controls, and stale-generation rejection
-- records completed, interrupted, and unheard speech deliveries while adding only heard content to the transcript/context projection
+- records completed, interrupted, and unheard speech deliveries as diagnostics; transcript events never settle task attention
 - exposes a restricted shell gateway for natural task lookup/actions, reminders, bounded `history_grep`, voice selection, fresh-log, and session-end capabilities
-- coalesces typed task-fact envelopes, preserves questions, automatically judges pending updates at a safe boundary, folds suitable facts into the next natural reply, and marks facts presented only through a generation-bound heard delivery
+- coalesces typed task-fact envelopes, preserves questions, keeps pending attention authoritative, and accepts one session-bound model self-report after an update is communicated
 - hides the deterministic developer conversation lab unless developer mode is enabled
 - runs the exact-word wake model off the main thread, associates wake scores with recent speech instead of same-frame VAD, accepts one strong or two low-confidence hits, prepares browser WebRTC locally while armed, and holds the first backend response for a deliberately permissive transcript-stage check
 
@@ -795,14 +809,14 @@ Current behavior:
 - `frontend/lib/jarvis-live-state.ts`: independent Jarvis domain cursors and merged display-only activity
 - `frontend/lib/jarvis-wake-runtime.ts`: one-microphone browser capture, AudioWorklet resampling, and dedicated-worker lifecycle
 - `frontend/lib/jarvis-wake-engine.ts`: bounded pre-roll, wake/command collection, and raw-audio destruction rules
-- `frontend/lib/jarvis-realtime.ts`: armed-state WebRTC preparation, wake one-shot-to-live handoff, reconnect, and immediate barge-in controls
+- `frontend/lib/jarvis-live.ts`: armed-state WebRTC preparation, wake one-shot-to-live handoff, reconnect, and Live session controls
 - `frontend/lib/jarvis-address-detection.ts`: recall-first wake verification with explicit incidental-mention rejection
 - `frontend/lib/jarvis-calibration-store.ts`: browser-local calibration sample lifecycle
 
 ### Android
 
 - `android/app/src/main/java/.../assistant/`: assistant, session, recognition, and Compose overlay services
-- `android/app/src/main/java/.../realtime/`: native WebRTC offer/answer and microphone controller
+- `android/app/src/main/java/.../live/`: native GPT-Live WebRTC offer/answer and microphone controller
 - `android/app/src/main/java/.../wake/`: shared ONNX inference pipeline, temporal recall-first gate, permissive address check, foreground listener, and reboot opt-in
 - `android/app/src/main/java/.../notifications/`: resumable SSE consumer and native actions
 - `android/app/src/main/java/.../data/`: paired API client and Keystore-backed credential store
@@ -842,12 +856,12 @@ These are not accidental omissions; they are the main boundaries of the current 
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
 - Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
-- Browser and Android source paths now cover Realtime media, sideband transport, controller handoff, streamed transcripts, reminders, natural task references, indexed recall, reviewed memory, paired notifications, and local wake/address gating. The API 37 debug build passes; Android release acceptance still requires physical-device checks for assistant selection, keyguard, screen-off listening, process death, network loss, and battery drain.
+- Browser and Android source paths now cover Live media, sideband transport, controller handoff, streamed transcripts, reminders, natural task references, indexed recall, reviewed memory, paired notifications, and local wake/address gating. The API 37 debug build passes; Android release acceptance still requires physical-device checks for assistant selection, keyguard, screen-off listening, process death, network loss, and battery drain.
 - The selected exact-word model remains less consistent at low volume and its prior automated false-activation result does not meet the stricter v2 target. Calibrated quiet/distant/noisy/hard-negative recordings, GPU retraining, and held-out real-device address evaluation remain release gates rather than claimed passes.
 
 ## Architectural Direction
 
-The codebase now has one production path across durable conversations, global tasks and reminders, the separate worker, the provider-neutral Jarvis coordinator, OpenAI Realtime/WebRTC, heard and provisional transcript truth, proactive presentation, deterministic local wake/address logic, indexed local recall, reviewed memory, durable notifications, paired Android control, and archive lifecycle. The retired batch local-speech and browser-only delivery paths are no longer part of the maintained documentation set; Git history retains them.
+The codebase now has one production path across durable conversations, global tasks and reminders, the separate worker, the provider-neutral Jarvis coordinator, GPT-Live/WebRTC, heard and provisional transcript truth, proactive presentation, deterministic local wake/address logic, indexed local recall, reviewed memory, durable notifications, paired Android control, and archive lifecycle. Retired provider-specific and batch local-speech paths are no longer part of the maintained documentation set; Git history retains them.
 
 This direction intentionally avoids a vector database requirement. Recall is local, bounded, inspectable SQLite text search; authoritative memory remains review-driven and file-backed.
 

@@ -20,9 +20,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import nl.sander.aicockpit.jarvis.assistant.JarvisVoiceInteractionService
 import nl.sander.aicockpit.jarvis.data.CredentialStore
-import nl.sander.aicockpit.jarvis.data.VoiceEngine
 import nl.sander.aicockpit.jarvis.notifications.JarvisNotifications
-import nl.sander.aicockpit.jarvis.realtime.LiveActivationAudioHandoff
+import nl.sander.aicockpit.jarvis.live.LiveActivationAudioHandoff
 import java.util.UUID
 
 class WakeForegroundService : Service() {
@@ -91,28 +90,22 @@ class WakeForegroundService : Service() {
                     val result = engine.analyze(window)
                     val acceptedWakeScore = gate.evaluate(result)
                     if (acceptedWakeScore != null) {
-                        val useLive = CredentialStore(this@WakeForegroundService).voiceEngine == VoiceEngine.GPT_LIVE
                         val activationId = UUID.randomUUID().toString()
-                        if (useLive) {
-                            val startup = ShortArray(window.size) { index ->
-                                (window[index].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
-                            }
-                            if (!LiveActivationAudioHandoff.begin(activationId, startup)) {
-                                startup.fill(0)
-                                window.fill(0f)
-                                break
-                            }
-                            startup.fill(0)
+                        val startup = ShortArray(window.size) { index ->
+                            (window[index].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()
                         }
-                        if (JarvisVoiceInteractionService.invokeFromWake(acceptedWakeScore, activationId)) {
+                        if (!LiveActivationAudioHandoff.begin(activationId, startup)) {
+                            startup.fill(0)
                             window.fill(0f)
-                            if (useLive) {
-                                liveActivationId = activationId
-                                continue
-                            }
                             break
                         }
-                        if (useLive) LiveActivationAudioHandoff.clear(activationId)
+                        startup.fill(0)
+                        if (JarvisVoiceInteractionService.invokeFromWake(acceptedWakeScore, activationId)) {
+                            window.fill(0f)
+                            liveActivationId = activationId
+                            continue
+                        }
+                        LiveActivationAudioHandoff.clear(activationId)
                     }
                     window.fill(0f)
                 }

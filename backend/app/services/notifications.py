@@ -16,6 +16,12 @@ from app.services.task_notifications import (
 )
 
 
+class LegacyNotificationStateError(ValueError):
+    """Compatibility tombstone for removed spoken/snoozed acknowledgements."""
+
+    status_code = 410
+
+
 async def get_public_key() -> str:
     return settings.vapid_public_key if settings.web_push_enabled else ""
 
@@ -65,13 +71,18 @@ async def delete_subscription(subscription_id: str) -> bool:
 
 async def acknowledge_delivery(delivery_id: str, state: str) -> bool:
     normalized = str(state or "").lower()
-    if normalized not in {"opened", "spoken", "snoozed"}:
-        raise ValueError("Delivery state must be opened, spoken, or snoozed")
+    if normalized in {"spoken", "snoozed"}:
+        raise LegacyNotificationStateError(
+            "Legacy notification acknowledgement states are no longer supported"
+        )
+    if normalized != "opened":
+        raise ValueError("Delivery state must be opened")
     return await acknowledge_task_notification(delivery_id, normalized)
 
 
 __all__ = [
     "acknowledge_delivery",
+    "LegacyNotificationStateError",
     "delete_subscription",
     "get_public_key",
     "upsert_subscription",

@@ -1,11 +1,11 @@
 import {
-  closeJarvisRealtimeSession,
-  createJarvisRealtimeCall,
+  closeJarvisLiveSession,
+  createJarvisLiveCall,
   getJarvisState,
   type JarvisLiveEvent,
   type JarvisStateResponse,
-  type JarvisRealtimeActivationContext,
-  type JarvisRealtimeCallResponse,
+  type JarvisLiveActivationContext,
+  type JarvisLiveCallResponse,
   type JarvisSession,
 } from "./api";
 import type { JarvisVoiceClient, JarvisVoiceSnapshot } from "./jarvis-voice-client";
@@ -13,7 +13,7 @@ import type { JarvisCandidateAudio } from "./jarvis-activation-audio";
 
 export interface JarvisLiveStartOptions {
   stream?: MediaStream;
-  activationContext?: JarvisRealtimeActivationContext;
+  activationContext?: JarvisLiveActivationContext;
   candidateAudio?: JarvisCandidateAudio;
   wakeDetectedMonotonicMs?: number;
 }
@@ -24,8 +24,8 @@ export interface JarvisLiveDependencies {
     role: "controller",
     adapter: "openai_live",
     sdpOffer: string,
-    activationContext?: JarvisRealtimeActivationContext,
-  ) => Promise<JarvisRealtimeCallResponse>;
+    activationContext?: JarvisLiveActivationContext,
+  ) => Promise<JarvisLiveCallResponse>;
   closeCall?: (sessionId: string, generation: number) => Promise<unknown>;
   getUserMedia?: () => Promise<MediaStream>;
   getBackendState?: () => Promise<JarvisStateResponse>;
@@ -106,7 +106,6 @@ export class JarvisLiveController implements JarvisVoiceClient {
   private backendObserverCleanup: (() => void) | null = null;
   private snapshot: JarvisVoiceSnapshot = {
     status: "idle",
-    engine: "openai_live",
     micEnabled: false,
     playbackActive: false,
     error: null,
@@ -122,9 +121,9 @@ export class JarvisLiveController implements JarvisVoiceClient {
     this.options = options;
     this.deps = {
       createCall: dependencies.createCall ?? ((id, role, adapter, offer, activation) => (
-        createJarvisRealtimeCall(id, role, adapter, offer, undefined, activation)
+        createJarvisLiveCall(id, role, adapter, offer, undefined, activation)
       )),
-      closeCall: dependencies.closeCall ?? closeJarvisRealtimeSession,
+      closeCall: dependencies.closeCall ?? closeJarvisLiveSession,
       getUserMedia: dependencies.getUserMedia ?? (() => navigator.mediaDevices.getUserMedia({ audio: true })),
       getBackendState: dependencies.getBackendState ?? getJarvisState,
       peerConnection: dependencies.peerConnection ?? (() => new RTCPeerConnection()),
@@ -376,7 +375,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
   }
 
   interrupt(): void {
-    // Speaking over Live is the interruption signal; do not send Realtime's
+    // Speaking over Live is the interruption signal; do not send a competing
     // response.cancel event, which is not part of the Live protocol.
     this.publish({ ...this.snapshot, status: "interrupted", playbackActive: false });
     this.touch();

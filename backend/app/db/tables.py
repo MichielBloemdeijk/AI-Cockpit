@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -358,10 +359,10 @@ class JarvisState(Base):
     )
 
 
-class RealtimeSession(Base):
-    __tablename__ = "realtime_sessions"
+class LiveSession(Base):
+    __tablename__ = "live_sessions"
     __table_args__ = (
-        CheckConstraint("generation > 0", name="ck_realtime_sessions_generation_positive"),
+        CheckConstraint("generation > 0", name="ck_live_sessions_generation_positive"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
@@ -376,7 +377,6 @@ class RealtimeSession(Base):
     last_event_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     timing_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     usage_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    audio_policy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     client_time_zone: Mapped[str | None] = mapped_column(String(255), nullable=True)
     client_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     client_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -390,18 +390,18 @@ class RealtimeSession(Base):
     )
 
 
-class VoiceSessionEvent(Base):
-    __tablename__ = "voice_session_events"
+class LiveSessionEvent(Base):
+    __tablename__ = "live_session_events"
     __table_args__ = (
-        UniqueConstraint("session_id", "sequence", name="uq_voice_session_events_session_sequence"),
+        UniqueConstraint("session_id", "sequence", name="uq_live_session_events_session_sequence"),
         UniqueConstraint(
-            "session_id", "idempotency_key", name="uq_voice_session_events_session_idempotency"
+            "session_id", "idempotency_key", name="uq_live_session_events_session_idempotency"
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("realtime_sessions.id", ondelete="CASCADE"), nullable=False
+        String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -412,13 +412,13 @@ class VoiceSessionEvent(Base):
     )
 
 
-class JarvisRealtimeTraceEvent(Base):
-    """Short-lived, metadata-only timing events for Realtime diagnosis."""
+class JarvisLiveTraceEvent(Base):
+    """Short-lived, metadata-only timing events for Live diagnosis."""
 
-    __tablename__ = "jarvis_realtime_trace_events"
+    __tablename__ = "jarvis_live_trace_events"
     __table_args__ = (
-        Index("ix_jarvis_realtime_trace_events_trace", "trace_id", "sequence"),
-        Index("ix_jarvis_realtime_trace_events_created", "created_at"),
+        Index("ix_jarvis_live_trace_events_trace", "trace_id", "sequence"),
+        Index("ix_jarvis_live_trace_events_created", "created_at"),
     )
 
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -442,13 +442,13 @@ class JarvisRealtimeTraceEvent(Base):
 
 
 class SpeechDelivery(Base):
-    __tablename__ = "speech_deliveries"
+    __tablename__ = "live_speech_deliveries"
     __table_args__ = (
         UniqueConstraint(
-            "realtime_session_id",
+            "live_session_id",
             "provider_response_id",
             "provider_item_id",
-            name="uq_speech_deliveries_provider_item",
+            name="uq_live_speech_deliveries_provider_item",
         ),
     )
 
@@ -456,8 +456,8 @@ class SpeechDelivery(Base):
     assistant_turn_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("conversation_messages.id", ondelete="SET NULL"), nullable=True
     )
-    realtime_session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("realtime_sessions.id", ondelete="CASCADE"), nullable=False
+    live_session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False
     )
     provider_response_id: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_item_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -901,6 +901,10 @@ class TaskPresentation(Base):
     __tablename__ = "task_presentations"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_task_presentations_idempotency_key"),
+        CheckConstraint(
+            "state IN ('pending', 'handled', 'superseded')",
+            name="ck_task_presentations_state",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
@@ -912,17 +916,13 @@ class TaskPresentation(Base):
     importance: Mapped[str] = mapped_column(String(32), nullable=False, default="normal")
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
     reserved_session_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("realtime_sessions.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("live_sessions.id", ondelete="SET NULL"), nullable=True
     )
     reserved_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     required_facts_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_task_event_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("task_events.id", ondelete="SET NULL"), nullable=True
     )
-    presented_turn_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversation_messages.id", ondelete="SET NULL"), nullable=True
-    )
-    presented_delivery_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     defer_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -931,7 +931,18 @@ class TaskPresentation(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    presented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    handled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    handled_turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversation_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    handled_event_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("jarvis_live_events.id", ondelete="SET NULL"), nullable=True
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    commentary_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
@@ -941,6 +952,10 @@ class NotificationOutbox(Base):
     __tablename__ = "notification_outbox"
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_notification_outbox_dedupe_key"),
+        CheckConstraint(
+            "status IN ('queued', 'sending', 'delivered', 'failed', 'superseded')",
+            name="ck_notification_outbox_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
@@ -960,8 +975,6 @@ class NotificationOutbox(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", server_default="queued")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    acknowledgement_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -1000,10 +1013,10 @@ Index("ix_generated_apps_status", GeneratedApp.status)
 Index("ix_generated_apps_lease_task", GeneratedApp.lease_task_run_id)
 Index("ix_conversations_kind_updated", Conversation.conversation_kind, Conversation.updated_at)
 Index("ix_conversations_lifecycle", Conversation.lifecycle_status)
-Index("ix_realtime_sessions_conversation_created", RealtimeSession.conversation_id, RealtimeSession.created_at)
-Index("ix_voice_session_events_session_created", VoiceSessionEvent.session_id, VoiceSessionEvent.created_at)
-Index("ix_speech_deliveries_session_created", SpeechDelivery.realtime_session_id, SpeechDelivery.created_at)
-Index("ix_speech_deliveries_state", SpeechDelivery.state)
+Index("ix_live_sessions_conversation_created", LiveSession.conversation_id, LiveSession.created_at)
+Index("ix_live_session_events_session_created", LiveSessionEvent.session_id, LiveSessionEvent.created_at)
+Index("ix_live_speech_deliveries_session_created", SpeechDelivery.live_session_id, SpeechDelivery.created_at)
+Index("ix_live_speech_deliveries_state", SpeechDelivery.state)
 Index("ix_tasks_status_order", Task.status, Task.creation_order)
 Index("ix_tasks_resume_at", Task.status, Task.resume_at)
 Index("ix_tasks_origin_conversation", Task.origin_conversation_id, Task.creation_order)
@@ -1019,6 +1032,18 @@ Index("ix_resource_leases_expiry", ResourceLease.expires_at)
 Index("ix_worker_instances_heartbeat", WorkerInstance.heartbeat_at)
 Index("ix_task_presentations_state_created", TaskPresentation.state, TaskPresentation.created_at)
 Index("ix_task_presentations_task", TaskPresentation.task_id, TaskPresentation.created_at)
+Index(
+    "uq_task_presentations_session_lease",
+    TaskPresentation.reserved_session_id,
+    unique=True,
+    sqlite_where=text("state = 'pending' AND lease_token IS NOT NULL"),
+)
+Index(
+    "uq_task_presentations_source_task_event",
+    TaskPresentation.source_task_event_id,
+    unique=True,
+    sqlite_where=text("source_task_event_id IS NOT NULL"),
+)
 Index("ix_notification_outbox_status_created", NotificationOutbox.status, NotificationOutbox.created_at)
 Index(
     "uq_notification_outbox_task_event",

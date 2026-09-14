@@ -1,4 +1,4 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
 import android.media.AudioFormat
 import kotlinx.coroutines.delay

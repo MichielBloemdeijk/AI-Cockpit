@@ -20,7 +20,7 @@ from app.services.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio
-async def test_preferences_are_durable_and_report_voice_rotation() -> None:
+async def test_preferences_are_durable_and_report_voice_change() -> None:
     initial = await jarvis_preferences_service.get()
     assert initial.voice == "marin"
     changed, voice_changed = await jarvis_preferences_service.patch({
@@ -124,7 +124,7 @@ async def test_history_grep_is_bounded_path_safe_and_transactionally_current() -
 
 
 @pytest.mark.asyncio
-async def test_reminders_deliver_once_and_snooze_replaces_pending_delivery() -> None:
+async def test_reminders_deliver_once() -> None:
     now = datetime.now(timezone.utc)
     reminder = await reminder_scheduler.create(
         text="water the basil",
@@ -147,20 +147,6 @@ async def test_reminders_deliver_once_and_snooze_replaces_pending_delivery() -> 
     assert due_events == 1
     assert outbox == 1
 
-    pending = await reminder_scheduler.create(
-        text="check the oven",
-        due_at=now + timedelta(hours=1),
-        idempotency_key="v2-reminder-pending",
-    )
-    snoozed = await reminder_scheduler.snooze(
-        pending.task.id,
-        due_at=now + timedelta(hours=2),
-        idempotency_key="v2-snooze",
-    )
-    replaced = await task_service.get_task(pending.task.id)
-    assert replaced is not None and replaced.task.status == "cancelled"
-    assert snoozed.task.id != pending.task.id
-    assert snoozed.task.status == "waiting_until"
 
 
 @pytest.mark.asyncio

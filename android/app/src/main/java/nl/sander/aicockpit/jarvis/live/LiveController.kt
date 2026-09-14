@@ -1,4 +1,4 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
 import android.content.Context
 import android.media.AudioFormat
@@ -17,8 +17,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import nl.sander.aicockpit.jarvis.data.CockpitApi
-import nl.sander.aicockpit.jarvis.data.RealtimeCall
-import nl.sander.aicockpit.jarvis.data.VoiceEngine
+import nl.sander.aicockpit.jarvis.data.LiveCall
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -35,17 +34,14 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 import java.util.UUID
 
-class RealtimeController(
+class LiveController(
     context: Context,
     private val api: CockpitApi,
-    liveAudioHandoff: Boolean = false,
 ) : AutoCloseable {
     private val audioModule = JavaAudioDeviceModule.builder(context)
         .apply {
-            if (liveAudioHandoff) {
-                setInputSampleRate(LiveActivationAudioBuffer.SAMPLE_RATE)
-                setAudioFormat(AudioFormat.ENCODING_PCM_16BIT)
-            }
+            setInputSampleRate(LiveActivationAudioBuffer.SAMPLE_RATE)
+            setAudioFormat(AudioFormat.ENCODING_PCM_16BIT)
         }
         .setAudioBufferCallback { buffer, audioFormat, channels, sampleRate, byteCount, captureTimeNs ->
             LiveActivationAudioHandoff.processWebRtcBuffer(
@@ -58,27 +54,24 @@ class RealtimeController(
     private var peer: PeerConnection? = null
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
-    private var call: RealtimeCall? = null
+    private var call: LiveCall? = null
     private var iceReady = CompletableDeferred<Unit>()
     private var liveClosed = CompletableDeferred<Unit>()
     private var eventsChannel: DataChannel? = null
-    private var activeEngine: VoiceEngine = VoiceEngine.REALTIME
     private var liveActivationId: String? = null
     private var attemptEpoch = 0
     private val diagnosticScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     suspend fun connect(
         wakeScore: Float? = null,
-        engine: VoiceEngine = VoiceEngine.REALTIME,
         activationId: String? = null,
         onState: (String) -> Unit = {},
-    ): RealtimeCall = withContext(Dispatchers.Main) {
+    ): LiveCall = withContext(Dispatchers.Main) {
         val attempt = ++attemptEpoch
         closePeerOnly()
         iceReady = CompletableDeferred()
         liveClosed = CompletableDeferred()
-        activeEngine = engine
-        var accepted: RealtimeCall? = null
+        var accepted: LiveCall? = null
         var readiness: LiveStartupReadiness? = null
         var backendObserver: Job? = null
         var latestPeerState = PeerConnection.PeerConnectionState.NEW
@@ -89,10 +82,9 @@ class RealtimeController(
             if (attempt != attemptEpoch) throw CancellationException("GPT-Live startup was cancelled")
         }
         fun record(event: String, detail: JSONObject = JSONObject()) {
-            if (engine != VoiceEngine.GPT_LIVE) return
             recordDiagnostic(event, attempt, activationId, accepted, detail)
         }
-        if (engine == VoiceEngine.GPT_LIVE && activationId != null) {
+        if (activationId != null) {
             LiveActivationAudioHandoff.releaseRecorder(activationId).getOrThrow()
             liveActivationId = activationId
             onState("activation_audio_ready")
@@ -128,7 +120,7 @@ class RealtimeController(
                     channel,
                     attempt,
                     onState,
-                    engine == VoiceEngine.GPT_LIVE,
+                    true,
                     onChannelState = { state ->
                         latestDataState = state
                         readiness?.observeDataChannel(state.name)
@@ -160,7 +152,7 @@ class RealtimeController(
             events,
             attempt,
             onState,
-            engine == VoiceEngine.GPT_LIVE,
+            true,
             onChannelState = { state ->
                 latestDataState = state
                 readiness?.observeDataChannel(state.name)
@@ -181,14 +173,13 @@ class RealtimeController(
             runCatching { withTimeout(750) { iceReady.await() } }
             ensureCurrent()
             val local = connection.localDescription ?: offer
-            val established = api.createRealtimeCall(local.description, wakeScore, engine, effectiveActivationId)
+            val established = api.createLiveCall(local.description, wakeScore, effectiveActivationId)
             accepted = established
             ensureCurrent()
             // Store the accepted identity before applying the answer or waiting;
             // failure and cancellation must close this exact backend attempt.
             call = established
-            if (engine == VoiceEngine.GPT_LIVE) {
-                readiness = LiveStartupReadiness(established.sessionId, established.generation).also {
+            readiness = LiveStartupReadiness(established.sessionId, established.generation).also {
                     it.observePeer(latestPeerState.name)
                     it.observeIce(latestIceState.name)
                     it.observeDataChannel(latestDataState.name)
@@ -196,7 +187,7 @@ class RealtimeController(
                 }
                 backendObserver = launch(Dispatchers.IO) {
                     while (attempt == attemptEpoch && readiness?.current()?.ready != true) {
-                        val stateResult = runCatching { api.realtimeSessionState() }
+                        val stateResult = runCatching { api.liveSessionState() }
                         if (stateResult.isFailure) {
                             val cause = stateResult.exceptionOrNull()
                             record("backend_readiness_failed", JSONObject().put("message", cause?.message))
@@ -215,12 +206,10 @@ class RealtimeController(
                         delay(100)
                     }
                 }
-            }
             connection.setRemoteDescriptionAwait(
                 SessionDescription(SessionDescription.Type.ANSWER, established.sdpAnswer)
             )
             ensureCurrent()
-            if (engine == VoiceEngine.GPT_LIVE) {
                 readiness?.markSdpApplied()
                 record("sdp_applied")
                 try {
@@ -230,7 +219,7 @@ class RealtimeController(
                             val snapshot = readiness?.current() ?: error("GPT-Live readiness was not initialized")
                             snapshot.failure?.let { error(it) }
                             if (snapshot.ready) {
-                                val finalState = withContext(Dispatchers.IO) { api.realtimeSessionState() }
+                                val finalState = withContext(Dispatchers.IO) { api.liveSessionState() }
                                 readiness?.observeBackend(finalState)
                                 val confirmed = readiness?.current()
                                     ?: error("GPT-Live readiness was not initialized")
@@ -260,7 +249,6 @@ class RealtimeController(
                         .put("buffered", activationId != null)
                         .put("browser_session_started", readiness?.current()?.browserSessionStarted == true),
                 )
-            }
             ensureCurrent()
             onState("connected")
             established
@@ -276,7 +264,7 @@ class RealtimeController(
             call = null
             val exact = accepted
             if (exact != null) withContext(NonCancellable + Dispatchers.IO) {
-                runCatching { api.closeRealtime(exact.sessionId, exact.generation) }
+                runCatching { api.closeLive(exact.sessionId, exact.generation) }
             }
             closePeerOnly()
             throw cause
@@ -332,12 +320,12 @@ class RealtimeController(
         attemptEpoch += 1
         val active = call
         call = null
-        if (activeEngine == VoiceEngine.GPT_LIVE && eventsChannel?.state() == DataChannel.State.OPEN) {
+        if (eventsChannel?.state() == DataChannel.State.OPEN) {
             val closeJson = "{\"type\":\"session.close\"}".toByteArray(Charsets.UTF_8)
             eventsChannel?.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(closeJson), false))
             withTimeoutOrNull(2_000) { liveClosed.await() }
         }
-        if (active != null) runCatching { api.closeRealtime(active.sessionId, active.generation) }
+        if (active != null) runCatching { api.closeLive(active.sessionId, active.generation) }
         withContext(Dispatchers.Main) { closePeerOnly() }
     }
 
@@ -362,13 +350,13 @@ class RealtimeController(
         event: String,
         attempt: Int,
         activationId: String?,
-        activeCall: RealtimeCall?,
+        activeCall: LiveCall?,
         detail: JSONObject = JSONObject(),
     ) {
         val traceId = activationId ?: activeCall?.sessionId ?: "android-live-attempt-$attempt"
         diagnosticScope.launch {
             runCatching {
-                api.submitRealtimeDiagnostic(
+                api.submitLiveDiagnostic(
                     traceId = traceId,
                     eventType = "live.$event",
                     activationId = activationId,

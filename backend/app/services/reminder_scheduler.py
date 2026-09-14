@@ -173,34 +173,4 @@ class ReminderScheduler:
             timing_metadata=resolved.timing,
         )
 
-    async def snooze(
-        self,
-        task_id: str,
-        *,
-        due_at: datetime | str | None = None,
-        timing: object | None = None,
-        active_time_zone: str = DEFAULT_TIME_ZONE,
-        now: datetime | None = None,
-        idempotency_key: str,
-    ) -> TaskSnapshot:
-        detail = await task_service.get_task(task_id)
-        if detail is None or (detail.task.scheduled_delivery_json or {}).get("kind") != "reminder":
-            raise ValueError("Reminder not found")
-        text_value = str((detail.task.scheduled_delivery_json or {}).get("text") or detail.task.goal)
-        if detail.task.status == "waiting_until":
-            await task_service.cancel(
-                task_id,
-                idempotency_key=f"reminder-snooze:{idempotency_key}",
-            )
-        return await self.create(
-            text=text_value,
-            due_at=due_at,
-            timing=timing,
-            active_time_zone=active_time_zone,
-            now=now,
-            idempotency_key=f"snooze:{task_id}:{idempotency_key}",
-            origin_conversation_id=detail.task.origin_conversation_id,
-        )
-
-
 reminder_scheduler = ReminderScheduler()

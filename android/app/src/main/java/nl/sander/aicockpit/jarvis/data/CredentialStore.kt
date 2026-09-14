@@ -41,12 +41,6 @@ class CredentialStore(context: Context) {
         val encoded = Base64.encodeToString(cipher.iv + cipher.doFinal(value.toByteArray()), Base64.NO_WRAP)
         preferences.edit().putString("credential", encoded).apply()
     }
-    /** Voice engine used when the next assistant session is created. */
-    var voiceEngine: VoiceEngine
-        get() = runCatching { VoiceEngine.valueOf(preferences.getString("voice_engine", VoiceEngine.REALTIME.name)!!) }
-            .getOrDefault(VoiceEngine.REALTIME)
-        set(value) { preferences.edit().putString("voice_engine", value.name).apply() }
-
     fun credential(): String? {
         val encoded = preferences.getString("credential", null) ?: return null
         return runCatching {
@@ -81,5 +75,3 @@ class CredentialStore(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 }
-
-enum class VoiceEngine { REALTIME, GPT_LIVE }

@@ -1,4 +1,4 @@
-"""Bounded transcript-prefix estimation from audible Realtime playback evidence."""
+"""Bounded transcript-prefix estimation from audible Live playback evidence."""
 from __future__ import annotations
 
 from dataclasses import dataclass

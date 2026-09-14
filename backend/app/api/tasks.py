@@ -141,7 +141,9 @@ def _presentation(presentation: TaskPresentation) -> TaskPresentationView:
         state=presentation.state,
         source_task_event_id=presentation.source_task_event_id,
         created_at=presentation.created_at,
-        presented_at=presentation.presented_at,
+        handled_at=presentation.handled_at,
+        handled_by=presentation.handled_by,
+        presented_at=presentation.handled_at,
     )
 
 

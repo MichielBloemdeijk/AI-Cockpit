@@ -6,7 +6,13 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.auth import require_auth
-from app.services.notifications import acknowledge_delivery, delete_subscription, get_public_key, upsert_subscription
+from app.services.notifications import (
+    LegacyNotificationStateError,
+    acknowledge_delivery,
+    delete_subscription,
+    get_public_key,
+    upsert_subscription,
+)
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=[Depends(require_auth)])
 
@@ -48,6 +54,8 @@ async def remove_subscription(subscription_id: str) -> None:
 async def ack_delivery(delivery_id: str, request: DeliveryAckRequest) -> dict[str, bool]:
     try:
         found = await acknowledge_delivery(delivery_id, request.state)
+    except LegacyNotificationStateError as exc:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not found:

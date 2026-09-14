@@ -1,4 +1,4 @@
-"""Recall-first wake verification shared by the Realtime response arbiter."""
+"""Recall-first wake verification shared by the Live response arbiter."""
 from __future__ import annotations
 
 from dataclasses import dataclass

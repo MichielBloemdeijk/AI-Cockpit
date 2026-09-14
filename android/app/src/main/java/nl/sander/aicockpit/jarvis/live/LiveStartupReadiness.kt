@@ -1,6 +1,6 @@
-package nl.sander.aicockpit.jarvis.realtime
+package nl.sander.aicockpit.jarvis.live
 
-import nl.sander.aicockpit.jarvis.data.RealtimeSessionState
+import nl.sander.aicockpit.jarvis.data.LiveSessionState
 
 internal data class LiveStartupSnapshot(
     val sdpApplied: Boolean,
@@ -50,7 +50,7 @@ internal class LiveStartupReadiness(
         }
     }
 
-    @Synchronized fun observeBackend(state: RealtimeSessionState?) {
+    @Synchronized fun observeBackend(state: LiveSessionState?) {
         if (state == null) return
         if (state.sessionId != sessionId || state.generation != generation) {
             failLocked("GPT-Live session was replaced during startup")

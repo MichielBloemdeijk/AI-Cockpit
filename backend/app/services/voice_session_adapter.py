@@ -9,7 +9,7 @@ from uuid import uuid4
 
 @dataclass(frozen=True, slots=True)
 class VoiceProviderEvent:
-    """Normalized event emitted by a realtime provider adapter."""
+    """Normalized event emitted by a voice provider adapter."""
 
     event_id: str
     kind: str
@@ -48,7 +48,7 @@ class VoiceProviderCapabilities:
 
 
 class VoiceSessionAdapter(Protocol):
-    """The coordinator-facing surface implemented by any realtime provider."""
+    """The coordinator-facing surface implemented by any voice provider."""
 
     name: str
     capabilities: VoiceProviderCapabilities
@@ -234,6 +234,25 @@ class FakeVoiceSessionAdapter:
                 ),
             )
             return
+        if response_kind == "task_update" and not any(
+            bool(fact.get("commentary")) for fact in facts
+        ):
+            await self.inject(
+                session_id=session_id,
+                generation=generation,
+                event=VoiceProviderEvent(
+                    event_id=f"{response_id}:context-appended",
+                    kind="assistant_update_submitted",
+                    payload={
+                        "response_id": response_id,
+                        "request_id": request_id,
+                        "presentation_ids": list(presentation_ids),
+                        "response_kind": response_kind,
+                        "append_type": "session.thinking.append",
+                    },
+                ),
+            )
+            return
         if response_kind == "task_update":
             transcript = ""
         elif pending_tool is not None:
@@ -371,8 +390,7 @@ class FakeVoiceSessionAdapter:
     def _summarize_facts(facts: tuple[dict[str, Any], ...]) -> str:
         values = [
             str(
-                fact.get("required_spoken_phrase")
-                or fact.get("summary")
+                fact.get("summary")
                 or fact.get("question")
                 or fact.get("status")
                 or "Task update"
@@ -406,10 +424,6 @@ fake_voice_session_adapter = FakeVoiceSessionAdapter()
 def get_voice_session_adapter(name: str) -> VoiceSessionAdapter:
     if name == fake_voice_session_adapter.name:
         return fake_voice_session_adapter
-    if name == "openai":
-        from app.services.openai_realtime_adapter import openai_realtime_adapter
-
-        return openai_realtime_adapter
     if name == "openai_live":
         from app.services.openai_live_adapter import openai_live_adapter
         return openai_live_adapter

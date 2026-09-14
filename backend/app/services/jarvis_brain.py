@@ -1,4 +1,4 @@
-"""Restricted capability gateway exposed to the realtime Jarvis shell."""
+"""Restricted capability gateway exposed to the Live Jarvis voice session."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,7 +27,8 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "set_task_update_policy",
         "create_reminder",
         "list_reminders",
-        "snooze_reminder",
+        "get_attention_checklist",
+        "acknowledge_task_update",
         "history_grep",
         "set_jarvis_voice",
         "start_new_jarvis_log",
@@ -55,6 +56,10 @@ class RestrictedBrainGateway:
         origin_turn_id: str | None,
         active_time_zone: str = "Europe/Amsterdam",
         now: datetime | None = None,
+        session_id: str | None = None,
+        generation: int | None = None,
+        provider_event_id: str | None = None,
+        provider_call_id: str | None = None,
     ) -> BrainResult:
         if tool_name not in ALLOWED_SHELL_TOOLS:
             raise ValueError(f"Jarvis shell tool is not allowed: {tool_name}")
@@ -212,22 +217,37 @@ class RestrictedBrainGateway:
                 "due_at": snapshot.task.resume_at.isoformat() if snapshot.task.resume_at else None,
             })
 
-        if tool_name == "snooze_reminder":
-            task = await self._resolve_task(arguments, mutation=False)
-            snapshot = await reminder_scheduler.snooze(
-                task.id,
-                timing=arguments.get("timing"),
-                due_at=arguments.get("due_at"),
-                active_time_zone=active_time_zone,
-                now=now,
-                idempotency_key=f"jarvis-shell:{call_id}:snooze",
+        if tool_name == "get_attention_checklist":
+            if not session_id or generation is None:
+                raise ValueError("Attention checklist requires the active voice session")
+            from app.services.task_presentations import task_presentation_service
+
+            checklist = await task_presentation_service.get_attention_checklist(
+                session_id=session_id,
+                generation=generation,
+                cursor=str(arguments.get("cursor") or "") or None,
+                limit=int(arguments.get("limit") or 20),
             )
-            await natural_task_resolver.touch(snapshot.task.id)
             return BrainResult(output={
-                "accepted": True,
-                "title": task_title(snapshot.task),
-                "due_at": snapshot.task.resume_at.isoformat() if snapshot.task.resume_at else None,
+                "items": list(checklist.items),
+                "total_pending": checklist.total_pending,
+                "next_cursor": checklist.next_cursor,
             })
+
+        if tool_name == "acknowledge_task_update":
+            if not session_id or generation is None:
+                raise ValueError("Task update acknowledgement requires the active voice session")
+            from app.services.task_presentations import task_presentation_service
+
+            result = await task_presentation_service.acknowledge_task_update(
+                session_id=session_id,
+                generation=generation,
+                presentation_id=str(arguments.get("presentation_id") or ""),
+                exposure_token=str(arguments.get("exposure_token") or ""),
+                provider_event_id=provider_event_id,
+                provider_call_id=provider_call_id or call_id,
+            )
+            return BrainResult(output=result)
 
         if tool_name == "history_grep":
             matches, truncated, elapsed_ms = await history_retrieval_service.search(
@@ -254,7 +274,7 @@ class RestrictedBrainGateway:
             if voice not in {"marin", "cedar"}:
                 raise ValueError("Jarvis voice must be Marin or Cedar")
             preferences, _changed = await jarvis_preferences_service.patch({"voice": voice})
-            return BrainResult(output={"voice": preferences.voice, "rotation_requested": True})
+            return BrainResult(output={"voice": preferences.voice, "applies_to": "next_live_session"})
 
         if tool_name == "start_new_jarvis_log":
             return BrainResult(

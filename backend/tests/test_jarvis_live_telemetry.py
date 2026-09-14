@@ -6,13 +6,13 @@ import pytest
 from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import JarvisRealtimeTraceEvent
-from app.services.jarvis_realtime_telemetry import JarvisRealtimeTelemetryService
+from app.db.tables import JarvisLiveTraceEvent
+from app.services.jarvis_live_telemetry import JarvisLiveTelemetryService
 
 
 @pytest.mark.asyncio
-async def test_realtime_telemetry_persists_a_batch_without_transcript_content() -> None:
-    service = JarvisRealtimeTelemetryService()
+async def test_live_telemetry_persists_a_batch_without_transcript_content() -> None:
+    service = JarvisLiveTelemetryService()
     await service.start()
     assert service.record({
         "trace_id": "trace-1",
@@ -32,15 +32,15 @@ async def test_realtime_telemetry_persists_a_batch_without_transcript_content() 
     await service.stop()
 
     async with session_scope() as session:
-        rows = list((await session.execute(select(JarvisRealtimeTraceEvent))).scalars())
+        rows = list((await session.execute(select(JarvisLiveTraceEvent))).scalars())
     assert len(rows) == 1
     assert rows[0].event_type == "wake.detected"
     assert rows[0].client_sequence == 7
     assert rows[0].detail_json == {"attempt": 1}
 
 
-def test_realtime_telemetry_acceptance_is_a_prefix_when_queue_is_full() -> None:
-    service = JarvisRealtimeTelemetryService(queue_size=2)
+def test_live_telemetry_acceptance_is_a_prefix_when_queue_is_full() -> None:
+    service = JarvisLiveTelemetryService(queue_size=2)
     events = [
         {
             "trace_id": "trace-prefix",
@@ -59,8 +59,8 @@ def test_realtime_telemetry_acceptance_is_a_prefix_when_queue_is_full() -> None:
 
 
 @pytest.mark.asyncio
-async def test_realtime_telemetry_keeps_only_the_newest_rows_at_the_hard_cap() -> None:
-    service = JarvisRealtimeTelemetryService(max_rows=3)
+async def test_live_telemetry_keeps_only_the_newest_rows_at_the_hard_cap() -> None:
+    service = JarvisLiveTelemetryService(max_rows=3)
     await service.start()
     for index in range(5):
         assert service.record({
@@ -82,8 +82,8 @@ async def test_realtime_telemetry_keeps_only_the_newest_rows_at_the_hard_cap() -
 
     async with session_scope() as session:
         rows = list((await session.execute(
-            select(JarvisRealtimeTraceEvent)
-            .where(JarvisRealtimeTraceEvent.trace_id == "trace-cap")
-            .order_by(JarvisRealtimeTraceEvent.sequence)
+            select(JarvisLiveTraceEvent)
+            .where(JarvisLiveTraceEvent.trace_id == "trace-cap")
+            .order_by(JarvisLiveTraceEvent.sequence)
         )).scalars())
     assert [row.client_sequence for row in rows] == [3, 4, 5]

@@ -12,18 +12,18 @@ from app.db.repositories.tasks import TaskRepository
 from app.db.session import get_session_factory, session_scope
 from app.db.tables import (
     ConversationEvent,
-    RealtimeSession,
+    LiveSession,
     Task,
     TaskEvent,
-    VoiceSessionEvent,
+    LiveSessionEvent,
 )
 
 
 REQUIRED_JARVIS_TABLES = {
     "jarvis_state",
-    "speech_deliveries",
-    "realtime_sessions",
-    "voice_session_events",
+    "live_speech_deliveries",
+    "live_sessions",
+    "live_session_events",
     "tasks",
     "task_attempts",
     "task_events",
@@ -93,7 +93,7 @@ async def test_concurrent_writers_allocate_unique_ordered_domain_sequences() -> 
     async with session_scope() as session:
         conversation = await ConversationRepository(session).create_conversation(title="Sequence test")
         session.add(
-            RealtimeSession(
+            LiveSession(
                 id="realtime-sequence-test",
                 conversation_id=conversation.id,
                 generation=1,
@@ -205,7 +205,7 @@ async def test_snapshot_cursors_only_reference_committed_rows() -> None:
             event_type="task.queued",
             idempotency_key="snapshot:task-event",
         )
-        realtime_session = RealtimeSession(
+        realtime_session = LiveSession(
             id="snapshot-session",
             conversation_id=conversation.id,
             generation=1,
@@ -236,9 +236,9 @@ async def test_snapshot_cursors_only_reference_committed_rows() -> None:
             select(func.count()).select_from(TaskEvent).where(TaskEvent.sequence == snapshot.task_cursor)
         ) == 1
         assert await session.scalar(
-            select(func.count()).select_from(VoiceSessionEvent).where(
-                VoiceSessionEvent.sequence == snapshot.session_cursor,
-                VoiceSessionEvent.session_id == "snapshot-session",
+            select(func.count()).select_from(LiveSessionEvent).where(
+                LiveSessionEvent.sequence == snapshot.session_cursor,
+                LiveSessionEvent.session_id == "snapshot-session",
             )
         ) == 1
 

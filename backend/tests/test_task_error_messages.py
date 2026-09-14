@@ -61,9 +61,7 @@ async def test_failed_task_defaults_to_brief_error_but_diagnostics_remain_retrie
     assert facts["summary"] == "The task failed because of a database error."
     assert "sqlite" not in str(facts).casefold()
     assert "insert into" not in str(facts).casefold()
-    assert facts["required_spoken_phrase"].endswith(
-        "failed because of a database error."
-    )
+    assert "required_spoken_phrase" not in facts
 
     situation = await jarvis_situation_projector.project(
         conversation_id=accepted.conversation.id,

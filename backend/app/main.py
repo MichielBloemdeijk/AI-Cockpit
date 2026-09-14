@@ -18,8 +18,7 @@ from app.services.run_supervisor import run_supervisor
 from app.services.task_notifications import recover_pending_task_notifications
 from app.services.reminder_scheduler import reminder_scheduler
 from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.jarvis_realtime_telemetry import jarvis_realtime_telemetry
-from app.services.openai_realtime_adapter import openai_realtime_adapter
+from app.services.jarvis_live_telemetry import jarvis_live_telemetry
 from app.services.openai_live_adapter import openai_live_adapter
 from app.services.runtime_health import runtime_health_service
 from app.services.task_service import task_service
@@ -40,7 +39,7 @@ async def lifespan(_: FastAPI):
     await task_service.repair_invalid_reminder_tasks()
     await worker_coordinator.reconcile_availability()
     await recover_pending_task_notifications()
-    await jarvis_realtime_telemetry.start()
+    await jarvis_live_telemetry.start()
     await reminder_scheduler.start()
     await jarvis_coordinator.start()
     await runtime_health_service.start()
@@ -49,9 +48,8 @@ async def lifespan(_: FastAPI):
     finally:
         await runtime_health_service.stop()
         await jarvis_coordinator.stop()
-        await openai_realtime_adapter.shutdown()
         await openai_live_adapter.shutdown()
-        await jarvis_realtime_telemetry.stop()
+        await jarvis_live_telemetry.stop()
         await reminder_scheduler.stop()
         await run_supervisor.stop()
         await close_engine()

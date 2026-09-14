@@ -140,7 +140,7 @@ if (-not (Find-CommandPath @("npm.cmd", "npm"))) { $missing.Add("npm") }
 $envText = if (Test-Path -LiteralPath $envFile -PathType Leaf) { [IO.File]::ReadAllText($envFile) } else { "" }
 $sessionSecret = Get-EnvValue "SESSION_SECRET_KEY" $envText
 if (-not $sessionSecret -or $sessionSecret.Length -lt 32) { $missing.Add("SESSION_SECRET_KEY (32+ characters in .env)") }
-if (-not (Get-EnvValue "OPENAI_API_KEY" $envText)) { $missing.Add("OPENAI_API_KEY (required for Realtime Jarvis in .env)") }
+if (-not (Get-EnvValue "OPENAI_API_KEY" $envText)) { $missing.Add("OPENAI_API_KEY (required for GPT-Live Jarvis in .env)") }
 if (-not (Get-EnvValue "AUTH_PASSWORD_HASH" $envText)) { Write-Warning "AUTH_PASSWORD_HASH is empty; local development login remains intentionally open." }
 if ((Get-EnvValue "SESSION_COOKIE_SECURE" $envText).ToLowerInvariant() -ne "true") { Write-Warning "SESSION_COOKIE_SECURE is not true; enable it before HTTPS phone testing." }
 

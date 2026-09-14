@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
-from app.config import RealtimeAudioPolicy, build_realtime_audio_policy, settings
+from app.config import settings
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
@@ -22,15 +22,15 @@ from app.db.tables import (
     JarvisPreference,
     JarvisDevice,
     JarvisState,
-    RealtimeSession,
+    LiveSession,
     SpeechDelivery,
     Task,
     TaskPresentation,
     TaskQuestion,
-    VoiceSessionEvent,
+    LiveSessionEvent,
 )
 from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.jarvis_realtime_telemetry import jarvis_realtime_telemetry
+from app.services.jarvis_live_telemetry import jarvis_live_telemetry
 from app.services.task_error_messages import public_tool_error
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.jarvis_time import normalize_client_context
@@ -78,7 +78,7 @@ def _safe_connection_failure(exc: Exception) -> str:
     api_key = settings.openai_api_key.strip()
     if api_key:
         detail = detail.replace(api_key, "[redacted]")
-    return detail[:500] or "Realtime provider connection failed"
+    return detail[:500] or "Live provider connection failed"
 
 
 class StaleSessionError(ValueError):
@@ -105,7 +105,6 @@ class SessionRecord:
     client_time_zone: str | None
     client_utc_offset_minutes: int | None
     client_observed_at: datetime | None
-    audio_policy: RealtimeAudioPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,15 +117,8 @@ class DeliveryRecord:
 @dataclass(frozen=True, slots=True)
 class ControllerBootstrap:
     session: SessionRecord
-    audio_policy: RealtimeAudioPolicy
     sdp_answer: str | None = None
     provider_capabilities: dict[str, bool] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class WakeActivationRegistration:
-    activation: "_WakeActivation"
-    audio_policy: RealtimeAudioPolicy
 
 
 @dataclass(slots=True)
@@ -210,6 +202,12 @@ class JarvisCoordinator:
         self._provider_correlation_turns: dict[tuple[str, int, str], str] = {}
         self._provider_correlation_tasks: dict[tuple[str, int, str], set[str]] = {}
         self._barge_in_keys: set[tuple[str, int, str, str]] = set()
+        self._attention_context_fingerprints: dict[tuple[str, int], str] = {}
+        self._attention_context_pending: dict[
+            tuple[str, int], tuple[str, float]
+        ] = {}
+        self._attention_context_items: dict[tuple[str, int], dict[str, str]] = {}
+        self._attention_appended_ids: dict[tuple[str, int], set[str]] = {}
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
 
@@ -225,7 +223,7 @@ class JarvisCoordinator:
         detail: dict[str, Any] | None = None,
     ) -> None:
         activation = self._wake_activations.get((session_id, generation))
-        jarvis_realtime_telemetry.record({
+        jarvis_live_telemetry.record({
             "trace_id": session_id,
             "activation_id": None if activation is None else activation.activation_id,
             "session_id": session_id,
@@ -273,6 +271,10 @@ class JarvisCoordinator:
         self._provider_correlation_turns.clear()
         self._provider_correlation_tasks.clear()
         self._barge_in_keys.clear()
+        self._attention_context_fingerprints.clear()
+        self._attention_context_pending.clear()
+        self._attention_context_items.clear()
+        self._attention_appended_ids.clear()
         response_tasks: list[asyncio.Task[None]] = []
         for gate in self._response_gates.values():
             if gate.barge_in_task is not None and not gate.barge_in_task.done():
@@ -371,7 +373,7 @@ class JarvisCoordinator:
                 activation.lifecycle_state = "terminal"
                 decision_monotonic = time.monotonic()
                 async with session_scope() as session:
-                    realtime = await session.get(RealtimeSession, session_id)
+                    realtime = await session.get(LiveSession, session_id)
                     if (
                         realtime is None
                         or realtime.generation != generation
@@ -454,99 +456,6 @@ class JarvisCoordinator:
             if (indexed_session, indexed_generation) == (session_id, generation):
                 self._activation_index[activation_id] = (session_id, generation, expires_at)
 
-    async def register_wake_activation(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        activation_id: str,
-        wake_score: float,
-        gate_mode: str = "transcript_rules",
-        allow_immediate: bool = False,
-        benchmark_run_id: str | None = None,
-        benchmark_fixture: str | None = None,
-    ) -> WakeActivationRegistration:
-        """Register a candidate on an already-connected standby session."""
-        if gate_mode not in {"transcript_rules", "immediate"}:
-            raise ValueError("Unsupported wake gate mode")
-        if gate_mode == "immediate" and not allow_immediate:
-            raise ValueError("Immediate wake gate is restricted to developer mode")
-        if (benchmark_run_id or benchmark_fixture) and not allow_immediate:
-            raise ValueError("Benchmark metadata is restricted to developer mode")
-        if not activation_id.strip():
-            raise ValueError("Wake activation requires an activation id")
-        self._prune_activation_index()
-        activation_id = activation_id.strip()
-        indexed = self._activation_index.get(activation_id)
-        if indexed is not None:
-            indexed_session_id, indexed_generation, expires_at = indexed
-            if (indexed_session_id, indexed_generation) != (session_id, generation):
-                if expires_at > time.monotonic():
-                    raise ActivationConflictError("Wake activation id is already active on another session")
-                self._activation_index.pop(activation_id, None)
-            else:
-                existing = self._wake_activations.get((session_id, generation))
-                if existing is not None:
-                    return WakeActivationRegistration(
-                        activation=existing,
-                        audio_policy=await self._session_audio_policy(session_id),
-                    )
-        activation = _WakeActivation(
-            activation_id=activation_id,
-            wake_score=max(0.0, min(1.0, float(wake_score))),
-            gate_mode=gate_mode,
-            verification_state="accepted" if gate_mode == "immediate" else "pending",
-            benchmark_run_id=benchmark_run_id,
-            benchmark_fixture=benchmark_fixture,
-        )
-        async with session_scope() as session:
-            realtime = await self._require_current_generation(session, session_id, generation)
-            if realtime.lifecycle_state != "ready":
-                raise ValueError("Wake activation requires a ready Realtime session")
-            if not get_voice_session_adapter(realtime.provider_adapter).is_connected(
-                session_id=session_id,
-                generation=generation,
-            ):
-                raise ValueError("Wake activation requires a connected Realtime provider")
-            audio_policy = RealtimeAudioPolicy.from_dict(realtime.audio_policy_json)
-            if audio_policy is None:
-                raise ValueError("Realtime session has no persisted audio policy; reconnect is required")
-            await JarvisDomainRepository(session).append_session_event(
-                session_id=session_id,
-                event_type="wake.gate.started",
-                payload_json={
-                    "activation_id": activation.activation_id,
-                    "wake_score": activation.wake_score,
-                    "gate_mode": activation.gate_mode,
-                    "session_id": session_id,
-                    "generation": generation,
-                    "configuration_id": audio_policy.configuration_id,
-                    "benchmark_run_id": benchmark_run_id,
-                    "benchmark_fixture": benchmark_fixture,
-                },
-                idempotency_key=f"wake-gate-started:{session_id}:{generation}:{activation.activation_id}",
-            )
-        self._activation_index[activation.activation_id] = (
-            session_id,
-            generation,
-            float("inf"),
-        )
-        self._wake_activation_seen.add((session_id, generation))
-        self._wake_activations[(session_id, generation)] = activation
-        self._prune_activation_index()
-        self._trace_response_gate(
-            "wake.gate.accepted" if activation.verification_state == "accepted" else "wake.gate.started",
-            session_id=session_id,
-            generation=generation,
-            reason="developer_immediate" if activation.verification_state == "accepted" else "activation_registered",
-            detail={
-                "configuration_id": audio_policy.configuration_id,
-                "benchmark_run_id": benchmark_run_id,
-                "benchmark_fixture": benchmark_fixture,
-            },
-        )
-        return WakeActivationRegistration(activation=activation, audio_policy=audio_policy)
-
     def _prune_activation_index(self) -> None:
         now = time.monotonic()
         expired = [key for key, (_, _, expiry) in self._activation_index.items() if expiry <= now]
@@ -574,16 +483,6 @@ class JarvisCoordinator:
         while len(handled) > 128:
             handled.pop(next(iter(handled)))
         return True
-
-    async def _session_audio_policy(self, session_id: str) -> RealtimeAudioPolicy:
-        async with session_scope() as session:
-            realtime = await session.get(RealtimeSession, session_id)
-            if realtime is None:
-                raise ValueError("Realtime session not found")
-            policy = RealtimeAudioPolicy.from_dict(realtime.audio_policy_json)
-            if policy is None:
-                raise ValueError("Realtime session has no persisted audio policy; reconnect is required")
-            return policy
 
     async def _discard_candidate_items(
         self,
@@ -643,12 +542,43 @@ class JarvisCoordinator:
                             )
                         voice_floor_held = busy_floor and not stale_voice_floor
                         pending = await task_presentation_service.list_pending()
-                        if pending:
-                            await self._queue_controlled_response(
-                                active.id,
-                                active.generation,
-                                "task_update",
-                            )
+                        fingerprint = task_presentation_service.semantic_fingerprint(pending)
+                        attention_key = (active.id, active.generation)
+                        previous_fingerprint = self._attention_context_fingerprints.get(attention_key)
+                        if fingerprint != previous_fingerprint:
+                            observed = self._attention_context_pending.get(attention_key)
+                            now_monotonic = time.monotonic()
+                            if observed is None or observed[0] != fingerprint:
+                                # Hold a short coalescing window so a burst of
+                                # projection changes becomes one quiet context
+                                # append rather than a sequence of stale facts.
+                                self._attention_context_pending[attention_key] = (
+                                    fingerprint,
+                                    now_monotonic,
+                                )
+                            elif now_monotonic - observed[1] >= 0.25:
+                                current_items = {
+                                    item.id: task_presentation_service.semantic_item_fingerprint(item)
+                                    for item in pending
+                                }
+                                previously_synced = self._attention_context_items.get(
+                                    attention_key, {}
+                                )
+                                appended = self._attention_appended_ids.setdefault(
+                                    attention_key, set()
+                                )
+                                for presentation_id, item_fingerprint in current_items.items():
+                                    if previously_synced.get(presentation_id) != item_fingerprint:
+                                        appended.discard(presentation_id)
+                                await self._queue_controlled_response(
+                                    active.id,
+                                    active.generation,
+                                    "task_update",
+                                )
+                                self._attention_context_fingerprints[attention_key] = fingerprint
+                                self._attention_context_pending.pop(attention_key, None)
+                        else:
+                            self._attention_context_pending.pop(attention_key, None)
                 attempts = [
                     gate.attempt
                     for gate in self._response_gates.values()
@@ -691,23 +621,6 @@ class JarvisCoordinator:
                 )
             except TimeoutError:
                 pass
-
-    async def request_voice_rotation(self, voice: str) -> None:
-        """Signal the active controller to reconnect at its next safe boundary."""
-        active = await self.get_active_session()
-        if active is None:
-            return
-        async with session_scope() as session:
-            realtime = await session.get(RealtimeSession, active.id)
-            if realtime is None or realtime.lifecycle_state not in ACTIVE_SESSION_STATES:
-                return
-            floor = await self._floor_state(session, realtime.id)
-            await JarvisDomainRepository(session).append_session_event(
-                session_id=realtime.id,
-                event_type="session.rotation_requested",
-                payload_json={"reason": "voice_changed", "voice": voice, "safe_boundary": floor == "listening"},
-                idempotency_key=f"voice-rotation:{realtime.id}:{realtime.generation}:{voice}",
-            )
 
     async def accept_text_turn(
         self,
@@ -825,6 +738,7 @@ class JarvisCoordinator:
         adapter = None
         reservation = None
         context = None
+        attention_item_fingerprints: dict[str, str] | None = None
         selected_reason = reason
         self._trace_response_gate(
             "response.arbiter.requested" if enqueue else "response.arbiter.retry_requested",
@@ -925,25 +839,57 @@ class JarvisCoordinator:
                     )
                     situation_finished = time.monotonic()
                     context = projected.payload
+                    if selected_reason == "task_update":
+                        attention_update = (
+                            await task_presentation_service.build_attention_context_in_session(
+                                session,
+                                session_id=session_id,
+                                generation=generation,
+                                limit=20,
+                            )
+                        )
+                        current_presentations = list((await session.execute(
+                            select(TaskPresentation).where(TaskPresentation.state == "pending")
+                        )).scalars().all())
+                        attention_item_fingerprints = {
+                            item.id: task_presentation_service.semantic_item_fingerprint(item)
+                            for item in current_presentations
+                        }
+                        prior_ids = set(self._attention_context_items.get(key, {}))
+                        removed_ids = prior_ids - set(attention_item_fingerprints)
+                        tombstones: list[dict[str, str]] = []
+                        if removed_ids:
+                            removed = list((await session.execute(
+                                select(TaskPresentation).where(TaskPresentation.id.in_(removed_ids))
+                            )).scalars().all())
+                            tombstones = [
+                                {
+                                    "presentation_id": item.id,
+                                    "state": item.state,
+                                    "handled_event_id": item.handled_event_id or "",
+                                }
+                                for item in removed
+                            ]
+                        context["attention_context"] = {
+                            "items": list(attention_update.items),
+                            "total_pending": attention_update.total_pending,
+                            "next_cursor": attention_update.next_cursor,
+                            "deltas": tombstones,
+                        }
                     reservation_started = situation_finished
-                    reservation = await task_presentation_service.reserve_in_session(
-                        session,
-                        session_id=session_id,
-                        generation=generation,
-                        user_owns_floor=False,
-                        limit=3,
-                    )
-                    reservation_finished = time.monotonic()
-                    if selected_reason == "task_update" and reservation is None:
-                        gate.pending.discard(selected_reason)
-                        self._trace_response_gate(
-                            "response.arbiter.skipped",
+                    if selected_reason == "task_update":
+                        reservation = await task_presentation_service.reserve_in_session(
+                            session,
                             session_id=session_id,
                             generation=generation,
-                            reason=selected_reason,
-                            detail={"blocked_by": "no_pending_updates"},
+                            user_owns_floor=False,
+                            limit=3,
+                            commentary=True,
+                            exclude_presentation_ids=frozenset(
+                                self._attention_appended_ids.get(key, set())
+                            ),
                         )
-                        return
+                    reservation_finished = time.monotonic()
                     if reservation is not None:
                         context["pending_update_count"] = reservation.total_pending
                     gate.pending.discard(selected_reason)
@@ -1042,6 +988,8 @@ class JarvisCoordinator:
                     },
                     idempotency_key=f"response-arbiter:{session_id}:{generation}:{uuid4()}",
                 )
+            if selected_reason == "task_update" and attention_item_fingerprints is not None:
+                self._attention_context_items[key] = attention_item_fingerprints
             self._trace_response_gate(
                 "response.arbiter.started",
                 session_id=session_id,
@@ -1245,9 +1193,8 @@ class JarvisCoordinator:
         if wake_activation is not None and adapter_name == "openai_live":
             # The local wake detector already admitted the activation and Live
             # receives it on the one primary microphone path. Realtime's
-            # transcript-verification gate does not apply to GPT-Live.
+            # The local wake detector already admitted the activation.
             wake_activation.verification_state = "accepted"
-        audio_policy = build_realtime_audio_policy(settings)
         if wake_activation is not None:
             self._prune_activation_index()
             indexed = self._activation_index.get(wake_activation.activation_id)
@@ -1269,9 +1216,9 @@ class JarvisCoordinator:
                 raise ValueError("A controller requires the current open Jarvis log")
 
             active = list((await session.execute(
-                select(RealtimeSession)
-                .where(RealtimeSession.lifecycle_state.in_(sorted(ACTIVE_SESSION_STATES)))
-                .order_by(RealtimeSession.generation.asc())
+                select(LiveSession)
+                .where(LiveSession.lifecycle_state.in_(sorted(ACTIVE_SESSION_STATES)))
+                .order_by(LiveSession.generation.asc())
             )).scalars().all())
             repo = JarvisDomainRepository(session)
             for old in active:
@@ -1286,7 +1233,7 @@ class JarvisCoordinator:
                 )
 
             latest_generation = int((await session.execute(
-                select(func.max(RealtimeSession.generation))
+                select(func.max(LiveSession.generation))
             )).scalar_one_or_none() or 0)
             preferences = await session.get(JarvisPreference, "current")
             if preferences is None:
@@ -1306,7 +1253,7 @@ class JarvisCoordinator:
                 fallback_time_zone=preferences.time_zone,
             )
             preferences.time_zone = temporal.time_zone
-            realtime = RealtimeSession(
+            realtime = LiveSession(
                 id=str(uuid4()),
                 conversation_id=conversation_id,
                 generation=latest_generation + 1,
@@ -1316,7 +1263,6 @@ class JarvisCoordinator:
                 client_time_zone=temporal.time_zone,
                 client_utc_offset_minutes=temporal.utc_offset_minutes,
                 client_observed_at=temporal.observed_at,
-                audio_policy_json=audio_policy.as_dict(),
             )
             session.add(realtime)
             await session.flush()
@@ -1327,7 +1273,6 @@ class JarvisCoordinator:
                     "controller_id": controller_id,
                     "adapter": adapter.name,
                     "activation_source": "wake_word" if wake_activation is not None else "manual",
-                    "configuration_id": audio_policy.configuration_id,
                 },
                 idempotency_key=f"connecting:{realtime.id}",
             )
@@ -1341,7 +1286,6 @@ class JarvisCoordinator:
                         "gate_mode": wake_activation.gate_mode,
                         "session_id": realtime.id,
                         "generation": realtime.generation,
-                        "configuration_id": audio_policy.configuration_id,
                         "benchmark_run_id": wake_activation.benchmark_run_id,
                         "benchmark_fixture": wake_activation.benchmark_fixture,
                     },
@@ -1362,7 +1306,6 @@ class JarvisCoordinator:
                             ),
                             "session_id": realtime.id,
                             "generation": realtime.generation,
-                            "configuration_id": audio_policy.configuration_id,
                             "benchmark_run_id": wake_activation.benchmark_run_id,
                             "benchmark_fixture": wake_activation.benchmark_fixture,
                         },
@@ -1374,7 +1317,29 @@ class JarvisCoordinator:
                 conversation_id=conversation_id,
                 session_id=realtime.id,
             )
-            context = {**context, "audio_policy": audio_policy.as_dict()}
+            attention_update = await task_presentation_service.build_attention_context_in_session(
+                session,
+                session_id=realtime.id,
+                generation=realtime.generation,
+                limit=20,
+            )
+            initial_presentations = list((await session.execute(
+                select(TaskPresentation).where(TaskPresentation.state == "pending")
+            )).scalars().all())
+            attention_key = (realtime.id, realtime.generation)
+            self._attention_context_fingerprints[attention_key] = (
+                task_presentation_service.semantic_fingerprint(initial_presentations)
+            )
+            self._attention_context_items[attention_key] = {
+                item.id: task_presentation_service.semantic_item_fingerprint(item)
+                for item in initial_presentations
+            }
+            context["attention_context"] = {
+                "items": list(attention_update.items),
+                "total_pending": attention_update.total_pending,
+                "next_cursor": attention_update.next_cursor,
+                "deltas": [],
+            }
             if wake_activation is not None and wake_activation.activation_id:
                 context = {**context, "activation_id": wake_activation.activation_id}
 
@@ -1419,16 +1384,17 @@ class JarvisCoordinator:
         except Exception as exc:
             self._tombstone_activation_ids(record.id, record.generation)
             self._clear_wake_activation(record.id, record.generation)
+            self._clear_provider_session_mappings(record.id, record.generation)
             failure_type = type(exc).__name__
             failure_detail = _safe_connection_failure(exc)
             logger.exception(
-                "Realtime provider connection failed for session %s generation %s: %s",
+                "Live provider connection failed for session %s generation %s: %s",
                 record.id,
                 record.generation,
                 failure_detail,
             )
             async with session_scope() as session:
-                failed = await session.get(RealtimeSession, record.id)
+                failed = await session.get(LiveSession, record.id)
                 if failed is not None:
                     failed.lifecycle_state = "disconnected"
                     failed.disconnected_at = utc_now()
@@ -1445,10 +1411,9 @@ class JarvisCoordinator:
             raise
         refreshed = await self.get_session(record.id)
         if refreshed is None:
-            raise RuntimeError("Realtime session disappeared after connection")
+            raise RuntimeError("Live session disappeared after connection")
         return ControllerBootstrap(
             session=refreshed,
-            audio_policy=audio_policy,
             sdp_answer=connection.sdp_answer,
             provider_capabilities=adapter.capabilities.as_dict(),
         )
@@ -1487,9 +1452,9 @@ class JarvisCoordinator:
     async def get_active_session(self) -> SessionRecord | None:
         async with session_scope() as session:
             realtime = (await session.execute(
-                select(RealtimeSession)
-                .where(RealtimeSession.lifecycle_state.in_(sorted(ACTIVE_SESSION_STATES)))
-                .order_by(RealtimeSession.generation.desc())
+                select(LiveSession)
+                .where(LiveSession.lifecycle_state.in_(sorted(ACTIVE_SESSION_STATES)))
+                .order_by(LiveSession.generation.desc())
                 .limit(1)
             )).scalar_one_or_none()
             if realtime is None:
@@ -1498,7 +1463,7 @@ class JarvisCoordinator:
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         async with session_scope() as session:
-            realtime = await session.get(RealtimeSession, session_id)
+            realtime = await session.get(LiveSession, session_id)
             if realtime is None:
                 return None
             return self._record(realtime, floor_state=await self._floor_state(session, realtime.id))
@@ -1506,9 +1471,9 @@ class JarvisCoordinator:
     async def get_latest_session(self, *, conversation_id: str) -> SessionRecord | None:
         async with session_scope() as session:
             realtime = (await session.execute(
-                select(RealtimeSession)
-                .where(RealtimeSession.conversation_id == conversation_id)
-                .order_by(RealtimeSession.generation.desc())
+                select(LiveSession)
+                .where(LiveSession.conversation_id == conversation_id)
+                .order_by(LiveSession.generation.desc())
                 .limit(1)
             )).scalar_one_or_none()
             if realtime is None:
@@ -1531,9 +1496,10 @@ class JarvisCoordinator:
                 speech_item_id=str(event.payload.get("item_id") or "") or None,
             )
         shell_call: tuple[
-            str, dict[str, Any], str, str | None, str | None, dict[str, Any]
+            str, dict[str, Any], str, str | None, str | None, dict[str, Any], str
         ] | None = None
         presentation_action: tuple[tuple[str, ...], DeliveryRecord, str, str] | None = None
+        append_acknowledged_presentations: tuple[str, ...] = ()
         requeue_presentations: tuple[str, ...] = ()
         release_reservations = False
         response_finished = False
@@ -1547,6 +1513,8 @@ class JarvisCoordinator:
         cancel_wake_fallback = False
         clear_wake_activation = False
         discard_activation: _WakeActivation | None = None
+        replay_tool_result: tuple[bool, dict[str, Any]] | None = None
+        atomic_tool_result: tuple[str, bool, dict[str, Any], str] | None = None
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             repo = JarvisDomainRepository(session)
@@ -1581,7 +1549,28 @@ class JarvisCoordinator:
                 payload_json=payload,
                 idempotency_key=f"provider:{event.event_id}",
             )
-            if not appended.created:
+            if not appended.created and event.kind == "shell_call":
+                call_id = str(event.payload.get("call_id") or event.event_id)
+                existing_result = (await session.execute(
+                    select(LiveSessionEvent)
+                    .where(LiveSessionEvent.session_id == session_id)
+                    .where(LiveSessionEvent.event_type == "brain.tool.result")
+                    .order_by(LiveSessionEvent.sequence.desc())
+                )).scalars().all()
+                for result_event in existing_result:
+                    result_payload = result_event.payload_json or {}
+                    if str(result_payload.get("call_id") or "") != call_id:
+                        continue
+                    replay_tool_result = (
+                        bool(result_payload.get("ok")),
+                        dict(result_payload.get("output") or {}),
+                    )
+                    break
+            # A duplicate non-tool callback is already durably represented and
+            # needs no further work.  A duplicate shell callback without a
+            # stored result is retried so an interrupted handling transaction
+            # can recover instead of becoming permanently lost.
+            if not appended.created and replay_tool_result is None and event.kind != "shell_call":
                 return
 
             if event.kind == "ready":
@@ -1804,10 +1793,14 @@ class JarvisCoordinator:
                     # a conversational response by itself.
                     retry_task_updates = True
             elif event.kind == "assistant_update_submitted":
-                # A Live context-append acknowledgment proves submission only.
-                # Keep the presentation reserved (and its notification fallback
-                # eligible) until playback is independently verified or the
-                # session releases the reservation.
+                # Context submission releases only the short transport lease.
+                # It never changes durable attention state.
+                raw_presentation_ids = payload.get("presentation_ids")
+                append_acknowledged_presentations = tuple(
+                    str(item)
+                    for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
+                    if item
+                )
                 response_finished = True
             elif event.kind in {"assistant_response", "assistant_interrupted"}:
                 delivery = await self._persist_delivery(session, realtime, event)
@@ -1853,13 +1846,57 @@ class JarvisCoordinator:
                         origin_item_id,
                         origin_correlation_id,
                         origin_timeline,
+                        event.event_id,
                     )
+                    if tool_name == "acknowledge_task_update":
+                        result = await task_presentation_service.acknowledge_task_update_in_session(
+                            session,
+                            session_id=session_id,
+                            generation=generation,
+                            presentation_id=str(arguments.get("presentation_id") or ""),
+                            exposure_token=str(arguments.get("exposure_token") or ""),
+                            provider_event_id=event.event_id,
+                            provider_call_id=call_id,
+                        )
+                        await repo.append_session_event(
+                            session_id=session_id,
+                            event_type="brain.tool.result",
+                            payload_json={
+                                "call_id": call_id,
+                                "name": tool_name,
+                                "ok": True,
+                                "output": result,
+                                "origin_item_id": origin_item_id,
+                                "origin_correlation_id": origin_correlation_id,
+                                "origin_timeline": origin_timeline,
+                            },
+                            idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
+                        )
+                        atomic_tool_result = (
+                            call_id,
+                            True,
+                            result,
+                            realtime.provider_adapter,
+                        )
+                        shell_call = None
                     raw_presentation_ids = payload.get("presentation_ids")
                     requeue_presentations = tuple(
                         str(item)
                         for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
                         if item
                     )
+
+        if replay_tool_result is not None:
+            active = await self.get_session(session_id)
+            if active is not None and active.generation == generation:
+                adapter = get_voice_session_adapter(active.provider_adapter)
+                await adapter.send_tool_result(
+                    session_id=session_id,
+                    generation=generation,
+                    call_id=str(event.payload.get("call_id") or event.event_id),
+                    output={"ok": replay_tool_result[0], "result": replay_tool_result[1]},
+                )
+            return
 
         if cancel_wake_fallback:
             self._cancel_wake_verification(session_id, generation)
@@ -1873,7 +1910,7 @@ class JarvisCoordinator:
 
         if presentation_action is not None:
             presentation_ids, delivery, heard_transcript, response_kind = presentation_action
-            await task_presentation_service.settle_delivery(
+            await task_presentation_service.release_transport_leases(
                 presentation_ids=presentation_ids,
                 session_id=session_id,
                 generation=generation,
@@ -1882,6 +1919,29 @@ class JarvisCoordinator:
                 heard_transcript=heard_transcript,
                 response_kind=response_kind,
             )
+            appended = self._attention_appended_ids.setdefault(
+                (session_id, generation), set()
+            )
+            appended.update(presentation_ids)
+
+        if append_acknowledged_presentations:
+            await task_presentation_service.release_append_lease(
+                presentation_ids=append_acknowledged_presentations,
+                session_id=session_id,
+                generation=generation,
+                turn_id=None,
+                delivery_id=None,
+            )
+            attention_key = (session_id, generation)
+            appended = self._attention_appended_ids.setdefault(attention_key, set())
+            appended.update(append_acknowledged_presentations)
+            pending_attention = await task_presentation_service.list_pending()
+            if any(item.id not in appended for item in pending_attention):
+                await self._queue_controlled_response(
+                    session_id,
+                    generation,
+                    "task_update",
+                )
 
         if requeue_presentations:
             await task_presentation_service.requeue(
@@ -1907,6 +1967,17 @@ class JarvisCoordinator:
                 request_id=str(event.payload.get("request_id") or "") or None,
                 response_id=str(event.payload.get("response_id") or "") or None,
             )
+            if presentation_action is not None:
+                appended = self._attention_appended_ids.setdefault(
+                    (session_id, generation), set()
+                )
+                pending_attention = await task_presentation_service.list_pending()
+                if any(item.id not in appended for item in pending_attention):
+                    await self._queue_controlled_response(
+                        session_id,
+                        generation,
+                        "task_update",
+                    )
 
         if wake_response is not None:
             await self._maybe_queue_wake_response(
@@ -1957,6 +2028,7 @@ class JarvisCoordinator:
                 origin_item_id,
                 origin_correlation_id,
                 origin_timeline,
+                provider_event_id,
             ) = shell_call
             await self._execute_shell_call(
                 session_id=session_id,
@@ -1967,7 +2039,23 @@ class JarvisCoordinator:
                 origin_item_id=origin_item_id,
                 origin_correlation_id=origin_correlation_id,
                 origin_timeline=origin_timeline,
+                provider_event_id=provider_event_id,
             )
+        elif atomic_tool_result is not None:
+            call_id, ok, output, provider_adapter = atomic_tool_result
+            adapter = get_voice_session_adapter(provider_adapter)
+            await adapter.send_tool_result(
+                session_id=session_id,
+                generation=generation,
+                call_id=call_id,
+                output={"ok": ok, "result": output},
+            )
+            if adapter.capabilities.supports_manual_response:
+                await self._queue_controlled_response(
+                    session_id,
+                    generation,
+                    "tool_continuation",
+                )
 
     def _schedule_background_response(
         self,
@@ -2211,7 +2299,7 @@ class JarvisCoordinator:
     async def close_session(self, session_id: str, *, generation: int, reason: str = "requested") -> None:
         session = await self.get_session(session_id)
         if session is None:
-            raise ValueError("Realtime session not found")
+            raise ValueError("Live session not found")
         await self._assert_generation(session_id, generation)
         adapter = get_voice_session_adapter(session.provider_adapter)
         await adapter.close(
@@ -2246,6 +2334,10 @@ class JarvisCoordinator:
             self._provider_input_turns,
             self._provider_correlation_turns,
             self._provider_correlation_tasks,
+            self._attention_context_fingerprints,
+            self._attention_context_pending,
+            self._attention_context_items,
+            self._attention_appended_ids,
         ):
             for key in [
                 key for key in mapping
@@ -2259,16 +2351,16 @@ class JarvisCoordinator:
         *,
         after_sequence: int = 0,
         limit: int = 250,
-    ) -> tuple[int, tuple[VoiceSessionEvent, ...]]:
+    ) -> tuple[int, tuple[LiveSessionEvent, ...]]:
         async with session_scope() as session:
-            realtime = await session.get(RealtimeSession, session_id)
+            realtime = await session.get(LiveSession, session_id)
             if realtime is None:
-                raise ValueError("Realtime session not found")
+                raise ValueError("Live session not found")
             result = await session.execute(
-                select(VoiceSessionEvent)
-                .where(VoiceSessionEvent.session_id == session_id)
-                .where(VoiceSessionEvent.sequence > after_sequence)
-                .order_by(VoiceSessionEvent.sequence.asc())
+                select(LiveSessionEvent)
+                .where(LiveSessionEvent.session_id == session_id)
+                .where(LiveSessionEvent.sequence > after_sequence)
+                .order_by(LiveSessionEvent.sequence.asc())
                 .limit(limit)
             )
             return realtime.last_event_sequence, tuple(result.scalars().all())
@@ -2315,6 +2407,7 @@ class JarvisCoordinator:
         origin_item_id: str | None = None,
         origin_correlation_id: str | None = None,
         origin_timeline: dict[str, Any] | None = None,
+        provider_event_id: str | None = None,
     ) -> None:
         correlation_key = (
             (session_id, generation, origin_correlation_id)
@@ -2370,6 +2463,10 @@ class JarvisCoordinator:
                 origin_turn_id=last_turn_id,
                 active_time_zone=active_time_zone or "Europe/Amsterdam",
                 now=utc_now(),
+                session_id=session_id,
+                generation=generation,
+                provider_event_id=provider_event_id or f"provider-tool:{session_id}:{generation}:{call_id}",
+                provider_call_id=call_id,
             )
             output = result.output
             durable_output = output
@@ -2407,8 +2504,6 @@ class JarvisCoordinator:
                 idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
             )
         if control is None:
-            if ok and tool_name == "set_jarvis_voice":
-                await self.request_voice_rotation(str(output.get("voice") or "marin"))
             adapter = get_voice_session_adapter(realtime.provider_adapter)
             await adapter.send_tool_result(
                 session_id=session_id,
@@ -2430,7 +2525,7 @@ class JarvisCoordinator:
     async def _persist_delivery(
         self,
         session,
-        realtime: RealtimeSession,
+        realtime: LiveSession,
         event: VoiceProviderEvent,
     ) -> DeliveryRecord:
         payload = event.payload
@@ -2438,7 +2533,7 @@ class JarvisCoordinator:
         item_id = str(payload.get("item_id") or response_id)
         existing = (await session.execute(
             select(SpeechDelivery)
-            .where(SpeechDelivery.realtime_session_id == realtime.id)
+            .where(SpeechDelivery.live_session_id == realtime.id)
             .where(SpeechDelivery.provider_response_id == response_id)
             .where(SpeechDelivery.provider_item_id == item_id)
             .limit(1)
@@ -2452,7 +2547,7 @@ class JarvisCoordinator:
         delivery_state = "interrupted" if interrupted else ("completed" if heard else "unheard")
         delivery = SpeechDelivery(
             id=str(uuid4()),
-            realtime_session_id=realtime.id,
+            live_session_id=realtime.id,
             provider_response_id=response_id,
             provider_item_id=item_id,
             generated_transcript=generated,
@@ -2521,7 +2616,7 @@ class JarvisCoordinator:
     async def _persist_user_transcript(
         self,
         session,
-        realtime: RealtimeSession,
+        realtime: LiveSession,
         event: VoiceProviderEvent,
     ) -> None:
         transcript = str(event.payload.get("transcript") or "")
@@ -2583,7 +2678,7 @@ class JarvisCoordinator:
     async def _persist_assistant_transcript(
         self,
         session,
-        realtime: RealtimeSession,
+        realtime: LiveSession,
         event: VoiceProviderEvent,
     ) -> None:
         transcript = str(event.payload.get("transcript") or "")
@@ -2651,22 +2746,22 @@ class JarvisCoordinator:
             await self._require_current_generation(session, session_id, generation)
 
     @staticmethod
-    async def _require_current_generation(session, session_id: str, generation: int) -> RealtimeSession:
-        realtime = await session.get(RealtimeSession, session_id)
+    async def _require_current_generation(session, session_id: str, generation: int) -> LiveSession:
+        realtime = await session.get(LiveSession, session_id)
         if (
             realtime is None
             or realtime.generation != generation
             or realtime.lifecycle_state not in ACTIVE_SESSION_STATES
         ):
-            raise StaleSessionError("Realtime session generation is stale")
+            raise StaleSessionError("Live session generation is stale")
         newer = (await session.execute(
-            select(RealtimeSession.id)
-            .where(RealtimeSession.generation > generation)
-            .where(RealtimeSession.lifecycle_state.in_(sorted(ACTIVE_SESSION_STATES)))
+            select(LiveSession.id)
+            .where(LiveSession.generation > generation)
+            .where(LiveSession.lifecycle_state.in_(sorted(ACTIVE_SESSION_STATES)))
             .limit(1)
         )).scalar_one_or_none()
         if newer is not None:
-            raise StaleSessionError("Realtime session generation is stale")
+            raise StaleSessionError("Live session generation is stale")
         return realtime
 
     @staticmethod
@@ -2680,9 +2775,9 @@ class JarvisCoordinator:
         session_id: str,
     ) -> tuple[str, datetime | None]:
         events = list((await session.execute(
-            select(VoiceSessionEvent)
-            .where(VoiceSessionEvent.session_id == session_id)
-            .order_by(VoiceSessionEvent.sequence.desc())
+            select(LiveSessionEvent)
+            .where(LiveSessionEvent.session_id == session_id)
+            .order_by(LiveSessionEvent.sequence.desc())
             .limit(50)
         )).scalars().all())
         for index, event in enumerate(events):
@@ -2691,6 +2786,8 @@ class JarvisCoordinator:
                 continue
             if event_type.startswith("provider."):
                 provider_kind = event_type.removeprefix("provider.")
+                if provider_kind == "usage":
+                    continue
                 if provider_kind in {"user_transcript_delta", "user_transcript"}:
                     continue
                 if provider_kind in {"assistant_response", "assistant_interrupted"}:
@@ -2711,7 +2808,7 @@ class JarvisCoordinator:
         return "thinking", None
 
     @staticmethod
-    async def _is_late_delivery_state(session, realtime: RealtimeSession, event: VoiceProviderEvent) -> bool:
+    async def _is_late_delivery_state(session, realtime: LiveSession, event: VoiceProviderEvent) -> bool:
         if event.kind not in {"assistant_generating", "assistant_speaking"}:
             return False
         response_id = str(event.payload.get("response_id") or "")
@@ -2719,7 +2816,7 @@ class JarvisCoordinator:
             return False
         existing = (await session.execute(
             select(SpeechDelivery.id)
-            .where(SpeechDelivery.realtime_session_id == realtime.id)
+            .where(SpeechDelivery.live_session_id == realtime.id)
             .where(SpeechDelivery.provider_response_id == response_id)
             .where(SpeechDelivery.state.in_(["completed", "interrupted", "unheard"]))
             .limit(1)
@@ -2741,7 +2838,7 @@ class JarvisCoordinator:
         return projected.payload
 
     @staticmethod
-    def _record(realtime: RealtimeSession, *, floor_state: str) -> SessionRecord:
+    def _record(realtime: LiveSession, *, floor_state: str) -> SessionRecord:
         return SessionRecord(
             id=realtime.id,
             conversation_id=realtime.conversation_id,
@@ -2757,7 +2854,6 @@ class JarvisCoordinator:
             client_time_zone=realtime.client_time_zone,
             client_utc_offset_minutes=realtime.client_utc_offset_minutes,
             client_observed_at=realtime.client_observed_at,
-            audio_policy=RealtimeAudioPolicy.from_dict(realtime.audio_policy_json),
         )
 
 

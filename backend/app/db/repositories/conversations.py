@@ -17,7 +17,7 @@ from app.db.tables import (
     ConversationRun,
     JarvisState,
     MemoryItem,
-    RealtimeSession,
+    LiveSession,
     RunStatus,
 )
 
@@ -97,11 +97,11 @@ class ConversationRepository:
     async def get_jarvis_state(self) -> JarvisState | None:
         return await self.session.get(JarvisState, "current")
 
-    async def has_live_realtime_session(self, conversation_id: str) -> bool:
+    async def has_live_session(self, conversation_id: str) -> bool:
         statement = (
-            select(RealtimeSession.id)
-            .where(RealtimeSession.conversation_id == conversation_id)
-            .where(RealtimeSession.lifecycle_state.in_(["connecting", "ready"]))
+            select(LiveSession.id)
+            .where(LiveSession.conversation_id == conversation_id)
+            .where(LiveSession.lifecycle_state.in_(["connecting", "ready"]))
             .limit(1)
         )
         result = await self.session.execute(statement)
