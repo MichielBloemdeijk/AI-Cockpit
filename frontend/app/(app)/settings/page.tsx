@@ -3,10 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Settings, Bell, Cpu, Save, AudioLines } from "lucide-react";
-import { ConversationSessionMetadata, createJarvisPairingCode, getChatSettings, getJarvisPreferences, updateChatSettings, updateJarvisPreferences, type JarvisPairingCode, type JarvisPreferences } from "@/lib/api";
+import { ConversationSessionMetadata, getChatSettings, getJarvisPreferences, updateChatSettings, updateJarvisPreferences, getAccessSession, type AccessSession, type JarvisPreferences } from "@/lib/api";
 import { enablePushNotifications, inspectPushNotifications, type PushNotificationState } from "@/lib/push-notifications";
+import { LinkPhone } from "@/components/LinkPhone";
+import { WorkerToolSettings } from "@/components/WorkerToolSettings";
 
 export default function SettingsPage() {
+  const [access, setAccess] = useState<AccessSession | null>(null);
+  const [accessError, setAccessError] = useState("");
   const [models, setModels] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<ConversationSessionMetadata | null>(null);
   const [taskAgentModel, setTaskAgentModel] = useState("");
@@ -15,22 +19,27 @@ export default function SettingsPage() {
   const [jarvisPreferences, setJarvisPreferences] = useState<JarvisPreferences | null>(null);
   const [developerLabSaving, setDeveloperLabSaving] = useState(false);
   const [developerLabStatus, setDeveloperLabStatus] = useState<"saved" | "error" | null>(null);
-  const [pairingCode, setPairingCode] = useState<JarvisPairingCode | null>(null);
 
   useEffect(() => {
+    getAccessSession().then(setAccess).catch(() => setAccessError("Unable to check your connection. Reload to retry."));
+    getJarvisPreferences().then(setJarvisPreferences).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (access?.scope !== "owner") return;
     getChatSettings().then((response) => {
       setModels(response.available_models);
       setDefaults({ ...response.defaults, mode: "single" });
       setTaskAgentModel(response.task_agent_model);
     }).catch(() => {});
-    getJarvisPreferences().then(setJarvisPreferences).catch(() => {});
-  }, []);
+  }, [access?.scope]);
 
   useEffect(() => {
+    if (access?.scope !== "owner") return;
     inspectPushNotifications()
       .then(setPushState)
       .catch(() => setPushState("error"));
-  }, []);
+  }, [access?.scope]);
 
   const toggleCouncilModel = (model: string) => {
     setDefaults((current) => {
@@ -99,6 +108,13 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 md:p-6 max-w-2xl space-y-6">
+        {accessError && <p role="alert">{accessError}</p>}
+        {access?.scope === "device" && <section className="rounded-xl border border-emerald-800 bg-zinc-800 p-4 space-y-2">
+          <h2 className="font-semibold text-emerald-300">This phone is linked</h2>
+          <p className="text-sm text-zinc-300">{access.device?.label} · Connected to Jarvis. Your link stays saved through restarts.</p>
+          <a href="jarvis://setup" className="block min-h-12 py-3 text-blue-400 underline">Open phone setup and status</a>
+          <p className="text-xs text-zinc-400">Microphone, assistant access and notifications are set up together in the Android app.</p>
+        </section>}
         <section>
           <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-300">
             <AudioLines size={15} /> Jarvis
@@ -146,27 +162,11 @@ export default function SettingsPage() {
             <Link href="/settings/wake" className="flex min-h-14 items-center justify-between px-4 py-3 text-sm text-zinc-200">
               Wake-word calibration <span className="text-xs text-zinc-500">Open wizard →</span>
             </Link>
-            <div className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 text-sm text-zinc-200">
-              <div>
-                <p>Android pairing</p>
-                {pairingCode && (
-                  <p className="mt-1 font-mono text-xl tracking-[0.24em] text-violet-200">{pairingCode.code}</p>
-                )}
-                <p className="mt-1 text-xs text-zinc-500">
-                  {pairingCode ? `Expires ${new Date(pairingCode.expires_at).toLocaleTimeString()}` : "Generate a five-minute code for the native client."}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void createJarvisPairingCode().then(setPairingCode)}
-                className="min-h-12 shrink-0 rounded-xl border border-zinc-600 px-3 text-xs"
-              >
-                Generate code
-              </button>
-            </div>
+            {access?.scope === "owner" && <LinkPhone />}
           </div>
         </section>
 
+        {access?.scope === "owner" && <>
         {/* LLM Models */}
         <section>
           <h2 className="text-sm font-semibold text-zinc-300 mb-3 flex items-center gap-2">
@@ -269,6 +269,8 @@ export default function SettingsPage() {
             Ordinary progress stays in the app. Only terminal task states and questions that block work create Push alerts.
           </p>
         </section>
+        <WorkerToolSettings />
+        </>}
       </div>
     </div>
   );

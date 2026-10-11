@@ -1,0 +1,55 @@
+{
+  "schema": "jarvis-m3-runtime-preflight.v1",
+  "model": "gpt-5.6-luna",
+  "effort": "low",
+  "worker_busy_at_runtime_start": 8,
+  "code_only_service_elapsed_ms": 281,
+  "checks": [
+    {
+      "id": "action.persistence_boundary",
+      "status": "pass",
+      "summary": "The allowlisted Jarvis tool durably committed before reporting success.",
+      "evidence": {
+        "operation_committed": true,
+        "committed_before_success_by_contract": true,
+        "completed_tool_item_observed": true,
+        "journal_record_count": 1,
+        "enabled_tools": [
+          "jarvis_probe.journal_commit"
+        ]
+      },
+      "elapsed_ms": 4347.968,
+      "gating": true
+    },
+    {
+      "id": "profile.forbidden_tool_denial",
+      "status": "pass",
+      "summary": "The restricted workflow profile exposed only the brokered Jarvis tool.",
+      "evidence": {
+        "enabled_tools": [
+          "jarvis_probe.journal_commit"
+        ],
+        "marker_created": false,
+        "forbidden_item_types": [],
+        "undeclared_mcp_call_observed": false,
+        "allowlisted_tool_reused": false,
+        "shell_tool": false,
+        "unified_exec": false,
+        "subagents": false,
+        "web_search": "disabled"
+      },
+      "elapsed_ms": 1448.067,
+      "gating": true
+    }
+  ],
+  "runtime": {
+    "thread_id": "01a0f30b-6a58-7be0-b6a4-92e484f581f8",
+    "mcp_tools": [
+      "jarvis_probe.journal_commit"
+    ],
+    "mcp_server_states": {
+      "jarvis_probe": "connected"
+    }
+  },
+  "scope": "Reuses M0 restricted MCP probe; M3 decision loops/tools are not implemented"
+}

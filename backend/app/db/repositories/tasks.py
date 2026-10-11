@@ -71,6 +71,8 @@ class TaskRepository:
         event_type: str,
         idempotency_key: str,
         attempt_id: str | None = None,
+        execution_run_id: str | None = None,
+        native_item_id: str | None = None,
         payload_json: dict | None = None,
         causality_json: dict | None = None,
     ) -> TaskEvent:
@@ -87,6 +89,8 @@ class TaskRepository:
                 id=event_id,
                 task_id=task_id,
                 attempt_id=attempt_id,
+                execution_run_id=execution_run_id,
+                native_item_id=native_item_id,
                 event_type=event_type,
                 payload_json=payload_json,
                 causality_json=causality_json,
@@ -98,7 +102,11 @@ class TaskRepository:
         result = await self.session.execute(
             select(TaskEvent).where(TaskEvent.idempotency_key == idempotency_key).limit(1)
         )
-        return result.scalar_one()
+        self.session.info["task_feedback_committed"] = True
+        event = result.scalar_one()
+        from app.services.task_results import project_task_event
+        await project_task_event(self.session, event)
+        return event
 
     async def transition_with_event(
         self,

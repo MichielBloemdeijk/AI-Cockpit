@@ -5,13 +5,15 @@
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
     "build": "next build",
+    "build:results": "next build result-export",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
     "test:live-smoke": "node scripts/run-jarvis-live-smoke.mjs",
     "install:wake-model": "node scripts/install-jarvis-wake-assets.mjs",
     "postinstall": "node scripts/copy-vad-assets.mjs",
-    "prebuild": "node scripts/copy-vad-assets.mjs"
+    "prebuild": "node scripts/copy-vad-assets.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "clsx": "^2.1.1",

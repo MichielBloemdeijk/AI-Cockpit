@@ -13,7 +13,7 @@ async def test_conversation_tools_persist_trace_and_transcript():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         search = await client.post(
             f"/api/conversations/{conversation.id}/tools",
@@ -44,7 +44,7 @@ async def test_python_tool_writes_inside_workspace_and_blocks_outside():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         allowed = await client.post(
             f"/api/conversations/{conversation.id}/tools",

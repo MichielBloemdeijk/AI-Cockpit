@@ -20,6 +20,54 @@ from app.services.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio
+async def test_runtime_candidate_requires_authentication_and_the_unchanged_startup_database(monkeypatch):
+    from app.config import settings
+    from app.jarvis_tasks.acceptance import candidate_identity, database_identity
+    runtime = {"candidate": candidate_identity(), "database_identity": database_identity(settings.database_path), "instance_id": "test-startup"}
+    monkeypatch.setattr(app.state, "acceptance_runtime", runtime, raising=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        assert (await client.get("/api/jarvis/runtime-candidate")).status_code == 401
+        await client.post("/api/auth/login", json={"password": ""})
+        response = await client.get("/api/jarvis/runtime-candidate")
+        assert response.status_code == 200 and response.json() == runtime
+        assert response.headers["cache-control"] == "no-store"
+        monkeypatch.setattr(app.state, "acceptance_runtime", {**runtime, "database_identity": "another-database"})
+        assert (await client.get("/api/jarvis/runtime-candidate")).status_code == 409
+        monkeypatch.setattr(app.state, "acceptance_runtime", runtime)
+        monkeypatch.setattr(settings, "openai_live_reasoning_effort", "high" if settings.openai_live_reasoning_effort == "low" else "low")
+        assert (await client.get("/api/jarvis/runtime-candidate")).status_code == 409
+        monkeypatch.setattr(app.state, "acceptance_runtime", None)
+        assert (await client.get("/api/jarvis/runtime-candidate")).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_session_replay_uses_session_identity_and_preserves_event_deduplication():
+    from app.db.tables import Conversation, LiveSession
+    from app.db.repositories.jarvis import JarvisDomainRepository
+    async with session_scope() as session:
+        conversation = Conversation(title="Session identity")
+        session.add(conversation)
+        await session.flush()
+        live = LiveSession(conversation_id=conversation.id, provider_adapter="fake", lifecycle_state="ready")
+        session.add(live)
+        await session.flush()
+        identity = live.id
+        repository = JarvisDomainRepository(session)
+        for kind in ("provider.ready", "brain.tool.result"):
+            first = await repository.append_session_event_once(session_id=identity,
+                event_type=kind, payload_json={"generation": 1}, idempotency_key=kind)
+            repeated = await repository.append_session_event_once(session_id=identity,
+                event_type=kind, payload_json={"generation": 1}, idempotency_key=kind)
+            assert first.created and not repeated.created
+            assert first.event.id == repeated.event.id
+    _, events = await jarvis_live_service.replay()
+    scoped = [event for event in events if event.source_domain == "session"]
+    assert len(scoped) == 2
+    assert {event.source_id for event in scoped} == {identity}
+    assert [event.source_sequence for event in scoped] == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_preferences_are_durable_and_report_voice_change() -> None:
     initial = await jarvis_preferences_service.get()
     assert initial.voice == "marin"
@@ -60,7 +108,7 @@ async def test_live_replay_unifies_task_events_with_monotonic_cursor() -> None:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         response = await client.get("/api/jarvis/live/replay", params={"after": 0, "limit": 1})
 
     assert response.status_code == 200
@@ -69,6 +117,17 @@ async def test_live_replay_unifies_task_events_with_monotonic_cursor() -> None:
     assert len(body["events"]) == 1
     assert body["events"][0]["sequence"] == events[0].sequence
     assert body["events"][0]["event_type"] == events[0].event_type
+
+    # A subsequent Live activation reads state after admitted work exists.
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": ""})
+        state = await client.get("/api/jarvis/state")
+        direct = await client.get("/api/tasks")
+    assert state.status_code == direct.status_code == 200
+    live_task = next(item for item in state.json()["tasks"] if item["id"] == task.task.id)
+    direct_task = next(item for item in direct.json() if item["id"] == task.task.id)
+    for field in ("execution_kind", "current_run_id", "goal_revision", "control_revision", "workspace_generation", "queue_entered_at"):
+        assert live_task[field] == direct_task[field]
 
 
 @pytest.mark.asyncio
@@ -97,6 +156,29 @@ async def test_natural_task_focus_and_ambiguity_never_require_ids() -> None:
     assert wake.task.id not in ambiguous.clarification
     assert android.task.id not in ambiguous.clarification
     assert re.search(r"[0-9a-f]{8}-[0-9a-f-]{27,}", ambiguous.clarification) is None
+
+
+@pytest.mark.asyncio
+async def test_descriptive_control_match_outranks_a_recent_partial_match():
+    comparison = await task_service.dispatch(goal="Python comparison task: compare lists and tuples",
+        origin_surface="jarvis", idempotency_key="specific-comparison")
+    dictionaries = await task_service.dispatch(goal="Create an outline for a guide to using Python dictionaries",
+        origin_surface="jarvis", idempotency_key="recent-dictionaries")
+    await natural_task_resolver.touch(dictionaries.task.id)
+    resolved = await natural_task_resolver.resolve("the Python comparison task", active_only=True)
+    assert resolved.task is not None and resolved.task.id == comparison.task.id
+
+
+@pytest.mark.asyncio
+async def test_natural_controls_resolve_work_waiting_for_capacity_and_paused_work():
+    task = await task_service.dispatch(goal="Python comparison task: compare lists and tuples",
+        origin_surface="jarvis", idempotency_key="waiting-comparison")
+    assert task.task.status == "waiting_for_worker"
+    resolved = await natural_task_resolver.resolve("the active Python comparison task", active_only=True)
+    assert resolved.task is not None and resolved.task.id == task.task.id
+    await task_service.control(task.task.id, action="suspend", idempotency_key="pause-comparison")
+    resolved = await natural_task_resolver.resolve("Python comparison task", active_only=True)
+    assert resolved.task is not None and resolved.task.id == task.task.id and resolved.task.status == "paused"
 
 
 @pytest.mark.asyncio
@@ -153,7 +235,7 @@ async def test_reminders_deliver_once() -> None:
 async def test_pairing_credentials_are_scoped_to_the_paired_device() -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as admin:
-        await admin.post("/api/auth/login", json={"password": "dev"})
+        await admin.post("/api/auth/login", json={"password": ""})
         code_response = await admin.post("/api/jarvis/devices/pairing-code")
         assert code_response.status_code == 200
         code = code_response.json()["code"]

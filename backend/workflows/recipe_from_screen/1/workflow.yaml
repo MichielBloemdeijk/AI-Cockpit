@@ -1,0 +1,25 @@
+schema: workflow-definition.v2
+id: recipe_from_screen
+version: 1
+purpose: Find a useful source-backed recipe for the dish or ingredients visible on screen.
+routing_examples:
+  - Find me a recipe for this dish.
+  - How can I cook what is shown here?
+  - Make and save a recipe using the ingredients on my screen.
+instructions: instructions.md
+input_schema: screen-request.v2
+output_schema: recipe.v1
+required_initial_context: [screen_images]
+capabilities:
+  - task.context.read@1
+  - task.context.images@2
+  - research.native@1
+  - task.question.ask@1
+  - task.result.publish@1
+  - task.finish@1
+defaults:
+  execution_profile: fast
+fixtures: fixtures/cases.yaml
+
+tools:
+  remove: [native.local, native.subagents, native.skills]

@@ -9,6 +9,8 @@ function event(overrides: Partial<TaskEvent>): TaskEvent {
     sequence: 12,
     task_id: "task-1",
     attempt_id: "attempt-12345678",
+    execution_run_id: "run-1",
+    native_item_id: null,
     event_type: "task.progress",
     payload: { summary: "Inspected the repository", status: "running" },
     causality: null,
@@ -18,6 +20,19 @@ function event(overrides: Partial<TaskEvent>): TaskEvent {
 }
 
 describe("task Agent trace projection", () => {
+  it("shows native observed messages and broker calls as evidence", () => {
+    const message = taskEventToChatMessage(event({
+      event_type: "agent.native.item",
+      payload: { item: { type: "agentMessage", text: "The file is ready." } },
+    }));
+    const tool = taskEventToChatMessage(event({
+      event_type: "agent.native.item",
+      payload: { item: { type: "mcpToolCall", server: "jarvis_task", tool: "file_write", status: "completed" } },
+    }));
+    expect(message.content).toBe("The file is ready.");
+    expect(tool.content).toContain("jarvis_task.file_write");
+  });
+
   it("renders representative progress, question, answer, and terminal events", () => {
     const trace = [
       event({}),

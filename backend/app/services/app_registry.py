@@ -455,6 +455,8 @@ class AppRegistryService:
             )
             session.add(item)
             await session.flush()
+            from app.services.app_catalog import sync_generated_app
+            await sync_generated_app(session, item)
             return _record(item)
 
     async def update_app(self, app_id: str, **changes) -> GeneratedAppRecord | None:
@@ -473,6 +475,9 @@ class AppRegistryService:
             if not result.rowcount:
                 return None
             item = await session.get(GeneratedApp, app_id)
+            if item is not None:
+                from app.services.app_catalog import sync_generated_app
+                await sync_generated_app(session, item)
             record = None if item is None else _record(item)
         if record is not None:
             self._sync_live_route(record)
@@ -485,6 +490,11 @@ class AppRegistryService:
             if item is None:
                 return False
             slug = item.slug
+            if item.cockpit_app_id:
+                from app.db.tables import CockpitApp
+                catalog = await session.get(CockpitApp, item.cockpit_app_id)
+                if catalog:
+                    catalog.enabled = False
             await session.delete(item)
         if slug:
             shutil.rmtree(_live_generated_app_root(slug), ignore_errors=True)

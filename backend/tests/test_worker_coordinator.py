@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import os
 
 import pytest
 from sqlalchemy import delete, select
@@ -66,7 +67,7 @@ async def test_strict_fifo_claim_is_stable_and_one_attempt_is_claimed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lease_blocked_head_is_not_bypassed_and_acquisition_is_all_or_nothing() -> None:
+async def test_lease_blocked_head_is_bypassed_and_acquisition_is_all_or_nothing() -> None:
     blocker = await task_service.dispatch(goal="holder", origin_surface="test", idempotency_key="lease-holder")
     async with session_scope() as session:
         blocker_task = (await session.execute(select(Task).where(Task.id == blocker.task.id))).scalar_one()
@@ -94,9 +95,9 @@ async def test_lease_blocked_head_is_not_bypassed_and_acquisition_is_all_or_noth
     assert worker is not None
 
     result = await worker_coordinator.claim_next(worker.worker_id, now=NOW)
-    assert result.task is None
-    assert result.blocked_task_id == head.task.id
-    assert (await task_service.get_task(tail.task.id)).task.status == "queued"  # type: ignore[union-attr]
+    assert result.task is not None
+    assert result.task.task_id == tail.task.id
+    assert (await task_service.get_task(head.task.id)).task.status == "queued"  # type: ignore[union-attr]
     async with session_scope() as session:
         acquired_free = (await session.execute(
             select(ResourceLease).where(
@@ -107,6 +108,8 @@ async def test_lease_blocked_head_is_not_bypassed_and_acquisition_is_all_or_noth
         assert acquired_free is None
         await session.execute(delete(ResourceLease).where(ResourceLease.id == "blocking-lease"))
 
+    await task_service.complete(tail.task.id, summary="done", idempotency_key="tail-done")
+    await worker_coordinator.release_claim(worker.worker_id, result.task.attempt_id)
     claimed = await worker_coordinator.claim_next(worker.worker_id, now=NOW + timedelta(seconds=1))
     assert claimed.task is not None and claimed.task.task_id == head.task.id
     async with session_scope() as session:
@@ -114,10 +117,11 @@ async def test_lease_blocked_head_is_not_bypassed_and_acquisition_is_all_or_noth
             select(ResourceLease).where(ResourceLease.owner_attempt_id == claimed.task.attempt_id)
             .order_by(ResourceLease.resource_type, ResourceLease.resource_key)
         )).scalars().all())
-    assert [(lease.resource_type, lease.resource_key) for lease in leases] == [
+    assert [(lease.resource_type, lease.resource_key) for lease in leases if lease.resource_key in {"free", "shared"}] == [
         ("directory", "free"),
         ("repository", "shared"),
     ]
+    assert len(leases) == 3  # includes the task's private workspace lease
 
 
 @pytest.mark.asyncio
@@ -172,7 +176,131 @@ async def test_target_expansion_checkpoints_releases_and_requeues_same_task() ->
 
 
 @pytest.mark.asyncio
-async def test_stale_takeover_interrupts_without_retry_and_releases_leases() -> None:
+async def test_reacquired_shared_directory_is_checked_before_runtime(tmp_path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    document = shared / "note.txt"
+    document.write_text("before", encoding="utf-8")
+    created = await task_service.dispatch(
+        goal="edit shared note", origin_surface="test", idempotency_key="shared-check",
+        targets=(("directory", str(shared), True),),
+    )
+    first = await worker_coordinator.activate(process_identity="shared-first", worker_id="shared-first")
+    assert first is not None
+    first_claim = (await worker_coordinator.claim_next(first.worker_id)).task
+    assert first_claim is not None
+    await task_service.complete(created.task.id, summary="done", idempotency_key="shared-done")
+    await worker_coordinator.worker_exited(
+        first.worker_id, process_identity="shared-first", exit_code=0,
+    )
+    after_exit = await task_service.get_task(created.task.id)
+    assert after_exit is not None
+    assert (after_exit.attempts[0].recovery_metadata_json or {}).get("released_resource_snapshots"), (
+        after_exit.attempts[0].recovery_metadata_json
+    )
+    document.write_text("changed by another owner", encoding="utf-8")
+    followup = await task_service.continue_task(
+        created.task.id, content="edit again", idempotency_key="shared-followup", origin="test",
+    )
+    assert followup.task.id == created.task.id
+    second = await worker_coordinator.activate(process_identity="shared-second", worker_id="shared-second")
+    assert second is not None
+    second_claim = (await worker_coordinator.claim_next(second.worker_id)).task
+    assert second_claim is not None
+    assert second_claim.task_id == created.task.id
+    async with session_scope() as session:
+        active = await session.get(TaskAttempt, second_claim.attempt_id)
+        assert active is not None and active.claim_token == second_claim.claim_token
+        current_task = (await session.execute(
+            select(Task).where(Task.id == created.task.id)
+        )).scalar_one_or_none()
+        assert current_task is not None
+        assert current_task.current_attempt_id == second_claim.attempt_id
+        assert current_task.status == "running"
+    permitted, changes = await worker_coordinator.verify_reacquired_targets(second_claim)
+    assert not permitted
+    assert len(changes) == 1, (after_exit.attempts[0].recovery_metadata_json, second_claim)
+    detail = await task_service.get_task(created.task.id)
+    assert detail is not None and detail.task.status == "interrupted"
+    assert detail.attempts[-1].terminal_reason == "resource_changed"
+    assert any(event.event_type == "task.recovery.needed" for event in detail.events)
+    await worker_coordinator.worker_exited(
+        second.worker_id, process_identity="shared-second", exit_code=0,
+    )
+    await task_service.control(
+        created.task.id,
+        action="retry",
+        idempotency_key="accept-shared-change",
+        parameters={"accept_resource_changes": True},
+        requester="test",
+        reason="Reviewed the changed note and will re-inspect it before editing",
+    )
+    third = await worker_coordinator.activate(process_identity="shared-third", worker_id="shared-third")
+    assert third is not None
+    third_claim = (await worker_coordinator.claim_next(third.worker_id)).task
+    assert third_claim is not None
+    permitted, changes = await worker_coordinator.verify_reacquired_targets(third_claim)
+    assert permitted and len(changes) == 1
+
+
+@pytest.mark.asyncio
+async def test_unobservable_external_resource_cannot_be_silently_reacquired() -> None:
+    created = await task_service.dispatch(
+        goal="Update external record", origin_surface="test", idempotency_key="external-target",
+        targets=(("external_record", "record-1", True),),
+    )
+    first = await worker_coordinator.activate(process_identity="external-first", worker_id="external-first")
+    assert first is not None
+    claim = (await worker_coordinator.claim_next(first.worker_id)).task
+    assert claim is not None
+    await task_service.complete(created.task.id, summary="Done", idempotency_key="external-done")
+    await worker_coordinator.release_claim(first.worker_id, claim.attempt_id)
+    await task_service.continue_task(
+        created.task.id, content="Update again", origin="test", idempotency_key="external-followup",
+    )
+    next_claim = (await worker_coordinator.claim_next(first.worker_id)).task
+    assert next_claim is not None
+    permitted, changes = await worker_coordinator.verify_reacquired_targets(next_claim)
+    assert not permitted
+    assert changes[0]["current_state"] == "unknown"
+    detail = await task_service.get_task(created.task.id)
+    assert detail is not None
+    assert "cannot be checked" in (detail.task.terminal_summary or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows process-exit reconciliation")
+async def test_new_supervisor_generation_releases_orphan_lease_only_after_exact_exit(
+    tmp_path, monkeypatch
+) -> None:
+    assert await worker_coordinator.acquire_supervisor("old", now=NOW) == 1
+    created = await task_service.dispatch(
+        goal="shared work", origin_surface="test", idempotency_key="orphan-lease",
+        targets=(("directory", str(tmp_path / "shared"), True),),
+    )
+    worker = await worker_coordinator.activate(
+        process_identity="orphan", worker_id="orphan", supervisor_generation=1, now=NOW,
+    )
+    assert worker is not None
+    claim = (await worker_coordinator.claim_next(worker.worker_id, now=NOW)).task
+    assert claim is not None
+    assert await worker_coordinator.acquire_supervisor(
+        "replacement", now=NOW + timedelta(seconds=16)
+    ) == 2
+    monkeypatch.setattr("app.services.worker_coordinator.process_has_exited", lambda *_: False)
+    await worker_coordinator.reconcile_availability(now=NOW + timedelta(seconds=16))
+    async with session_scope() as session:
+        assert (await session.execute(select(ResourceLease))).scalars().first() is not None
+    monkeypatch.setattr("app.services.worker_coordinator.process_has_exited", lambda *_: True)
+    await worker_coordinator.reconcile_availability(now=NOW + timedelta(seconds=17))
+    async with session_scope() as session:
+        assert (await session.execute(select(ResourceLease))).scalars().first() is None
+    detail = await task_service.get_task(created.task.id)
+    assert detail is not None and detail.task.status == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_stale_takeover_interrupts_but_retains_leases_until_observed_exit() -> None:
     created = await task_service.dispatch(
         goal="lose worker",
         origin_surface="test",
@@ -196,6 +324,13 @@ async def test_stale_takeover_interrupts_without_retry_and_releases_leases() -> 
     assert detail.task.status == "interrupted"
     assert len(detail.attempts) == 1
     assert detail.attempts[0].terminal_reason == "worker_stale"
+    async with session_scope() as session:
+        assert len((await session.execute(select(ResourceLease))).scalars().all()) == 2
+    await worker_coordinator.worker_exited(
+        old.worker_id,
+        process_identity="old",
+        exit_code=9,
+    )
     async with session_scope() as session:
         assert (await session.execute(select(ResourceLease))).scalars().all() == []
 

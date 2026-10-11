@@ -7,6 +7,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
@@ -14,13 +15,16 @@ import okhttp3.sse.EventSources
 import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
+import java.security.MessageDigest
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
+class CockpitRequestException(val status: Int, message: String) : IllegalStateException(message)
 data class LiveCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
-data class LiveSessionState(val sessionId: String, val generation: Int, val lifecycleState: String)
+data class LiveSessionState(val sessionId: String, val generation: Int, val lifecycleState: String,
+    val controllerId: String? = null, val activationId: String? = null)
 data class JarvisComponentIssue(val name: String, val status: String, val detail: String?)
 data class JarvisAssistantStatus(
     val workerStatus: String,
@@ -79,13 +83,13 @@ internal fun parseJarvisAssistantStatus(
     )
 }
 
-class CockpitApi(private val store: CredentialStore, private val client: OkHttpClient = OkHttpClient()) {
+class CockpitApi(private val store: CredentialStore, private val client: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()) {
     private val json = "application/json; charset=utf-8".toMediaType()
 
     suspend fun pair(serverUrl: String, code: String, label: String): PairingResult {
-        store.serverUrl = serverUrl
+        val origin = PairingLink.serverOrigin(serverUrl)
         val payload = JSONObject().put("code", code).put("label", label)
-        val response = execute(Request.Builder().url("${store.serverUrl}/api/jarvis/devices/pair")
+        val response = execute(Request.Builder().url("$origin/api/jarvis/devices/pair")
             .post(payload.toString().toRequestBody(json)).build())
         val body = JSONObject(response.body?.string().orEmpty())
         return PairingResult(
@@ -93,6 +97,17 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             body.getString("credential"),
             body.optLong("event_cursor", 0L),
         )
+    }
+
+    suspend fun webSessionCookie(): String {
+        return execute(authenticated("/api/jarvis/devices/web-session")
+            .post("{}".toRequestBody(json)).build()).use { response ->
+            response.header("Set-Cookie") ?: error("Server did not return a phone session.")
+        }
+    }
+
+    suspend fun unlink() {
+        execute(authenticated("/api/jarvis/devices/unlink").post("{}".toRequestBody(json)).build()).close()
     }
 
     suspend fun updateDevice(lockState: String, cursor: Long? = null) {
@@ -115,15 +130,11 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .put("provider_adapter", "openai_live")
             .put("client_context", clientContext)
             .put("sdp_offer", offer)
-        wakeScore?.let {
-            payload.put(
-                "activation_context",
-                JSONObject()
-                    .put("source", "wake_word")
-                    .put("wake_score", it)
-                    .put("activation_id", activationId ?: UUID.randomUUID().toString()),
-            )
-        }
+        val activation = JSONObject()
+            .put("source", if (wakeScore == null) "system" else "wake_word")
+            .put("activation_id", activationId ?: UUID.randomUUID().toString())
+        wakeScore?.let { activation.put("wake_score", it) }
+        payload.put("activation_context", activation)
         val response = execute(authenticated("/api/jarvis/live/calls")
             .post(payload.toString().toRequestBody(json)).build())
         val body = JSONObject(response.body?.string().orEmpty())
@@ -142,6 +153,8 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             session.getString("id"),
             session.getInt("generation"),
             session.optString("lifecycle_state"),
+            session.optString("controller_id").takeIf { it.isNotBlank() },
+            session.optString("activation_id").takeIf { it.isNotBlank() },
         )
     }
 
@@ -174,26 +187,62 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .post(payload.toString().toRequestBody(json)).build()).close()
     }
 
+    suspend fun reportCapture(captureId: String, report: JSONObject) {
+        execute(authenticated("/api/jarvis/captures/$captureId/status")
+            .put(report.toString().toRequestBody(json)).build()).close()
+    }
+
+    suspend fun pendingContextRequests(): List<JSONObject> {
+        val response = execute(authenticated("/api/jarvis/context-requests/pending").get().build())
+        val array = JSONObject(response.body?.string().orEmpty()).getJSONArray("requests")
+        return (0 until array.length()).map { array.getJSONObject(it) }
+    }
+
+    suspend fun uploadContext(request: JSONObject, jpeg: ByteArray, capturedAt: Instant, monotonicMs: Double) {
+        val checksum = MessageDigest.getInstance("SHA-256").digest(jpeg)
+            .joinToString("") { "%02x".format(it) }
+        val requestId = request.getString("request_id")
+        execute(authenticated("/api/jarvis/context-requests/$requestId/content")
+            .header("X-Upload-Token", request.getString("upload_token"))
+            .header("X-Content-SHA256", checksum)
+            .header("X-Capture-Id", request.getString("capture_id"))
+            .header("X-Activation-Id", request.getString("activation_id"))
+            .header("X-Generation", request.getInt("generation").toString())
+            .header("X-Captured-At", capturedAt.toString())
+            .header("X-Capture-Monotonic-Ms", monotonicMs.toString())
+            .put(jpeg.toRequestBody("image/jpeg".toMediaType())).build()).close()
+    }
+
+    suspend fun failContext(requestId: String, reason: String) {
+        execute(authenticated("/api/jarvis/context-requests/$requestId/unavailable")
+            .post(JSONObject().put("reason", reason).toString().toRequestBody(json)).build()).close()
+    }
+
     suspend fun assistantStatus(): JarvisAssistantStatus {
         val response = execute(authenticated("/api/jarvis/state").get().build())
         return parseJarvisAssistantStatus(JSONObject(response.body?.string().orEmpty()))
     }
 
-    fun liveEvents(cursor: Long, listener: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit): EventSource {
+    suspend fun liveEvents(cursor: Long, listener: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit,
+                   onOpen: () -> Unit = {}): EventSource {
         val request = authenticated("/api/jarvis/live?cursor=$cursor").get().build()
         return EventSources.createFactory(client).newEventSource(request, object : EventSourceListener() {
+            override fun onOpen(source: EventSource, response: Response) { onOpen() }
             override fun onEvent(source: EventSource, id: String?, type: String?, data: String) {
                 if (type == "jarvis") runCatching { JSONObject(data) }.onSuccess(listener)
             }
             override fun onFailure(source: EventSource, t: Throwable?, response: Response?) {
-                onFailure(t ?: IllegalStateException("Jarvis event stream closed: ${response?.code}"))
+                onFailure(if (response?.code == 401) CockpitRequestException(401, "Phone was unlinked")
+                    else t ?: IllegalStateException("Jarvis event stream closed: ${response?.code}"))
             }
         })
     }
 
-    private fun authenticated(path: String): Request.Builder {
+    private suspend fun authenticated(path: String): Request.Builder = withContext(Dispatchers.IO) {
+        // AndroidKeyStore decryption can block on Binder. Callers include the
+        // visible assistant on Main; move authentication as well as HTTP off it.
         val credential = store.credential() ?: error("Jarvis device is not paired")
-        return Request.Builder().url("${store.serverUrl}$path").header("Authorization", "Bearer $credential")
+        Request.Builder().url("${store.serverUrl}$path").header("Authorization", "Bearer $credential")
     }
 
     private suspend fun execute(request: Request): Response = withContext(Dispatchers.IO) {
@@ -213,8 +262,23 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
                         val status = response.code
                         val detail = response.body?.string().orEmpty()
                         response.close()
-                        continuation.resumeWithException(IllegalStateException("Cockpit $status: $detail"))
-                    } else continuation.resume(response)
+                        val message = if (status == 401) "Phone link is unavailable. In Jarvis Settings, choose Link phone and open a new link."
+                        else runCatching { JSONObject(detail).optString("detail") }.getOrNull()
+                            ?.takeIf { it.isNotBlank() && !it.startsWith("[") }
+                            ?: "Jarvis could not complete the request. Check the host status and try again."
+                        continuation.resumeWithException(CockpitRequestException(status, message))
+                    } else {
+                        try {
+                            val contentType = response.body?.contentType()
+                            val buffered = (response.body?.bytes() ?: ByteArray(0)).toResponseBody(contentType)
+                            val detached = response.newBuilder().body(buffered).build()
+                            response.close()
+                            continuation.resume(detached)
+                        } catch (error: Exception) {
+                            response.close()
+                            if (continuation.isActive) continuation.resumeWithException(error)
+                        }
+                    }
                 }
             })
         }

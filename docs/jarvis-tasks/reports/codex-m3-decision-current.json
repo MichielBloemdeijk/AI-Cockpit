@@ -1,0 +1,38 @@
+{
+  "schema": "jarvis-m3-native-decision.v1",
+  "status": "blocked_provider_credits",
+  "date": "2026-09-30",
+  "model": "gpt-5.6-luna",
+  "effort": "low",
+  "earlier_verified_run": {
+    "status": "pass",
+    "test_file": "backend/tests/test_codex_orchestration_runtime.py",
+    "tests_passed": 2,
+    "test_suite_elapsed_seconds": 40.62,
+    "worker_busy_at_native_start": 8,
+    "exact_worker_question_answered": true,
+    "asking_run_preserved": true,
+    "shared_voice_admission_control_forwarding_history": "pass",
+    "tools": [
+      "jarvis_orchestration.answer",
+      "jarvis_orchestration.continue",
+      "jarvis_orchestration.control",
+      "jarvis_orchestration.delegate",
+      "jarvis_orchestration.inspect",
+      "jarvis_orchestration.retain"
+    ],
+    "evidence_source": "Observed pytest output in this implementation chat; summary, not a newly generated successful-run transcript."
+  },
+  "latest_live_rerun": {
+    "status": "blocked",
+    "test_suite_result": "1 passed, 1 failed in 31.77 seconds",
+    "provider_message": "You have no credits remaining.",
+    "decision_status": "deferred",
+    "last_error": "billing_exhausted",
+    "native_turn_error_observed": true,
+    "application_immediate_retry": false,
+    "billing_settings_changed": false,
+    "further_billable_tests_stopped": true
+  },
+  "scope": "Isolated API profile. Earlier native answer and saturated-pool independence passed. Latest live completion is blocked by exhausted provider credits; this is not proof of the configured account's enforced spending-limit policy or subscription continuation. Unattended rollout remains disabled."
+}

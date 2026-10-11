@@ -8,10 +8,12 @@ from app.models.apps import (
     GeneratedAppDetail,
     GeneratedAppSummary,
     GeneratedAppUpdateRequest,
+    AppStorageCapabilityRequest,
 )
 from app.presenters.apps import present_generated_app_detail, present_generated_app_summary
 from app.services.app_registry import GeneratedAppRecord, app_registry_service
 from app.services.auth import require_auth
+from app.api.results import protect_state_write
 
 router = APIRouter(prefix="/api/apps", tags=["apps"], dependencies=[Depends(require_auth)])
 
@@ -64,3 +66,19 @@ async def update_app(app_id: str, req: GeneratedAppUpdateRequest):
     if record is None:
         raise HTTPException(status_code=404, detail="App not found")
     return present_generated_app_detail(record)
+
+
+@router.post("/{app_id}/storage-capability", dependencies=[Depends(protect_state_write)])
+async def generated_app_storage(app_id: str, body: AppStorageCapabilityRequest):
+    """Resolve by generated identity, including legacy/catalog slug collisions."""
+    from sqlalchemy import select
+    from app.db.session import session_scope
+    from app.db.tables import CockpitApp, GeneratedApp
+    from app.services.app_capabilities import issue_capability
+    async with session_scope() as session:
+        catalog = (await session.execute(select(CockpitApp).join(GeneratedApp,
+            GeneratedApp.cockpit_app_id == CockpitApp.id).where(GeneratedApp.id == app_id,
+            CockpitApp.enabled.is_(True)))).scalar_one_or_none()
+        if catalog is None:
+            raise HTTPException(404, "Generated app not available")
+        return issue_capability(catalog, read_only=body.read_only)

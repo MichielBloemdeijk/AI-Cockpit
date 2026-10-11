@@ -53,6 +53,7 @@ import {
   type JarvisLiveStreamState,
 } from "@/lib/jarvis-live-state";
 import { JarvisLiveController } from "@/lib/jarvis-live";
+import { JarvisPhoneVoiceController, phoneVoiceBridge, type PhoneAudioState } from "@/lib/jarvis-phone-voice";
 import type { JarvisVoiceSnapshot } from "@/lib/jarvis-voice-client";
 import {
   configuredJarvisWakeModel,
@@ -78,6 +79,7 @@ import {
   type ProvisionalTranscript,
 } from "@/lib/jarvis-transcript-state";
 import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
+import { createUuid } from "@/lib/uuid";
 
 
 const WAKE_MODEL_CONFIGURATION = configuredJarvisWakeModel();
@@ -145,9 +147,10 @@ export default function JarvisPage() {
   const logIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const controllerIdRef = useRef("");
-  const liveControllerRef = useRef<JarvisLiveController | null>(null);
+  const liveControllerRef = useRef<JarvisLiveController | JarvisPhoneVoiceController | null>(null);
   const wakeLifecycleRef = useRef<JarvisWakeLifecycle | null>(null);
   const wakeRuntimeRef = useRef<JarvisWakeRuntime | null>(null);
+  const [phoneAudio, setPhoneAudio] = useState<PhoneAudioState | null>(null);
   const wakeGateModeRef = useRef<JarvisWakeGateMode>("transcript_rules");
   const developerModeRef = useRef(false);
   const refreshInFlightRef = useRef(false);
@@ -260,7 +263,21 @@ export default function JarvisPage() {
 
   useEffect(() => {
     let disposed = false;
-    controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`;
+    const phoneBridge = phoneVoiceBridge();
+    if (phoneBridge) {
+      const controller = new JarvisPhoneVoiceController(phoneBridge, setVoice, snapshot => {
+        setPhoneAudio(snapshot);
+        setWake({ status: snapshot.mode === "waiting" ? "armed" : snapshot.mode === "wake_starting" ? "arming" : "idle",
+          error: snapshot.mode === "error" ? snapshot.text : null, followUpUntil: null });
+      });
+      liveControllerRef.current = controller;
+      void refresh();
+      void getJarvisPreferences().then(next => { if (!disposed) { setPreferences(next); setWakeGatePreferencesLoaded(true); } })
+        .catch(cause => { if (!disposed) setError(cause instanceof Error ? cause.message : "Unable to load Jarvis preferences"); });
+      const timer = window.setInterval(() => void refresh(), 1500);
+      return () => { disposed = true; window.clearInterval(timer); controller.dispose(); liveControllerRef.current = null; };
+    }
+    controllerIdRef.current = `jarvis-browser-${createUuid()}`;
     const handleProviderEvent = (event: Record<string, unknown>) => {
       const eventType = typeof event.type === "string" ? event.type : "";
       if (FOLLOW_UP_ACTIVITY_EVENTS.has(eventType) || eventType.startsWith("session.")) {
@@ -341,7 +358,15 @@ export default function JarvisPage() {
     });
     wakeLifecycleRef.current = lifecycle;
     const runtime = new JarvisWakeRuntime({
-      onTrace: () => undefined,
+      onTrace: (event, detail) => {
+        if (!["wake_runtime_starting", "wake_microphone_ready", "wake_runtime_failed"].includes(event)) return;
+        void submitJarvisLiveTelemetry([{
+          trace_id: `wake-${controllerIdRef.current.slice(-36)}`,
+          client_sequence: ++liveDiagnosticSequenceRef.current,
+          source: "browser", event_type: event, observed_at: new Date().toISOString(),
+          monotonic_ms: performance.now(), detail,
+        }]).catch(() => undefined);
+      },
       onReady: (stream) => {
         void liveController.prepare(stream).catch((cause) => {
           if (disposed) return;
@@ -362,7 +387,7 @@ export default function JarvisPage() {
         if (disposed || lifecycle.current().status !== "armed") return;
         lifecycle.detected();
         lifecycle.connecting();
-        const activationId = handoff.activationId ?? crypto.randomUUID();
+        const activationId = handoff.activationId ?? createUuid();
         setWakeGateBackendMode(null);
         setWakeGateMismatch(null);
         const effectiveGateMode = resolveJarvisWakeGateMode(
@@ -609,7 +634,7 @@ export default function JarvisPage() {
     const content = draft.trim();
     if (!content) return;
     await run(async () => {
-      await acceptJarvisTextTurn(content, crypto.randomUUID());
+      await acceptJarvisTextTurn(content, createUuid());
       wakeLifecycleRef.current?.noteActivity();
       setDraft("");
     });
@@ -623,7 +648,7 @@ export default function JarvisPage() {
     if (!liveSession) throw new Error("Start a fake controller first");
     await injectFakeJarvisEvent(liveSession.id, {
       generation: liveSession.generation,
-      event_id: `lab-${crypto.randomUUID()}`,
+      event_id: `lab-${createUuid()}`,
       kind,
       payload,
     });
@@ -632,7 +657,8 @@ export default function JarvisPage() {
   const currentLog = state?.current_log ?? null;
   const session = state?.session ?? null;
   const sessionReady = session?.lifecycle_state === "ready";
-  const ownsController = session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
+  const ownsController = liveControllerRef.current?.ownsSession(session)
+    || session?.controller_id === controllerIdRef.current || session?.controller_id === "typed-bridge";
   const voiceBusy = voice.status === "connecting";
   const voiceActive = !["idle", "closed", "error"].includes(voice.status);
   const effectiveWakeGateMode = resolveJarvisWakeGateMode(
@@ -649,6 +675,9 @@ export default function JarvisPage() {
     .join(", ");
 
   const armVoice = async () => {
+    if (liveControllerRef.current instanceof JarvisPhoneVoiceController) {
+      await liveControllerRef.current.startWithOptions(); return;
+    }
     if (!currentLog) throw new Error("Send the first turn before arming Jarvis");
     if (!liveControllerRef.current) throw new Error("Voice controller is unavailable");
     const runtime = wakeRuntimeRef.current;
@@ -672,6 +701,9 @@ export default function JarvisPage() {
   };
 
   const sleepVoice = async () => {
+    if (liveControllerRef.current instanceof JarvisPhoneVoiceController) {
+      await liveControllerRef.current.stop(); return;
+    }
     if (
       WAKE_MODEL_CONFIGURATION
       && wakeRuntimeRef.current
@@ -804,7 +836,7 @@ export default function JarvisPage() {
             <button
               type="button"
               onClick={() => void run(toggleVoice)}
-              disabled={submitting || voiceBusy || (!voiceActive && !currentLog)}
+              disabled={submitting || (phoneAudio ? phoneAudio.mode === "stopping" : voiceBusy || (!voiceActive && !currentLog))}
               aria-pressed={voiceActive}
               className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs disabled:opacity-40 ${
                 voiceActive
@@ -813,15 +845,22 @@ export default function JarvisPage() {
               }`}
             >
               {voiceActive ? <MicOff size={13} /> : <Mic size={13} />}
-              {voiceActive ? "Sleep" : "Arm"}
+              {phoneAudio ? voiceActive ? "Stop Live" : "Listen now" : voiceActive ? "Sleep" : "Arm"}
             </button>
+            {phoneAudio && !["waiting", "wake_starting", "stopping"].includes(phoneAudio.mode) && (
+              <button type="button" disabled={submitting} onClick={() => void run(async () => {
+                const controller = liveControllerRef.current;
+                if (controller instanceof JarvisPhoneVoiceController) await controller.wake();
+              })} className="rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300 disabled:opacity-40">Hey Jarvis</button>
+            )}
+            {phoneAudio && <span className="text-xs text-zinc-400">{phoneAudio.text}</span>}
             <Link href="/chat" className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700 px-3 py-2 text-xs text-zinc-300">
               <History size={13} /> History
             </Link>
             <button
               type="button"
               onClick={() => void run(async () => {
-                await startFreshJarvisLog(crypto.randomUUID());
+                await startFreshJarvisLog(createUuid());
                 setLiveStreams(resetJarvisConversationStream(streamsRef.current));
               })}
               disabled={submitting}
@@ -863,10 +902,10 @@ export default function JarvisPage() {
               </label>
               <LabButton label="User speaking" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("user_speaking"))} />
               <LabButton label="Release floor" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("user_stopped"))} />
-              <LabButton label="Direct reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_response", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This is a deterministic direct response." }))} />
-              <LabButton label="Interrupt reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_interrupted", { response_id: `lab-${crypto.randomUUID()}`, item_id: `lab-${crypto.randomUUID()}`, transcript: "This response was interrupted before it finished.", heard_transcript: "This response was interrupted" }))} />
-              <LabButton label="Delegate demo" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("shell_call", { call_id: `lab-${crypto.randomUUID()}`, name: "dispatch_task", arguments: { goal: "Prepare the developer lab report" } }))} />
-              <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${crypto.randomUUID()}`; await createJarvisLiveCall(controllerIdRef.current, "controller"); })} />
+              <LabButton label="Direct reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_response", { response_id: `lab-${createUuid()}`, item_id: `lab-${createUuid()}`, transcript: "This is a deterministic direct response." }))} />
+              <LabButton label="Interrupt reply" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("assistant_interrupted", { response_id: `lab-${createUuid()}`, item_id: `lab-${createUuid()}`, transcript: "This response was interrupted before it finished.", heard_transcript: "This response was interrupted" }))} />
+              <LabButton label="Delegate demo" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("shell_call", { call_id: `lab-${createUuid()}`, name: "dispatch_task", arguments: { goal: "Prepare the developer lab report" } }))} />
+              <LabButton label="Supersede" disabled={!currentLog || submitting} onClick={() => void run(async () => { controllerIdRef.current = `jarvis-browser-${createUuid()}`; await createJarvisLiveCall(controllerIdRef.current, "controller"); })} />
               <LabButton label="Provider error" disabled={!sessionReady || submitting} onClick={() => void run(() => inject("provider_error", { reason: "simulated_failure" }))} />
             </div>
           )}
@@ -942,7 +981,7 @@ export default function JarvisPage() {
               {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
             </div>
           </div>
-          <div className="shrink-0 border-t border-zinc-800 bg-zinc-900 p-3 pb-[max(.75rem,env(safe-area-inset-bottom))]">
+          <div className="mobile-safe-jarvis-input shrink-0 border-t border-zinc-800 bg-zinc-900 p-3">
             <div className="mx-auto flex max-w-3xl items-end gap-2">
               <button
                 type="button"
@@ -1033,7 +1072,7 @@ export default function JarvisPage() {
           <section
             role="dialog"
             aria-label={mobilePanel === "tasks" ? "Jarvis tasks" : "Jarvis activity"}
-            className="absolute inset-x-0 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] max-h-[70dvh] overflow-hidden rounded-t-3xl border-t border-zinc-700 bg-zinc-950 shadow-2xl"
+            className="mobile-safe-jarvis-panel absolute inset-x-0 max-h-[70dvh] overflow-hidden rounded-t-3xl border-t border-zinc-700 bg-zinc-950 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex min-h-14 items-center justify-between border-b border-zinc-800 px-4">

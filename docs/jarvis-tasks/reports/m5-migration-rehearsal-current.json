@@ -1,0 +1,118 @@
+{
+  "schema": "jarvis-migration-rehearsal.v1",
+  "status": "passed",
+  "observed_at": "2026-10-01T23:23:31.455656+00:00",
+  "provider_calls": 0,
+  "production_mutations": [],
+  "ready_for_enablement": false,
+  "scope": "Configured database read-only snapshot, disposable-clone upgrade and retained-data checks; not deployment or complete backup",
+  "snapshot": {
+    "integrity": "ok",
+    "foreign_keys": "ok",
+    "online_backup": true,
+    "scope": "database_only",
+    "source_opened_read_only": true
+  },
+  "database": {
+    "id": "database",
+    "status": "passed",
+    "summary": "Schema and foreign keys must match the current code; migration is an explicit deployment step.",
+    "evidence": {
+      "expected_revision": "20261001_0033",
+      "revision_matches": true,
+      "missing_tables": [],
+      "foreign_keys_valid": true,
+      "opened_read_only": true
+    }
+  },
+  "retained_tables": [
+    {
+      "table": "tasks",
+      "row_count": 3,
+      "columns_checked": [
+        "id",
+        "goal",
+        "origin_surface",
+        "idempotency_key"
+      ],
+      "unchanged": true
+    },
+    {
+      "table": "task_attempts",
+      "row_count": 3,
+      "columns_checked": [
+        "id",
+        "task_id",
+        "attempt_number",
+        "workspace_path",
+        "checkpoint_json"
+      ],
+      "unchanged": true
+    },
+    {
+      "table": "task_events",
+      "row_count": 9,
+      "columns_checked": [
+        "id",
+        "task_id",
+        "event_type",
+        "payload_json",
+        "idempotency_key"
+      ],
+      "unchanged": true
+    },
+    {
+      "table": "task_artifacts",
+      "row_count": 0,
+      "columns_checked": [
+        "id",
+        "task_id",
+        "artifact_type",
+        "mime_type",
+        "content_text",
+        "content_json",
+        "uri"
+      ],
+      "unchanged": true
+    },
+    {
+      "table": "task_questions",
+      "row_count": 0,
+      "columns_checked": [
+        "id",
+        "task_id",
+        "question",
+        "answer",
+        "state"
+      ],
+      "unchanged": true
+    },
+    {
+      "table": "task_turns",
+      "row_count": 3,
+      "columns_checked": [
+        "id",
+        "task_id",
+        "sequence",
+        "role",
+        "content",
+        "request_identity"
+      ],
+      "unchanged": true
+    },
+    {
+      "table": "task_execution_runs",
+      "row_count": 3,
+      "columns_checked": [
+        "id",
+        "task_id",
+        "ordinal",
+        "status",
+        "current_attempt_id"
+      ],
+      "unchanged": true
+    }
+  ],
+  "clone_removed": true,
+  "complete_backup": false
+}

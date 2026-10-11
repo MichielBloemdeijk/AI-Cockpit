@@ -141,6 +141,12 @@ export class JarvisLiveController implements JarvisVoiceClient {
     return this.snapshot;
   }
 
+  ownsSession(session: JarvisSession | null): boolean {
+    return session !== null && this.session?.id === session.id
+      && this.session.generation === session.generation
+      && ["connecting", "connected", "interrupted"].includes(this.snapshot.status);
+  }
+
   onSnapshot(listener: (snapshot: JarvisVoiceSnapshot) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -261,7 +267,9 @@ export class JarvisLiveController implements JarvisVoiceClient {
     };
     this.publish({ ...this.snapshot, status: "connecting", error: null });
     try {
+      diagnose("microphone_request_started");
       const stream = options.stream ?? await this.deps.getUserMedia();
+      diagnose("microphone_ready", { reused: Boolean(options.stream) });
       assertCurrent();
       let transport = this.prepared?.stream === stream ? this.prepared : null;
       if (!transport && this.preparation && this.preparationStream === stream) {
@@ -361,7 +369,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
       return this.snapshot;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "GPT-Live connection failed";
-      diagnose("startup_failed", { message, missing: readiness.missing() });
+      diagnose("startup_failed", { message, error_name: cause instanceof Error ? cause.name : "unknown", missing: readiness.missing() });
       if (attempt === this.attemptEpoch) {
         this.attemptEpoch += 1;
         startupAbort.abort();

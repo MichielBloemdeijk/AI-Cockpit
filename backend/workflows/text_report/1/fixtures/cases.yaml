@@ -1,0 +1,4 @@
+cases:
+- id: simple_request
+  request: Summarize the supplied task request in one sentence.
+  expected: Produces a valid workflow result.

@@ -1,6 +1,6 @@
 # AI Cockpit
 
-AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. GPT-Live powers Jarvis audio; delegated tasks default to a loopback OpenAI-compatible server such as llama.cpp, while OpenRouter remains an explicit cloud option.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. GPT-Live powers Jarvis audio and managed routing. Durable Jarvis workers use the subscription-first Codex runtime with safe API handoff; other chat modes retain local and OpenRouter options.
 
 This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
@@ -15,7 +15,9 @@ This repository currently targets local development. Windows has convenience scr
 - Dispatch durable background tasks with ordered traces, isolated attempts, and explicit cancel/retry controls.
 - Use Jarvis for streamed conversation, durable reminders, natural task follow-up, reviewed memory, local history recall, and phone or Android system-assistant access.
 
-For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The living implementation plan is [docs/JARVIS_FOLLOW_UP_PLAN.md](docs/JARVIS_FOLLOW_UP_PLAN.md), active acceptance failures are tracked in [docs/JARVIS_GAPS.md](docs/JARVIS_GAPS.md), and wake-model provenance remains in [docs/JARVIS_WAKE_MODEL.md](docs/JARVIS_WAKE_MODEL.md).
+For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The modular task architecture is [docs/JARVIS_TASK_ARCHITECTURE.md](docs/JARVIS_TASK_ARCHITECTURE.md), accepted limits and archived observations are recorded in [docs/JARVIS_GAPS.md](docs/JARVIS_GAPS.md), and wake-model provenance remains in [docs/JARVIS_WAKE_MODEL.md](docs/JARVIS_WAKE_MODEL.md).
+
+Jarvis task implementation and M11 personal phone acceptance are **complete as of 2026-10-11**, including screenshot-based recipe creation. See the [completion ledger](docs/jarvis-tasks/00-implementation-roadmap.md) and [accepted limits](docs/JARVIS_GAPS.md).
 
 ## Quick Start
 
@@ -29,7 +31,7 @@ For implementation details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Th
 | uv | Current | Install with `python -m pip install uv` |
 | Android SDK | API 37, optional | Required only to build the Android 17 companion |
 
-OpenRouter is optional. Jarvis voice requires an OpenAI API key, while the default task model expects llama.cpp (or another OpenAI-compatible server) on `127.0.0.1:8080`.
+OpenRouter is optional. Jarvis voice requires an OpenAI API key; the personal setup uses its dedicated subscription profile for durable workers. The optional local chat model expects an OpenAI-compatible server on `127.0.0.1:8080`.
 
 ### 2. Clone the repository
 
@@ -64,7 +66,7 @@ LOCAL_LLM_MODEL=google/gemma-4-12B-it-qat-q4_0-gguf:Q4_0
 
 The copied file is safe for localhost development:
 
-- `AUTH_PASSWORD_HASH` is blank, so any non-empty password is accepted.
+- `JARVIS_ACCESS_MODE=personal` and an empty `AUTH_PASSWORD` skip the password form; signed sessions still apply.
 - `ALLOWED_DIRS` is blank, so it contains no machine-specific paths.
 - `SESSION_SECRET_KEY` is deliberately insecure and must be replaced before remote or shared use.
 
@@ -123,6 +125,12 @@ cd backend
 uv run python -m app.worker
 ```
 
+The separate worker command is for the default legacy mode. With
+`TASK_POOL_ENABLED=true`, the API lifecycle elects and repairs the supervised
+pool automatically; do not also start `app.worker`. Drain the legacy worker
+before switching modes. Pool repair, worker replacement, and pool restart are
+available from the Tasks page once the pool flag is enabled.
+
 ```bash
 # Terminal 3
 cd frontend
@@ -151,38 +159,52 @@ Then open:
 - Jarvis live workspace: [http://localhost:3000/jarvis](http://localhost:3000/jarvis)
 - API documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-With the default development configuration, enter any non-empty password on the login page.
+With personal access and no configured password, the app opens without a password form.
 The first typed Jarvis turn creates the current daily log and starts the fake provider. Prefix a turn with `delegate:` to exercise immediate background-task acknowledgement without a microphone or external provider.
 
 The backend creates and migrates its SQLite database automatically on first startup. No separate migration command is required.
 
-## Secure Authentication
+## Personal Jarvis setup
 
-Development mode is convenient on localhost but should not be used when another device can reach the application.
+The selected Windows setup uses private Tailscale HTTPS, loopback-only services,
+a persistent dedicated subscription profile and the explicitly selected trusted
+command broker. See the [phone guide](docs/jarvis-tasks/phone-test-checklist.md).
 
-Generate a session secret:
-
-```powershell
-cd backend
-uv run python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Generate a bcrypt password hash:
+Double-click `Jarvis.cmd` to start frontend, backend and the task pool. For terminal use:
 
 ```powershell
-uv run python -c "from passlib.hash import bcrypt; import getpass; print(bcrypt.hash(getpass.getpass('Password: ')))"
+.\Jarvis.cmd Start
+.\Jarvis.cmd Status
+.\Jarvis.cmd Stop
 ```
 
-Put both values in the repository-root `.env` file and restart the backend:
+Ready means the services and worker are healthy and the private proxy/listeners
+have been checked. A second launcher cannot create a duplicate host. The local
+LLM server is optional for this Jarvis configuration.
+
+Keep a unique `SESSION_SECRET_KEY` in the ignored root `.env`; preserve it across
+restarts so sessions survive. Do not replace an existing private configuration
+with `.env.example`. For an optional owner password, configure:
 
 ```env
-SESSION_SECRET_KEY=<generated-secret>
-AUTH_PASSWORD_HASH=<generated-bcrypt-hash>
+JARVIS_ACCESS_MODE=password
+AUTH_PASSWORD=<your-private-password>
 ```
+
+For the selected personal mode, use `JARVIS_ACCESS_MODE=personal` and leave
+`AUTH_PASSWORD` empty. A configured password is required in either mode. Password
+mode without a password fails closed. The old `AUTH_PASSWORD_HASH` setting is
+removed; nonempty obsolete configuration is rejected rather than silently ignored.
+Passwords, API keys and permanent phone credentials never belong in QR links.
+
+Settings → Link phone creates a five-minute, one-use link and QR. Android retains
+its revocable credential and renews its own scoped WebView session without an owner
+login. External source links receive no Jarvis credential. Full development-data
+backup and Windows-login autostart are optional. Physical phone acceptance is last.
 
 ## Model Configuration and Cost
 
-Jarvis voice uses GPT-Live. Multi-step task turns default to the local provider. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
+Jarvis voice uses GPT-Live with managed routing; durable workers use Codex with subscription-first execution and authorized API fallback. Ordinary Agent conversations retain the local model default. Council mode and other configured cloud models still use OpenRouter; model availability and pricing can change, so check the [OpenRouter model catalog](https://openrouter.ai/models) when using those models.
 
 The main settings are:
 
@@ -198,8 +220,14 @@ The main settings are:
 | `LOCAL_LLM_ALIAS` | local/gemma-4-12b | Public model alias used by AI Cockpit |
 | `LOCAL_LLM_MODEL` | Gemma 4 Q4 checkpoint ID | Upstream model ID sent to the local server |
 | `TASK_AGENT_MODEL` | local/gemma-4-12b | Default chat and multi-step Agent model; must support native tool calls |
+| `TASK_POOL_ENABLED` | false | Opt-in supervised task pool during M1 rollout |
+| `TASK_EXECUTOR` | legacy | Task runtime; `codex` uses the pinned, brokered profile when the pool is enabled |
+| `CODEX_TASK_ALLOW_UNJOURNALED_NATIVE_TOOLS` | false | Test-only escape hatch; leave disabled because native actions lack the broker journal |
+| `TASK_WORKFLOW_ALLOWLIST` | blank | Comma-separated `id@version:source-digest` entries; keep blank until each workflow is reviewed and enabled |
 | `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` | blank | Browser path to the installed exact-word Jarvis ONNX model; blank keeps local wake disabled and preserves manual Arm |
-| `AUTH_PASSWORD_HASH` | blank | Blank enables local development login |
+| `JARVIS_ACCESS_MODE` | personal | Explicit personal or password owner access |
+| `AUTH_PASSWORD` | blank | Optional private plaintext owner password |
+| `JARVIS_PUBLIC_URL` | blank | Reachable origin used for phone pairing |
 | `SESSION_SECRET_KEY` | insecure example | Signs login cookies; replace for remote use |
 | `ALLOWED_DIRS` | blank | Optional comma-separated absolute directories |
 | `TAILSCALE_HOST` | blank | Optional fixed Tailscale IP or MagicDNS hostname; normal same-origin tailnet access requires no per-device list |
@@ -228,7 +256,7 @@ Voice, concision, wake behavior, developer visibility, and Android privacy prefe
 
 The Kotlin application under `android/` targets API 37 and provides a `VoiceInteractionService`, Compose assistant overlay, WebView phone UI, local ONNX wake inference, native WebRTC audio, resumable task/reminder notifications, short-lived code pairing, and Keystore-backed device credentials.
 
-Generate a five-minute pairing code from AI Cockpit Settings, then follow [android/README.md](android/README.md) to build, pair, and select Jarvis as the assistant. Foreground-app assist structure is opt-in, screenshots remain disabled, restart listening is opt-in, and the backend blocks general mutations while the paired device reports that it is locked.
+Use **Link phone** in desktop Settings and follow [android/README.md](android/README.md). Opening the link pairs automatically and starts Android's required permission/assistant prompts; supported wake, boot listening and assist context are enabled together. Already paired phones show their saved link and have one **Finish setup** action for incomplete setup. Android controls screenshot consent and protected content. The backend blocks mutations while the paired device is locked.
 
 ## Phone Access with Tailscale
 
@@ -278,6 +306,42 @@ cd backend
 uv run pytest
 ```
 
+### Jarvis task architecture M0 probe
+
+The first task-architecture gate verifies the pinned Codex SDK/App Server,
+model catalog, sandbox behavior, descendant termination, isolated profile
+ownership, and (with explicit `--live`) session persistence and interruption:
+
+```powershell
+cd backend
+uv sync --group codex-probe
+uv run --group codex-probe python -m app.jarvis_tasks probe-codex `
+  --report ../docs/jarvis-tasks/reports/codex-m0-current.json
+```
+
+See [the M0 report notes](docs/jarvis-tasks/reports/README.md). A nonzero exit is
+intentional when a required safety contract fails or live evidence is missing.
+The historical guarded API reports remain available. Current local setup selects
+trusted brokered Windows commands after native provisioning required repeated
+elevation prompts. Commands inherit the Windows user's access; brokered file
+edits remain path-constrained. Workspace leases, process-tree termination,
+restricted MCP tools and write-ahead journals remain required. A dedicated
+subscription profile is signed in and reused across tasks and restarts.
+
+Background orchestration is separately default-off. With
+`TASK_ORCHESTRATION_ENABLED=true`, one code-only feedback owner preserves the
+existing attention inbox and independently claims meaningful decisions.
+Actual native decisions also require `TASK_ORCHESTRATION_LIVE_ENABLED`
+and a dedicated `TASK_ORCHESTRATION_PROFILE`; do not enable unattended work merely because an
+isolated test passes. `/api/orchestration` provides timing, backlog, action and
+native token telemetry plus explicit deferred inspection/resumption endpoints.
+`TASK_EXECUTION_MODEL_ALLOWLIST` bounds shared new-run model preferences; an
+empty value permits only `CODEX_TASK_MODEL`. See
+[the M3 implementation/tests](docs/jarvis-tasks/08-background-orchestration.md#13-implementation-progress--2026-09-30).
+The opt-in billed emulator check is
+`uv run python ../android/scripts/verify-screen-workflow.py --orchestration`
+from `backend`; it uses disposable services, not production settings.
+
 Frontend:
 
 ```powershell
@@ -305,10 +369,11 @@ Install uv with `python -m pip install uv`. Install a supported Node.js release 
 For development mode, confirm the copied `.env` contains an actually empty value:
 
 ```env
-AUTH_PASSWORD_HASH=
+JARVIS_ACCESS_MODE=personal
+AUTH_PASSWORD=
 ```
 
-Restart the backend after changing it. If a hash is configured, only the corresponding password will work.
+Restart Jarvis after changing access settings. A configured AUTH_PASSWORD is required; password mode with no password fails closed. Preserve the signing secret for retained sessions.
 
 ### The frontend says it cannot reach the backend
 
@@ -334,7 +399,7 @@ AI-Cockpit/
 ├── frontend/                Next.js UI and generated-app route host
 ├── android/                 Android 17 system-assistant companion
 ├── docs/ARCHITECTURE.md     Current implementation architecture
-├── docs/JARVIS_FOLLOW_UP_PLAN.md  Living Jarvis v2 plan
+├── docs/JARVIS_TASK_ARCHITECTURE.md  Target modular-task architecture and plan index
 ├── docs/JARVIS_GAPS.md            Active Jarvis acceptance gaps
 ├── knowledge/               Approved local knowledge and preference template
 ├── .env.example             Safe local configuration template

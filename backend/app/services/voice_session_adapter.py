@@ -227,7 +227,7 @@ class FakeVoiceSessionAdapter:
                         "response_id": response_id,
                         "call_id": f"{response_id}:dispatch",
                         "name": "dispatch_task",
-                        "arguments": {"goal": goal},
+                        "arguments": {"goal": goal, "intent_id": "primary"},
                         "presentation_ids": list(presentation_ids),
                         "response_kind": response_kind,
                     },

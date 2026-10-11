@@ -13,6 +13,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services.orchestration_visibility import visible_attention
 from app.db.session import session_scope
 from app.db.tables import (
     JarvisLiveEvent,
@@ -22,8 +23,10 @@ from app.db.tables import (
     TaskEvent,
     TaskPresentation,
     TaskQuestion,
+    ResultPage,
 )
 from app.services.task_error_messages import public_failure_summary
+from app.services.result_telemetry import observe_notification_transport
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )
@@ -73,7 +76,17 @@ async def enqueue_task_notification(
     if event.event_type == "task.requires_input" and question is None:
         raise ValueError("Blocking-question notifications require a question")
     question_id = None if question is None else question.id
+    page = None
     deep_link = f"/tasks/{task.id}"
+    event_run_id = event.execution_run_id or task.current_run_id
+    if event.event_type in TERMINAL_TASK_EVENTS and event_run_id is not None:
+        page = (await session.execute(select(ResultPage).where(
+            ResultPage.task_id == task.id,
+            ResultPage.active_execution_run_id == event_run_id,
+            ResultPage.current_revision_id.is_not(None),
+        ).limit(1))).scalar_one_or_none()
+        if page is not None:
+            deep_link = f"/results/{page.public_id}"
     if question_id:
         deep_link += f"?question={question_id}"
     payload = {
@@ -108,6 +121,9 @@ async def enqueue_task_notification(
             },
         )
     )
+    if page is not None:
+        from app.services.result_telemetry import notification_queued
+        notification_queued(page, event)
     return outbox_id
 
 
@@ -238,6 +254,7 @@ async def route_pending_task_notifications(
     return len(due_ids)
 
 
+@observe_notification_transport
 async def _send_outbox_by_id(outbox_id: str) -> None:
     now = utc_now()
     async with session_scope() as session:
@@ -251,6 +268,7 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
                 NotificationOutbox.task_event_id.in_(
                     select(TaskPresentation.source_task_event_id)
                     .where(TaskPresentation.state == "pending")
+                    .where(visible_attention())
                     .where(TaskPresentation.source_task_event_id.is_not(None))
                 )
             )
@@ -364,7 +382,11 @@ async def acknowledge_task_notification(delivery_id: str, state: str) -> bool:
         raise ValueError("Delivery state must be opened")
     from app.services.task_presentations import task_presentation_service
 
-    return await task_presentation_service.acknowledge_notification(delivery_id=delivery_id)
+    found = await task_presentation_service.acknowledge_notification(delivery_id=delivery_id)
+    if found:
+        from app.services.result_telemetry import observe_notification
+        await observe_notification(delivery_id, "notification_opened")
+    return found
 
 
 async def _attention_is_closed(session, task_event_id: str | None) -> bool:

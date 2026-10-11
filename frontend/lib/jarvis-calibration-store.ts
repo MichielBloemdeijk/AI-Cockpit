@@ -1,3 +1,5 @@
+import { createUuid } from "./uuid";
+
 export type CalibrationCategory = "normal" | "quiet" | "distant" | "noisy" | "hard_negative";
 
 export interface CalibrationSample {
@@ -39,7 +41,7 @@ async function transaction<T>(mode: IDBTransactionMode, action: (store: IDBObjec
 
 export async function saveCalibrationSample(category: CalibrationCategory, audio: Blob): Promise<CalibrationSample> {
   const sample: CalibrationSample = {
-    id: crypto.randomUUID(), category, createdAt: new Date().toISOString(),
+    id: createUuid(), category, createdAt: new Date().toISOString(),
     mimeType: audio.type || "audio/webm", audio,
   };
   await transaction("readwrite", (store) => store.put(sample));

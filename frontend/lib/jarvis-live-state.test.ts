@@ -27,7 +27,7 @@ describe("Jarvis independent domain streams", () => {
       schema_version: 1, payload_json: { content: "hello" },
     }]);
     const task = mergeJarvisDomainReplay(conversation, "task", [{
-      id: "t9", sequence: 9, task_id: "task", attempt_id: null, event_type: "task.completed",
+      id: "t9", sequence: 9, task_id: "task", attempt_id: null, execution_run_id: null, native_item_id: null, event_type: "task.completed",
       payload: { summary: "done" }, causality: null, created_at: "2026-08-27T12:00:02Z",
     }]);
 
@@ -37,7 +37,7 @@ describe("Jarvis independent domain streams", () => {
 
   it("resets log-scoped streams while preserving global task activity", () => {
     const withTask = mergeJarvisDomainReplay(EMPTY_JARVIS_LIVE_STREAMS, "task", [{
-      id: "t1", sequence: 1, task_id: "task", attempt_id: null, event_type: "task.queued",
+      id: "t1", sequence: 1, task_id: "task", attempt_id: null, execution_run_id: null, native_item_id: null, event_type: "task.queued",
       payload: null, causality: null, created_at: "2026-08-27T12:00:00Z",
     }]);
     const reset = resetJarvisConversationStream({

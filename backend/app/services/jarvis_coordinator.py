@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
 import time
 from typing import Any
@@ -97,6 +98,9 @@ class SessionRecord:
     provider_adapter: str
     lifecycle_state: str
     controller_id: str | None
+    activation_id: str | None
+    activation_source: str | None
+    workflow_catalog_revision: str | None
     floor_state: str
     last_event_sequence: int
     created_at: datetime
@@ -1190,6 +1194,14 @@ class JarvisCoordinator:
     ) -> ControllerBootstrap:
         adapter = get_voice_session_adapter(adapter_name)
         wake_activation = self._wake_activation(activation_context)
+        activation_id = (
+            activation_context.get("activation_id") if isinstance(activation_context, dict)
+            else getattr(activation_context, "activation_id", None)
+        )
+        activation_source = (
+            activation_context.get("source") if isinstance(activation_context, dict)
+            else getattr(activation_context, "source", None)
+        )
         if wake_activation is not None and adapter_name == "openai_live":
             # The local wake detector already admitted the activation and Live
             # receives it on the one primary microphone path. Realtime's
@@ -1260,6 +1272,11 @@ class JarvisCoordinator:
                 provider_adapter=adapter.name,
                 lifecycle_state="connecting",
                 controller_id=controller_id,
+                activation_id=str(activation_id) if activation_id else None,
+                activation_source=str(activation_source) if activation_source else None,
+                workflow_catalog_revision=hashlib.sha256(
+                    settings.task_workflow_allowlist.encode("utf-8")
+                ).hexdigest(),
                 client_time_zone=temporal.time_zone,
                 client_utc_offset_minutes=temporal.utc_offset_minutes,
                 client_observed_at=temporal.observed_at,
@@ -1341,7 +1358,8 @@ class JarvisCoordinator:
                 "deltas": [],
             }
             if wake_activation is not None and wake_activation.activation_id:
-                context = {**context, "activation_id": wake_activation.activation_id}
+                context = {**context, "activation_id": wake_activation.activation_id,
+                    "activation_source": "wake_word"}
 
         if wake_activation is not None:
             self._activation_index[wake_activation.activation_id] = (
@@ -1688,6 +1706,10 @@ class JarvisCoordinator:
                             queue_user_response = True
             elif event.kind == "assistant_transcript":
                 await self._persist_assistant_transcript(session, realtime, event)
+                # Native Live has no assistant_response boundary. Reconsider
+                # queued context when this segment releases the observed floor;
+                # the transcript still grants no heard/delivered authority.
+                retry_task_updates = True
             elif event.kind == "delegation_origin_resolved":
                 correlation_id = str(payload.get("origin_correlation_id") or "")
                 origin_item_id = str(payload.get("origin_item_id") or "")
@@ -1826,7 +1848,9 @@ class JarvisCoordinator:
             elif event.kind == "shell_call":
                 activation = self._wake_activations.get((session_id, generation))
                 if activation is None or activation.verification_state == "accepted":
-                    response_finished = True
+                    # The deterministic fake adapter models a tool call as a
+                    # complete response. GPT-Live keeps the spoken turn open.
+                    response_finished = realtime.provider_adapter != "openai_live"
                     tool_name = str(payload.get("name") or "")
                     arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
                     call_id = str(payload.get("call_id") or event.event_id)
@@ -1885,6 +1909,15 @@ class JarvisCoordinator:
                         for item in (raw_presentation_ids if isinstance(raw_presentation_ids, list) else [])
                         if item
                     )
+
+        if event.kind == "delegation_received":
+            from app.services.task_capture import task_capture_service
+            try:
+                await task_capture_service.request_fresh(session_id=session_id, generation=generation,
+                    request_identity=event.payload["origin_correlation_id"])
+            except ValueError:
+                # Browser/audio-only or locked sessions have no usable screen channel.
+                pass
 
         if replay_tool_result is not None:
             active = await self.get_session(session_id)
@@ -2409,6 +2442,7 @@ class JarvisCoordinator:
         origin_timeline: dict[str, Any] | None = None,
         provider_event_id: str | None = None,
     ) -> None:
+        shell_started_ns = __import__("time").perf_counter_ns()
         correlation_key = (
             (session_id, generation, origin_correlation_id)
             if origin_correlation_id is not None
@@ -2449,9 +2483,11 @@ class JarvisCoordinator:
                 )).scalar_one_or_none()
             conversation_id = realtime.conversation_id
             active_time_zone = realtime.client_time_zone
+        authority_ready_ns = __import__("time").perf_counter_ns()
         try:
             if controller_locked and tool_name in {
-                "dispatch_task", "answer_task_question", "cancel_task",
+                "dispatch_task", "start_workflow", "answer_task_question", "cancel_task",
+                "continue_task", "control_task",
                 "set_task_update_policy", "set_jarvis_voice",
             }:
                 raise ValueError("That action is unavailable while the device is locked")
@@ -2461,14 +2497,18 @@ class JarvisCoordinator:
                 call_id=call_id,
                 conversation_id=conversation_id,
                 origin_turn_id=last_turn_id,
+                capture_request_identity=origin_correlation_id or origin_item_id or last_turn_id or call_id,
                 active_time_zone=active_time_zone or "Europe/Amsterdam",
                 now=utc_now(),
                 session_id=session_id,
                 generation=generation,
                 provider_event_id=provider_event_id or f"provider-tool:{session_id}:{generation}:{call_id}",
                 provider_call_id=call_id,
+                turn_scope=origin_item_id or last_turn_id or origin_correlation_id,
             )
             output = result.output
+            output.setdefault("admission_timing", {}).update({
+                "shell_started_ns": shell_started_ns, "authority_ready_ns": authority_ready_ns})
             durable_output = output
             control = result.control
             ok = True
@@ -2486,7 +2526,7 @@ class JarvisCoordinator:
                     internal_task_id
                 )
                 resolved_turn_id = self._provider_correlation_turns.get(correlation_key)
-                task = await session.get(Task, internal_task_id)
+                task = (await session.execute(select(Task).where(Task.id == internal_task_id))).scalar_one_or_none()
                 if task is not None and task.origin_turn_id is None and resolved_turn_id:
                     task.origin_turn_id = resolved_turn_id
             await JarvisDomainRepository(session).append_session_event(
@@ -2500,6 +2540,9 @@ class JarvisCoordinator:
                     "origin_item_id": origin_item_id,
                     "origin_correlation_id": origin_correlation_id,
                     "origin_timeline": origin_timeline or {},
+                    "stage": "result_record_started",
+                    "server_monotonic_ns": __import__("time").perf_counter_ns(),
+                    "session_id": session_id, "generation": generation,
                 },
                 idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
             )
@@ -2786,11 +2829,11 @@ class JarvisCoordinator:
                 continue
             if event_type.startswith("provider."):
                 provider_kind = event_type.removeprefix("provider.")
-                if provider_kind == "usage":
+                if provider_kind in {"usage", "delegation_usage", "delegation_tier_fallback", "provider_protocol_warning"}:
                     continue
                 if provider_kind in {"user_transcript_delta", "user_transcript"}:
                     continue
-                if provider_kind in {"assistant_response", "assistant_interrupted"}:
+                if provider_kind in {"assistant_response", "assistant_interrupted", "assistant_transcript"}:
                     for older_event in events[index + 1 :]:
                         older_event_type = older_event.event_type
                         older_kind = older_event_type.removeprefix("provider.")
@@ -2846,6 +2889,9 @@ class JarvisCoordinator:
             provider_adapter=realtime.provider_adapter,
             lifecycle_state=realtime.lifecycle_state,
             controller_id=realtime.controller_id,
+            activation_id=realtime.activation_id,
+            activation_source=realtime.activation_source,
+            workflow_catalog_revision=realtime.workflow_catalog_revision,
             floor_state=floor_state,
             last_event_sequence=realtime.last_event_sequence,
             created_at=realtime.created_at,

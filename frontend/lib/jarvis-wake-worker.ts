@@ -1,5 +1,6 @@
 import { HeyBuddyOnnxInference } from "./jarvis-hey-buddy-inference";
 import { JarvisWakeEngine } from "./jarvis-wake-engine";
+import { createUuid } from "./uuid";
 import {
   JARVIS_WAKE_SAMPLE_RATE,
   type JarvisWakeWorkerCommand,
@@ -75,7 +76,7 @@ scope.onmessage = (event) => {
         probability,
       }),
       onDetected: () => {
-        currentActivationId = crypto.randomUUID();
+        currentActivationId = createUuid();
       },
       onCandidateStart: (probability, preRoll) => {
         const copiedPreRoll = preRoll.slice();

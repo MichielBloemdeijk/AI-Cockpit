@@ -1,11 +1,14 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/CockpitLink";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bot, ChevronRight, ListTodo, Loader2, Plus } from "lucide-react";
 
-import { dispatchTask, getTaskWorkerHealth, listTasks, type TaskSummary } from "@/lib/api";
+import { controlTaskPool, dispatchTask, getTaskPool, getTaskWorkerHealth, listTasks, type TaskPool, type TaskPoolAction, type TaskSummary } from "@/lib/api";
 import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
+import { createUuid } from "@/lib/uuid";
+import { TaskToolOverrides } from "@/components/TaskToolOverrides";
+import type { ToolOverrides } from "@/lib/api";
 
 
 function statusClass(status: string): string {
@@ -18,17 +21,21 @@ function statusClass(status: string): string {
 export default function TasksPage() {
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [goal, setGoal] = useState("");
+  const [toolOverrides, setToolOverrides] = useState<ToolOverrides>();
   const [showFinished, setShowFinished] = useState(true);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workerStatus, setWorkerStatus] = useState("offline");
+  const [pool, setPool] = useState<TaskPool | null>(null);
+  const [poolActionPending, setPoolActionPending] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [nextTasks, worker] = await Promise.all([listTasks(), getTaskWorkerHealth()]);
+      const [nextTasks, worker, nextPool] = await Promise.all([listTasks(), getTaskWorkerHealth(), getTaskPool()]);
       setTasks(nextTasks);
       setWorkerStatus(worker.status);
+      setPool(nextPool);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to load tasks");
@@ -54,13 +61,34 @@ export default function TasksPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await dispatchTask({ goal: normalized, idempotency_key: crypto.randomUUID(), origin_surface: "tasks_ui" });
+      await dispatchTask({ goal: normalized, idempotency_key: createUuid(), origin_surface: "tasks_ui",
+        ...(toolOverrides ? { execution_config: { tools: toolOverrides } } : {}) });
       setGoal("");
+      setToolOverrides(undefined);
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to dispatch task");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const controlPool = async (action: TaskPoolAction, workerId?: string) => {
+    if (poolActionPending) return;
+    if (action !== "repair_capacity" && !window.confirm(
+      action === "restart_pool"
+        ? "Restart all pool workers? Running tasks may be interrupted."
+        : "Replace this worker? Its current task may be interrupted.",
+    )) return;
+    setPoolActionPending(true);
+    setError(null);
+    try {
+      await controlTaskPool(action, `Requested from Tasks UI: ${action}`, workerId);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to control task pool");
+    } finally {
+      setPoolActionPending(false);
     }
   };
 
@@ -76,6 +104,11 @@ export default function TasksPage() {
               <span className={workerStatus === "online" ? "text-xs text-emerald-400" : "text-xs text-zinc-500"}>worker {workerStatus}</span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">Global background work, independent from conversation history.</p>
+            {pool && <p className="mt-1 text-xs text-zinc-400">Pool {pool.enabled ? `${pool.busy}/${pool.max_busy} busy · ${pool.standby} standby · ${pool.starting} starting · ${pool.stale} stale · ${pool.queue_depth} queued${pool.saturated ? " · saturated" : ""}` : "disabled (legacy worker mode)"}</p>}
+            {pool?.enabled && <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              <button type="button" disabled={poolActionPending} onClick={() => void controlPool("repair_capacity")} className="rounded-lg border border-zinc-700 px-2 py-1 text-zinc-300 disabled:opacity-40">Repair capacity</button>
+              <button type="button" disabled={poolActionPending} onClick={() => void controlPool("restart_pool")} className="rounded-lg border border-amber-700/60 px-2 py-1 text-amber-200 disabled:opacity-40">Restart pool</button>
+            </div>}
           </div>
           <label className="flex items-center gap-2 text-xs text-zinc-400">
             <input type="checkbox" checked={showFinished} onChange={(event) => setShowFinished(event.target.checked)} />
@@ -86,6 +119,15 @@ export default function TasksPage() {
 
       <main className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
         <div className="mx-auto max-w-5xl space-y-5">
+          {pool && pool.workers.length > 0 && <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3 text-xs text-zinc-400">
+            <h2 className="mb-2 font-medium text-zinc-200">Pool workers</h2>
+            <div className="flex flex-wrap gap-2">
+              {pool.workers.map((worker) => <div key={worker.id} className="flex items-center gap-2 rounded-lg border border-zinc-700 px-2 py-1">
+                <span>{worker.id.slice(0, 8)} · {worker.state}</span>
+                <button type="button" disabled={poolActionPending || worker.state === "retiring"} onClick={() => void controlPool("replace_worker", worker.id)} className="text-amber-300 disabled:opacity-40">Replace</button>
+              </div>)}
+            </div>
+          </section>}
           <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
             <div className="flex items-end gap-2">
               <label className="min-w-0 flex-1">
@@ -114,6 +156,7 @@ export default function TasksPage() {
                 Dispatch
               </button>
             </div>
+            <TaskToolOverrides value={toolOverrides} onChange={setToolOverrides} />
           </section>
 
           {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}

@@ -75,7 +75,7 @@ export function Sidebar() {
             id="mobile-more-navigation"
             role="dialog"
             aria-label="More navigation"
-            className="absolute inset-x-2 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] rounded-3xl border border-zinc-700 bg-zinc-900 p-3 shadow-2xl"
+            className="mobile-safe-more-menu absolute inset-x-2 rounded-3xl border border-zinc-700 bg-zinc-900 p-3 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-2 flex min-h-12 items-center justify-between px-2">
@@ -98,7 +98,7 @@ export function Sidebar() {
         </div>
       )}
 
-      <nav aria-label="Primary mobile navigation" className="fixed inset-x-0 bottom-0 z-50 border-t border-zinc-800 bg-zinc-950/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 backdrop-blur md:hidden">
+      <nav aria-label="Primary mobile navigation" className="mobile-safe-nav fixed inset-x-0 bottom-0 z-50 border-t border-zinc-800 bg-zinc-950/95 px-2 pt-2 backdrop-blur md:hidden">
         <div className="mx-auto flex max-w-md items-center gap-1 rounded-3xl border border-zinc-800 bg-zinc-900/90 p-1.5 shadow-[0_-12px_40px_rgba(0,0,0,0.35)]">
           {MOBILE_NAV.map(({ href, label, icon: Icon }) => {
             const active = pathname.startsWith(href);

@@ -1,0 +1,931 @@
+{
+  "schema": "jarvis-m4-report.v1",
+  "verified_at": "2026-10-01",
+  "status": "passed_guarded_api_emulator",
+  "production_enabled": false,
+  "regression": {
+    "backend": {
+      "passed": 447,
+      "skipped": 9
+    },
+    "frontend": {
+      "passed": 166
+    },
+    "production_frontend_build": "passed"
+  },
+  "configuration": {
+    "codex_runtime": "0.155.1",
+    "worker_model": "gpt-5.6-luna",
+    "worker_effort": "low",
+    "search_model": "gpt-5.5",
+    "search_effort": "low",
+    "native_tools": "constrained_journaled_mcp"
+  },
+  "definitions": {
+    "recipe_from_screen@1": "6fd2bfa86c54ba7e74a94395adcdedc73e1f168f0a661a732e24576d75422ba1",
+    "research_screen@1": "a69837e78c6823448fb8d406cbb92bbe124dd6f2ae9d5ed40354925a08ed7fa7"
+  },
+  "fixtures": {
+    "scenario_ids": [
+      "clear",
+      "ambiguity",
+      "source_failure",
+      "invalid_output",
+      "followup",
+      "failed_update"
+    ],
+    "all_passed": true,
+    "human_input": false
+  },
+  "native_samples": [
+    {
+      "definition": "recipe_from_screen@1",
+      "subject": "tomato pasta",
+      "task_id": "d1776ec1-6d7e-45e8-a7a5-ca7444bb3c5e",
+      "result_id": "324e6726-4047-45b5-8585-e6ff6507cb4b",
+      "status": "passed",
+      "initial_outcome": "completed",
+      "cold_execution_seconds": 27.938,
+      "ready_followup_seconds": 12.89,
+      "same_url_revision": true,
+      "reused_without_new_search": true,
+      "source_reads": [
+        {
+          "operation_id": "9afb162c-f0ea-4ec9-8eb8-7757ce7cdd16",
+          "url": "https://www.bonappetit.com/bon-appetit/recipe/basically-spaghetti-pomodoro",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 1344
+        },
+        {
+          "operation_id": "9fc8fca7-e6e0-4a07-ab78-ee46d8939763",
+          "url": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 1860
+        },
+        {
+          "operation_id": "c55e9799-e5ae-4bac-8209-b225c81eb8fa",
+          "url": "https://www.foodnetwork.com/recipes/ina-garten/capellini-with-tomatoes-and-basil-recipe-1949902",
+          "state": "failed",
+          "error": "Source returned HTTP 403",
+          "duration_ms": null
+        }
+      ],
+      "search_usage": [
+        {
+          "provider_response_id": "resp_0f5ec20672f07cde016abe1c64e85087d2a97e030390a10bcd",
+          "model": "gpt-5.5",
+          "provider_calls": 1,
+          "usage": {
+            "input_tokens": 8742,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 3584
+            },
+            "output_tokens": 530,
+            "output_tokens_details": {
+              "reasoning_tokens": 60
+            },
+            "total_tokens": 9272
+          },
+          "invoice_cost": null,
+          "provider_status": "completed",
+          "incomplete_details": null,
+          "duration_ms": 7734,
+          "web_search_calls": 1,
+          "candidates": [
+            {
+              "url": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta",
+              "title": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta"
+            },
+            {
+              "url": "https://www.foodnetwork.com/recipes/ina-garten/capellini-with-tomatoes-and-basil-recipe-1949902",
+              "title": "https://www.foodnetwork.com/recipes/ina-garten/capellini-with-tomatoes-and-basil-recipe-1949902"
+            },
+            {
+              "url": "https://www.bonappetit.com/bon-appetit/recipe/basically-spaghetti-pomodoro",
+              "title": "https://www.bonappetit.com/bon-appetit/recipe/basically-spaghetti-pomodoro"
+            },
+            {
+              "url": "https://food.unl.edu/recipe/tomato-and-basil-pasta/",
+              "title": "https://food.unl.edu/recipe/tomato-and-basil-pasta/"
+            },
+            {
+              "url": "https://www.foodnetwork.com/recipes/food-network-kitchen/simple-spaghetti-with-tomato-sauce-3362665.html",
+              "title": "https://www.foodnetwork.com/recipes/food-network-kitchen/simple-spaghetti-with-tomato-sauce-3362665.html"
+            }
+          ]
+        }
+      ],
+      "native_usage": [
+        {
+          "total": {
+            "totalTokens": 74293,
+            "outputTokens": 911,
+            "reasoningOutputTokens": 73,
+            "cachedInputTokens": 54555,
+            "cacheWriteInputTokens": 18812,
+            "inputTokens": 73382
+          },
+          "last": {
+            "totalTokens": 18819,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 18236,
+            "cacheWriteInputTokens": 576,
+            "inputTokens": 18815
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        },
+        {
+          "total": {
+            "totalTokens": 160029,
+            "outputTokens": 1702,
+            "reasoningOutputTokens": 148,
+            "cachedInputTokens": 135596,
+            "cacheWriteInputTokens": 22704,
+            "inputTokens": 158327
+          },
+          "last": {
+            "totalTokens": 22735,
+            "outputTokens": 28,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 22167,
+            "cacheWriteInputTokens": 537,
+            "inputTokens": 22707
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        }
+      ],
+      "initial_content": {
+        "title": "One-Pan Vegetarian Tomato Pasta",
+        "source_event_sequences": [
+          87
+        ],
+        "ingredients": [
+          "12 oz linguine",
+          "12 oz cherry or grape tomatoes, halved (quarter large tomatoes)",
+          "1 onion, thinly sliced (about 2 cups)",
+          "4 garlic cloves, thinly sliced",
+          "1/2 tsp red-pepper flakes",
+          "2 basil sprigs, plus torn basil leaves to garnish",
+          "2 tbsp extra-virgin olive oil, plus more to serve",
+          "4 1/2 cups water",
+          "2 tsp salt, plus more to taste",
+          "1/4 tsp freshly ground black pepper, plus more to taste",
+          "Optional: vegetarian-labelled Parmesan-style cheese, to serve"
+        ],
+        "instructions": [
+          "Combine the pasta, tomatoes, onion, garlic, red-pepper flakes, basil sprigs, olive oil, salt, pepper, and water in a large straight-sided skillet.",
+          "Bring to a boil over high heat. Boil, stirring and turning the pasta frequently with tongs, until the pasta is al dente and the water has nearly evaporated, about 9 minutes.",
+          "Taste and adjust the salt and pepper. Divide among four bowls, garnish with torn basil, and drizzle with extra olive oil. Serve with vegetarian-labelled Parmesan-style cheese if desired."
+        ],
+        "sources": [
+          {
+            "operation_id": "9fc8fca7-e6e0-4a07-ab78-ee46d8939763",
+            "url": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta",
+            "title": "One-Pan Tomato Pasta Recipe | PBS Food"
+          }
+        ],
+        "uncertainty": "The screen identifies the dish as tomato pasta but does not specify a particular style; this recipe uses a one-pan tomato pasta approach. Parmesan is omitted from the core recipe; use only a vegetarian-labelled alternative if desired.",
+        "servings": "4 servings",
+        "timing": "About 20 minutes"
+      },
+      "revised_content": {
+        "title": "One-Pan Vegetarian Tomato Pasta",
+        "source_event_sequences": [
+          87
+        ],
+        "ingredients": [
+          "12 oz linguine",
+          "12 oz cherry or grape tomatoes, halved (quarter large tomatoes)",
+          "1 onion, thinly sliced (about 2 cups)",
+          "4 garlic cloves, thinly sliced",
+          "1/2 tsp red-pepper flakes",
+          "2 basil sprigs, plus torn basil leaves to garnish",
+          "2 tbsp extra-virgin olive oil, plus more to serve",
+          "4 1/2 cups water",
+          "2 tsp salt, plus more to taste",
+          "1/4 tsp freshly ground black pepper, plus more to taste",
+          "Optional: vegetarian-labelled Parmesan-style cheese, to serve"
+        ],
+        "instructions": [
+          "Put the pasta, tomatoes, onion, garlic, red-pepper flakes, basil sprigs, oil, salt, pepper, and water in a large straight-sided skillet.",
+          "Bring to a boil over high heat. Cook, turning the pasta often with tongs, until al dente and almost all the water is gone, about 9 minutes.",
+          "Season to taste. Divide between four bowls and top with torn basil and a drizzle of oil. Add vegetarian-labelled Parmesan-style cheese if desired."
+        ],
+        "sources": [
+          {
+            "operation_id": "9fc8fca7-e6e0-4a07-ab78-ee46d8939763",
+            "url": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta",
+            "title": "One-Pan Tomato Pasta Recipe | PBS Food"
+          }
+        ],
+        "uncertainty": "The screen identifies the dish as tomato pasta but does not specify a particular style; this recipe uses a one-pan tomato pasta approach. Parmesan is omitted from the core recipe; use only a vegetarian-labelled alternative if desired.",
+        "servings": "4 servings",
+        "timing": "About 20 minutes"
+      }
+    },
+    {
+      "definition": "recipe_from_screen@1",
+      "subject": "lentil soup",
+      "task_id": "511706c4-2163-455e-a928-b19d3bae610f",
+      "result_id": "d916437f-7a1c-449b-a0b0-ab86d342f1b9",
+      "status": "passed",
+      "initial_outcome": "completed",
+      "cold_execution_seconds": 23.328,
+      "ready_followup_seconds": 12.297,
+      "same_url_revision": true,
+      "reused_without_new_search": true,
+      "source_reads": [
+        {
+          "operation_id": "18ddcf2e-0463-461f-bc35-fc89d199171b",
+          "url": "https://www.greenpan.us/blogs/recipes/vegetarian-lentil-soup",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 1688
+        },
+        {
+          "operation_id": "2a89c454-f375-46c2-b7bf-7bf6f42c2841",
+          "url": "https://www.foodnetwork.com/recipes/ina-garten/lentil-vegetable-soup-recipe-1948822",
+          "state": "failed",
+          "error": "Source returned HTTP 403",
+          "duration_ms": null
+        },
+        {
+          "operation_id": "755b5107-55b2-47eb-a2dc-382139d772e7",
+          "url": "https://www.nutrition.gov/recipes/lentil-soup",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 2343
+        }
+      ],
+      "search_usage": [
+        {
+          "provider_response_id": "resp_017ef48f1098b9ec016abe1c8f199887d2b1edacad22791b90",
+          "model": "gpt-5.5",
+          "provider_calls": 1,
+          "usage": {
+            "input_tokens": 8725,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 3584
+            },
+            "output_tokens": 122,
+            "output_tokens_details": {
+              "reasoning_tokens": 33
+            },
+            "total_tokens": 8847
+          },
+          "invoice_cost": null,
+          "provider_status": "completed",
+          "incomplete_details": null,
+          "duration_ms": 4922,
+          "web_search_calls": 1,
+          "candidates": [
+            {
+              "url": "https://www.nutrition.gov/recipes/lentil-soup",
+              "title": "Lentil Soup | Nutrition.gov"
+            },
+            {
+              "url": "https://www.greenpan.us/blogs/recipes/vegetarian-lentil-soup",
+              "title": "https://www.greenpan.us/blogs/recipes/vegetarian-lentil-soup"
+            },
+            {
+              "url": "https://www.foodnetwork.com/recipes/ina-garten/lentil-vegetable-soup-recipe-1948822",
+              "title": "https://www.foodnetwork.com/recipes/ina-garten/lentil-vegetable-soup-recipe-1948822"
+            },
+            {
+              "url": "https://www.foodnetwork.com/recipes/food-network-kitchen/the-best-lentil-soup-7192365",
+              "title": "https://www.foodnetwork.com/recipes/food-network-kitchen/the-best-lentil-soup-7192365"
+            },
+            {
+              "url": "https://www.williams-sonoma.com/recipe/vegetable-and-lentil-soup.html",
+              "title": "https://www.williams-sonoma.com/recipe/vegetable-and-lentil-soup.html"
+            }
+          ]
+        }
+      ],
+      "native_usage": [
+        {
+          "total": {
+            "totalTokens": 115970,
+            "outputTokens": 750,
+            "reasoningOutputTokens": 80,
+            "cachedInputTokens": 80367,
+            "cacheWriteInputTokens": 34838,
+            "inputTokens": 115220
+          },
+          "last": {
+            "totalTokens": 34860,
+            "outputTokens": 19,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 34307,
+            "cacheWriteInputTokens": 531,
+            "inputTokens": 34841
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        },
+        {
+          "total": {
+            "totalTokens": 295468,
+            "outputTokens": 1383,
+            "reasoningOutputTokens": 143,
+            "cachedInputTokens": 245125,
+            "cacheWriteInputTokens": 48933,
+            "inputTokens": 294085
+          },
+          "last": {
+            "totalTokens": 48960,
+            "outputTokens": 24,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 48452,
+            "cacheWriteInputTokens": 481,
+            "inputTokens": 48936
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        }
+      ],
+      "initial_content": {
+        "title": "Vegetarian Lentil Soup",
+        "source_event_sequences": [
+          60
+        ],
+        "ingredients": [
+          "2 tablespoons olive oil",
+          "2 medium carrots, diced",
+          "2 medium celery stalks, chopped",
+          "1 small yellow onion, chopped",
+          "2 cloves garlic, minced",
+          "1 teaspoon dried oregano",
+          "1 teaspoon dried basil",
+          "1/2 teaspoon ground black pepper",
+          "2 cups dry lentils",
+          "1 (14.5-ounce) can crushed tomatoes",
+          "2 cups vegetable broth",
+          "6 1/2 cups water"
+        ],
+        "instructions": [
+          "Heat the olive oil in a large soup pot over medium heat. Add the carrots, celery, and onion; cook and stir until the onion is tender.",
+          "Stir in the garlic, oregano, basil, and black pepper. Cook for 2 minutes.",
+          "Stir in the lentils and crushed tomatoes, then add the vegetable broth and water. Cover and bring to a boil.",
+          "Reduce the heat and simmer for at least 1 hour, or until the lentils are tender. Taste and adjust seasoning if needed.",
+          "Serve hot. Refrigerate leftovers and reheat on the stove or in the microwave; the soup may taste even better the next day."
+        ],
+        "sources": [
+          {
+            "operation_id": "755b5107-55b2-47eb-a2dc-382139d772e7",
+            "url": "https://www.nutrition.gov/recipes/lentil-soup",
+            "title": "Lentil Soup | Nutrition.gov"
+          }
+        ],
+        "uncertainty": "The screen identifies lentil soup; the vegetarian recipe is based on the fetched USDA Nutrition.gov version.",
+        "servings": "11 servings",
+        "timing": "At least 1 hour"
+      },
+      "revised_content": {
+        "title": "Vegetarian Lentil Soup",
+        "source_event_sequences": [
+          60
+        ],
+        "ingredients": [
+          "2 tablespoons olive oil",
+          "2 medium carrots, diced",
+          "2 medium celery stalks, chopped",
+          "1 small yellow onion, chopped",
+          "2 cloves garlic, minced",
+          "1 teaspoon dried oregano",
+          "1 teaspoon dried basil",
+          "1/2 teaspoon ground black pepper",
+          "2 cups dry lentils",
+          "1 (14.5-ounce) can crushed tomatoes",
+          "2 cups vegetable broth",
+          "6 1/2 cups water"
+        ],
+        "instructions": [
+          "Heat the oil in a large soup pot over medium heat. Add the carrots, celery, and onion. Cook, stirring, until the onion is tender.",
+          "Add the garlic, oregano, basil, and pepper. Cook for 2 minutes.",
+          "Add the lentils, tomatoes, broth, and water. Cover and bring to a boil.",
+          "Lower the heat and simmer for at least 1 hour, until the lentils are tender.",
+          "Refrigerate leftovers. Reheat on the stove or in the microwave."
+        ],
+        "sources": [
+          {
+            "operation_id": "755b5107-55b2-47eb-a2dc-382139d772e7",
+            "url": "https://www.nutrition.gov/recipes/lentil-soup",
+            "title": "Lentil Soup | Nutrition.gov"
+          }
+        ],
+        "uncertainty": "The screen identifies lentil soup; this vegetarian recipe uses the retained USDA Nutrition.gov source.",
+        "servings": "11 servings",
+        "timing": "At least 1 hour"
+      }
+    },
+    {
+      "definition": "research_screen@1",
+      "subject": "tomato pasta",
+      "task_id": "bc75982f-ccc3-4e44-958d-de3fa8345941",
+      "result_id": "3e5319e8-001c-4f6d-95a3-f45845f05bf2",
+      "status": "passed",
+      "initial_outcome": "completed",
+      "cold_execution_seconds": 37.406,
+      "ready_followup_seconds": 17.25,
+      "same_url_revision": true,
+      "reused_without_new_search": true,
+      "source_reads": [
+        {
+          "operation_id": "117a583d-b356-4440-a1bd-b803d3e6487e",
+          "url": "https://www.lacucinaitaliana.it/article/spaghetti-al-pomodoro-origini-del-piatto-simbolo-italiano/",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 2093
+        },
+        {
+          "operation_id": "c042f7b7-17dd-4f41-adbb-bd29f18ea0c9",
+          "url": "https://www.treccani.it/enciclopedia/pasta_%28Enciclopedia-dei-ragazzi%29/",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 1187
+        },
+        {
+          "operation_id": "c5d985a5-1e3f-4011-be18-2b72f83f6b9b",
+          "url": "https://pomodoro.museidelcibo.it/per-saperne-di-piu/focus-su/pomodoro-a-parma/pomodoro-nella-storia-tullio-gregory/",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 1938
+        }
+      ],
+      "search_usage": [
+        {
+          "provider_response_id": "resp_0b5851e85a1ecf10016abe1c71bbac87d2bcc04fce10687141",
+          "model": "gpt-5.5",
+          "provider_calls": 1,
+          "usage": {
+            "input_tokens": 17692,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 3584
+            },
+            "output_tokens": 817,
+            "output_tokens_details": {
+              "reasoning_tokens": 175
+            },
+            "total_tokens": 18509
+          },
+          "invoice_cost": null,
+          "provider_status": "completed",
+          "incomplete_details": null,
+          "duration_ms": 14359,
+          "web_search_calls": 2,
+          "candidates": [
+            {
+              "url": "https://www.treccani.it/enciclopedia/pasta_%28Enciclopedia-dei-ragazzi%29/",
+              "title": "Pasta - Enciclopedia - Treccani"
+            },
+            {
+              "url": "https://pomodoro.museidelcibo.it/per-saperne-di-piu/focus-su/pomodoro-a-parma/pomodoro-nella-storia-tullio-gregory/",
+              "title": "Il pomodoro nella storia – Tullio Gregory – Museo del Pomodoro"
+            },
+            {
+              "url": "https://www.lacucinaitaliana.it/article/spaghetti-al-pomodoro-origini-del-piatto-simbolo-italiano/",
+              "title": "Spaghetti al pomodoro: il piatto simbolo italiano | La Cucina Italiana"
+            },
+            {
+              "url": "https://www.lacucinaitaliana.com/amp/italian-food/how-to-cook/spaghetti-al-pomodoro-the-worlds-best-pasta-recipe",
+              "title": "Spaghetti al Pomodoro, the World's Best Pasta Recipe - La Cucina Italiana"
+            },
+            {
+              "url": "https://cup.columbia.edu/book/pomodoro/9780231152068/",
+              "title": "Pomodoro! | Columbia University Press"
+            }
+          ]
+        }
+      ],
+      "native_usage": [
+        {
+          "total": {
+            "totalTokens": 145800,
+            "outputTokens": 886,
+            "cacheWriteInputTokens": 37298,
+            "inputTokens": 144914,
+            "reasoningOutputTokens": 118,
+            "cachedInputTokens": 107598
+          },
+          "last": {
+            "totalTokens": 37323,
+            "outputTokens": 22,
+            "cacheWriteInputTokens": 579,
+            "inputTokens": 37301,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 36719
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        },
+        {
+          "total": {
+            "totalTokens": 377341,
+            "outputTokens": 1864,
+            "cacheWriteInputTokens": 54792,
+            "inputTokens": 375477,
+            "reasoningOutputTokens": 299,
+            "cachedInputTokens": 320652
+          },
+          "last": {
+            "totalTokens": 54822,
+            "outputTokens": 27,
+            "cacheWriteInputTokens": 526,
+            "inputTokens": 54795,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 54266
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        }
+      ],
+      "initial_content": {
+        "title": "Tomato Pasta: preparation and background",
+        "source_event_sequences": [
+          70,
+          71,
+          72
+        ],
+        "body": "Tomato pasta is pasta tossed with a cooked tomato sauce—typically ripe tomatoes or passata reduced with olive oil, salt and aromatic ingredients such as garlic, onion or basil. The pasta is boiled separately, then combined with the sauce so it finishes coating the noodles; cheese may be added, but the menu’s vegetarian label does not establish a particular recipe.\n\nIts background is distinctly transregional. Dry pasta developed through Mediterranean and Arab-world traditions, while tomatoes came to Europe from the Americas in the sixteenth century and were initially treated with suspicion. Tomato sauces appeared in Italian cooking by the seventeenth century, but tomato-on-pasta combinations became established later, especially in Naples and across the eighteenth and nineteenth centuries. Thus “tomato pasta” is best understood as a later Italian classic built from ingredients with different histories, not as an unchanged ancient dish.\n\nSources: [Treccani, “Pasta”](https://www.treccani.it/enciclopedia/pasta_%28Enciclopedia-dei-ragazzi%29/); [Museo del Pomodoro, “Il pomodoro nella storia”](https://pomodoro.museidelcibo.it/per-saperne-di-piu/focus-su/pomodoro-a-parma/pomodoro-nella-storia-tullio-gregory/); [La Cucina Italiana, “Spaghetti al pomodoro”](https://www.lacucinaitaliana.it/article/spaghetti-al-pomodoro-origini-del-piatto-simbolo-italiano/)",
+        "summary": "Tomato pasta is a simple vegetarian pasta dish dressed with cooked tomato sauce; its modern Italian identity emerged gradually through the meeting of pasta, New World tomatoes and later Italian cooking practices."
+      },
+      "revised_content": {
+        "title": "Tomato Pasta: preparation and background",
+        "source_event_sequences": [
+          70,
+          71,
+          72
+        ],
+        "body": "Tomato pasta is pasta with cooked tomato sauce—usually ripe tomatoes or passata, olive oil and salt, with optional garlic, onion or basil. Boil the pasta separately, then toss it with the sauce until coated. Cheese may be added, but the menu’s vegetarian label does not specify a particular recipe.\n\nIts background is distinctly transregional. Dry pasta developed through Mediterranean and Arab-world traditions, while tomatoes came to Europe from the Americas in the sixteenth century and were initially treated with suspicion. Tomato sauces appeared in Italian cooking by the seventeenth century, but tomato-on-pasta combinations became established later, especially in Naples and across the eighteenth and nineteenth centuries. Thus “tomato pasta” is best understood as a later Italian classic built from ingredients with different histories, not as an unchanged ancient dish.\n\nSources: [Treccani, “Pasta”](https://www.treccani.it/enciclopedia/pasta_%28Enciclopedia-dei-ragazzi%29/); [Museo del Pomodoro, “Il pomodoro nella storia”](https://pomodoro.museidelcibo.it/per-saperne-di-piu/focus-su/pomodoro-a-parma/pomodoro-nella-storia-tullio-gregory/); [La Cucina Italiana, “Spaghetti al pomodoro”](https://www.lacucinaitaliana.it/article/spaghetti-al-pomodoro-origini-del-piatto-simbolo-italiano/)",
+        "summary": "Tomato pasta is a simple vegetarian pasta dish dressed with cooked tomato sauce; its modern Italian identity emerged gradually through the meeting of pasta, New World tomatoes and later Italian cooking practices."
+      }
+    },
+    {
+      "definition": "research_screen@1",
+      "subject": "lentil soup",
+      "task_id": "91824e52-f081-484d-afbd-00c5a09e5ebb",
+      "result_id": "af814bf8-5494-47ac-85b8-348fbbe6af7a",
+      "status": "passed",
+      "initial_outcome": "completed",
+      "cold_execution_seconds": 35.391,
+      "ready_followup_seconds": 11.531,
+      "same_url_revision": true,
+      "reused_without_new_search": true,
+      "source_reads": [
+        {
+          "operation_id": "7229875e-c392-4a04-8a6e-7b2c9b42e858",
+          "url": "https://www.iranicaonline.org/articles/adas/adas-i-lentils/",
+          "state": "failed",
+          "error": "Source returned HTTP 403",
+          "duration_ms": null
+        },
+        {
+          "operation_id": "a7da3fde-29a5-4c7f-ad79-94a1c2896542",
+          "url": "https://www.ucpress.edu/blog-posts/a-tomato-y-lentil-soup-for-cooler-days",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 1969
+        },
+        {
+          "operation_id": "acac4e85-29d8-4ec4-b0b8-035b3f999b57",
+          "url": "https://repo.mel.cgiar.org/items/9df3d770-56ad-4214-b16a-f26d4052afb8",
+          "state": "succeeded",
+          "error": null,
+          "duration_ms": 2282
+        }
+      ],
+      "search_usage": [
+        {
+          "provider_response_id": "resp_0aeb56cb5753b3f9016abe1ca868a487d2beb6ac800c9d9556",
+          "model": "gpt-5.5",
+          "provider_calls": 1,
+          "usage": {
+            "input_tokens": 15265,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 3584
+            },
+            "output_tokens": 650,
+            "output_tokens_details": {
+              "reasoning_tokens": 144
+            },
+            "total_tokens": 15915
+          },
+          "invoice_cost": null,
+          "provider_status": "completed",
+          "incomplete_details": null,
+          "duration_ms": 16531,
+          "web_search_calls": 2,
+          "candidates": [
+            {
+              "url": "https://repo.mel.cgiar.org/items/9df3d770-56ad-4214-b16a-f26d4052afb8",
+              "title": "Lentil cook book"
+            },
+            {
+              "url": "https://www.iranicaonline.org/articles/adas/adas-i-lentils/",
+              "title": "ʿADAS i. Lentils - Encyclopaedia Iranica"
+            },
+            {
+              "url": "https://www.ucpress.edu/blog-posts/a-tomato-y-lentil-soup-for-cooler-days",
+              "title": "A Tomato-y Egyptian Lentil Soup for Cooler Days - University of California Press"
+            },
+            {
+              "url": "https://cookbooksoftheworld.com/italy/la-scienza-in-cucina/lentil-soup-in-the-rice-version-zuppa-di-lenticchie/",
+              "title": "Lentil soup, in the rice version (Zuppa di lenticchie) | Science in the Kitchen and the Art of Eating Well"
+            },
+            {
+              "url": "https://en.m.wikisource.org/wiki/Page%3AEncyclop%C3%A6dia_Britannica%2C_Ninth_Edition%2C_v._14.djvu/467",
+              "title": "Page:Encyclopædia Britannica, Ninth Edition, v. 14.djvu/467 - Wikisource, the free online library"
+            }
+          ]
+        }
+      ],
+      "native_usage": [
+        {
+          "total": {
+            "totalTokens": 138158,
+            "outputTokens": 867,
+            "cacheWriteInputTokens": 34411,
+            "inputTokens": 137291,
+            "reasoningOutputTokens": 121,
+            "cachedInputTokens": 102862
+          },
+          "last": {
+            "totalTokens": 34436,
+            "outputTokens": 22,
+            "cacheWriteInputTokens": 536,
+            "inputTokens": 34414,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 33875
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        },
+        {
+          "total": {
+            "totalTokens": 328889,
+            "outputTokens": 1607,
+            "cacheWriteInputTokens": 55569,
+            "inputTokens": 327282,
+            "reasoningOutputTokens": 218,
+            "cachedInputTokens": 271683
+          },
+          "last": {
+            "totalTokens": 55599,
+            "outputTokens": 27,
+            "cacheWriteInputTokens": 518,
+            "inputTokens": 55572,
+            "reasoningOutputTokens": 0,
+            "cachedInputTokens": 55051
+          },
+          "cost_usd": null,
+          "cost_status": "provider_cost_unavailable"
+        }
+      ],
+      "initial_content": {
+        "title": "Lentil soup",
+        "source_event_sequences": [
+          67,
+          68
+        ],
+        "body": "## Lentil soup\n\n**What it is.** Lentil soup is a savory soup built around cooked lentils, whose texture may range from brothy and chunky to smooth and puréed. Lentils have been staple foods in the Near East and India, and are widely used in soups, stews, salads, and other dishes.[[1]](https://repo.mel.cgiar.org/items/9df3d770-56ad-4214-b16a-f26d4052afb8)\n\n**Typical preparation.** A documented Egyptian-style method rinses red or yellow lentils, briefly boils and drains them, then cooks them with browned onion and carrot, tomato, and broth. The mixture is blended smooth, seasoned with salt and cumin, reheated, and served with toasted bread cubes and lime; garlic, parsley, or extra tomato are noted variations.[[2]](https://www.ucpress.edu/blog-posts/a-tomato-y-lentil-soup-for-cooler-days)\n\n**Background.** Lentils are among the earliest domesticated pulse crops, with archaeological remains in the Fertile Crescent dating back about 10,000 years. Evidence cited by ICARDA includes lentil paste in ancient Egyptian tombs and a depiction of lentil soup from the era of Ramses II. The menu does not identify a specific national style, so these details describe a well-attested tradition rather than claiming this exact bowl is Egyptian.[[1]](https://repo.mel.cgiar.org/items/9df3d770-56ad-4214-b16a-f26d4052afb8)",
+        "summary": "Lentil soup is a flexible, protein-rich pulse soup; the menu names the dish but gives no regional variant."
+      },
+      "revised_content": {
+        "title": "Lentil soup",
+        "source_event_sequences": [
+          67,
+          68
+        ],
+        "body": "## Lentil soup\n\n**What it is.** Lentil soup is a savory soup built around cooked lentils, ranging from brothy and chunky to smooth and puréed. Lentils have long been staples in the Near East and India and are widely used in soups, stews, salads, and other dishes.[[1]](https://repo.mel.cgiar.org/items/9df3d770-56ad-4214-b16a-f26d4052afb8)\n\n**Typical preparation.** Rinse red or yellow lentils, boil them briefly with salt, and drain. Brown chopped onion and carrot in butter, then combine them with the lentils, tomato, and broth. Blend until smooth, reheat, and season with salt and cumin. Serve with toasted bread cubes and lime; garlic, parsley, or extra tomato are possible variations.[[2]](https://www.ucpress.edu/blog-posts/a-tomato-y-lentil-soup-for-cooler-days)\n\n**Background.** Lentils are among the earliest domesticated pulse crops, with archaeological remains in the Fertile Crescent dating back about 10,000 years. ICARDA cites lentil paste in ancient Egyptian tombs and a depiction of lentil soup from the era of Ramses II. The menu does not identify a specific national style, so these details describe a well-attested tradition rather than claiming this exact bowl is Egyptian.[[1]](https://repo.mel.cgiar.org/items/9df3d770-56ad-4214-b16a-f26d4052afb8)",
+        "summary": "Lentil soup is a flexible, protein-rich pulse soup; the menu names the dish but gives no regional variant."
+      }
+    }
+  ],
+  "latency": {
+    "recipe": {
+      "cold_execution_seconds": {
+        "sample_count": 2,
+        "median": 25.633,
+        "p95": 27.938,
+        "individual_seconds": [
+          23.328,
+          27.938
+        ]
+      },
+      "ready_followup_seconds": {
+        "sample_count": 2,
+        "median": 12.5935,
+        "p95": 12.89,
+        "individual_seconds": [
+          12.297,
+          12.89
+        ]
+      }
+    },
+    "research": {
+      "cold_execution_seconds": {
+        "sample_count": 2,
+        "median": 36.3985,
+        "p95": 37.406,
+        "individual_seconds": [
+          35.391,
+          37.406
+        ]
+      },
+      "ready_followup_seconds": {
+        "sample_count": 2,
+        "median": 14.3905,
+        "p95": 17.25,
+        "individual_seconds": [
+          11.531,
+          17.25
+        ]
+      }
+    }
+  },
+  "usage_counting": "Native total is a cumulative thread snapshot; do not add resumed attempts' totals. Last is the last model-call snapshot. Provider invoice cost unavailable.",
+  "quality": {
+    "method": "Implementation agent review against retained tool evidence/excerpts and independent re-reads of the same public sources; not a calibrated judge.",
+    "rubric": [
+      "useful completeness",
+      "material source support",
+      "explicit constraints",
+      "readable Unicode",
+      "truthful image uncertainty"
+    ],
+    "final_samples": "passed",
+    "caveat": "Small sample; no culinary or production-latency guarantee; approximate timing can be an agent estimate."
+  },
+  "corrected_failures": [
+    "PDF-heavy discovery",
+    "source ID/URL mismatch",
+    "tracking URL duplicates",
+    "Windows MCP Unicode decoding",
+    "source charset handling",
+    "truncated search response budget",
+    "vegetarian cheese caveat"
+  ],
+  "deferred": [
+    "M5 full catalog/collections/actions/namespaced storage",
+    "physical audio/wake/OEM/lock-screen/battery acceptance",
+    "custom-wake native capture sign-off",
+    "subscription continuation/account provider gates",
+    "production enablement"
+  ],
+  "emulator": {
+    "recipe": {
+      "task_id": "255d4d70-eeda-41a5-b98e-6f0db9f97fc2",
+      "activation_id": "8e9644f5-8f40-4b03-9a9c-28e23500cff5",
+      "capture_id": "d1473593-9fd8-40eb-a71c-79837b7c14ae",
+      "definition": "recipe_from_screen@1",
+      "result_kind": "recipe.v1",
+      "search_usage": [
+        {
+          "candidates": [
+            {
+              "url": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta?utm_source=openai",
+              "title": "One-Pan Tomato Pasta Recipe | PBS Food | PBS Food"
+            },
+            {
+              "url": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta",
+              "title": "https://www.pbs.org/food/recipes/one-pan-tomato-pasta"
+            },
+            {
+              "url": "https://www.forkathome.com/recipes/vegetarian-tomato-pasta",
+              "title": "https://www.forkathome.com/recipes/vegetarian-tomato-pasta"
+            },
+            {
+              "url": "https://www.foodnetwork.com/recipes/giada-de-laurentiis/pasta-with-tomato-and-peas-recipe-1945288",
+              "title": "https://www.foodnetwork.com/recipes/giada-de-laurentiis/pasta-with-tomato-and-peas-recipe-1945288"
+            },
+            {
+              "url": "https://www.askchefdennis.com/restaurant-style-vegetarian-pasta/",
+              "title": "https://www.askchefdennis.com/restaurant-style-vegetarian-pasta/"
+            }
+          ],
+          "provider_response_id": "resp_0b1dc2f8599dc984016abe195b349487d2b02e1d7b57e66c5b",
+          "model": "gpt-5.5",
+          "provider_calls": 1,
+          "web_search_calls": 1,
+          "usage": {
+            "input_tokens": 8798,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 3584
+            },
+            "output_tokens": 116,
+            "output_tokens_details": {
+              "reasoning_tokens": 30
+            },
+            "total_tokens": 8914
+          },
+          "invoice_cost": null,
+          "duration_ms": 4516
+        }
+      ],
+      "active_execution_s": 31.458889,
+      "admission_to_ready_s": 34.173942,
+      "execution_run_id": "505a869c-bc32-4bfd-a488-c67cfa674b10",
+      "result_url": "/results/91459fcd-9833-449e-9f58-46d25758d1fd",
+      "image_sha256": "e5c42961fc78268b28387d91ad73b4abdf849a4d2040a8b2f61a12603e6eb8c9",
+      "image_size": [
+        921,
+        2048
+      ],
+      "fake_live_cold_to_ready_s": 0.366483,
+      "backend_ready_call_to_admission_ms": 63,
+      "backend_capture_preflight_ms": 16,
+      "capture_to_admission_s": 0.489198,
+      "admission_to_upload_s": 2.526683,
+      "queue_to_worker_start_s": 2.730052,
+      "emulator": "emulator-5554",
+      "avd": "JarvisM3Api37",
+      "system_image": "system-images;android-37.0;google_apis;x86_64",
+      "android_api": "37",
+      "local_network_permission_ui": "deny_then_allow_and_pair",
+      "invocation": "system_assist_key"
+    },
+    "research": {
+      "task_id": "86f46a0c-764c-4ae5-9bf6-77373edcfe76",
+      "activation_id": "42899c73-55ad-47c7-9e7b-80b466ccd5f1",
+      "capture_id": "5ee07609-41fd-43ad-8981-e076fe1d42a9",
+      "definition": "research_screen@1",
+      "result_kind": "document.v1",
+      "search_usage": [
+        {
+          "candidates": [
+            {
+              "url": "https://www.bonappetit.com/recipe/pasta-with-no-cook-fresh-tomato-sauce",
+              "title": "https://www.bonappetit.com/recipe/pasta-with-no-cook-fresh-tomato-sauce"
+            },
+            {
+              "url": "https://www.bonappetit.com/recipe/quick-5-ingredient-tomato-sauce",
+              "title": "https://www.bonappetit.com/recipe/quick-5-ingredient-tomato-sauce"
+            },
+            {
+              "url": "https://www.bonappetit.com/story/never-fail-no-cook-tomato-pasta-recipe",
+              "title": "https://www.bonappetit.com/story/never-fail-no-cook-tomato-pasta-recipe"
+            },
+            {
+              "url": "https://www.bonappetit.com/bon-appetit/recipe/bucatini-with-butter-roasted-tomato-sauce",
+              "title": "https://www.bonappetit.com/bon-appetit/recipe/bucatini-with-butter-roasted-tomato-sauce"
+            },
+            {
+              "url": "https://www.bonappetit.com/recipe/fresh-pasta-with-buttered-tomatoes-recipe",
+              "title": "https://www.bonappetit.com/recipe/fresh-pasta-with-buttered-tomatoes-recipe"
+            }
+          ],
+          "provider_response_id": "resp_04eef727e325d87f016abe1a578d6887d2af25273cae04f39d",
+          "model": "gpt-5.5",
+          "provider_calls": 1,
+          "web_search_calls": 1,
+          "usage": {
+            "input_tokens": 8634,
+            "input_tokens_details": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0
+            },
+            "output_tokens": 146,
+            "output_tokens_details": {
+              "reasoning_tokens": 65
+            },
+            "total_tokens": 8780
+          },
+          "invoice_cost": null,
+          "duration_ms": 4156
+        }
+      ],
+      "active_execution_s": 25.41579,
+      "admission_to_ready_s": 26.272583,
+      "execution_run_id": "8c69bdb1-ed71-4c2e-b529-b5f2d8ee52d3",
+      "result_url": "/results/fc77ddb8-bf10-427e-84db-23232a8d90a2",
+      "image_sha256": "4d052653ff03e276f0dbe6b9c35d52400236fe3a54e9bd6efd230baa844783e6",
+      "image_size": [
+        921,
+        2048
+      ],
+      "fake_live_cold_to_ready_s": 0.486319,
+      "backend_ready_call_to_admission_ms": 63,
+      "backend_capture_preflight_ms": 16,
+      "capture_to_admission_s": 0.843689,
+      "admission_to_upload_s": 0.873799,
+      "queue_to_worker_start_s": 0.871796,
+      "emulator": "emulator-5554",
+      "avd": "JarvisM3Api37",
+      "system_image": "system-images;android-37.0;google_apis;x86_64",
+      "android_api": "37",
+      "local_network_permission_ui": "deny_then_allow_and_pair",
+      "invocation": "system_assist_key"
+    }
+  }
+}

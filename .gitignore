@@ -24,6 +24,7 @@ dist/
 build/
 *.egg-info/
 .pytest_cache/
+backend/data/codex-probe/
 .mypy_cache/
 .ruff_cache/
 
@@ -78,3 +79,7 @@ Thumbs.db
 # VS Code
 .vscode/settings.json
 .vscode/launch.json
+
+# Private acceptance evidence and local chat attachments
+/data/
+/.codex-remote-attachments/

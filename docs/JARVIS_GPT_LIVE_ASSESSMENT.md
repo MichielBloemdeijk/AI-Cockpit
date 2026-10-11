@@ -14,4 +14,4 @@ Operational requirements remain explicit:
 - Screen context, when requested, is captured and authorized independently of the voice stream.
 - Raw audio is never persisted as application telemetry.
 
-See [the workflow implementation plan](JARVIS_WORKFLOW_IMPLEMENTATION_PLAN.md) for provider-independent workflow guarantees and [the architecture reference](ARCHITECTURE.md) for the current module layout.
+See [the task architecture](JARVIS_TASK_ARCHITECTURE.md) for provider-independent workflow guarantees and [the architecture reference](ARCHITECTURE.md) for the current module layout.

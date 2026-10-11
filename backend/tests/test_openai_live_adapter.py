@@ -38,12 +38,255 @@ class FakeLiveSocket:
         await self.incoming.put(None)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["closed", "transport", "stale_closed"])
+async def test_terminal_sideband_retires_session_and_idle_watcher(monkeypatch, termination):
+    from app.services.jarvis_coordinator import StaleSessionError
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    socket, events = FakeLiveSocket(), []
+    async def create(**kwargs):
+        return {"session": {"id": "terminal"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs):
+        return socket
+    async def on_event(session, generation, event):
+        events.append(event)
+        if termination == "stale_closed" and event.kind in {"disconnected", "provider_error"}:
+            raise StaleSessionError("Live session generation is stale")
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="terminal", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("terminal", 1))
+    session = adapter._sessions[("terminal", 1)]
+    tool = asyncio.create_task(asyncio.Event().wait())
+    session.tool_tasks.add(tool)
+    if termination == "transport":
+        await socket.incoming.put(None)
+    else:
+        await socket.incoming.put(json.dumps({"type": "session.closed"}))
+    await asyncio.wait_for(session.receiver_task, timeout=1)
+    assert not adapter._sessions and socket.closed
+    assert session.idle_task.cancelled() and tool.cancelled()
+    if termination == "closed":
+        assert [event.kind for event in events] == ["ready", "disconnected"]
+    else:
+        assert any(event.kind == "provider_error" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flush_path", ["gap", "close"])
+async def test_rejected_transcript_does_not_strand_old_session_work(monkeypatch, flush_path):
+    from app.services.jarvis_coordinator import StaleSessionError
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    monkeypatch.setattr("app.services.openai_live_adapter._TRANSCRIPT_GAP_SECONDS", .01)
+    socket, events = FakeLiveSocket(), []
+    async def create(**kwargs):
+        return {"session": {"id": "old"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs):
+        return socket
+    async def on_event(session, generation, event):
+        events.append(event)
+        if event.kind in {"user_transcript", "provider_error"}:
+            raise StaleSessionError("Live session generation is stale")
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="old", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("old", 1))
+    session = adapter._sessions[("old", 1)]
+    tool = asyncio.create_task(asyncio.Event().wait())
+    session.tool_tasks.add(tool)
+    await adapter.handle_event("old", 1, {"type": "session.input_transcript.delta",
+        "delta": "Unfinished old speech", "start_ms": 0, "end_ms": 100})
+    flush = session.user_transcript_flush_task
+    if flush_path == "gap":
+        await asyncio.wait_for(flush, timeout=1)
+        assert any(event.kind == "provider_error" and event.payload["stage"] == "transcript_flush" for event in events)
+        await adapter.close(session_id="old", generation=1, reason="superseded", emit_event=False)
+    else:
+        with pytest.raises(StaleSessionError):
+            await adapter.close(session_id="old", generation=1, reason="superseded", emit_event=False)
+    assert socket.closed and tool.cancelled() and session.receiver_task.done()
+    assert session.idle_task.done() and flush.done()
+    assert not adapter._sessions
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_durable_disconnect_after_provider_ack(monkeypatch):
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    socket, events = FakeLiveSocket(), []
+    async def create(**kwargs):
+        return {"session": {"id": "closing"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs):
+        return socket
+    async def on_event(session, generation, event):
+        if event.kind == "usage":
+            await asyncio.sleep(.05)  # Coordinator persistence yields to close().
+        events.append(event)
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="closing", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("closing", 1))
+    await adapter.handle_event("closing", 1, {"type": "session.started"})
+    await adapter.close(session_id="closing", generation=1, reason="explicit_sleep")
+    disconnected = [event for event in events if event.kind == "disconnected"]
+    assert len(disconnected) == 1 and disconnected[0].payload["reason"] == "session_closed"
+    assert any(event.kind == "usage" for event in events)
+    assert socket.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("socket_exception", [False, True])
+async def test_provider_closed_socket_does_not_report_a_second_error(monkeypatch, socket_exception):
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    class RemoteSocket(FakeLiveSocket):
+        async def __anext__(self):
+            value = await self.incoming.get()
+            if value is None:
+                if socket_exception:
+                    raise RuntimeError("Transport closed after session.closed")
+                raise StopAsyncIteration
+            return value
+    socket, events = RemoteSocket(), []
+    async def create(**kwargs):
+        return {"session": {"id": "provider"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs): return socket
+    async def on_event(session, generation, event): events.append(event)
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("s", 1))
+    session = adapter._sessions[("s", 1)]
+    await socket.incoming.put(json.dumps({"type": "session.closed", "usage": {"seconds": 3}}))
+    await socket.incoming.put(None)
+    await asyncio.wait_for(session.receiver_task, timeout=1)
+    assert [event.kind for event in events].count("disconnected") == 1
+    assert [event.kind for event in events].count("usage") == 1
+    assert not any(event.kind == "provider_error" for event in events)
+    assert session.closed.is_set() and not adapter._sessions
+    await adapter.close(session_id="s", generation=1, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_sideband_start_reports_disconnect(monkeypatch):
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    events = []
+    async def create(**kwargs):
+        return {"session": {"id": "pending"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs):
+        await asyncio.Event().wait()
+    async def on_event(session, generation, event):
+        events.append(event)
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="pending", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await adapter.close(session_id="pending", generation=1, reason="cancel_startup")
+    assert [event.payload["reason"] for event in events if event.kind == "disconnected"] == ["cancel_startup"]
+    assert not adapter._pending_connections and not adapter._sessions
+
+
+@pytest.mark.asyncio
+async def test_priority_rejection_falls_back_once_and_stream_item_routes_once(monkeypatch):
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket, events = FakeLiveSocket(), []
+    async def create(**kwargs):
+        assert kwargs["session_config"]["delegation"]["responses"]["service_tier"] == "priority"
+        return {"session": {"id": "priority"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs):
+        return socket
+    async def on_event(session, generation, event):
+        events.append(event)
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="priority", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("priority", 1))
+    rejected = {"type": "response.event", "delegation_id": "one", "event": {"type": "response.failed",
+        "response": {"id": "response-one", "error": {"code": "unsupported_service_tier"}}}}
+    await adapter.handle_event("priority", 1, rejected)
+    await adapter.handle_event("priority", 1, rejected)
+    assert len([event for event in events if event.kind == "delegation_tier_fallback"]) == 1
+    assert len([message for message in socket.sent if message["type"] == "session.update"]) == 1
+    item = {"type": "response.event", "delegation_id": "two", "event": {"type": "response.output_item.done",
+        "response_id": "response-two", "item": {"type": "function_call", "call_id": "completed",
+            "name": "list_tasks", "arguments": "{}"}}}
+    await adapter.handle_event("priority", 1, item)
+    await adapter.handle_event("priority", 1, item)
+    completed = {"type": "response.event", "delegation_id": "two", "event": {"type": "response.completed", "response": {
+        "id": "response-two", "service_tier": "default", "usage": {"input_tokens": 4, "output_tokens": 2}, "output": []}}}
+    await adapter.handle_event("priority", 1, completed)
+    await adapter.handle_event("priority", 1, completed)
+    assert len([event for event in events if event.kind == "shell_call"]) == 1
+    usage = next(event.payload for event in events if event.kind == "delegation_usage" and event.payload["response_id"] == "response-two")
+    assert usage["actual_tier"] == "default" and usage["fallback"]
+    assert usage["usage"]["input_tokens"] == 4 and usage["cost_status"] == "unavailable"
+    await adapter.close(session_id="priority", generation=1, reason="test", emit_event=False)
+
+
 async def wait_for_sideband(adapter: OpenAILiveAdapter, key: tuple[str, int]) -> None:
     for _ in range(20):
         if key in adapter._sessions:
             return
         await asyncio.sleep(0)
     raise AssertionError("Live sideband did not attach")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments, valid", [
+    ({"goal": "Draft a plan", "intent_id": "plan"}, True),
+    ({"goal": "Draft a plan"}, False),
+    ({"intent_id": "plan"}, False),
+    ({"goal": "Draft a plan", "intent_id": "plan", "importance": "invalid"}, False),
+    ({"goal": "Draft a plan", "intent_id": "plan", "unknown": True}, False),
+])
+async def test_managed_optional_arguments_preserve_local_validation(monkeypatch, arguments, valid):
+    from jsonschema.exceptions import ValidationError
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    socket, events = FakeLiveSocket(), []
+    async def create(**kwargs):
+        return {"session": {"id": "provider"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs): return socket
+    async def on_event(session, generation, event): events.append(event)
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("s", 1))
+    event = {"type": "response.event", "delegation_id": "d", "event": {
+        "type": "response.output_item.done", "response_id": "r", "item": {
+            "type": "function_call", "call_id": "call", "name": "dispatch_task", "arguments": json.dumps(arguments)}}}
+    try:
+        if valid:
+            await adapter.handle_event("s", 1, event)
+            assert next(row for row in events if row.kind == "shell_call").payload["arguments"] == arguments
+        else:
+            with pytest.raises(ValidationError):
+                await adapter.handle_event("s", 1, event)
+            assert not any(row.kind == "shell_call" for row in events)
+    finally:
+        await adapter.close(session_id="s", generation=1, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, expected_requests", [("unsupported_service_tier", 2),
+    ("service_tier_not_supported", 2), ("invalid_api_key", 1), ("invalid_request", 1)])
+async def test_creation_retries_only_explicit_priority_rejection_and_remembers_fallback(monkeypatch, code, expected_requests):
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    requests, events = [], []
+    socket = FakeLiveSocket()
+    def handler(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"code": code}})
+        return httpx.Response(201, json={"session": {"id": "live-fallback"}, "transport": {"sdp": "answer"}})
+    async def connect(*args, **kwargs):
+        return socket
+    async def on_event(session, generation, event):
+        events.append(event)
+    adapter = OpenAILiveAdapter(websocket_connector=connect,
+        http_client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    if expected_requests == 1:
+        with pytest.raises(RuntimeError, match="HTTP 400"):
+            await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    else:
+        await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+        await wait_for_sideband(adapter, ("s", 1))
+        assert requests[0]["session"]["delegation"]["responses"]["service_tier"] == "priority"
+        assert requests[1]["session"]["delegation"]["responses"]["service_tier"] == "default"
+        await adapter.handle_event("s", 1, {"type": "error", "error": {"code": code}})
+        assert len([event for event in events if event.kind == "delegation_tier_fallback"]) == 1
+        assert not [message for message in socket.sent if message["type"] == "session.update"]
+        await adapter.close(session_id="s", generation=1, reason="test", emit_event=False)
+    assert len(requests) == expected_requests
 
 
 @pytest.mark.asyncio
@@ -79,7 +322,49 @@ async def test_default_creator_posts_documented_session_and_transport(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_connect_uses_live_session_shape_and_waits_for_real_started_event(monkeypatch) -> None:
+async def test_screen_workflow_preflight_does_not_block_live_sideband(monkeypatch) -> None:
+    from app.config import settings
+    from app.services.task_workflows import load_workflow
+    definition = load_workflow("screen_document@1")
+    monkeypatch.setattr(settings, "task_workflow_allowlist", f"screen_document@1:{definition.digest}")
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    events: list[VoiceProviderEvent] = []
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live-screen"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        if event.kind == "shell_call":
+            started.set()
+            await release.wait()
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="screen", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("screen", 1))
+    await adapter.handle_event("screen", 1, {
+        "type": "response.event", "delegation_id": "delegation-screen",
+        "event": {"type": "response.output_item.done", "response_id": "response-screen",
+                  "item": {"type": "function_call", "call_id": "call-screen",
+                           "name": "start_workflow", "arguments": json.dumps({"goal": "Describe this screen", "definition": "screen_document@1", "intent_id": "screen"})}},
+    })
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await asyncio.wait_for(adapter.handle_event("screen", 1, {
+        "type": "session.input_transcript.delta", "delta": "still listening",
+    }), timeout=0.2)
+    assert any(event.kind == "user_transcript_delta" for event in events)
+    release.set()
+    await adapter.close(session_id="screen", generation=1, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_attached_sideband_is_ready_without_primary_started_replay(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
     socket = FakeLiveSocket()
     created_args: dict[str, Any] = {}
@@ -118,8 +403,12 @@ async def test_connect_uses_live_session_shape_and_waits_for_real_started_event(
     assert config["delegation"]["responses"]["model"] == "gpt-5.6-luna"
     assert config["delegation"]["responses"]["reasoning"] == {"effort": "low"}
     assert config["delegation"]["responses"]["parallel_tool_calls"] is False
+    assert all(tool["strict"] is False for tool in config["delegation"]["responses"]["tools"])
+    dispatch = next(tool for tool in config["delegation"]["responses"]["tools"] if tool["name"] == "dispatch_task")
+    assert dispatch["parameters"]["required"] == ["goal", "intent_id"]
     assert socket_args["url"].endswith("/live_opaque%2Fid/attach")
-    assert events == []
+    assert [event.kind for event in events] == ["ready"]
+    assert events[0].payload["readiness_source"] == "authenticated_sideband_attachment"
 
     await adapter.handle_event("local", 2, {"type": "session.started", "event_id": "started"})
     assert [event.kind for event in events] == ["ready"]
@@ -159,6 +448,7 @@ async def test_connect_returns_sdp_while_live_sideband_attaches(monkeypatch) -> 
 
     release_attachment.set()
     await wait_for_sideband(adapter, ("s", 10))
+    assert [event.kind for event in events] == ["ready"]
     await adapter.handle_event("s", 10, {"type": "session.started"})
     assert events[-1].kind == "ready"
     assert events[-1].payload["timing_ms"]["sideband_connect"] >= 0
@@ -192,6 +482,35 @@ async def test_sideband_setup_failure_is_reported_after_sdp_return(monkeypatch) 
     assert events[-1].payload == {"reason": "RuntimeError", "stage": "sideband_setup"}
     assert ("s", 11) not in adapter._pending_connections
     assert ("s", 11) not in adapter._sessions
+
+
+@pytest.mark.asyncio
+async def test_rejected_attachment_ready_retires_socket_and_watchers(monkeypatch):
+    from app.services.jarvis_coordinator import StaleSessionError
+    monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
+    socket, observed = FakeLiveSocket(), []
+    key = ("superseded", 4)
+    session = None
+    async def create(**kwargs):
+        return {"session": {"id": "provider"}, "transport": {"sdp": "answer"}}
+    async def connect(*args, **kwargs):
+        return socket
+    async def on_event(session_id, generation, event):
+        nonlocal session
+        if event.kind == "ready":
+            session = adapter._sessions[key]
+            raise StaleSessionError("Superseded during attachment")
+        observed.append(event)
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id=key[0], generation=key[1], context={},
+        on_event=on_event, sdp_offer="offer")
+    pending = adapter._pending_connections[key]
+    await asyncio.wait_for(pending.task, timeout=3)
+    assert socket.closed and session is not None
+    assert session.receiver_task.done() and session.idle_task.done()
+    assert not adapter._sessions and not adapter._pending_connections
+    assert not any(event.kind == "ready" for event in observed)
+    assert any(event.kind == "provider_error" for event in observed)
 
 
 @pytest.mark.asyncio
@@ -249,7 +568,7 @@ async def test_nested_responses_calls_are_idempotent_and_continue_once(monkeypat
     assert [event.kind for event in events].count("shell_call") == 2
     assert {event.payload["delegation_id"] for event in events if event.kind == "shell_call"} == {"item_delegation_a"}
     shell_events = [event for event in events if event.kind == "shell_call"]
-    assert all(event.payload["origin_item_id"] is None for event in shell_events)
+    assert all(event.payload["origin_item_id"] == "live-user:live_1:1" for event in shell_events)
     assert len({event.payload["origin_correlation_id"] for event in shell_events}) == 1
     assert all(
         event.payload["origin_timeline"]
@@ -345,13 +664,13 @@ async def test_live_transcripts_and_final_usage_are_normalized(monkeypatch) -> N
     })
     await adapter.handle_event("s", 3, {"type": "session.closed", "usage": {"duration": 8}})
     assert [event.kind for event in events] == [
-        "user_transcript_delta", "assistant_transcript_delta", "user_transcript",
+        "ready", "user_transcript_delta", "assistant_transcript_delta", "user_transcript",
         "assistant_transcript", "usage", "disconnected"
     ]
-    assert events[2].payload["fragments"] == [
+    assert events[3].payload["fragments"] == [
         {"delta": "hello", "start_ms": 100, "end_ms": 300}
     ]
-    assert events[3].payload["transcript"] == "hi"
+    assert events[4].payload["transcript"] == "hi"
     await adapter.close(session_id="s", generation=3, reason="test", emit_event=False)
 
 
@@ -381,11 +700,14 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
         response_kind="task_update",
         presentation_ids=(),
         facts=({"summary": "The report is ready.", "commentary": True},),
-        context={},
+        context={"attention_context": {"items": [{"summary": "The report is ready."}], "total_pending": 1}},
     )
     delegated_update = socket.sent[-2]
     assert delegated_update["type"] == "session.update"
     assert delegated_update["session"]["delegation"]["type"] == "responses"
+    instructions = delegated_update["session"]["delegation"]["responses"]["instructions"]
+    assert instructions.count("CURRENT_ATTENTION_CHECKLIST=") == 1
+    assert "Fulfil the current user request before briefing older task updates" in instructions
     commentary = socket.sent[-1]
     assert commentary["type"] == "session.commentary.append"
     assert commentary["delegation_id"] is None
@@ -398,6 +720,52 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
     assert events[-1].kind == "assistant_update_submitted"
     assert events[-1].payload["submission_ack"] == "context_appended"
     assert "transcript" not in events[-1].payload
+    await adapter.close(session_id="s", generation=4, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_empty_attention_refresh_does_not_inject_live_context(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_empty"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    events: list[VoiceProviderEvent] = []
+
+    async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
+        events.append(event)
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=4, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("s", 4))
+    await adapter.create_response(
+        session_id="s", generation=4, request_id="empty-1",
+        response_kind="task_update", presentation_ids=(), facts=(),
+        context={"attention_context": {"items": [], "total_pending": 0, "deltas": []}},
+    )
+    assert [item["type"] for item in socket.sent] == ["session.update"]
+    assert not adapter._sessions[("s", 4)].pending_commentary
+    submitted = events[-1]
+    assert submitted.kind == "assistant_update_submitted"
+    assert submitted.payload["submission_ack"] == "no_context_to_append"
+    assert submitted.payload["presentation_ids"] == []
+    assert "submitted_transcript" not in submitted.payload
+    # An empty checklist after a handled update must still retire the old
+    # context. A tombstone is a real change, unlike an empty startup update.
+    await adapter.create_response(
+        session_id="s", generation=4, request_id="handled-1",
+        response_kind="task_update", presentation_ids=(), facts=(),
+        context={"attention_context": {"items": [], "total_pending": 0,
+            "deltas": [{"presentation_id": "old-update", "state": "handled"}]}},
+    )
+    assert socket.sent[-1]["type"] == "session.thinking.append"
+    assert "old-update" in socket.sent[-1]["content"]
+    assert "handled" in socket.sent[-1]["content"]
+    assert "jarvis-live-update:handled-1:0" in adapter._sessions[("s", 4)].pending_commentary
     await adapter.close(session_id="s", generation=4, reason="test", emit_event=False)
 
 
@@ -597,6 +965,7 @@ async def test_response_completion_does_not_end_assistant_transcript(monkeypatch
         "event": {"type": "response.completed", "response": {"id": "r"}},
     })
     assert not any(event.kind == "assistant_transcript" for event in events)
+    assert not any(event.kind == "assistant_response" for event in events)
     await adapter.handle_event("s", 8, {
         "type": "session.output_transcript.delta", "delta": " after completion", "start_ms": 300, "end_ms": 500,
     })

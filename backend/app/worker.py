@@ -1,12 +1,14 @@
 """`python -m app.worker` entry point for the durable task worker."""
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
-from app.services.task_worker import TaskWorker, task_worker
+from app.services.task_pool_supervisor import task_pool_supervisor
+from app.services.task_worker import TaskWorker
 
 
 logging.basicConfig(
@@ -39,21 +41,67 @@ async def wait_for_worker_activation(
         await asyncio.sleep(min(1.0, remaining))
 
 
-async def worker_main() -> None:
+async def worker_main(
+    *,
+    child: bool = False,
+    generation: int = 1,
+    process_identity: str | None = None,
+    parent_pid: int | None = None,
+) -> None:
+    if child:
+        # Install the fail-closed process boundary before touching the database
+        # or doing any other child startup work. A supervisor crash during
+        # migrations must not leave an uncontained writer behind.
+        from app.services.windows_job import contain_current_process_tree, exit_when_parent_exits
+
+        contain_current_process_tree()
+        if parent_pid is None:
+            raise RuntimeError("A supervised task child requires its parent's process identity")
+        exit_when_parent_exits(parent_pid)
     await ensure_database_ready()
     run_migrations()
     initialize_engine(settings.database_url)
     try:
-        await wait_for_worker_activation(task_worker)
-        logger.info("Task worker active: %s", task_worker.worker_id)
-        await task_worker.run_forever()
+        if child:
+            worker = TaskWorker(externally_supervised=True)
+            activated = await worker.activate(
+                process_identity=process_identity,
+                supervisor_generation=generation,
+            )
+            if not activated:
+                return
+            logger.info("Task worker child active: %s", worker.worker_id)
+            await worker.run_child()
+        elif settings.task_pool_enabled:
+            logger.info("Task pool supervisor starting")
+            await task_pool_supervisor.run()
+        else:
+            if settings.task_executor == "codex":
+                raise RuntimeError("Codex task execution requires the supervised process-tree pool")
+            worker = TaskWorker()
+            await wait_for_worker_activation(worker)
+            logger.info("Legacy task worker active: %s", worker.worker_id)
+            await worker.run_forever()
     finally:
         await close_engine()
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="AI Cockpit task pool")
+    parser.add_argument("--child", action="store_true")
+    parser.add_argument("--generation", type=int, default=1)
+    parser.add_argument("--identity")
+    parser.add_argument("--parent-pid", type=int)
+    args = parser.parse_args()
     try:
-        asyncio.run(worker_main())
+        asyncio.run(
+            worker_main(
+                child=args.child,
+                generation=args.generation,
+                process_identity=args.identity,
+                parent_pid=args.parent_pid,
+            )
+        )
     except KeyboardInterrupt:
         pass
 

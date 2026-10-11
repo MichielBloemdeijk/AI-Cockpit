@@ -220,7 +220,7 @@ async def test_history_filters_and_closed_log_mutation_guards() -> None:
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         jarvis_history = await client.get("/api/conversations/", params={"kind": "jarvis"})
         assert jarvis_history.status_code == 200

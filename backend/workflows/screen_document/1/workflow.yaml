@@ -1,0 +1,21 @@
+schema: workflow-definition.v2
+id: screen_document
+version: 1
+instructions: instructions.md
+input_schema: screen-request.v2
+output_schema: document.v1
+required_initial_context:
+  - screen_images
+capabilities:
+  - task.context.read@1
+  - task.context.images@2
+  - task.result.publish@1
+defaults:
+  execution_profile: fast
+fixtures: fixtures/cases.yaml
+
+purpose: Explain the invocation and latest screens in a maintained document.
+routing_examples: []
+
+tools:
+  remove: [native.local, native.research, native.subagents, native.skills]

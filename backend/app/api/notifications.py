@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.auth import require_auth
+from app.services.jarvis_devices import require_jarvis_auth
 from app.services.notifications import (
     LegacyNotificationStateError,
     acknowledge_delivery,
@@ -14,7 +15,7 @@ from app.services.notifications import (
     upsert_subscription,
 )
 
-router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
 class PushKeys(BaseModel):
@@ -32,12 +33,12 @@ class DeliveryAckRequest(BaseModel):
     state: str
 
 
-@router.get("/vapid-public-key")
+@router.get("/vapid-public-key", dependencies=[Depends(require_auth)])
 async def vapid_public_key() -> dict[str, object]:
     return {"enabled": bool(settings.web_push_enabled and settings.vapid_public_key), "public_key": await get_public_key()}
 
 
-@router.post("/subscriptions")
+@router.post("/subscriptions", dependencies=[Depends(require_auth)])
 async def create_subscription(request: PushSubscriptionRequest) -> dict[str, str]:
     try:
         return await upsert_subscription(request.endpoint, request.keys.p256dh, request.keys.auth, request.user_agent)
@@ -45,12 +46,12 @@ async def create_subscription(request: PushSubscriptionRequest) -> dict[str, str
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
-@router.delete("/subscriptions/{subscription_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/subscriptions/{subscription_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_auth)])
 async def remove_subscription(subscription_id: str) -> None:
     await delete_subscription(subscription_id)
 
 
-@router.post("/deliveries/{delivery_id}/ack")
+@router.post("/deliveries/{delivery_id}/ack", dependencies=[Depends(require_jarvis_auth)])
 async def ack_delivery(delivery_id: str, request: DeliveryAckRequest) -> dict[str, bool]:
     try:
         found = await acknowledge_delivery(delivery_id, request.state)

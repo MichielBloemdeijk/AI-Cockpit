@@ -11,14 +11,15 @@ from app.db.base import Base
 from app.db import tables  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("+aiosqlite", ""))
+config.set_main_option("sqlalchemy.url", settings.resolved_database_url.replace("+aiosqlite", ""))
 
 database_path = settings.database_path
 if database_path is not None:
     Path(database_path).parent.mkdir(parents=True, exist_ok=True)
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    # Migrations run inside API/worker startup too; retain application loggers.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

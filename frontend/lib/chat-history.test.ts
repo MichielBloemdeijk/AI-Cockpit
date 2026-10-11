@@ -7,6 +7,7 @@ import { mapConversationMessages } from "./chat-history";
 describe("mapConversationMessages", () => {
   it("attaches stored council artifacts to the synthesized assistant message", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-1",
       title: "Council thread",
       mode_hint: "council",
@@ -83,6 +84,7 @@ describe("mapConversationMessages", () => {
 
   it("keeps tool arguments and output behind compact timeline summaries", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-2",
       title: "Agent thread",
       mode_hint: "single",
@@ -143,6 +145,7 @@ describe("mapConversationMessages", () => {
 
   it("keeps repeated tool calls in the same step as separate rows", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-2b",
       title: "Agent thread",
       mode_hint: "single",
@@ -235,6 +238,7 @@ describe("mapConversationMessages", () => {
 
   it("keeps thought summaries separate from the final tool result row", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-3",
       title: "Agent thread",
       mode_hint: "single",
@@ -294,6 +298,7 @@ describe("mapConversationMessages", () => {
 
   it("maps legacy progress summaries as unlabeled status rows", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-5",
       title: "Agent thread",
       mode_hint: "single",
@@ -333,6 +338,7 @@ describe("mapConversationMessages", () => {
 
   it("suppresses low-signal persisted tool-intent thought and progress rows", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-6",
       title: "Agent thread",
       mode_hint: "single",
@@ -397,6 +403,7 @@ describe("mapConversationMessages", () => {
 
   it("renders persisted visible agent text as a regular assistant message", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-7",
       title: "Agent thread",
       mode_hint: "single",
@@ -435,6 +442,7 @@ describe("mapConversationMessages", () => {
 
   it("deduplicates persisted visible agent text when an assistant message already exists", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-8",
       title: "Agent thread",
       mode_hint: "single",
@@ -447,6 +455,7 @@ describe("mapConversationMessages", () => {
         {
           id: "message-1",
           role: "assistant",
+          author_label: "Assistant",
           content: "I need to ask for the specific details required to proceed with this unnecessarily detailed plan:",
           content_format: "markdown",
           created_at: "2026-05-01T00:00:02Z",
@@ -488,6 +497,7 @@ describe("mapConversationMessages", () => {
 
   it("maps conversation.task.started with expandable task metadata details", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-4",
       title: "Task bridge thread",
       mode_hint: "single",
@@ -540,6 +550,7 @@ describe("mapConversationMessages", () => {
 
   it("maps conversation.task.start_failed as a warning status row", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-5",
       title: "Task bridge thread",
       mode_hint: "single",
@@ -583,6 +594,7 @@ describe("mapConversationMessages", () => {
 
   it("drops the redundant agent.run.started row while keeping later progress events", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-6",
       title: "Agent thread",
       mode_hint: "single",
@@ -634,6 +646,7 @@ describe("mapConversationMessages", () => {
 
   it("marks persisted user messages as non-branchable after unsafe mutations", () => {
     const detail: ConversationDetail = {
+      active_branch_key: "main", branches: [], workspace: null, workspace_path: null, session_metadata: null,
       id: "conversation-7",
       title: "Unsafe branch thread",
       mode_hint: "single",

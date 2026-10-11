@@ -1,0 +1,19 @@
+---
+description: Development-stage priorities, disposable application data and long-term design
+alwaysApply: true
+---
+
+# Development-stage project policy
+
+Follow the repository-root `AGENTS.md` development-stage and scope/safety policy.
+AI Cockpit / Jarvis is in active development: existing application data is
+disposable. Prioritize a current, correct, coherent long-term implementation over
+backward compatibility or preserving old development data. Update all consumers
+and tests together, and remove unnecessary legacy compatibility code.
+
+Necessary local migrations and precisely scoped development-data resets are
+normal implementation work; data preservation alone is not an approval blocker.
+Preserve source/uncommitted work, credentials and unrelated files, confirm exact
+reset targets and writer shutdown, and retain security/durability guarantees.
+Do not infer authorization for production enablement or external account/device
+changes. Reassess this policy explicitly before production rollout.

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 import hashlib
 import json
+import logging
 import time
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -15,6 +17,7 @@ import httpx
 
 from app.config import settings
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+from app.services.live_model_diagnostics import LiveModelDiagnostics, tool_metadata
 from app.services.voice_session_adapter import (
     ProviderEventHandler,
     VoiceProviderCapabilities,
@@ -50,6 +53,7 @@ class _DelegatedResponse:
     origin_correlation_id: str = ""
     timeline_start_ms: int | None = None
     timeline_end_ms: int | None = None
+    selector_response_observed_ns: int | None = None
 
 
 @dataclass(slots=True)
@@ -59,6 +63,10 @@ class _Delegation:
     offset_ms: int | None = None
     response_id: str | None = None
     origin_item_id: str | None = None
+    requested_tier: str = "priority"
+    tier_fallback: bool = False
+    started_monotonic: float = field(default_factory=time.monotonic)
+    received_emitted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +92,11 @@ class _LiveSession:
     socket: LiveSocket
     on_event: ProviderEventHandler
     activation_id: str | None = None
+    tool_definitions: list[dict[str, Any]] = field(default_factory=list)
     receiver_task: asyncio.Task[None] | None = None
     idle_task: asyncio.Task[None] | None = None
     started: bool = False
+    priority_unsupported: bool = False
     closing: bool = False
     closed: asyncio.Event = field(default_factory=asyncio.Event)
     final_usage: dict[str, Any] | None = None
@@ -94,6 +104,7 @@ class _LiveSession:
     responses: dict[tuple[str, str], _DelegatedResponse] = field(default_factory=dict)
     call_index: dict[str, tuple[str, str]] = field(default_factory=dict)
     handled_calls: set[tuple[str, str, str]] = field(default_factory=set)
+    tool_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     pending_commentary: dict[str, tuple[str, tuple[str, ...], str]] = field(default_factory=dict)
     user_fragments: list[_TranscriptFragment] = field(default_factory=list)
     assistant_fragments: list[_TranscriptFragment] = field(default_factory=list)
@@ -110,6 +121,7 @@ class _LiveSession:
     provider_call_finished: float = 0.0
     sideband_started: float = 0.0
     sideband_finished: float = 0.0
+    diagnostics: LiveModelDiagnostics | None = None
 
 
 @dataclass(slots=True)
@@ -119,13 +131,16 @@ class _PendingLiveConnection:
     provider_session_id: str
     api_key: str
     context: dict[str, Any]
+    tool_definitions: list[dict[str, Any]]
     on_event: ProviderEventHandler
     connect_started: float
     provider_call_started: float
     provider_call_finished: float
+    priority_rejection: str | None = None
     task: asyncio.Task[None] | None = None
     socket: LiveSocket | None = None
     closing: bool = False
+    diagnostics: LiveModelDiagnostics | None = None
 
 
 _TRANSCRIPT_GAP_SECONDS = 0.75
@@ -176,10 +191,17 @@ class OpenAILiveAdapter:
             raise OpenAILiveConfigurationError("An SDP offer is required for GPT-Live")
         connect_started = time.monotonic()
         provider_call_started = time.monotonic()
+        session_configuration = self._session_config(context)
+        tool_definitions = session_configuration["delegation"]["responses"]["tools"]
+        diagnostics = LiveModelDiagnostics(settings.openai_live_diagnostics_dir, session_id=session_id, generation=generation,
+            configuration={"voice_model": settings.openai_live_model, "selector_model": settings.openai_live_responses_model,
+                "delegation_mode": "responses", "reasoning_effort": settings.openai_live_reasoning_effort,
+                "reasoning_summary_requested": settings.openai_live_reasoning_summary,
+                "requested_tools": tool_metadata(tool_definitions)}) if settings.openai_live_diagnostics_dir else None
         created = await self._session_creator(
             api_key=api_key,
             sdp_offer=sdp_offer,
-            session_config=self._session_config(context),
+            session_config=session_configuration,
         )
         provider_call_finished = time.monotonic()
         provider_session_id, sdp_answer = self._parse_creation_response(created)
@@ -189,10 +211,13 @@ class OpenAILiveAdapter:
             provider_session_id=provider_session_id,
             api_key=api_key,
             context=context,
+            tool_definitions=tool_definitions,
             on_event=on_event,
             connect_started=connect_started,
             provider_call_started=provider_call_started,
             provider_call_finished=provider_call_finished,
+            priority_rejection=created.get("_jarvis_priority_rejection"),
+            diagnostics=diagnostics,
         )
         key = (session_id, generation)
         previous_pending = self._pending_connections.pop(key, None)
@@ -213,6 +238,8 @@ class OpenAILiveAdapter:
         provider_session: _LiveSession | None = None
         try:
             sideband_started = time.monotonic()
+            logger = logging.getLogger(__name__)
+            logger.info("Live sideband attaching for session %s generation %s", *key)
             socket = await self._websocket_connector(
                 self._sideband_url(pending.provider_session_id),
                 additional_headers={"Authorization": f"Bearer {pending.api_key}"},
@@ -220,6 +247,7 @@ class OpenAILiveAdapter:
             )
             pending.socket = socket
             sideband_finished = time.monotonic()
+            logger.info("Live sideband attached for session %s generation %s", *key)
             if pending.closing or self._pending_connections.get(key) is not pending:
                 await socket.close(code=1000, reason="connection_cancelled")
                 return
@@ -230,11 +258,14 @@ class OpenAILiveAdapter:
                 socket=socket,
                 on_event=pending.on_event,
                 activation_id=str(pending.context.get("activation_id") or "") or None,
+                tool_definitions=pending.tool_definitions,
                 connect_started=pending.connect_started,
                 provider_call_started=pending.provider_call_started,
                 provider_call_finished=pending.provider_call_finished,
                 sideband_started=sideband_started,
                 sideband_finished=sideband_finished,
+                priority_unsupported=pending.priority_rejection is not None,
+                diagnostics=pending.diagnostics,
             )
             self._sessions[key] = provider_session
             self._pending_connections.pop(key, None)
@@ -246,6 +277,14 @@ class OpenAILiveAdapter:
                 self._watch_idle(provider_session),
                 name=f"jarvis-openai-live-idle-{pending.session_id}-{pending.generation}",
             )
+            # An authenticated sideband attaches to an already started Live
+            # session. Do not require replay of the primary's session.started
+            # event: a late attachment can miss that event entirely.
+            await self._announce_ready(provider_session)
+            if pending.priority_rejection:
+                await self._emit(provider_session, "delegation_tier_fallback", {
+                    "requested_tier": "priority", "fallback_tier": "default",
+                    "reason": pending.priority_rejection, "stage": "session_creation"})
         except asyncio.CancelledError:
             if pending.socket is not None:
                 await pending.socket.close(code=1000, reason="connection_cancelled")
@@ -253,7 +292,9 @@ class OpenAILiveAdapter:
         except Exception as exc:
             self._pending_connections.pop(key, None)
             self._sessions.pop(key, None)
-            if pending.socket is not None:
+            if provider_session is not None:
+                await self._close_session(provider_session, reason="sideband_setup_failed", emit_event=False)
+            elif pending.socket is not None:
                 await pending.socket.close(code=1011, reason="sideband_setup_failed")
             if not pending.closing:
                 await self._notify_pending_best_effort(
@@ -293,6 +334,12 @@ class OpenAILiveAdapter:
         output: dict[str, Any],
     ) -> None:
         provider_session = self._require_session(session_id, generation)
+        # Timing metadata stays in durable events/SSE. It is not model context
+        # and would otherwise add tokens to every subsequent selector request.
+        output = dict(output)
+        output.pop("admission_timing", None)
+        if isinstance(output.get("result"), dict):
+            output["result"] = {key: value for key, value in output["result"].items() if key != "admission_timing"}
         response_key = provider_session.call_index.get(call_id)
         if response_key is None:
             raise ValueError("Unknown GPT-Live function call")
@@ -335,11 +382,6 @@ class OpenAILiveAdapter:
             if isinstance(context.get("attention_context"), dict)
             else {"items": [], "total_pending": 0, "next_cursor": None, "deltas": []}
         )
-        checklist = json.dumps(
-            {"schema": "jarvis.attention_context.v1", **attention_context},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
         # Keep the delegated Responses model's checklist view authoritative
         # without replacing its fixed routing instructions.
         await self._send(
@@ -351,13 +393,7 @@ class OpenAILiveAdapter:
                     "delegation": {
                         "type": "responses",
                         "responses": {
-                            "instructions": (
-                                self._router_instructions(context)
-                                + " Use the current attention checklist below as authoritative application context. "
-                                "Mention items naturally, never read identifiers aloud, and acknowledge exactly one "
-                                "item after communicating it. Quiet context does not require speech. "
-                                f"CURRENT_ATTENTION_CHECKLIST={checklist}"
-                            )
+                            "instructions": self._router_instructions(context)
                         }
                     }
                 },
@@ -375,11 +411,21 @@ class OpenAILiveAdapter:
                 if isinstance(delta, dict)
             )
         if not append_items:
-            append_items.append(({
-                "schema": "jarvis.attention_delta.v1",
-                "state": "empty",
-                "total_pending": int(attention_context.get("total_pending") or 0),
-            }, (), False))
+            # The checklist is already in the router instructions. With no
+            # facts or tombstones there is nothing to inject into Live; release
+            # the transport lease without inventing a provider append/ack.
+            await self._emit(
+                provider_session,
+                "assistant_update_submitted",
+                {
+                    "request_id": request_id,
+                    "presentation_ids": [],
+                    "response_kind": "task_update",
+                    "submission_ack": "no_context_to_append",
+                },
+                event_id=f"live-empty-update:{request_id}",
+            )
+            return
         for index, (item, item_ids, item_commentary) in enumerate(append_items):
             verified = json.dumps(item, separators=(",", ":"), ensure_ascii=False)
             event_id = f"jarvis-live-update:{request_id}:{index}"
@@ -430,6 +476,12 @@ class OpenAILiveAdapter:
         provider_session = self._sessions.pop(key, None)
         if provider_session is not None:
             await self._close_session(provider_session, reason=reason, emit_event=emit_event)
+        elif pending is not None and emit_event:
+            # A cancellation before sideband startup has no receiver to report
+            # closure. The explicit API close must still commit its final state.
+            await pending.on_event(session_id, generation, VoiceProviderEvent(
+                kind="disconnected", payload={"reason": reason},
+                event_id=f"live-pending-close:{uuid4()}"))
 
     async def shutdown(self) -> None:
         pending_connections = list(self._pending_connections.values())
@@ -463,65 +515,73 @@ class OpenAILiveAdapter:
                 event = json.loads(raw)
                 if isinstance(event, dict):
                     await self._handle_event(provider_session, event)
-            if self._sessions.get(key) is provider_session and not provider_session.closing:
-                await self._emit(
-                    provider_session,
-                    "provider_error",
-                    {"reason": "sideband_closed", "stage": "sideband_receive"},
-                )
+                    if provider_session.closed.is_set():
+                        return
+            if self._sessions.get(key) is provider_session and not provider_session.closing and not provider_session.closed.is_set():
+                await self._report_transport_error(provider_session, {"reason": "sideband_closed", "stage": "sideband_receive"})
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if self._sessions.get(key) is provider_session and not provider_session.closing and not provider_session.closed.is_set():
+                await self._report_transport_error(provider_session, {"reason": type(exc).__name__, "stage": "sideband_receive"})
+        finally:
+            # A terminal sideband cannot serve another turn. Retire its socket,
+            # idle watcher and tools even if durable event reporting was fenced
+            # out by a replacement generation.
             if self._sessions.get(key) is provider_session and not provider_session.closing:
-                await self._emit(
-                    provider_session,
-                    "provider_error",
-                    {"reason": type(exc).__name__, "stage": "sideband_receive"},
-                )
+                try:
+                    await self.close(session_id=provider_session.session_id,
+                        generation=provider_session.generation, reason="sideband_ended", emit_event=False)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("Live terminal cleanup report rejected (%s)", type(exc).__name__)
+
+    async def _report_transport_error(self, provider_session: _LiveSession, payload: dict[str, Any]) -> None:
+        if provider_session.diagnostics:
+            provider_session.diagnostics.record("voice", {"type": "selector.transport.closed", **payload})
+            await provider_session.diagnostics.checkpoint("provider_transport_closed")
+        try:
+            await self._emit(provider_session, "provider_error", payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A superseded generation can reject the final socket-close report.
+            # The durable coordinator fence remains authoritative; do not send
+            # another error recursively or leave an unobserved receiver exception.
+            logging.getLogger(__name__).warning("Live transport error report rejected (%s)", type(exc).__name__)
 
     async def _handle_event(self, provider_session: _LiveSession, outer: dict[str, Any]) -> None:
         event_type = str(outer.get("type") or "")
+        if provider_session.diagnostics:
+            if event_type == "response.event" and isinstance(outer.get("event"), dict):
+                inner = outer["event"]
+                delegation_id = str(outer.get("delegation_id") or "")
+                response = inner.get("response") or {}
+                provider_session.diagnostics.record("selector_managed", inner, delegation_id=delegation_id,
+                    response_id=response.get("id") or inner.get("response_id") or self._response_id_for_delegation(provider_session, delegation_id))
+            else:
+                provider_session.diagnostics.record("voice", outer)
         if event_type == "session.started":
-            if not provider_session.started:
-                provider_session.started = True
-                await self._emit(
-                    provider_session,
-                    "ready",
-                    {
-                        "provider_session_id": provider_session.provider_session_id,
-                        "activation_id": provider_session.activation_id,
-                        "defer_initial_updates": True,
-                        "timing_ms": {
-                            "provider_call": round(
-                                (provider_session.provider_call_finished - provider_session.provider_call_started)
-                                * 1_000,
-                                3,
-                            ),
-                            "sideband_connect": round(
-                                (provider_session.sideband_finished - provider_session.sideband_started) * 1_000,
-                                3,
-                            ),
-                            "total_to_sideband_ready": round(
-                                (time.monotonic() - provider_session.connect_started) * 1_000,
-                                3,
-                            ),
-                        },
-                    },
-                    event_id=str(outer.get("event_id") or "") or None,
-                )
+            await self._announce_ready(provider_session)
             return
         if event_type == "session.closed":
+            if provider_session.diagnostics:
+                await provider_session.diagnostics.checkpoint("provider_session_closed")
             await self._flush_transcript(provider_session, "user")
             await self._flush_transcript(provider_session, "assistant")
             usage = outer.get("usage")
             provider_session.final_usage = usage if isinstance(usage, dict) else None
-            provider_session.closed.set()
             if provider_session.final_usage is not None:
                 await self._emit(provider_session, "usage", {"usage": provider_session.final_usage})
             await self._emit(provider_session, "disconnected", {"reason": "session_closed"})
+            # The close waiter may cancel the sideband receiver. Release it
+            # only after the coordinator has committed the disconnected state.
+            provider_session.closed.set()
             return
         if event_type == "session.input_transcript.delta":
             await self._handle_transcript_delta(provider_session, "user", outer)
+            return
+        if event_type == "session.input_transcript.done":
+            await self._flush_transcript(provider_session, "user")
             return
         if event_type == "session.output_transcript.delta":
             await self._handle_transcript_delta(provider_session, "assistant", outer)
@@ -547,6 +607,15 @@ class OpenAILiveAdapter:
                 )
             return
         if event_type == "error":
+            error = outer.get("error") or {}
+            if (isinstance(error, dict) and error.get("code") in {"unsupported_service_tier", "service_tier_not_supported"}
+                    and not provider_session.priority_unsupported):
+                provider_session.priority_unsupported = True
+                await self._send(provider_session, {"type": "session.update", "session": {
+                    "delegation": {"type": "responses", "responses": {"service_tier": "default"}}}})
+                await self._emit(provider_session, "delegation_tier_fallback", {
+                    "requested_tier": "priority", "fallback_tier": "default", "reason": error["code"]})
+                return
             await self._emit(provider_session, "provider_error", {"error": outer.get("error")})
             return
         if event_type == "session.delegation.created":
@@ -575,6 +644,18 @@ class OpenAILiveAdapter:
                 self._observe_delegation(
                     provider_session, delegation_id, response_id
                 )
+            if not observed.received_emitted:
+                observed.received_emitted = True
+                await self._emit(provider_session, "delegation_received", {
+                    "delegation_id": delegation_id, "origin_correlation_id": observed.origin_correlation_id,
+                    "stage": "delegation_received", "server_monotonic_ns": time.perf_counter_ns()})
+            # A delegation offset beyond every fragment's end establishes a
+            # timeline boundary without a fixed settling delay. Incomplete or
+            # overlapping fragments still use the bounded gap fallback.
+            fragments = provider_session.user_fragments
+            if (observed.offset_ms is not None and fragments and
+                    all(fragment.end_ms is not None and fragment.end_ms <= observed.offset_ms for fragment in fragments)):
+                await self._flush_transcript(provider_session, "user")
             self._apply_delegation_context(provider_session, observed)
             self._mark_meaningful_activity(provider_session)
             await self._resolve_delegation_origins(provider_session)
@@ -598,7 +679,12 @@ class OpenAILiveAdapter:
             delegated = self._observe_delegation(
                 provider_session, delegation_id, response_id
             )
+            delegated.selector_response_observed_ns = time.perf_counter_ns()
             await self._resolve_delegation_origins(provider_session)
+            await self._emit(provider_session, "admission_stage", {"stage": "selector_response_started",
+                "server_monotonic_ns": time.perf_counter_ns(), "delegation_id": delegation_id,
+                "origin_correlation_id": delegated.origin_correlation_id, "response_id": response_id,
+                "clock": "server_monotonic", "request_start_observable": False})
             await self._emit(provider_session, "assistant_generating", {"delegation_id": delegation_id, "response_id": response_id})
             return
         if inner_type == "response.output_item.done":
@@ -615,21 +701,38 @@ class OpenAILiveAdapter:
                     item=item,
                 )
             return
-        if inner_type in {"response.completed", "response.failed", "response.cancelled"} and response_id:
+        if inner_type in {"response.completed", "response.done", "response.failed", "response.cancelled"} and response_id:
             delegated = self._observe_delegation(
                 provider_session, delegation_id, response_id
             )
+            if delegated.terminal:
+                return
             delegated.terminal = True
+            delegation = self._delegation(provider_session, delegation_id)
+            error = response.get("error") or inner.get("error") or {}
+            unsupported = (isinstance(error, dict) and error.get("code") in {
+                "unsupported_service_tier", "service_tier_not_supported"})
+            if (unsupported and not provider_session.priority_unsupported and not delegated.calls
+                    and not any(isinstance(item, dict) and item.get("type") == "function_call" for item in response.get("output") or [])):
+                provider_session.priority_unsupported = True
+                delegation.tier_fallback = True
+                await self._send(provider_session, {"type": "session.update", "session": {
+                    "delegation": {"type": "responses", "responses": {"service_tier": "default"}}}})
+                await self._emit(provider_session, "delegation_tier_fallback", {
+                    "delegation_id": delegation_id, "requested_tier": "priority", "fallback_tier": "default",
+                    "reason": error.get("code")})
+                await self._send(provider_session, {"type": "response.create",
+                    "event_id": f"jarvis-tier-fallback:{delegation_id}"})
+                return
+            await self._emit(provider_session, "delegation_usage", {
+                "delegation_id": delegation_id, "response_id": response_id,
+                "requested_tier": "priority", "actual_tier": response.get("service_tier"),
+                "fallback": provider_session.priority_unsupported, "usage": response.get("usage"),
+                "cost": None, "cost_status": "unavailable",
+                "latency_ms": (time.monotonic() - delegation.started_monotonic) * 1000})
             await self._continue_if_ready(provider_session, delegated)
-            await self._emit(
-                provider_session,
-                "assistant_response",
-                {
-                    "delegation_id": delegation_id,
-                    "response_id": response_id,
-                    "response_status": inner_type.removeprefix("response."),
-                },
-            )
+            # This ends a nested Responses delegation, not the Live spoken turn.
+            # Output transcript/audio may continue after this event.
 
     async def _collect_function_call(
         self,
@@ -639,11 +742,26 @@ class OpenAILiveAdapter:
         response_id: str,
         item: dict[str, Any],
     ) -> None:
+        item_received_ns = time.perf_counter_ns()
         call_id = str(item.get("call_id") or item.get("id") or "")
         name = str(item.get("name") or "")
         if not call_id or not name:
             await self._emit(provider_session, "provider_protocol_warning", {"reason": "incomplete_function_call"})
             return
+        from jsonschema import Draft202012Validator
+        definition = next((tool for tool in provider_session.tool_definitions if tool["name"] == name), None)
+        if definition is None:
+            raise ValueError("Selector called a tool outside its frozen catalog")
+        arguments = _parse_arguments(item.get("arguments"))
+        Draft202012Validator(definition["parameters"]).validate(arguments)
+        delegation = self._delegation(provider_session, delegation_id)
+        observed = provider_session.responses[(delegation_id, response_id)]
+        await self._emit(provider_session, "admission_stage", {
+            "stage": "tool_arguments_complete", "server_monotonic_ns": time.perf_counter_ns(),
+            "delegation_id": delegation_id, "origin_correlation_id": delegation.origin_correlation_id,
+            "provider_call_id": item.get("call_id"), "tool_item_received_ns": item_received_ns,
+            "selector_response_observed_ns": observed.selector_response_observed_ns,
+            "tool_validation_ms": (time.perf_counter_ns() - item_received_ns) / 1_000_000})
         execution_key = (delegation_id, response_id, call_id)
         if execution_key in provider_session.handled_calls:
             return
@@ -652,15 +770,12 @@ class OpenAILiveAdapter:
         delegated = provider_session.responses[response_key]
         delegated.calls.add(call_id)
         provider_session.call_index[call_id] = response_key
-        await self._emit(
-            provider_session,
-            "shell_call",
-            {
+        payload = {
                 "delegation_id": delegation_id,
                 "response_id": response_id,
                 "call_id": call_id,
                 "name": name,
-                "arguments": _parse_arguments(item.get("arguments")),
+                "arguments": arguments,
                 "origin_item_id": delegated.origin_item_id,
                 "origin_correlation_id": delegated.origin_correlation_id,
                 "origin_timeline": {
@@ -668,9 +783,26 @@ class OpenAILiveAdapter:
                     "start_ms": delegated.timeline_start_ms,
                     "end_ms": delegated.timeline_end_ms,
                 },
-            },
-            event_id=f"live-tool:{delegation_id}:{response_id}:{call_id}",
-        )
+            }
+        event_id = f"live-tool:{delegation_id}:{response_id}:{call_id}"
+        if name in {"start_workflow", "continue_task"}:
+            # Capture preflight can legitimately wait two seconds. Keep the
+            # sideband receive loop free to observe transcript and terminal
+            # events while the guarded admission runs.
+            async def route_workflow() -> None:
+                try:
+                    await self._emit(provider_session, "shell_call", payload, event_id=event_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    if not provider_session.closing:
+                        await self._emit(provider_session, "provider_error", {"reason": "workflow_tool_route_failed"})
+
+            task = asyncio.create_task(route_workflow(), name=f"live-workflow:{call_id}")
+            provider_session.tool_tasks.add(task)
+            task.add_done_callback(provider_session.tool_tasks.discard)
+        else:
+            await self._emit(provider_session, "shell_call", payload, event_id=event_id)
 
     async def _handle_transcript_delta(
         self,
@@ -718,7 +850,8 @@ class OpenAILiveAdapter:
         await self._emit(
             provider_session,
             f"{speaker}_transcript_delta",
-            {"delta": delta, "start_ms": start_ms, "end_ms": end_ms},
+            {"delta": delta, "start_ms": start_ms, "end_ms": end_ms,
+                "server_monotonic_ns": time.perf_counter_ns(), "stage": f"{speaker}_transcript_fragment"},
         )
 
     async def _flush_transcript_after_gap(
@@ -729,6 +862,9 @@ class OpenAILiveAdapter:
             await self._flush_transcript(provider_session, speaker)
         except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            await self._report_transport_error(provider_session, {
+                "reason": type(exc).__name__, "stage": "transcript_flush", "speaker": speaker})
 
     async def _flush_transcript(
         self, provider_session: _LiveSession, speaker: str
@@ -927,6 +1063,7 @@ class OpenAILiveAdapter:
                 provider_session,
                 "delegation_origin_resolved",
                 {
+                    "stage": "transcript_ready", "server_monotonic_ns": time.perf_counter_ns(),
                     "delegation_id": responses[0].delegation_id,
                     "origin_correlation_id": correlation_id,
                     "origin_item_id": segment.item_id,
@@ -968,33 +1105,50 @@ class OpenAILiveAdapter:
     ) -> None:
         if provider_session.closing:
             return
-        await self._flush_transcript(provider_session, "user")
-        await self._flush_transcript(provider_session, "assistant")
-        provider_session.closing = True
-        if provider_session.started and not provider_session.closed.is_set():
+        try:
+            await self._flush_transcript(provider_session, "user")
+            await self._flush_transcript(provider_session, "assistant")
+        finally:
+            # A superseded generation can reject transcript persistence. The
+            # rejection must not strand its socket or background work after
+            # close() has removed the session from the adapter's registry.
+            provider_session.closing = True
+            task = provider_session.receiver_task
+            if provider_session.started and not provider_session.closed.is_set():
+                try:
+                    await provider_session.socket.send(json.dumps({"type": "session.close", "event_id": f"jarvis-live-close:{uuid4()}"}))
+                    # An ended receiver (or this receiver's own finalizer)
+                    # cannot consume a closing acknowledgment.
+                    if task is not None and task is not asyncio.current_task() and not task.done():
+                        await asyncio.wait_for(provider_session.closed.wait(), timeout=2.0)
+                except Exception:
+                    pass
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            idle_task = provider_session.idle_task
+            if idle_task is not None and idle_task is not asyncio.current_task() and not idle_task.done():
+                idle_task.cancel()
+                await asyncio.gather(idle_task, return_exceptions=True)
+            for transcript_task in (
+                provider_session.user_transcript_flush_task,
+                provider_session.assistant_transcript_flush_task,
+            ):
+                if transcript_task is not None and transcript_task is not asyncio.current_task() and not transcript_task.done():
+                    transcript_task.cancel()
+                    await asyncio.gather(transcript_task, return_exceptions=True)
+            pending_tools = tuple(task for task in provider_session.tool_tasks if not task.done())
+            for task in pending_tools:
+                task.cancel()
+            if pending_tools:
+                await asyncio.gather(*pending_tools, return_exceptions=True)
             try:
-                await provider_session.socket.send(json.dumps({"type": "session.close", "event_id": f"jarvis-live-close:{uuid4()}"}))
-                await asyncio.wait_for(provider_session.closed.wait(), timeout=2.0)
-            except Exception:
-                pass
-        task = provider_session.receiver_task
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        idle_task = provider_session.idle_task
-        if idle_task is not None and idle_task is not asyncio.current_task() and not idle_task.done():
-            idle_task.cancel()
-            await asyncio.gather(idle_task, return_exceptions=True)
-        for transcript_task in (
-            provider_session.user_transcript_flush_task,
-            provider_session.assistant_transcript_flush_task,
-        ):
-            if transcript_task is not None and transcript_task is not asyncio.current_task() and not transcript_task.done():
-                transcript_task.cancel()
-                await asyncio.gather(transcript_task, return_exceptions=True)
-        await provider_session.socket.close(code=1000, reason=reason[:120])
-        if emit_event and not provider_session.closed.is_set():
-            await self._emit(provider_session, "disconnected", {"reason": reason})
+                await provider_session.socket.close(code=1000, reason=reason[:120])
+                if emit_event and not provider_session.closed.is_set():
+                    await self._emit(provider_session, "disconnected", {"reason": reason})
+            finally:
+                if provider_session.diagnostics:
+                    await provider_session.diagnostics.flush(reason)
 
     async def _close_pending(self, pending: _PendingLiveConnection, *, reason: str) -> None:
         pending.closing = True
@@ -1004,6 +1158,8 @@ class OpenAILiveAdapter:
             await asyncio.gather(task, return_exceptions=True)
         if pending.socket is not None:
             await pending.socket.close(code=1000, reason=reason[:120])
+        if pending.diagnostics:
+            await pending.diagnostics.flush(reason)
 
     @staticmethod
     async def _notify_pending_best_effort(
@@ -1043,6 +1199,26 @@ class OpenAILiveAdapter:
                     return
         except asyncio.CancelledError:
             raise
+
+    async def _announce_ready(self, provider_session: _LiveSession) -> None:
+        if provider_session.started or provider_session.closing or provider_session.closed.is_set():
+            return
+        provider_session.started = True
+        await self._emit(provider_session, "ready", {
+            "provider_session_id": provider_session.provider_session_id,
+            "activation_id": provider_session.activation_id,
+            "defer_initial_updates": True,
+            "delegation_mode": "responses",
+            "readiness_source": "authenticated_sideband_attachment",
+            "timing_ms": {
+                "provider_call": round((provider_session.provider_call_finished
+                    - provider_session.provider_call_started) * 1_000, 3),
+                "sideband_connect": round((provider_session.sideband_finished
+                    - provider_session.sideband_started) * 1_000, 3),
+                "total_to_sideband_ready": round((time.monotonic()
+                    - provider_session.connect_started) * 1_000, 3),
+            },
+        })
 
     async def _emit(
         self,
@@ -1094,14 +1270,40 @@ class OpenAILiveAdapter:
             voice = settings.openai_live_voice
         conversation_prompt = (
             "You are Jarvis, a concise spoken assistant. Keep listening while speaking. "
-            "Acknowledge actionable requests quickly, then delegate work needing tools or "
+            "Delegate actionable requests immediately when they need tools or "
             "authoritative application state. Never claim success until the backend returns a "
             "verified result. Speech interruption does not cancel durable work. "
+            "An explicit request to create, save, start or continue a task requires backend tools. "
+            "When the requested outcome is undefined, ask a short clarification before creating a task. "
+            "A request to save something useful does not specify which result the user wants; do not choose it for them. "
+            "A summary, report, plan, checklist or recipe is a defined outcome even without a file format. "
+            "Use the matching workflow's result type, or a Document for ordinary prose; do not ask note versus document. "
+            "Delegate before composing an acknowledgement; keep any concurrent speech brief. The spoken answer must not replace the requested durable task. "
             "Use the attention checklist for pending updates: mention an item naturally before "
             "calling acknowledge_task_update with its opaque exposure token. Do not read identifiers aloud. "
+            "Fulfil the current user request before briefing older task updates. "
+            "Existing completed or cancelled tasks do not satisfy a request to create new tasks. "
+            "Acknowledging an update never creates, continues or cancels a task. "
             "Quiet context does not require an immediate announcement, bookkeeping needs no spoken confirmation, "
             "and handled or superseded items are not announced proactively again."
         )
+        if context.get("activation_source") == "wake_word":
+            conversation_prompt += (
+                " The Android interface has already acknowledged this wake activation. "
+                "A wake name or greeting alone is an activation cue. Keep listening quietly "
+                "until the user gives a request; do not speak a startup greeting over their first command. "
+                "Answer substantive conversation normally and delegate actionable requests immediately."
+            )
+        catalog = get_jarvis_tool_definitions("openai_live")
+        workflow = next((tool for tool in catalog if tool["name"] == "start_workflow"), None)
+        if workflow:
+            conversation_prompt += " Screen work requires backend delegation. Available workflows: " + workflow["description"]
+        if settings.task_orchestration_enabled:
+            conversation_prompt += (
+                " Background orchestration is the sole automatic worker-feedback owner. "
+                "Task updates are facts for briefing, not requests to autonomously answer, retry or repair tasks. "
+                "Delegate task actions only for a direct user request; user answers and controls remain immediate."
+            )
         attention_context = (
             context.get("attention_context")
             if isinstance(context.get("attention_context"), dict)
@@ -1112,22 +1314,27 @@ class OpenAILiveAdapter:
             separators=(",", ":"),
             ensure_ascii=False,
         )
-        router_prompt = OpenAILiveAdapter._router_instructions(context)
         return {
             "model": settings.openai_live_model,
             "instructions": conversation_prompt,
             "audio": {"output": {"voice": voice}},
             "delegation": {
                 "type": "responses",
-                "responses": {
-                    "model": settings.openai_live_responses_model,
-                    "instructions": router_prompt,
-                    "reasoning": {"effort": settings.openai_live_reasoning_effort},
-                    "tools": get_jarvis_tool_definitions("openai_live"),
-                    "tool_choice": "auto",
-                    "parallel_tool_calls": False,
-                },
+                "responses": OpenAILiveAdapter._router_configuration(context),
             },
+        }
+
+    @staticmethod
+    def _router_configuration(context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "model": settings.openai_live_responses_model,
+            "service_tier": "priority",
+            "instructions": OpenAILiveAdapter._router_instructions(context),
+            "reasoning": {"effort": settings.openai_live_reasoning_effort,
+                **({"summary": "auto"} if settings.openai_live_reasoning_summary else {})},
+            "tools": get_jarvis_tool_definitions("openai_live"),
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
         }
 
     @staticmethod
@@ -1136,10 +1343,37 @@ class OpenAILiveAdapter:
             "Interpret actionable requests and use only the supplied Jarvis tools. The application "
             "owns authorization, execution, and durable state. Prefer dispatch_task for substantial "
             "work. Return concise speech-ready facts and never invent task state or success. "
+            "If the user explicitly asks to create or save a task, call dispatch_task or the matching workflow. "
+            "First clarify an undefined requested outcome; do not invent a result or workflow for a vague request to save something useful. "
+            "A summary, report, plan, checklist or recipe is a defined outcome even without a file format. "
+            "Use the matching workflow's result type, or a Document for ordinary prose; do not ask note versus document. "
+            "Do not substitute inline advice or a spoken comparison for that durable outcome. "
+            "For each explicit requested outcome choose a stable intent_id within this user turn. "
+            "Reuse it on replay and never submit the same intent through another admission tool. "
+            "Use separate IDs for distinct outcomes. Follow-ups continue the existing task with retained evidence. "
+            "For straightforward requests submit the minimum required arguments in one decision. "
+            "Only fields listed in the tool schema's required array are mandatory. "
+            "Keep goal concise and faithful; the worker develops the detailed solution. "
+            "Omit optional result, execution_preferences, targets, importance and presentation_policy unless the request or context needs them. "
+            "For a screen task call start_workflow directly: the backend prepares invocation and latest screenshots in parallel. "
+            "The workflow worker inspects those images after admission; you do not need to see or identify their contents to route a defined outcome. "
+            "A request to save a recipe from visible ingredients or research the visible topic specifies an outcome; admit it without reconfirmation. "
+            "An explicit current-screen request selects screen_context_mode fresh in start_workflow or continue_task; "
+            "no separate capture call is needed. Ordinary continuations omit screen_context_mode. "
+            "Choose optional execution_preferences in this delegation; changed model or effort needs override_reason. "
             "When reviewing pending attention, use get_attention_checklist, mention updates naturally, "
             "and call acknowledge_task_update only after communicating exactly one item. Quiet context does not "
-            "require immediate speech; do not announce handled or superseded items or read identifiers aloud."
+            "require immediate speech; do not announce handled or superseded items or read identifiers aloud. "
+            "Fulfil the current user request before briefing older task updates. "
+            "Existing completed or cancelled tasks do not satisfy a request to create new tasks. "
+            "Acknowledging an update never creates, continues or cancels a task."
         )
+        if settings.task_orchestration_enabled:
+            router_prompt += (
+                " Background orchestration exclusively handles automatic worker questions and recovery. "
+                "Do not initiate answers/retries/repairs from a task update or quiet context. "
+                "Apply these tools immediately when the user explicitly requests an answer or control."
+            )
         situation = context.get("situation")
         if isinstance(situation, dict) and situation:
             router_prompt += " Current application context: " + json.dumps(
@@ -1163,11 +1397,30 @@ class OpenAILiveAdapter:
             headers={"Authorization": f"Bearer {api_key}"},
             json={"session": session_config, "transport": {"type": "webrtc", "sdp": sdp_offer}},
         )
+        priority_rejection = None
+        if response.status_code in {400, 422}:
+            try:
+                error = response.json().get("error", {})
+            except (ValueError, AttributeError):
+                error = {}
+            code = error.get("code") if isinstance(error, dict) else None
+            if (code in {"unsupported_service_tier", "service_tier_not_supported"}
+                    and session_config.get("delegation", {}).get("responses", {}).get("service_tier") == "priority"):
+                priority_rejection = code
+                fallback = deepcopy(session_config)
+                fallback["delegation"]["responses"]["service_tier"] = "default"
+                response = await client.post(
+                    f"{settings.openai_live_base_url.rstrip('/')}/live/sessions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"session": fallback, "transport": {"type": "webrtc", "sdp": sdp_offer}},
+                )
         if response.status_code != 201:
             raise RuntimeError(f"OpenAI GPT-Live session creation failed with HTTP {response.status_code}")
         result = response.json()
         if not isinstance(result, dict):
             raise RuntimeError("OpenAI GPT-Live returned an invalid response")
+        if priority_rejection:
+            result["_jarvis_priority_rejection"] = priority_rejection
         return result
 
     async def _shared_http_client(self) -> httpx.AsyncClient:
@@ -1196,9 +1449,11 @@ def _parse_arguments(value: Any) -> dict[str, Any]:
         return value
     try:
         parsed = json.loads(str(value or "{}"))
-    except (TypeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Tool arguments are not complete JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Tool arguments must be a JSON object")
+    return parsed
 
 
 def _group_transcript_fragments(

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.engine import make_url
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,7 +18,15 @@ class Settings(BaseSettings):
         env_file=Path(__file__).parent.parent.parent / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_obsolete_password_configuration(cls, values):
+        if isinstance(values, dict) and any(str(key).casefold() == "auth_password_hash" and value for key, value in values.items()):
+            raise ValueError("AUTH_PASSWORD_HASH is obsolete. Configure the optional AUTH_PASSWORD in the private .env file instead.")
+        return values
 
     # OpenRouter
     openrouter_api_key: str = ""
@@ -34,6 +42,8 @@ class Settings(BaseSettings):
     openai_live_voice: str = "marin"
     openai_live_responses_model: str = "gpt-5.6-luna"
     openai_live_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    openai_live_diagnostics_dir: str = ""
+    openai_live_reasoning_summary: bool = False
     openai_live_idle_timeout_seconds: int = 60
     openai_live_connect_timeout_seconds: float = 12.0
     jarvis_update_poll_seconds: float = 0.2
@@ -52,9 +62,22 @@ class Settings(BaseSettings):
     local_llm_max_concurrency: int = 1
 
     # Auth
-    auth_password_hash: str = ""
+    jarvis_access_mode: Literal["personal", "password"] = "personal"
+    auth_password: SecretStr = SecretStr("")
+    jarvis_public_url: str = ""
     session_secret_key: str = "dev-secret-change-me"
     session_cookie_secure: bool = False
+
+    @field_validator("jarvis_public_url")
+    @classmethod
+    def public_url_is_origin(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlparse(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            raise ValueError("JARVIS_PUBLIC_URL must be an HTTP/HTTPS origin without credentials, page path, query or fragment")
+        return value.rstrip("/")
 
     # LLM Council
     available_models: str = (
@@ -73,6 +96,25 @@ class Settings(BaseSettings):
     )
     synthesizer_model: str = "anthropic/claude-sonnet-5"
     task_agent_model: str = "local/gemma-4-12b"
+    task_executor: Literal["legacy", "codex"] = "legacy"
+    task_pool_enabled: bool = False
+    task_orchestration_enabled: bool = False
+    task_orchestration_live_enabled: bool = False
+    task_orchestration_model: str = "gpt-5.6-luna"
+    task_orchestration_effort: Literal["low", "medium", "high"] = "low"
+    task_orchestration_profile: str = "data/codex-orchestration-profile"
+    task_orchestration_context_dir: str = "data/orchestration-context"
+    codex_task_model: str = "gpt-5.6-luna"
+    codex_task_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    task_execution_model_allowlist: str = ""  # Empty: only the configured Codex task default.
+    task_project_roots: str = ""  # Comma-separated authorized filesystem project roots.
+    task_workflow_allowlist: str = ""
+    task_research_enabled: bool = False
+    codex_profiles_dir: str = "data/codex-task-profiles"
+    codex_subscription_enabled: bool = False
+    codex_subscription_profile: str = "data/codex-subscription-profile"
+    task_command_mode: Literal["native", "trusted"] = "native"
+    task_windows_sandbox: Literal["elevated", "unelevated"] = "elevated"
     native_tool_model_prefixes: str = (
         "local/,"
         "moonshotai/kimi-k2.6,"
@@ -112,10 +154,14 @@ class Settings(BaseSettings):
     knowledge_preferences_file: str = "../knowledge/preferences.yaml"
     verifier_generated_apps_dir: str = "data/verifier-runs"
     task_workspaces_dir: str = "data/task-workspaces"
+    task_context_blobs_dir: str = "data/task-context-blobs"
     worker_heartbeat_interval_seconds: float = 5.0
     worker_stale_after_seconds: float = 20.0
     worker_lease_ttl_seconds: float = 30.0
     worker_poll_interval_seconds: float = 0.5
+    worker_max_busy: int = 8
+    worker_standby_count: int = 1
+    supervisor_lease_ttl_seconds: float = 15.0
     reminder_poll_interval_seconds: float = 1.0
     conversation_context_message_limit: int = 24
     conversation_compaction_enabled: bool = True
@@ -158,16 +204,27 @@ class Settings(BaseSettings):
 
     @property
     def database_path(self) -> Path | None:
-        url = make_url(self.database_url)
+        url = make_url(self.resolved_database_url)
         if not url.drivername.startswith("sqlite"):
             return None
         if url.database in (None, "", ":memory:"):
             return None
 
-        db_path = Path(url.database)
-        if db_path.is_absolute():
-            return db_path
-        return self.backend_root / db_path
+        return Path(url.database)
+
+    def resolve_database_url(self, database_url: str) -> str:
+        """SQLite files belong to the backend, independent of a worker's cwd."""
+        url = make_url(database_url)
+        if not url.drivername.startswith("sqlite") or url.database in (None, "", ":memory:"):
+            return database_url
+        path = Path(url.database)
+        if not path.is_absolute():
+            path = self.backend_root / path
+        return url.set(database=path.resolve().as_posix()).render_as_string(hide_password=False)
+
+    @property
+    def resolved_database_url(self) -> str:
+        return self.resolve_database_url(self.database_url)
 
     @property
     def knowledge_notes_path(self) -> Path:
@@ -200,6 +257,13 @@ class Settings(BaseSettings):
     @property
     def task_workspaces_path(self) -> Path:
         configured_path = Path(self.task_workspaces_dir)
+        if configured_path.is_absolute():
+            return configured_path
+        return self.backend_root / configured_path
+
+    @property
+    def codex_profiles_path(self) -> Path:
+        configured_path = Path(self.codex_profiles_dir)
         if configured_path.is_absolute():
             return configured_path
         return self.backend_root / configured_path

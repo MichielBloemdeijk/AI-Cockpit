@@ -22,6 +22,12 @@ class CredentialStore(context: Context) {
     var sleep: Boolean
         get() = preferences.getBoolean("sleep", false)
         set(value) { preferences.edit().putBoolean("sleep", value).apply() }
+    var controlsDismissed: Boolean
+        get() = preferences.getBoolean("controls_dismissed", false)
+        set(value) { preferences.edit().putBoolean("controls_dismissed", value).apply() }
+    var setupComplete: Boolean
+        get() = preferences.getBoolean("setup_complete", false)
+        set(value) { preferences.edit().putBoolean("setup_complete", value).apply() }
     var wakeAfterBoot: Boolean
         get() = preferences.getBoolean("wake_after_boot", false)
         set(value) { preferences.edit().putBoolean("wake_after_boot", value).apply() }
@@ -31,15 +37,18 @@ class CredentialStore(context: Context) {
     var assistStructureOptIn: Boolean
         get() = preferences.getBoolean("assist_structure_opt_in", false)
         set(value) { preferences.edit().putBoolean("assist_structure_opt_in", value).apply() }
-    var appFunctionsEnabled: Boolean
-        get() = preferences.getBoolean("app_functions_enabled", false)
-        set(value) { preferences.edit().putBoolean("app_functions_enabled", value).apply() }
+    fun savePairing(server: String, result: PairingResult) {
+        preferences.edit().putString("server_url", PairingLink.serverOrigin(server))
+            .putString("device_id", result.deviceId).putString("credential", encrypt(result.credential))
+            .putLong("event_cursor", result.eventCursor).putBoolean("sleep", false)
+            .putBoolean("setup_complete", false).apply()
+    }
 
-    fun saveCredential(value: String) {
+    private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encoded = Base64.encodeToString(cipher.iv + cipher.doFinal(value.toByteArray()), Base64.NO_WRAP)
-        preferences.edit().putString("credential", encoded).apply()
+        return encoded
     }
     fun credential(): String? {
         val encoded = preferences.getString("credential", null) ?: return null

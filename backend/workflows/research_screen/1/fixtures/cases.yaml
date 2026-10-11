@@ -1,0 +1,19 @@
+cases:
+- id: clear
+  request: Explain the visible subject concisely with sources.
+  expected: sourced_document
+- id: ambiguity
+  request: Explain the highlighted subject.
+  expected: clarify_then_resume
+- id: source_failure
+  request: Find reliable evidence for this subject.
+  expected: partial_success_or_classified_failure
+- id: invalid_output
+  request: Publish the explanation.
+  expected: repair_before_publication
+- id: followup
+  request: Clarify the wording using the saved source.
+  expected: same_url_revision
+- id: failed_update
+  request: Update with unavailable evidence.
+  expected: preserve_previous_revision

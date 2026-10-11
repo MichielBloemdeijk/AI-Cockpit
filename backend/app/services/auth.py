@@ -1,4 +1,4 @@
-"""Simple session-cookie auth with bcrypt-hashed password."""
+"""Signed owner/device sessions and optional private-config password."""
 from __future__ import annotations
 
 import logging
@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import Cookie, HTTPException, Request, status
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from passlib.hash import bcrypt
+import secrets
 
 from app.config import settings
 
@@ -21,15 +21,24 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def verify_password(plain: str) -> bool:
-    """Verify a plain-text password against the stored hash."""
-    if not settings.auth_password_hash:
-        # No password configured → allow all (dev mode)
-        logger.warning("No AUTH_PASSWORD_HASH set — auth disabled (dev mode)")
-        return True
+    """Optional private-config password; password mode fails closed if absent."""
+    configured = settings.auth_password.get_secret_value()
+    if not configured:
+        return settings.jarvis_access_mode == "personal" and plain == ""
+    return secrets.compare_digest(plain.encode("utf-8"), configured.encode("utf-8"))
+
+
+def create_device_session(device_id: str) -> str:
+    return _serializer().dumps({"device_id": device_id})
+
+
+def device_session_id(token: str) -> str | None:
     try:
-        return bcrypt.verify(plain, settings.auth_password_hash)
-    except Exception:
-        return False
+        data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
+        value = data.get("device_id")
+        return value if isinstance(value, str) and value else None
+    except (BadSignature, SignatureExpired, AttributeError):
+        return None
 
 
 def create_session_token() -> str:
@@ -42,12 +51,19 @@ def verify_session_token(token: str) -> bool:
     try:
         data = _serializer().loads(token, max_age=SESSION_MAX_AGE)
         return data.get("authenticated") is True
-    except (BadSignature, SignatureExpired):
+    except (BadSignature, SignatureExpired, AttributeError):
         return False
+
+
+def authorization_scheme(request: Request) -> str:
+    parts = request.headers.get("authorization", "").split(maxsplit=1)
+    return parts[0].casefold() if parts else ""
 
 
 def require_auth(request: Request) -> None:
     """FastAPI dependency: raises 401 if not authenticated."""
+    if authorization_scheme(request) == "appcapability":
+        raise HTTPException(status_code=401, detail="App capability is not accepted here")
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token or not verify_session_token(token):
         raise HTTPException(

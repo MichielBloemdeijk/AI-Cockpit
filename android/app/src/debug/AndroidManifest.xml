@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".audio.LocalAudioFixtureActivity" android:exported="true" />
+        <receiver android:name=".audio.AudioControlsProbeReceiver" android:exported="true" />
+        <activity android:name=".assistant.CaptureFixtureActivity" android:exported="true" />
+        <activity android:name=".web.ResultFixtureActivity" android:exported="true" />
+        <activity android:name=".web.NativeVoiceFixtureActivity" android:exported="true" />
+        <receiver android:name=".assistant.CaptureProbeReceiver" android:exported="true" />
+        <receiver android:name=".assistant.AudioAcceptanceReceiver" android:exported="true" />
+    </application>
+</manifest>

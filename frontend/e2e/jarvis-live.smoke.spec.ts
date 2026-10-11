@@ -124,12 +124,14 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
     }) as typeof window.fetch;
 
     const nativeGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-    let streamPromise: Promise<MediaStream> | null = null;
     Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
       configurable: true,
       value: async (constraints?: MediaStreamConstraints) => {
         if (!constraints?.audio || constraints.video) return nativeGetUserMedia(constraints);
-        streamPromise ??= (async () => {
+        // React's development lifecycle may stop the first microphone stream
+        // and request another. Each request needs a new live track; replaying
+        // a cached, stopped stream leaves wake inference listening to silence.
+        return (async () => {
           const context = new AudioContext();
           const destination = context.createMediaStreamDestination();
           const audio = new Audio(`data:${mimeType};base64,${base64}`);
@@ -152,7 +154,6 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
           };
           return destination.stream;
         })();
-        return streamPromise;
       },
     });
   }, { base64: fixture.base64, mimeType: fixture.mimeType });
@@ -177,7 +178,7 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
   let acceptedSession: { id: string; generation: number } | null = null;
   try {
     await page.goto("/jarvis", { waitUntil: "domcontentloaded" });
-    await expect(page.getByText("GPT-Live experimental", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("GPT-Live", { exact: true }).first()).toBeVisible();
     if (await page.getByText("wake model pending", { exact: true }).isVisible()) {
       throw new Error("The browser wake model is not configured; set NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL and restart the frontend");
     }
@@ -188,7 +189,7 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
       page,
       "combined GPT-Live readiness",
       (entry) => entry.state?.session?.provider_adapter === "openai_live"
-        && entry.state.session.lifecycle_state === "ready"
+        && entry.state?.session?.lifecycle_state === "ready"
         && entry.diagnostics.includes("live.sdp_applied")
         && entry.diagnostics.includes("live.data_channel_open")
         && entry.diagnostics.includes("live.backend_ready")
@@ -223,7 +224,7 @@ test("a recorded Jarvis wake opens GPT-Live and receives a spoken response", asy
       page,
       "the exact Live session to close",
       (entry) => entry.state?.session?.id !== acceptedSession?.id
-        || entry.state.session.lifecycle_state === "disconnected",
+        || entry.state?.session?.lifecycle_state === "disconnected",
       10_000,
     );
   } finally {

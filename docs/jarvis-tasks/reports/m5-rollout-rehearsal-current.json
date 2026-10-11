@@ -1,0 +1,148 @@
+{
+  "schema": "jarvis-rollout-rehearsal.v1",
+  "status": "passed",
+  "observed_at": "2026-10-01T23:22:00.367000+00:00",
+  "checks": [
+    {
+      "name": "test_preparation_never_grants_rollout_and_redacts_credentials",
+      "status": "passed"
+    },
+    {
+      "name": "test_missing_database_assets_and_development_auth_fail_closed_without_creating_files",
+      "status": "passed"
+    },
+    {
+      "name": "test_unsafe_profile_or_tool_configuration_is_reported_not_repaired[desktop]",
+      "status": "passed"
+    },
+    {
+      "name": "test_unsafe_profile_or_tool_configuration_is_reported_not_repaired[desktop-child]",
+      "status": "passed"
+    },
+    {
+      "name": "test_unsafe_profile_or_tool_configuration_is_reported_not_repaired[desktop-parent]",
+      "status": "passed"
+    },
+    {
+      "name": "test_unsafe_profile_or_tool_configuration_is_reported_not_repaired[shared]",
+      "status": "passed"
+    },
+    {
+      "name": "test_unsafe_profile_or_tool_configuration_is_reported_not_repaired[unjournaled]",
+      "status": "passed"
+    },
+    {
+      "name": "test_stale_or_corrupt_database_is_not_migrated_or_reported_ready",
+      "status": "passed"
+    },
+    {
+      "name": "test_online_backup_includes_uncheckpointed_wal_without_overwriting",
+      "status": "passed"
+    },
+    {
+      "name": "test_backup_refuses_foreign_key_damage_and_times_out_busy_writer",
+      "status": "passed"
+    },
+    {
+      "name": "test_backup_refuses_stale_sidecars_and_invalid_deadlines",
+      "status": "passed"
+    },
+    {
+      "name": "test_rehearsal_rejects_missing_empty_skipped_and_failed_evidence",
+      "status": "passed"
+    },
+    {
+      "name": "test_migration_rehearsal_removes_clone_preserves_source_and_never_enables",
+      "status": "passed"
+    },
+    {
+      "name": "test_report_writer_preserves_unrelated_files_and_only_replaces_its_own_schema",
+      "status": "passed"
+    },
+    {
+      "name": "test_real_api_process_restart_keeps_result_saved_metrics_and_disabled_workflow_gate[restart]",
+      "status": "passed"
+    },
+    {
+      "name": "test_real_api_process_restart_keeps_result_saved_metrics_and_disabled_workflow_gate[backup-restore]",
+      "status": "passed"
+    },
+    {
+      "name": "test_in_process_migrations_preserve_application_logging",
+      "status": "passed"
+    },
+    {
+      "name": "test_result_platform_backfill_resumes_without_changing_generated_routes",
+      "status": "passed"
+    },
+    {
+      "name": "test_result_metric_migration_replay_preserves_observations",
+      "status": "passed"
+    },
+    {
+      "name": "test_storage_capability_migration_replay_preserves_revocations",
+      "status": "passed"
+    },
+    {
+      "name": "test_situation_health_migration_resumes_after_partial_sqlite_ddl",
+      "status": "passed"
+    },
+    {
+      "name": "test_run_migrations_serializes_parallel_sqlite_startup",
+      "status": "passed"
+    },
+    {
+      "name": "test_context_bundle_migration_resumes_after_partial_sqlite_ddl",
+      "status": "passed"
+    },
+    {
+      "name": "test_capture_context_migration_resumes_after_partial_sqlite_ddl",
+      "status": "passed"
+    },
+    {
+      "name": "test_task_control_plane_migration_preserves_legacy_task_evidence",
+      "status": "passed"
+    },
+    {
+      "name": "test_live_surface_migration_preserves_history_and_retires_active_legacy_sessions",
+      "status": "passed"
+    },
+    {
+      "name": "test_model_reported_attention_migrates_evidence_audits_and_constraints",
+      "status": "passed"
+    },
+    {
+      "name": "test_held_legacy_transport_lease_does_not_block_factual_append",
+      "status": "passed"
+    },
+    {
+      "name": "test_new_unjudged_issue_survives_disablement_without_rewinding_cursor",
+      "status": "passed"
+    },
+    {
+      "name": "test_legacy_backlog_flag_transitions_retain_identity_and_require_backend_receipt",
+      "status": "passed"
+    },
+    {
+      "name": "test_active_voice_reconnect_with_blocked_decision_and_full_pool",
+      "status": "passed"
+    },
+    {
+      "name": "test_process_creation_stamp_distinguishes_live_writer",
+      "status": "passed"
+    },
+    {
+      "name": "test_worker_job_closes_descendant_writer_after_parent_crash",
+      "status": "passed"
+    },
+    {
+      "name": "test_child_exits_when_its_exact_supervisor_process_dies",
+      "status": "passed"
+    }
+  ],
+  "tests_passed": 34,
+  "provider_calls": 0,
+  "production_mutations": [],
+  "ready_for_enablement": false,
+  "scope": "Isolated database snapshot/restore, API restart, migrations and disablement; not production backup or rollout acceptance"
+}

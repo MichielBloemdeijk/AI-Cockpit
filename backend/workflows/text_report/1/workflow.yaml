@@ -1,0 +1,19 @@
+schema: workflow-definition.v2
+id: text_report
+version: 1
+instructions: instructions.md
+input_schema: text-request.v1
+output_schema: text-report.v1
+required_initial_context: []
+capabilities:
+  - task.context.read@1
+  - task.result.publish@1
+defaults:
+  execution_profile: fast
+fixtures: fixtures/cases.yaml
+
+purpose: Produce a concise maintained report from the request.
+routing_examples: []
+
+tools:
+  remove: [native.local, native.research, native.subagents, native.skills]

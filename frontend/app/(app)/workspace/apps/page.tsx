@@ -1,12 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
+import Link from "@/components/CockpitLink";
+import { staticShell } from "@/lib/navigation";
 import { Blocks, ExternalLink, Plus, RefreshCw } from "lucide-react";
 import {
   createGeneratedApp,
   GeneratedAppSummary,
   listGeneratedApps,
+  listAppCatalog,
+  type CockpitApp,
 } from "@/lib/api";
 
 
@@ -35,6 +38,7 @@ function formatTimestamp(value: string): string {
 
 export default function AppsPage() {
   const [apps, setApps] = useState<GeneratedAppSummary[]>([]);
+  const [collections, setCollections] = useState<CockpitApp[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -46,7 +50,9 @@ export default function AppsPage() {
     setLoading(true);
     setError(null);
     try {
-      setApps(await listGeneratedApps());
+      const [catalog, generated] = await Promise.all([listAppCatalog(), staticShell ? Promise.resolve([]) : listGeneratedApps()]);
+      setCollections(catalog.filter(app => app.kind === "collection"));
+      setApps(generated);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load apps.");
     } finally {
@@ -96,7 +102,7 @@ export default function AppsPage() {
         <div className="flex items-center gap-2">
           <Blocks size={18} className="text-zinc-400" />
           <span className="text-sm font-medium text-zinc-100">Apps</span>
-          <span className="text-xs text-zinc-500">({apps.length})</span>
+          <span className="text-xs text-zinc-500">({apps.length + collections.length})</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -106,13 +112,13 @@ export default function AppsPage() {
           >
             <RefreshCw size={15} />
           </button>
-          <button
+          {!staticShell && <button
             onClick={() => setShowNew((value) => !value)}
             className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs text-white transition-colors hover:bg-blue-700"
           >
             <Plus size={13} />
             New draft app
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -153,6 +159,17 @@ export default function AppsPage() {
 
       <div className="flex-1 overflow-y-auto p-4">
         {error ? <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+        {collections.length > 0 && <section className="mb-6">
+          <h2 className="mb-3 text-sm font-medium text-zinc-400">Maintained collections</h2>
+          <div className="grid gap-4 md:grid-cols-2">{collections.map(collection => <article key={collection.id} className="rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
+            <h3 className="text-lg font-semibold text-zinc-100">{collection.title}</h3>
+            <p className="my-3 text-sm text-zinc-400">{collection.description}</p>
+            <Link href={collection.route_path} className="text-sky-400">Open collection</Link>
+          </article>)}</div>
+        </section>}
+        {staticShell && <p className="text-sm text-zinc-400">Generated app management is available in the full Cockpit frontend.</p>}
+        {!staticShell && <>
+        {apps.length > 0 && <h2 className="mb-3 text-sm font-medium text-zinc-400">Generated apps</h2>}
         {loading && apps.length === 0 ? (
           <div className="py-12 text-center text-sm text-zinc-500">Loading apps...</div>
         ) : apps.length === 0 ? (
@@ -217,6 +234,7 @@ export default function AppsPage() {
             ))}
           </div>
         )}
+        </>}
       </div>
     </div>
   );

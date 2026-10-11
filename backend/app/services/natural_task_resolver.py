@@ -5,12 +5,14 @@ from dataclasses import dataclass
 import re
 
 from sqlalchemy import and_, desc, exists, func, or_, select
+from sqlalchemy.dialects.sqlite import insert
 
-from app.db.session import session_scope
+from app.db.session import session_scope, read_session_scope
 from app.db.tables import JarvisState, Task, TaskEvent, TaskQuestion
+from app.services.task_statuses import ACTIVE_TASK_STATUSES
+from app.services.admission_timing import timed
 
 
-ACTIVE = {"queued", "running", "waiting_for_input", "waiting_until"}
 _PRONOUNS = {"this", "that", "it", "this task", "that task", "the task"}
 _STOP = {
     "a", "an", "and", "about", "check", "did", "do", "for", "how", "is", "of", "on",
@@ -33,15 +35,18 @@ class TaskResolution:
 
 
 class NaturalTaskResolver:
+    @timed("focus_update")
     async def touch(self, task_id: str) -> None:
         async with session_scope() as session:
+            # Acquire SQLite's writer before reading focus/history. Concurrent
+            # admissions must neither insert the singleton twice nor lose refs.
+            await session.execute(insert(JarvisState).values(id="current",
+                state_revision=0, live_event_cursor=0).on_conflict_do_nothing(index_elements=["id"]))
             task = await self._by_id(session, task_id)
             if task is None:
                 return
             state = await session.get(JarvisState, "current")
-            if state is None:
-                state = JarvisState(id="current", state_revision=0, live_event_cursor=0)
-                session.add(state)
+            assert state is not None
             recent = [str(item) for item in (state.recent_task_refs_json or []) if str(item) != task_id]
             state.focused_task_id = task_id
             state.recent_task_refs_json = [task_id, *recent[:11]]
@@ -51,7 +56,7 @@ class NaturalTaskResolver:
         normalized = " ".join(str(reference or "").lower().split()).strip()
         if not normalized:
             return TaskResolution(task=None)
-        async with session_scope() as session:
+        async with read_session_scope() as session:
             state = await session.get(JarvisState, "current")
             recent = [str(item) for item in ((state.recent_task_refs_json if state else None) or [])]
             focused_id = state.focused_task_id if state else None
@@ -70,14 +75,14 @@ class NaturalTaskResolver:
                 focused = await self._get_allowed(session, focused_id, active_only=True)
                 if focused is not None:
                     return TaskResolution(task=focused)
-                return TaskResolution(task=await self._first_recent(session, recent, statuses=ACTIVE))
+                return TaskResolution(task=await self._first_recent(session, recent, statuses=ACTIVE_TASK_STATUSES))
 
             if normalized in {"last", "last task", "the last task"}:
-                task = await self._first_recent(session, recent, statuses=ACTIVE if active_only else None)
+                task = await self._first_recent(session, recent, statuses=ACTIVE_TASK_STATUSES if active_only else None)
                 if task is None:
                     statement = select(Task).order_by(Task.creation_order.desc()).limit(1)
                     if active_only:
-                        statement = statement.where(Task.status.in_(sorted(ACTIVE)))
+                        statement = statement.where(Task.status.in_(sorted(ACTIVE_TASK_STATUSES)))
                     task = (await session.execute(statement)).scalar_one_or_none()
                 return TaskResolution(task=task)
 
@@ -93,7 +98,7 @@ class NaturalTaskResolver:
             # Exact internal identities remain accepted by trusted callers, but
             # are never required or included in clarification text.
             exact = await self._by_id(session, reference.strip())
-            if exact is not None and (not active_only or exact.status in ACTIVE):
+            if exact is not None and (not active_only or exact.status in ACTIVE_TASK_STATUSES):
                 return TaskResolution(task=exact)
 
             terms = [item for item in re.findall(r"[\w'-]+", normalized, flags=re.UNICODE) if item not in _STOP]
@@ -116,7 +121,7 @@ class NaturalTaskResolver:
                 ))
             statement = select(Task).where(or_(*clauses))
             if active_only:
-                statement = statement.where(Task.status.in_(sorted(ACTIVE)))
+                statement = statement.where(Task.status.in_(sorted(ACTIVE_TASK_STATUSES)))
             rows = list((await session.execute(
                 statement.order_by(desc(Task.updated_at), desc(Task.creation_order)).limit(50)
             )).scalars().all())
@@ -129,7 +134,7 @@ class NaturalTaskResolver:
                 reverse=True,
             )
             best_score = scored[0][0]
-            plausible = tuple(task for score, task in scored if score == best_score and score > 0)
+            plausible = tuple(task for score, task in scored if score == best_score and score[0] > 0)
             if len(plausible) == 1:
                 return TaskResolution(task=plausible[0])
             candidates = plausible[:3]
@@ -147,7 +152,7 @@ class NaturalTaskResolver:
     @staticmethod
     async def _get_allowed(session, task_id: str | None, *, active_only: bool) -> Task | None:
         task = None if not task_id else await NaturalTaskResolver._by_id(session, task_id)
-        if task is not None and active_only and task.status not in ACTIVE:
+        if task is not None and active_only and task.status not in ACTIVE_TASK_STATUSES:
             return None
         return task
 
@@ -166,12 +171,14 @@ class NaturalTaskResolver:
         )).scalar_one_or_none()
 
     @staticmethod
-    def _score(task: Task, terms: list[str], recent: list[str]) -> int:
+    def _score(task: Task, terms: list[str], recent: list[str]) -> tuple[int, int, int]:
         haystack = f"{task.goal}\n{task.terminal_summary or ''}".lower()
-        score = sum(3 if re.search(rf"\b{re.escape(term)}\b", haystack) else 1 for term in terms if term in haystack)
-        if task.id in recent:
-            score += max(1, 6 - recent.index(task.id))
-        return score
+        matched = [term for term in terms if term in haystack]
+        specificity = sum(3 if re.search(rf"\b{re.escape(term)}\b", haystack) else 1 for term in matched)
+        recency = max(1, 6 - recent.index(task.id)) if task.id in recent else 0
+        # A partial descriptive match must never outrank a more complete one
+        # merely because it was recently focused (especially for cancellation).
+        return len(matched), specificity, recency
 
 
 natural_task_resolver = NaturalTaskResolver()

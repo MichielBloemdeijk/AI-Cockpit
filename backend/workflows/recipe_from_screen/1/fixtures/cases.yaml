@@ -1,0 +1,22 @@
+cases:
+- id: clear
+  request: Find a vegetarian tomato pasta recipe for this dish.
+  expected: sourced_recipe
+- id: ingredients
+  request: Make and save a recipe using the ingredients on my screen.
+  expected: sourced_recipe
+- id: ambiguity
+  request: Find a recipe for the highlighted dish.
+  expected: clarify_then_resume
+- id: source_failure
+  request: Find a supported recipe.
+  expected: partial_success_or_classified_failure
+- id: invalid_output
+  request: Publish the recipe.
+  expected: repair_before_publication
+- id: followup
+  request: Make the instructions clearer using the saved source.
+  expected: same_url_revision
+- id: failed_update
+  request: Update the recipe with unavailable evidence.
+  expected: preserve_previous_revision

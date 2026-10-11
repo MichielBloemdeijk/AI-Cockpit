@@ -181,7 +181,7 @@ async def test_worker_retries_transient_sqlite_lock_instead_of_exiting(monkeypat
             stop.set()
             return ClaimResult(task=None)
 
-        async def heartbeat(self, worker_id: str, *, state: str) -> bool:
+        async def heartbeat(self, worker_id: str, *, state: str | None = None) -> bool:
             return True
 
         async def stop(self, worker_id: str) -> None:

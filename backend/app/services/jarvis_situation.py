@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 
 from app.config import settings
+from app.services.orchestration_visibility import visible_attention
 from app.db.session import session_scope
 from app.db.tables import (
     Conversation,
@@ -45,6 +46,26 @@ class JarvisSituationSnapshot:
 
 
 class JarvisSituationProjector:
+    async def background_in_session(self, session) -> dict[str, Any]:
+        """Bounded view of the same canonical facts, without a voice session."""
+        state = await session.get(JarvisState, "current")
+        tasks = list((await session.execute(select(Task).where(Task.status.in_(sorted(ACTIVE_TASK_STATUSES)))
+                                           .order_by(Task.creation_order.desc()).limit(8))).scalars())
+        count = int((await session.execute(select(func.count()).select_from(Task).where(
+            Task.status.in_(sorted(ACTIVE_TASK_STATUSES)),
+        ))).scalar_one())
+        preference = await session.get(JarvisPreference, "current")
+        return {
+            "schema": "jarvis.situation.background.v1",
+            "situation_revision": state.situation_revision if state else 0,
+            "focus": {"focused_task_id": state.focused_task_id if state else None},
+            "temporal": temporal_frame(time_zone=preference.time_zone if preference else "Europe/Amsterdam", now=utc_now()),
+            "active_task_count": count, "tasks_truncated": count > len(tasks),
+            "tasks": [{"task_id": task.id, "status": task.status, "goal": task.goal[:160],
+                       "importance": task.importance, "pending_control": bool(task.pending_control_id)} for task in tasks],
+            "component_health": await runtime_health_service.snapshot_in_session(session, now=utc_now()),
+        }
+
     async def project(
         self,
         *,
@@ -127,6 +148,7 @@ class JarvisSituationProjector:
         pending_presentations = list((await session.execute(
             select(TaskPresentation)
             .where(TaskPresentation.state == "pending")
+            .where(visible_attention())
             .order_by(TaskPresentation.created_at.asc(), TaskPresentation.id.asc())
         )).scalars().all())
         delivered_presentations = list((await session.execute(

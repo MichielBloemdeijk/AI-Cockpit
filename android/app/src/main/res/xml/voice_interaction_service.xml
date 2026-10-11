@@ -3,5 +3,7 @@
     android:sessionService="nl.sander.aicockpit.jarvis.assistant.JarvisSessionService"
     android:recognitionService="nl.sander.aicockpit.jarvis.assistant.JarvisRecognitionService"
     android:supportsAssist="true"
+    android:usesAssistData="true"
+    android:usesAssistScreenshots="true"
     android:supportsLaunchVoiceAssistFromKeyguard="true"
     android:supportsLocalInteraction="true" />

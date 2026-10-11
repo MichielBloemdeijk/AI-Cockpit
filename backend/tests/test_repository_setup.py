@@ -22,7 +22,7 @@ def _example_environment() -> dict[str, str]:
 def test_example_environment_is_safe_and_machine_independent() -> None:
     values = _example_environment()
 
-    assert values["AUTH_PASSWORD_HASH"] == ""
+    assert values["AUTH_PASSWORD"] == ""
     assert values["ALLOWED_DIRS"] == ""
     assert values["SESSION_SECRET_KEY"]
     assert values["TASK_AGENT_MODEL"] == "local/gemma-4-12b"

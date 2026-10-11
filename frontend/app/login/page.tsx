@@ -3,28 +3,46 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Cpu, Lock } from "lucide-react";
-import { login } from "@/lib/api";
+import { checkAuth, getAccessConfig, login } from "@/lib/api";
+import { defaultLoginPath, safeNextPath, staticShell } from "@/lib/navigation";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [passwordRequired, setPasswordRequired] = useState<boolean | null>(null);
   const router = useRouter();
-  const [nextPath, setNextPath] = useState("/chat");
+  const [nextPath, setNextPath] = useState(defaultLoginPath);
 
   useEffect(() => {
-    const candidate = new URLSearchParams(window.location.search).get("next") || "/chat";
-    if (candidate.startsWith("/") && !candidate.startsWith("//") && !candidate.includes("://")) setNextPath(candidate);
+    const target = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+    setNextPath(target);
+    let active = true;
+    async function prepare() {
+      try {
+        if (!(await checkAuth())) {
+          if (navigator.userAgent.includes("JarvisPhone/")) {
+            throw new Error("Reconnect or link this phone in the Jarvis Android app.");
+          }
+          const config = await getAccessConfig();
+          if (!active) return;
+          setPasswordRequired(config.password_required);
+          if (config.password_required) return;
+          await login("");
+        }
+        if (active) window.location.replace(target);
+      } catch (failure) {
+        if (active) setError(failure instanceof Error ? failure.message : "Unable to connect.");
+      }
+    }
+    void prepare();
+    return () => { active = false; };
   }, []);
-
-  const safeNext = () => {
-    return nextPath;
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
-    const submittedPassword = String(new FormData(form).get("password") ?? "").trim();
+    const submittedPassword = String(new FormData(form).get("password") ?? "");
 
     if (!submittedPassword) {
       setError("Enter a password.");
@@ -35,7 +53,8 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await login(submittedPassword);
-      router.replace(safeNext());
+      if (staticShell) window.location.replace(nextPath);
+      else router.replace(nextPath);
     } catch (error) {
       setError(error instanceof Error ? error.message : "Login failed.");
     } finally {
@@ -56,7 +75,7 @@ export default function LoginPage() {
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
+        {passwordRequired ? <form onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
             <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
             <input
@@ -81,7 +100,7 @@ export default function LoginPage() {
           >
             {loading ? "Signing in…" : "Sign in"}
           </button>
-        </form>
+        </form> : <div className="text-center text-zinc-300"><p>{error || "Connecting to Jarvis…"}</p>{error && <button className="mt-4 underline" onClick={() => window.location.reload()}>Try again</button>}</div>}
       </div>
     </div>
   );

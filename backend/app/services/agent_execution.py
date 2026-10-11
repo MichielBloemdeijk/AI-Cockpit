@@ -27,7 +27,9 @@ from app.services.llm import chat_completion
 from app.services.task_service import task_service
 
 
-TASK_CONTROL_TOOLS = {"list_tasks", "get_task", "cancel_task"}
+TASK_CONTROL_TOOLS = {
+    "list_tasks", "get_task", "cancel_task", "continue_task", "control_task"
+}
 CancellationProbe = Callable[[], Awaitable[bool]]
 
 
@@ -36,6 +38,10 @@ class AgentExecutionContext:
     execution_id: str
     task_id: str
     attempt_id: str
+    execution_run_id: str
+    claim_token: str
+    execution_kind: str
+    execution_config: dict[str, Any]
     goal: str
     workspace_path: str
     origin_conversation_id: str | None
@@ -83,6 +89,8 @@ class TaskExecutionSink:
             event_type=event_type,
             payload=payload,
             idempotency_key=self._key(event_type),
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
         )
 
     async def progress(self, summary: str) -> None:
@@ -90,17 +98,29 @@ class TaskExecutionSink:
             self.context.task_id,
             summary=summary,
             idempotency_key=self._key("task.progress"),
+            attempt_id=self.context.attempt_id,
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
         )
 
     async def checkpoint(self, value: dict[str, Any]) -> None:
         value["event_counter"] = self.counter
-        await task_service.save_checkpoint(self.context.task_id, checkpoint=value)
+        await task_service.save_checkpoint(
+            self.context.task_id,
+            checkpoint=value,
+            attempt_id=self.context.attempt_id,
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
+        )
 
     async def question(self, question: str) -> None:
         await task_service.ask_question(
             self.context.task_id,
             question=question,
             idempotency_key=self._key("task.requires_input"),
+            attempt_id=self.context.attempt_id,
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
         )
 
     async def wait_until(self, resume_at: datetime, reason: str) -> None:
@@ -109,21 +129,20 @@ class TaskExecutionSink:
             resume_at=resume_at,
             reason=reason,
             idempotency_key=self._key("task.waiting_until"),
+            attempt_id=self.context.attempt_id,
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
         )
 
     async def complete(self, summary: str, final_text: str) -> None:
-        await task_service.add_artifact(
-            self.context.task_id,
-            artifact_type="result",
-            mime_type="text/markdown",
-            title="Task result",
-            content_text=final_text,
-            idempotency_key=self._key("task.result"),
-        )
         await task_service.complete(
             self.context.task_id,
             summary=summary or final_text,
             idempotency_key=self._key("task.completed"),
+            final_text=final_text,
+            attempt_id=self.context.attempt_id,
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
         )
 
     async def fail(self, error: str) -> None:
@@ -132,13 +151,13 @@ class TaskExecutionSink:
             status="failed",
             summary=error,
             idempotency_key=self._key("task.failed"),
+            attempt_id=self.context.attempt_id,
+            execution_run_id=self.context.execution_run_id,
+            claim_token=self.context.claim_token,
         )
 
     async def cancelled(self) -> None:
-        await task_service.finish_cancellation(
-            self.context.task_id,
-            idempotency_key=self._key("task.cancelled"),
-        )
+        raise RuntimeError("A task worker cannot confirm its own descendant process tree stopped")
 
 
 class ConversationExecutionSink:
@@ -219,8 +238,7 @@ class TaskAgentRuntime:
         await sink.progress("Planning next step")
         for step in range(start_step + 1, 51):
             if await cancellation_requested():
-                await sink.cancelled()
-                return AgentExecutionResult(status="cancelled", summary="Task cancelled by user.")
+                return AgentExecutionResult(status="control_requested", summary="Task control requested.")
 
             transcript = json.dumps(history[-24:], ensure_ascii=False, default=str)
             user_prompt = (
@@ -241,8 +259,7 @@ class TaskAgentRuntime:
                 priority="background",
             )
             if await cancellation_requested():
-                await sink.cancelled()
-                return AgentExecutionResult(status="cancelled", summary="Task cancelled by user.")
+                return AgentExecutionResult(status="control_requested", summary="Task control requested.")
             if response.error:
                 raise RuntimeError(response.error)
             if response.reasoning.strip():

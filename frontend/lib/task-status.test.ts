@@ -11,10 +11,17 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
     origin_conversation_id: null,
     origin_turn_id: null,
     goal: "Take medicine",
+    execution_kind: "agent",
     status: "waiting_until",
     status_reason: null,
     creation_order: 1,
     current_attempt_id: null,
+    current_run_id: null,
+    pending_control_id: null,
+    goal_revision: 1,
+    control_revision: 0,
+    workspace_generation: 1,
+    queue_entered_at: "2026-09-03T07:00:00Z",
     cancellation_requested_at: null,
     importance: "normal",
     presentation_policy: "critical_only",
@@ -36,6 +43,7 @@ describe("task status presentation", () => {
   it("keeps every durable waiting state active", () => {
     expect(ACTIVE_TASK_STATUSES.has("waiting_for_worker")).toBe(true);
     expect(ACTIVE_TASK_STATUSES.has("waiting_until")).toBe(true);
+    expect(ACTIVE_TASK_STATUSES.has("paused")).toBe(true);
   });
 
   it("labels only due reminder waits as overdue", () => {

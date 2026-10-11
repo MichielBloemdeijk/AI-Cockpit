@@ -152,7 +152,7 @@ def _native_tool_response(*, model: str, name: str, arguments: dict[str, object]
 async def test_generated_app_registry_crud_and_contract():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         created = await client.post(
             "/api/apps",
@@ -208,7 +208,7 @@ async def test_generated_app_detail_derives_css_module_error_from_isolated_sourc
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         detail = await client.get(f"/api/apps/slug/{bootstrap.app.slug}")
 
     assert detail.status_code == 200
@@ -525,7 +525,7 @@ async def test_chat_agent_flow_accepts_top_level_app_initialize_fields(monkeypat
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         response = await client.post(
             "/api/conversations/",
@@ -617,7 +617,7 @@ async def test_chat_agent_native_tool_flow_uses_tool_calls_for_supported_models(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         response = await client.post(
             "/api/conversations/",
@@ -694,7 +694,7 @@ async def test_chat_agent_native_tool_flow_can_pause_for_user_question(monkeypat
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         response = await client.post(
             "/api/conversations/",
@@ -771,7 +771,7 @@ async def test_chat_agent_retry_feedback_recovers_missing_app_initialize_argumen
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         response = await client.post(
             "/api/conversations/",
@@ -960,7 +960,7 @@ async def test_chat_agent_flow_keeps_and_reacquires_app_leases(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         first = await client.post(
             "/api/conversations/",

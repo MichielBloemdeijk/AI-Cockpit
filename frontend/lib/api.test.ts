@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptJarvisTextTurn,
   cancelTask,
+  controlTaskPool,
   closeJarvisLiveSession,
   createJarvisLiveCall,
   createGeneratedApp,
@@ -24,6 +25,7 @@ import {
   submitJarvisLiveTelemetry,
   startFreshJarvisLog,
   dispatchTask,
+  continueTask,
   type ConversationEventView,
   updateChatSettings,
 } from "./api";
@@ -73,6 +75,36 @@ describe("global task api", () => {
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify({ idempotency_key: "cancel-key" }),
+    });
+  });
+
+  it("sends explicit result intent independently of execution preferences", async () => {
+    vi.stubGlobal("crypto", { randomUUID: () => "followup-key" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ result_url: "/results/result-1" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    await dispatchTask({ idempotency_key: "test-dispatch", goal: "Report", result: { mode: "new" } });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).result).toEqual({ mode: "new" });
+    await continueTask("task/1", "Edit", { mode: "update", public_id: "result-1", expected_revision: 2 });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/tasks/task%2F1/turns");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ content: "Edit", idempotency_key: "followup-key",
+      result: { mode: "update", public_id: "result-1", expected_revision: 2 } });
+  });
+
+  it("sends audited pool replacement with an idempotency key", async () => {
+    vi.stubGlobal("crypto", { randomUUID: () => "pool-key" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: "command-1" }) } satisfies Partial<Response>);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await controlTaskPool("replace_worker", "Replace stalled worker", "worker-1");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/pool/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        action: "replace_worker", idempotency_key: "pool-key",
+        reason: "Replace stalled worker", worker_id: "worker-1",
+      }),
     });
   });
 
@@ -453,7 +485,7 @@ describe("streamChat", () => {
           releaseLock: vi.fn(),
         }),
       },
-    } satisfies Partial<Response>);
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const chunks: string[] = [];

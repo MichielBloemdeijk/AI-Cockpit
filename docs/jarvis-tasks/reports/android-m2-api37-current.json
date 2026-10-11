@@ -1,0 +1,26 @@
+{
+  "task_id": "3ae52cd8-2b8d-4d12-bb02-1365d12766ef",
+  "activation_id": "b1878f29-65f2-4017-a738-305cfea5d5a2",
+  "capture_id": "8c954734-542c-48b6-b6f7-42f3d5f8b909",
+  "execution_run_id": "2aeec644-ebe5-41d0-a9b1-db59f1754f44",
+  "result_url": "/results/57ab9652-00c6-4d7a-8532-21824de3c54d",
+  "image_sha256": "1b1d3a5f6f4998001f332df08e69790e9cbdfd681be08a4f6dade83858ef13b2",
+  "image_size": [
+    921,
+    2048
+  ],
+  "fake_live_cold_to_ready_s": 0.902469,
+  "backend_ready_call_to_admission_ms": 78,
+  "backend_capture_preflight_ms": 31,
+  "capture_to_admission_s": 1.571204,
+  "admission_to_upload_s": 2.66255,
+  "queue_to_worker_start_s": 3.101932,
+  "emulator": "emulator-5554",
+  "avd": "JarvisM3Api37",
+  "system_image": "system-images;android-37.0;google_apis;x86_64",
+  "android_api": "37",
+  "local_network_permission_ui": "deny_then_allow_and_pair",
+  "invocation": "system_assist_key",
+  "evidence_dir": "C:\\Users\\Sander\\AppData\\Local\\Temp\\jarvis-m2-screen-mwopctqs",
+  "mobile_url": "http://10.0.2.2:50960/results/57ab9652-00c6-4d7a-8532-21824de3c54d"
+}

@@ -37,7 +37,11 @@ export default defineConfig({
       cwd: resolve(root, "../backend"),
       env: {
         ...process.env,
-        AUTH_PASSWORD_HASH: "",
+        AUTH_PASSWORD: "",
+        JARVIS_ACCESS_MODE: "personal",
+        TASK_POOL_ENABLED: "false",
+        TASK_ORCHESTRATION_ENABLED: "false",
+        TASK_ORCHESTRATION_LIVE_ENABLED: "false",
         DATABASE_URL: `sqlite+aiosqlite:///${normalizedDatabasePath}`,
         CONVERSATION_WORKSPACES_DIR: resolve(runDirectory || root, "conversations"),
         LOCAL_LLM_ENABLED: "false",

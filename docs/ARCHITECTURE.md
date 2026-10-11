@@ -4,10 +4,22 @@
 
 This document describes the current architecture of AI Cockpit as it exists in the repository today. It is intentionally current-state focused: it explains what is implemented, how the main parts interact, where code lives, and which parts are still intentionally incomplete.
 
+Jarvis worker tools passed M10 on 2026-10-09: native hosted Codex research,
+persisted global/workflow/task tool choices, approved skills, native subagents
+and exact human connector permissions are implemented. The explicit trusted
+Windows command broker remains the tested coding mode; native coding is gated
+by Python temporary-directory permissions. Fifteen required final assertions
+passed with four accepted M8 caveats. M11 personal phone use was accepted on
+2026-10-11, including working tasks and screenshot-based recipe creation. See
+the [final acceptance record](jarvis-tasks/reports/personal-use-accepted-2026-10-11.md).
+See the [worker policy](jarvis-tasks/09-worker-tool-policy.md) and
+[completion evidence](jarvis-tasks/reports/worker-tools-closure-2026-10-08.md).
+
 ## Related Docs
 
 - [README.md](../README.md) for setup, runtime entrypoints, and the high-level product overview
-- [JARVIS_FOLLOW_UP_PLAN.md](JARVIS_FOLLOW_UP_PLAN.md) for the living v2 implementation and release-acceptance record
+- [JARVIS_TASK_ARCHITECTURE.md](JARVIS_TASK_ARCHITECTURE.md) for the implemented modular task architecture and phase contracts
+- [JARVIS_GAPS.md](JARVIS_GAPS.md) for accepted limits and archived user-visible observations
 - [JARVIS_WAKE_MODEL.md](JARVIS_WAKE_MODEL.md) for wake-model provenance, evaluation, and calibration gates
 
 ## System Overview
@@ -41,6 +53,86 @@ The required product direction for generated apps is a chat-resident agent loop:
 This remains the primary control plane for interactive generated-app work. Delegation from chat creates a first-class global task directly; the retired `/voice` page permanently redirects to `/jarvis`. A separate `python -m app.worker` process claims and executes global tasks. FastAPI records only the causal delegation event and task card, not a child conversation run.
 
 The product is split into a FastAPI backend, a Next.js frontend/PWA, an optional native Android client, a local SQLite database for durable state and text indexes, and a file-backed approved-knowledge directory.
+
+### Guarded task and background execution
+
+The opt-in Windows/API task route now has serialized per-task execution runs,
+a homogeneous supervised pool (up to eight busy workers), isolated pinned
+Codex hosts, brokered action receipts and confirmed process-tree termination.
+The legacy route remains the default. Native continuation and portable
+task/run context are durable; unknown effects cannot be blindly replayed.
+
+`TASK_ORCHESTRATION_ENABLED` selects one code-only unified-event feedback owner
+and an independent single-flight decision loop. The loop uses an isolated
+restricted Codex/MCP profile, never a worker slot or active voice session.
+Common task services commit action receipts and task mutations together under
+current-state/generation guards. Accepted instructions and original evidence
+are bounded/retrievable; stale actions fail closed. Existing canonical attention
+records distinguish communicated updates from answered worker questions.
+Unjudged question/failure items stay pending but are hidden from proactive
+delivery until retained through a backend receipt; flag rollback preserves
+their identities. Factual completions forward without model approval.
+
+`/api/orchestration` exposes queue/runtime/action/forwarding timing, pending
+age, receipt counts and actual native token usage. Metadata metrics do not
+generate feedback events. Deferred native outcomes can be inspected read-only
+and explicitly resumed after verified host exit/history reconciliation; there
+is no periodic AI health check or automatic paid retry of an uncertain turn.
+Background live execution remains default-off and budget-gated. The guarded
+API/native and Android emulator acceptance does not enable subscription use,
+establish physical/audio timing, or verify the account's enforced cutoff.
+See the [M3 implementation and evidence](jarvis-tasks/08-background-orchestration.md#13-implementation-progress--2026-09-30)
+for the current scope and agent-runnable tests.
+
+The guarded route also implements M4's reusable workflow platform. Versioned
+definitions declare independent context, capability and output contracts;
+enabled packages supply catalog/routing descriptions without changing the voice
+gateway. Trusted result registrations serve document and minimal recipe views
+through one allocation/revision/delivery lifecycle. Shared MCP capabilities
+provide retained images/history, durable clarification/finish, fenced publication
+and batched research. Research journals separately billed Responses discovery
+and bounded public source reads with DNS/redirect/decoded-size safeguards.
+Follow-ups reuse task context and sources and edit the same URL with an expected
+base revision; failed updates preserve the last good result. MCP stdio explicitly
+uses UTF-8 on Windows. `recipe_from_screen@1` and `research_screen@1` are thin
+reference packages, not custom integrations. Actual provider and API37 acceptance
+is recorded in [M4 evidence](jarvis-tasks/reports/m4-acceptance.md).
+`TASK_RESEARCH_ENABLED` and exact workflow/digest allowlisting remain default-off;
+M5 is in progress: unified catalog/current collections, shared saved state,
+bounded optimistic JSON storage with revocable HTTP capabilities, document
+references/retained text attachments, durable result SSE and a production static
+result shell have autonomous coverage. Browser copy/print and offline cursor
+recovery pass. General agents can opt into Documents at admission; their final
+Markdown uses the shared fenced publication transaction with atomic notification
+intent. Run-owned new/update/answer associations support multiple same-task
+results, fixed-base edits and non-mutating questions. Task/Jarvis inspection and
+the task UI expose these choices. General and workflow workers recognize committed
+attempt outcomes during cleanup rather than reporting false claim loss.
+Generated apps remain trusted same-origin code; storage capability scope is not
+an untrusted-code sandbox. Focused deployment login-next and result/collection/task
+backlinks now pass the password-backed production browser journey. The export
+reuses maintained screens with document navigation for future-ID aliases;
+generated-app management stays in the full Next frontend. Personal access uses explicit configuration and signed owner/device sessions;
+optional private plaintext passwords are compared in constant time.
+Metadata-only result timing, publication outcomes, SSE emission and client
+milestone/delivery receipts now have durable authenticated inspection and
+structured logs. Short best-effort observations do not participate in task
+authority. Actual API process restart preserves results, saved state and login
+cookies while disabled workflows remain blocked. Updated API37 acceptance now
+passes with the production shell: direct activity notification actions, paired-device
+open receipts (subscription management stays cookie-only), real password login/return,
+persisted WebView cookies, system-bar-safe backlinks and external browser navigation.
+The combined backend/frontend/Android regression checkpoint passes. Broader physical,
+provider/account and explicit production opt-in gates remain deferred; see
+[M5 progress](jarvis-tasks/reports/m5-progress.md).
+
+The repository CLI now supports read-only `rollout-check`, disposable configured-DB
+`migration-rehearsal` and isolated Windows `rollout-rehearsal`. Online SQLite
+snapshots include WAL data, refuse existing destinations and validate integrity/FKs.
+The actual restored API preserves result/saved/history/auth state. Reports are
+redacted and never grant enablement; production data/configuration is not migrated
+or changed. The [operational runbook](jarvis-tasks/rollout-runbook.md) records full
+backup, confirmed writer stop and progressive rollout boundaries.
 
 ```text
 Browser / Phone PWA ----> Next.js frontend ----> FastAPI backend
@@ -141,7 +233,7 @@ Key configuration areas:
 
 #### `backend/app/api/auth.py`
 
-Handles cookie-based session auth. If `AUTH_PASSWORD_HASH` is empty, the app behaves in development mode and accepts any password.
+Handles signed owner and device sessions. Explicit personal mode with no configured password bootstraps an owner session on the private host; password mode requires the private plaintext password. Native pairing exchanges a revocable bearer credential for a device-scoped cookie, never an owner cookie. Browser writes require an allowed origin; device capture capabilities require native bearer authentication.
 
 #### `backend/app/api/chat.py`
 
@@ -827,7 +919,8 @@ Current behavior:
 - `knowledge/preferences.yaml`: structured preferences store
 - `knowledge/notes/`: approved memory notes and future knowledge corpus
 - `docs/ARCHITECTURE.md`: current-state architecture reference
-- `docs/JARVIS_FOLLOW_UP_PLAN.md`: living Jarvis v2 implementation and release-acceptance record
+- `docs/JARVIS_TASK_ARCHITECTURE.md`: target modular-task architecture, performance contract, and focused plan index
+- `docs/JARVIS_GAPS.md`: active user-visible acceptance gaps
 - `docs/JARVIS_WAKE_MODEL.md`: wake-model provenance, training commands, evaluation, and calibration gates
 
 ## Validation Surface
@@ -851,7 +944,7 @@ The frontend also includes API, chat-history, hook, stream-state, provisional Ja
 
 These are not accidental omissions; they are the main boundaries of the current implementation.
 
-- The v1 worker is intentionally single-active and does not automatically retry interrupted work; stale takeover records interruption and waits for explicit user retry.
+- The default legacy v1 worker is single-active; the separately opt-in guarded Codex route has the supervised pool/recovery boundary described above. Neither route blindly retries uncertain effects.
 - The current durable agent runtime is intentionally single-agent and does not yet include subagents, MCP integration, or plugin loading.
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.

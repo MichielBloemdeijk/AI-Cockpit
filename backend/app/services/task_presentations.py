@@ -13,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import aliased
+from app.config import settings
 
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
@@ -31,6 +32,7 @@ from app.services.task_notifications import enqueue_task_notification
 from app.services.task_error_messages import public_failure_summary
 from app.services.runtime_health import runtime_health_service
 from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
+from app.services.orchestration_visibility import visible_attention
 
 
 PRESENTABLE_EVENT_TYPES = {
@@ -122,6 +124,11 @@ class TaskPresentationService:
 
     async def _sync_candidates(self) -> int:
         """Incrementally project every committed task event exactly once."""
+        if settings.task_orchestration_enabled:
+            # One feedback owner, including when voice is connected. This
+            # performs only code/DB work and never waits for the decision loop.
+            from app.services.task_orchestration import task_orchestration_service
+            return await task_orchestration_service.intake()
         created = 0
         async with self._projection_lock:
             target_sequence: int | None = None
@@ -161,11 +168,12 @@ class TaskPresentationService:
                     checkpoint.last_sequence = events[-1].sequence
                     checkpoint.updated_at = utc_now()
 
-    async def _project_batch(self, session, events: list[TaskEvent]) -> int:
+    async def _project_batch(self, session, events: list[TaskEvent], *, judged_event_ids: frozenset[str] = frozenset()) -> int:
+        # Preserve the canonical candidates while the receipt-based visibility
+        # gate holds them. Disablement must not lose skipped worker questions.
         relevant = [
             event for event in events
-            if event.event_type in PRESENTABLE_EVENT_TYPES
-            or event.event_type == "task.question.answered"
+            if (event.event_type in PRESENTABLE_EVENT_TYPES or event.event_type == "task.question.answered")
         ]
         if not relevant:
             return 0
@@ -355,7 +363,10 @@ class TaskPresentationService:
             task_presentations.append(candidate)
             by_event[event.id] = candidate
             await enqueue_task_notification(session, task=task, event=event, question=question)
-            created += 1
+            held = (settings.task_orchestration_enabled
+                    and event.event_type in {"task.requires_input", "task.failed", "task.interrupted"}
+                    and event.id not in judged_event_ids)
+            created += int(not held)
         return created
 
     async def list_pending(self) -> tuple[TaskPresentation, ...]:
@@ -363,6 +374,7 @@ class TaskPresentationService:
             result = await session.execute(
                 select(TaskPresentation)
                 .where(TaskPresentation.state == "pending")
+                .where(visible_attention())
                 .order_by(
                     TaskPresentation.created_at.asc(),
                     TaskPresentation.id.asc(),
@@ -438,7 +450,7 @@ class TaskPresentationService:
         ):
             raise ValueError("Live session generation is stale")
         all_rows = list((await session.execute(
-            select(TaskPresentation).where(TaskPresentation.state == "pending")
+            select(TaskPresentation).where(TaskPresentation.state == "pending").where(visible_attention())
         )).scalars().all())
         ordered = sorted(all_rows, key=self._delivery_priority)
         bounded_limit = min(max(int(limit or 20), 1), 50)
@@ -521,12 +533,17 @@ class TaskPresentationService:
         ):
             raise ValueError("Live session generation is stale")
         now = utc_now()
-        # Expired leases are transport state, not attention state.
+        # Expired or newly held leases are transport state, not attention.
+        # Release hidden leases before claiming: the database enforces one
+        # pending transport lease per session, including invisible candidates.
         await session.execute(
             update(TaskPresentation)
             .where(TaskPresentation.state == "pending")
             .where(TaskPresentation.lease_token.is_not(None))
-            .where(TaskPresentation.reserved_at < now - timedelta(seconds=DEFAULT_LEASE_SECONDS))
+            .where(or_(
+                TaskPresentation.reserved_at < now - timedelta(seconds=DEFAULT_LEASE_SECONDS),
+                ~visible_attention(),
+            ))
             .values(
                 lease_token=None,
                 reserved_session_id=None,
@@ -538,6 +555,7 @@ class TaskPresentationService:
             select(TaskPresentation)
             .where(TaskPresentation.state == "pending")
             .where(TaskPresentation.lease_token.is_(None))
+            .where(visible_attention())
             .order_by(
                 TaskPresentation.created_at.asc(),
                 TaskPresentation.id.asc(),
@@ -565,9 +583,11 @@ class TaskPresentationService:
                 .where(TaskPresentation.id == candidate.id)
                 .where(TaskPresentation.state == "pending")
                 .where(TaskPresentation.lease_token.is_(None))
+                .where(visible_attention())
                 .where(
                     ~select(lease_owner.id)
                     .where(lease_owner.state == "pending")
+                    .where(visible_attention(lease_owner))
                     .where(lease_owner.lease_token.is_not(None))
                     .where(lease_owner.reserved_session_id == session_id)
                     .exists()
@@ -640,6 +660,7 @@ class TaskPresentationService:
             query = (
                 select(TaskPresentation)
                 .where(TaskPresentation.state == "pending")
+                .where(visible_attention())
                 .order_by(TaskPresentation.created_at.asc(), TaskPresentation.id.asc())
             )
             if cursor:
@@ -696,7 +717,7 @@ class TaskPresentationService:
                 total_pending=int((await session.execute(
                     select(func.count()).select_from(TaskPresentation).where(
                         TaskPresentation.state == "pending"
-                    )
+                    ).where(visible_attention())
                 )).scalar_one()),
             )
 
@@ -758,11 +779,18 @@ class TaskPresentationService:
         if candidate.state == "handled":
             return {"status": "already_handled", "attention": self._attention_value(candidate)}
 
+        visible = (await session.execute(select(TaskPresentation.id).where(
+            TaskPresentation.id == candidate.id, visible_attention(),
+        ))).scalar_one_or_none()
+        if visible is None:
+            return {"status": "invalid_exposure", "attention": None}
+
         now = utc_now()
         transitioned = await session.execute(
             update(TaskPresentation)
             .where(TaskPresentation.id == candidate.id)
             .where(TaskPresentation.state == "pending")
+            .where(visible_attention())
             .values(
                 state="handled",
                 handled_at=now,
@@ -980,6 +1008,19 @@ class TaskPresentationService:
                 ).encode("utf-8")
             )
 
+        # Semantic content is why this item is appended. Remove redundant
+        # metadata before shortening it; opaque acknowledgement IDs stay intact.
+        presentation = bounded.get("presentation")
+        if size() > MAX_APPEND_UTF8_BYTES and isinstance(presentation, dict):
+            presentation.pop("coalescing_key", None)
+        source = bounded.get("source")
+        if size() > MAX_APPEND_UTF8_BYTES and isinstance(source, dict):
+            source.pop("sequence", None)
+        for key in ("schema", "status", "kind", "presentation", "importance"):
+            if size() <= MAX_APPEND_UTF8_BYTES:
+                break
+            bounded.pop(key, None)
+
         text_keys = ("goal", "summary", "question")
         while size() > MAX_APPEND_UTF8_BYTES:
             candidates = [
@@ -988,27 +1029,19 @@ class TaskPresentationService:
             ]
             if not candidates:
                 break
-            key = max(candidates, key=lambda item: len(str(bounded[item]).encode("utf-8")))
+            # Goal is explanatory context; a question/summary is the update.
+            key = "goal" if "goal" in candidates and (bounded.get("question") or bounded.get("summary")) else max(
+                candidates, key=lambda item: len(str(bounded[item]).encode("utf-8")))
             value = str(bounded[key])
             encoded = value.encode("utf-8")
             if len(encoded) <= 24:
+                if key in {"question", "summary"}:
+                    raise ValueError("Attention content cannot fit beside its acknowledgement identifiers")
                 bounded.pop(key, None)
                 continue
             shortened = encoded[: max(1, len(encoded) - 32)].decode("utf-8", errors="ignore").rstrip()
             bounded[key] = shortened + "…"
 
-        for key in ("status", "kind", "schema"):
-            if size() <= MAX_APPEND_UTF8_BYTES:
-                break
-            bounded.pop(key, None)
-        source = bounded.get("source")
-        if size() > MAX_APPEND_UTF8_BYTES and isinstance(source, dict):
-            source.pop("sequence", None)
-        presentation = bounded.get("presentation")
-        if size() > MAX_APPEND_UTF8_BYTES and isinstance(presentation, dict):
-            presentation.pop("coalescing_key", None)
-        if size() > MAX_APPEND_UTF8_BYTES:
-            bounded.pop("presentation", None)
         if size() > MAX_APPEND_UTF8_BYTES:
             raise ValueError("Attention append identifiers exceed the 500-token safety bound")
         return bounded
@@ -1262,6 +1295,7 @@ class TaskPresentationService:
     def _facts(event: TaskEvent, task: Task) -> dict:
         payload = dict(event.payload_json or {})
         payload.pop("required_spoken_phrase", None)
+        payload.pop("orchestration_decision_id", None)
         if event.event_type in {"task.failed", "task.interrupted"}:
             raw_failure = str(payload.get("summary") or task.terminal_summary or "")
             payload["summary"] = public_failure_summary(raw_failure)

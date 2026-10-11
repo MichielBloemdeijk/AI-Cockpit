@@ -195,7 +195,7 @@ async def test_task_trace_is_exposed_without_polluting_conversation_history() ->
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         listing = await client.get("/api/tasks")
         detail = await client.get(f"/api/tasks/{created.task.id}")
         replay = await client.get("/api/tasks/events", params={"after": 0})

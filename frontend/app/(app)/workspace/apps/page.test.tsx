@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const apiMocks = vi.hoisted(() => ({
   createGeneratedApp: vi.fn(),
   listGeneratedApps: vi.fn(),
+  listAppCatalog: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => apiMocks);
@@ -22,6 +23,8 @@ describe("AppsPage refresh behavior", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     apiMocks.listGeneratedApps.mockResolvedValue([]);
+    apiMocks.listAppCatalog.mockResolvedValue([{ id: "documents", slug: "documents", title: "Documents", kind: "collection", route_path: "/collections/documents" },
+      { id: "recipes", slug: "recipes", title: "Recipes", kind: "collection", route_path: "/collections/recipes" }]);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -40,6 +43,8 @@ describe("AppsPage refresh behavior", () => {
 
   it("refreshes on mount and only refreshes pageshow restores from cache", async () => {
     expect(apiMocks.listGeneratedApps).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Maintained collections");
+    expect(container.querySelector('a[href="/collections/recipes"]')).not.toBeNull();
 
     const normalPageShow = new Event("pageshow");
     Object.defineProperty(normalPageShow, "persisted", { value: false });

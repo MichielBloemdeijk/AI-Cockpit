@@ -1,0 +1,61 @@
+{
+  "schema": "jarvis-m3-native-decision.v1",
+  "status": "pass",
+  "scenario": "answer",
+  "model": "gpt-5.6-luna",
+  "effort": "low",
+  "decision_status": "completed",
+  "worker_busy_at_native_start": 8,
+  "exact_question_answered": true,
+  "question_state": "answered",
+  "presentation_policy": "critical_only",
+  "committed_actions": [
+    "answer"
+  ],
+  "asking_run_preserved": true,
+  "shared_voice_admission_control_forwarding_history": "pass",
+  "shared_service_elapsed_ms": 281.0,
+  "owned_host_stopped": true,
+  "native_tools": [
+    "jarvis_orchestration.answer",
+    "jarvis_orchestration.continue",
+    "jarvis_orchestration.control",
+    "jarvis_orchestration.delegate",
+    "jarvis_orchestration.inspect",
+    "jarvis_orchestration.presentation",
+    "jarvis_orchestration.retain"
+  ],
+  "native_thread_id": "01a0f3f4-dead-7681-9fee-2f052393a3b1",
+  "native_turn_id": "01a0f3f4-e5e1-7492-88d1-b6f655a38ae4",
+  "native_call_count": 1,
+  "token_usage": {
+    "total": {
+      "cacheWriteInputTokens": 13058,
+      "cachedInputTokens": 24029,
+      "reasoningOutputTokens": 56,
+      "inputTokens": 37096,
+      "outputTokens": 271,
+      "totalTokens": 37367
+    },
+    "last": {
+      "cacheWriteInputTokens": 250,
+      "cachedInputTokens": 12808,
+      "reasoningOutputTokens": 0,
+      "inputTokens": 13061,
+      "outputTokens": 21,
+      "totalTokens": 13082
+    },
+    "cost_usd": null,
+    "cost_status": "provider_cost_unavailable"
+  },
+  "post_exit_read_only_native_inspection": {
+    "type": "inspection",
+    "thread_id": "01a0f3f4-dead-7681-9fee-2f052393a3b1",
+    "turn_id": "01a0f3f4-e5e1-7492-88d1-b6f655a38ae4",
+    "status": "terminal",
+    "turn_statuses": [
+      "completed"
+    ]
+  },
+  "scope": "Isolated API profile; this does not enable unattended production orchestration."
+}

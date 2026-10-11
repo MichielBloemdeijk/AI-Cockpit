@@ -132,7 +132,7 @@ describe("JarvisWakeRuntime", () => {
     const queued = new Float32Array([3, 4]);
     value.worker.emit({ type: "candidate_audio", samples: queued, sampleRate: 16_000 });
     const received: number[][] = [];
-    candidate?.subscribe((samples) => received.push([...samples]));
+    candidate?.subscribe((samples) => received.push([...("samples" in samples ? samples.samples : samples)]));
     const direct = new Float32Array([5, 6]);
     value.worker.emit({ type: "candidate_audio", samples: direct, sampleRate: 16_000 });
     value.worker.emit({

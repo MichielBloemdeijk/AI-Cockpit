@@ -28,7 +28,7 @@ async def test_knowledge_review_queue_and_documents_flow():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         extracted = await client.post(
             f"/api/conversations/{conversation.id}/memory-items/extract",

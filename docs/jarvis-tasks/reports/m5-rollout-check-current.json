@@ -1,0 +1,123 @@
+{
+  "schema": "jarvis-rollout-check.v1",
+  "observed_at": "2026-10-01T23:23:30.305015+00:00",
+  "status": "blocked",
+  "preparation_status": "blocked",
+  "ready_for_enablement": false,
+  "checks": [
+    {
+      "id": "owner_auth",
+      "status": "blocked",
+      "summary": "A valid password hash is required; the development login is not rollout authentication.",
+      "evidence": {}
+    },
+    {
+      "id": "session_signing",
+      "status": "passed",
+      "summary": "An explicitly configured session signing secret is required.",
+      "evidence": {}
+    },
+    {
+      "id": "broker_boundary",
+      "status": "passed",
+      "summary": "Unjournaled native worker tools must remain disabled.",
+      "evidence": {}
+    },
+    {
+      "id": "profile_isolation",
+      "status": "passed",
+      "summary": "Worker/background profile roots must be separate from each other and the desktop profile; credentials are not inspected.",
+      "evidence": {}
+    },
+    {
+      "id": "pinned_runtime_package",
+      "status": "passed",
+      "summary": "The tested runtime package must match the pinned version.",
+      "evidence": {
+        "installed": "0.155.1",
+        "expected": "0.155.1",
+        "native_execution_verified": false
+      }
+    },
+    {
+      "id": "result_shell",
+      "status": "passed",
+      "summary": "Build the production companion before starting the API.",
+      "evidence": {
+        "missing_pages": [],
+        "static_assets_present": true,
+        "browser_verified": false
+      }
+    },
+    {
+      "id": "database",
+      "status": "blocked",
+      "summary": "Schema and foreign keys must match the current code; migration is an explicit deployment step.",
+      "evidence": {
+        "expected_revision": "20261001_0033",
+        "revision_matches": false,
+        "missing_tables": [
+          "result_pages",
+          "result_page_revisions",
+          "result_page_events",
+          "app_data_records",
+          "result_metrics",
+          "cockpit_apps"
+        ],
+        "foreign_keys_valid": true,
+        "opened_read_only": true
+      }
+    }
+  ],
+  "external_gates": [
+    {
+      "id": "provider_budget",
+      "status": "blocked",
+      "owner": "account_authorization",
+      "summary": "Verify an account-enforced cutoff; a local budget flag is not evidence."
+    },
+    {
+      "id": "custom_wake_live_provider",
+      "status": "blocked",
+      "owner": "agent_test_with_authorized_provider",
+      "summary": "Run end-to-end wake/audio/provider acceptance; fixture and system-gesture evidence do not pass this gate."
+    },
+    {
+      "id": "physical_oem",
+      "status": "blocked",
+      "owner": "deferred_physical_device",
+      "summary": "Physical acoustics, protected/locked context, OEM persistence and real-phone delivery remain deferred."
+    },
+    {
+      "id": "subscription",
+      "status": "not_selected",
+      "owner": "optional_account_authorization",
+      "summary": "The verified route uses API authentication; separately authorize and test a Jarvis subscription profile if desired."
+    },
+    {
+      "id": "production_opt_in",
+      "status": "blocked",
+      "owner": "user_direction",
+      "summary": "Explicitly approve the deployment transport, device and progressive enablement; no flags are changed here."
+    },
+    {
+      "id": "complete_backup",
+      "status": "blocked",
+      "owner": "agent_preparation",
+      "summary": "A database-only fixture restore is not a full production backup: retain context blobs, artifacts, workspaces and native profiles together after confirmed writer stop."
+    }
+  ],
+  "current_flags": {
+    "task_pool_enabled": false,
+    "task_orchestration_enabled": false,
+    "task_orchestration_live_enabled": false,
+    "task_orchestration_budget_verified": false,
+    "task_research_enabled": false,
+    "codex_task_allow_unjournaled_native_tools": false,
+    "task_executor": "legacy"
+  },
+  "session_cookie_secure": false,
+  "provider_calls": 0,
+  "mutations": [],
+  "scope": "Read-only local preparation; not full rollout acceptance or authorization"
+}

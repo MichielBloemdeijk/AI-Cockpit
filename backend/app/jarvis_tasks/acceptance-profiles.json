@@ -1,0 +1,194 @@
+{
+  "command_timeouts_seconds": {
+    "backend": 2400
+  },
+  "schema": "jarvis-acceptance-profiles.v1",
+  "accepted_exceptions": {
+    "decision": "m8-accepted-with-caveats-2026-10-07",
+    "gates": [
+      "M8",
+      "M10"
+    ],
+    "assertions": {
+      "audio_corpus": "User accepted M8 without a complete latest-source voice corpus; intermittent missing speech remains unproven.",
+      "cold_latency": "User accepted the demonstrated admission timings without another five-start cold cohort.",
+      "fresh_screen": "User accepted remaining full-cohort fresh-screen coverage; privacy and run-bound image contracts remain required.",
+      "capture_performance": "User accepted incomplete capture performance coverage; no full-cohort performance or reliability guarantee is claimed."
+    }
+  },
+  "profiles": {
+    "process_tree": {
+      "overrides": {
+        "task_pool_enabled": false,
+        "task_orchestration_enabled": false,
+        "task_orchestration_live_enabled": false
+      },
+      "private_paths": [
+        "task_workspaces_dir",
+        "task_context_blobs_dir",
+        "conversation_workspaces_dir"
+      ],
+      "assertions": [
+        "process_tree"
+      ]
+    },
+    "coding_provider": {
+      "overrides": {
+        "task_executor": "codex",
+        "codex_subscription_enabled": false,
+        "task_pool_enabled": false,
+        "task_orchestration_enabled": false,
+        "task_orchestration_live_enabled": false,
+        "session_cookie_secure": false
+      },
+      "private_paths": [
+        "task_project_roots",
+        "codex_profiles_dir",
+        "task_workspaces_dir",
+        "task_context_blobs_dir",
+        "conversation_workspaces_dir"
+      ],
+      "assertions": [
+        "coding_provider"
+      ]
+    },
+    "subscription_provider": {
+      "overrides": {
+        "task_executor": "codex",
+        "codex_subscription_enabled": true,
+        "task_pool_enabled": false,
+        "task_orchestration_enabled": false,
+        "task_orchestration_live_enabled": false,
+        "session_cookie_secure": false
+      },
+      "private_paths": [
+        "codex_profiles_dir",
+        "task_workspaces_dir",
+        "task_context_blobs_dir",
+        "conversation_workspaces_dir"
+      ],
+      "assertions": [
+        "subscription_provider"
+      ]
+    },
+    "emulator": {
+      "overrides": {
+        "task_executor": "codex",
+        "task_pool_enabled": false,
+        "task_orchestration_enabled": false,
+        "task_orchestration_live_enabled": false,
+        "task_research_enabled": true,
+        "session_cookie_secure": false
+      },
+      "private_paths": [
+        "codex_profiles_dir",
+        "task_workspaces_dir",
+        "task_context_blobs_dir",
+        "conversation_workspaces_dir"
+      ],
+      "workflow_definitions": [
+        "recipe_from_screen@1",
+        "research_screen@1"
+      ],
+      "assertions": [
+        "audio_corpus",
+        "ready_latency",
+        "cold_latency",
+        "fresh_screen",
+        "capture_performance",
+        "voice_provider"
+      ],
+      "browser_origin": true
+    },
+    "mobile_emulator": {
+      "overrides": {
+        "task_executor": "codex",
+        "task_pool_enabled": true,
+        "task_orchestration_enabled": false,
+        "task_orchestration_live_enabled": false,
+        "task_research_enabled": true,
+        "worker_max_busy": 1,
+        "worker_standby_count": 1,
+        "codex_subscription_enabled": false,
+        "session_cookie_secure": false
+      },
+      "private_paths": [
+        "codex_profiles_dir",
+        "task_workspaces_dir",
+        "task_context_blobs_dir",
+        "conversation_workspaces_dir"
+      ],
+      "workflow_definitions": [
+        "recipe_from_screen@1",
+        "research_screen@1"
+      ],
+      "assertions": [
+        "mobile_result"
+      ],
+      "browser_origin": true
+    },
+    "capture_privacy": {
+      "overrides": {
+        "task_executor": "codex",
+        "task_pool_enabled": false,
+        "task_orchestration_enabled": false,
+        "task_orchestration_live_enabled": false,
+        "task_research_enabled": true,
+        "session_cookie_secure": false
+      },
+      "private_paths": [
+        "codex_profiles_dir",
+        "task_workspaces_dir",
+        "task_context_blobs_dir",
+        "conversation_workspaces_dir"
+      ],
+      "workflow_definitions": [
+        "screen_document@1",
+        "recipe_from_screen@1"
+      ],
+      "assertions": [
+        "capture_privacy"
+      ]
+    }
+  },
+  "backend_suites": {
+    "M6": "not diagnostic and not provider and not browser",
+    "M7": "not diagnostic and not provider and not browser",
+    "M8": "not diagnostic",
+    "M9": "not diagnostic and not provider and not browser",
+    "M10": "not diagnostic"
+  },
+  "assertion_reuse": {
+    "backend": [
+      "M6",
+      "M7",
+      "M9"
+    ],
+    "voice_provider": [
+      "M7",
+      "M10"
+    ],
+    "capture_privacy": [
+      "M8",
+      "M10"
+    ],
+    "mobile_result": [
+      "M8",
+      "M10"
+    ]
+  },
+  "backend_environment": {
+    "AUTH_PASSWORD": "",
+    "JARVIS_ACCESS_MODE": "personal",
+    "SESSION_COOKIE_SECURE": "false",
+    "TASK_EXECUTOR": "legacy",
+    "TASK_POOL_ENABLED": "false",
+    "TASK_ORCHESTRATION_ENABLED": "false",
+    "TASK_ORCHESTRATION_LIVE_ENABLED": "false",
+    "TASK_RESEARCH_ENABLED": "false",
+    "TASK_WORKFLOW_ALLOWLIST": "",
+    "CODEX_SUBSCRIPTION_ENABLED": "false",
+    "LOCAL_LLM_ENABLED": "true",
+    "TASK_AGENT_MODEL": "local/gemma-4-12b"
+  }
+}

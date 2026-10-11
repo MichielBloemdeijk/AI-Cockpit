@@ -25,6 +25,9 @@ class JarvisSessionView(BaseModel):
     provider_adapter: str
     lifecycle_state: str
     controller_id: str | None = None
+    activation_id: str | None = None
+    activation_source: str | None = None
+    workflow_catalog_revision: str | None = None
     floor_state: str
     last_event_sequence: int
     created_at: datetime
@@ -200,14 +203,47 @@ class JarvisClientContext(BaseModel):
 
 
 class JarvisLiveActivationContext(BaseModel):
-    source: Literal["wake_word"]
-    wake_score: float = Field(ge=0.0, le=1.0)
+    source: Literal["wake_word", "system", "manual", "context_refresh"]
+    wake_score: float | None = Field(default=None, ge=0.0, le=1.0)
     activation_id: str = Field(min_length=1, max_length=64)
     wake_detected_at: datetime | None = None
     local_speech_started_at: datetime | None = None
     gate_mode: Literal["transcript_rules", "immediate"] = "transcript_rules"
     benchmark_run_id: str | None = Field(default=None, max_length=64)
     benchmark_fixture: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_wake_fields(self):
+        if self.source == "wake_word" and self.wake_score is None:
+            raise ValueError("Wake activation requires a score")
+        if self.source != "wake_word" and self.wake_score is not None:
+            raise ValueError("Wake score is only valid for wake-word activation")
+        return self
+
+
+class JarvisCaptureStatusRequest(BaseModel):
+    activation_id: str = Field(min_length=1, max_length=64)
+    capture_mode: Literal["activation", "fresh"] = "activation"
+    status: Literal["pending", "captured", "unavailable", "expired"]
+    revision: int = Field(ge=1)
+    expires_at: datetime
+    captured_at: datetime | None = None
+    reason: str | None = Field(default=None, max_length=64)
+    callback_monotonic_ms: float | None = Field(default=None, ge=0)
+    session_id: str | None = Field(default=None, max_length=36)
+    generation: int | None = Field(default=None, gt=0)
+
+
+class JarvisCaptureStatusView(BaseModel):
+    capture_id: str
+    activation_id: str
+    capture_mode: str
+    status: str
+    revision: int
+    reason: str | None = None
+    expires_at: datetime
+    session_id: str | None = None
+    generation: int | None = None
 
 
 class JarvisLiveTelemetryEvent(BaseModel):
@@ -295,10 +331,13 @@ class TaskResolutionView(BaseModel):
 class PairingCodeView(BaseModel):
     code: str
     expires_at: datetime
+    server_url: str = ""
+    link: str = ""
+    qr_svg: str = ""
 
 
 class DevicePairRequest(BaseModel):
-    code: str = Field(min_length=6, max_length=12)
+    code: str = Field(pattern=r"^\d{6}$")
     label: str = Field(min_length=1, max_length=255)
 
 

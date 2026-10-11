@@ -20,6 +20,25 @@ from app.services.voice_session_adapter import VoiceProviderEvent
 
 
 @pytest.mark.asyncio
+async def test_bounded_question_preserves_its_text_and_acknowledgement_ids():
+    accepted = await jarvis_coordinator.accept_text_turn("Begin", idempotency_key="bounded-question-log")
+    live = await jarvis_coordinator.get_active_session()
+    task = await task_service.dispatch(goal="Recipe ingredients 🥕 " * 60, origin_surface="test",
+        idempotency_key="bounded-question-task", result_request={"mode": "answer"})
+    question = await task_service.ask_question(task.task.id,
+        question="Would you prefer the vegetarian recipe option?", idempotency_key="bounded-question")
+    await task_presentation_service.sync_candidates()
+    update = await task_presentation_service.build_attention_context(session_id=live.id, generation=live.generation)
+    fact = update.items[0]["facts"]
+    assert fact["question"] == question.question
+    assert fact["task_id"] == task.task.id
+    assert fact["presentation_id"] == update.items[0]["presentation_id"]
+    assert fact["exposure_token"] == update.items[0]["exposure_token"]
+    assert fact["source"]["task_event_id"] == question.source_task_event_id
+    assert len(json.dumps(fact, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 400
+
+
+@pytest.mark.asyncio
 async def test_model_report_handles_one_item_and_duplicate_preserves_evidence() -> None:
     accepted = await jarvis_coordinator.accept_text_turn(
         "Keep the task update pending until I hear it",

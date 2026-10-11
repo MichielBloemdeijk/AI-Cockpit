@@ -8,12 +8,12 @@ import secrets
 from uuid import uuid4
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import JarvisDevice, JarvisLiveEvent, JarvisPairingCode
-from app.services.auth import SESSION_COOKIE_NAME, verify_session_token
+from app.services.auth import SESSION_COOKIE_NAME, verify_session_token, authorization_scheme, device_session_id
 
 
 def utc_now() -> datetime:
@@ -44,15 +44,12 @@ class JarvisDeviceService:
         now = utc_now()
         credential = secrets.token_urlsafe(32)
         async with session_scope() as session:
-            row = (await session.execute(
-                select(JarvisPairingCode).where(JarvisPairingCode.code_hash == _hash(code)).limit(1)
-            )).scalar_one_or_none()
-            if row is None or row.consumed_at is not None:
-                raise ValueError("Pairing code is invalid")
-            expiry = row.expires_at if row.expires_at.tzinfo is not None else row.expires_at.replace(tzinfo=timezone.utc)
-            if expiry <= now:
-                raise ValueError("Pairing code has expired")
-            row.consumed_at = now
+            consumed = (await session.execute(update(JarvisPairingCode)
+                .where(JarvisPairingCode.code_hash == _hash(code),
+                       JarvisPairingCode.consumed_at.is_(None), JarvisPairingCode.expires_at > now)
+                .values(consumed_at=now).returning(JarvisPairingCode.id))).scalar_one_or_none()
+            if consumed is None:
+                raise ValueError("Link is invalid, expired or already used. Generate a new Link phone code.")
             latest_event_cursor = int((await session.execute(
                 select(func.max(JarvisLiveEvent.sequence))
             )).scalar_one_or_none() or 0)
@@ -68,22 +65,22 @@ class JarvisDeviceService:
             await session.flush()
             return device, credential
 
-    async def authenticate(self, request: Request) -> JarvisDevice | None:
+    async def authenticate(self, request: Request, *, bearer_only: bool = False) -> JarvisDevice | None:
         authorization = request.headers.get("authorization", "")
-        if not authorization.lower().startswith("bearer "):
-            return None
-        credential = authorization.split(" ", 1)[1].strip()
-        if not credential:
+        credential = authorization.split(" ", 1)[1].strip() if authorization.lower().startswith("bearer ") else ""
+        device_id = device_session_id(request.cookies.get(SESSION_COOKIE_NAME, "")) if not authorization and not bearer_only else None
+        if not credential and not device_id:
             return None
         async with session_scope() as session:
             device = (await session.execute(
-                select(JarvisDevice)
-                .where(JarvisDevice.credential_hash == _hash(credential))
+                update(JarvisDevice)
+                .where(JarvisDevice.credential_hash == _hash(credential) if credential else JarvisDevice.id == device_id)
                 .where(JarvisDevice.revoked_at.is_(None))
-                .limit(1)
+                .values(last_seen_at=utc_now())
+                .returning(JarvisDevice)
             )).scalar_one_or_none()
-            if device is not None:
-                device.last_seen_at = utc_now()
+            # Acquire the writer before reading: WAL read-to-write upgrades can
+            # fail immediately when capture/observations commit concurrently.
             return device
 
 
@@ -91,6 +88,8 @@ jarvis_device_service = JarvisDeviceService()
 
 
 async def require_jarvis_auth(request: Request) -> None:
+    if authorization_scheme(request) == "appcapability":
+        raise HTTPException(status_code=401, detail="App capability is not accepted here")
     cookie = request.cookies.get(SESSION_COOKIE_NAME)
     if cookie and verify_session_token(cookie):
         return
@@ -99,10 +98,35 @@ async def require_jarvis_auth(request: Request) -> None:
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
 
+async def require_paired_device(request: Request) -> JarvisDevice:
+    """Capture bytes and actionable upload tokens are never available to a browser cookie."""
+    device = await jarvis_device_service.authenticate(request, bearer_only=True)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Paired device required")
+    return device
+
+
 async def require_unlocked_device(request: Request) -> None:
     """Browser sessions are trusted; paired devices must report unlocked state."""
-    if request.cookies.get(SESSION_COOKIE_NAME):
+    if verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, "")):
         return
     device = await jarvis_device_service.authenticate(request)
     if device is not None and device.lock_state == "locked":
         raise HTTPException(status_code=423, detail="This action is unavailable while the device is locked")
+
+
+async def require_task_access(request: Request) -> None:
+    """Phones may view/continue/control tasks, never administer the worker pool."""
+    await require_jarvis_auth(request)
+    if verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, "")):
+        return
+    if request.method == "GET":
+        return
+    await require_unlocked_device(request)
+    import re
+    path = request.url.path.removeprefix("/api/tasks")
+    if request.method != "POST" or not (path == "" or re.fullmatch(r"/[0-9a-fA-F-]{36}/(turns|control|cancel|retry|questions/[0-9a-fA-F-]{36}/answer)", path)):
+        raise HTTPException(status_code=403, detail="Owner session required for worker administration")
+    body = await request.json()
+    if body.get("execution_config"):
+        raise HTTPException(status_code=403, detail="Owner session required for tool overrides")

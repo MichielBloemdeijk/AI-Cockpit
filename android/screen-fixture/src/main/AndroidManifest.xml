@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation android:name=".HierarchyDumpInstrumentation"
+        android:targetPackage="nl.sander.aicockpit.screenfixture"
+        android:label="Agent read-only hierarchy fixture" />
+    <application android:label="Jarvis screen test fixture" android:allowBackup="false">
+        <activity android:name=".MarkerActivity" android:exported="true" />
+    </application>
+</manifest>

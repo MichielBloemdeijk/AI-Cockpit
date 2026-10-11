@@ -1,4 +1,7 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "../app";
+@source "../components";
+@source "../lib";
 
 html, body, #__next {
   height: 100%;
@@ -43,4 +46,17 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Named safe-area rules avoid malformed arbitrary-value CSS in Windows dev builds. */
+.mobile-safe-more-menu { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+.mobile-safe-nav { padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem); }
+.mobile-safe-main { padding-bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+.mobile-safe-chat-input { padding-bottom: calc(env(safe-area-inset-bottom) + 0.75rem); }
+.mobile-safe-jarvis-input { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
+.mobile-safe-jarvis-panel { bottom: calc(5.25rem + env(safe-area-inset-bottom)); }
+
+@media (min-width: 48rem) {
+  .mobile-safe-main { padding-bottom: 0; }
+  .mobile-safe-chat-input { padding-bottom: 1rem; }
 }

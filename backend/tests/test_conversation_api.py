@@ -41,7 +41,7 @@ async def test_initial_message_persists_user_and_assistant_message(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         created = await client.post(
             "/api/conversations/",
@@ -76,7 +76,7 @@ async def test_single_model_stream_returns_done_and_persists_assistant_message(m
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         async with client.stream(
             "POST",
@@ -136,7 +136,7 @@ async def test_conversation_events_expose_active_run_live_item_snapshot():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         response = await client.get(f"/api/conversations/{conversation.id}/events")
 
     assert response.status_code == 200
@@ -169,7 +169,7 @@ async def test_conversation_events_support_lightweight_cursor_catch_up():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         response = await client.get(
             f"/api/conversations/{conversation.id}/events",
             params={"branch_key": "main", "after_sequence": first.sequence},
@@ -370,7 +370,7 @@ async def test_conversation_message_returns_error_when_single_response_fails(mon
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         created = await client.post("/api/conversations", json={"title": "Single failure"})
         conversation_id = created.json()["conversation"]["id"]
 
@@ -393,7 +393,7 @@ async def test_collection_routes_accept_requests_without_trailing_slashes(monkey
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         chat = await client.post(
             "/api/chat",
@@ -429,7 +429,7 @@ async def test_conversation_archive_and_branch_resend(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         created = await client.post(
             "/api/conversations/",

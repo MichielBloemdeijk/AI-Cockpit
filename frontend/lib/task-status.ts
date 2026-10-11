@@ -7,6 +7,7 @@ export const ACTIVE_TASK_STATUSES = new Set<TaskSummary["status"]>([
   "running",
   "waiting_for_input",
   "waiting_until",
+  "paused",
 ]);
 
 export function isOverdueReminder(task: TaskSummary, now = Date.now()): boolean {

@@ -18,6 +18,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.LiveCall
+import nl.sander.aicockpit.jarvis.data.LiveSessionState
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
@@ -33,21 +34,43 @@ import org.webrtc.audio.JavaAudioDeviceModule
 import org.json.JSONObject
 import kotlin.coroutines.resume
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+
+interface LiveCallTransport {
+    suspend fun createCall(offer: String, wakeScore: Float?, activationId: String): LiveCall
+    suspend fun state(): LiveSessionState?
+    suspend fun closeCall(sessionId: String, generation: Int)
+}
+
+class ApiLiveCallTransport(private val api: CockpitApi) : LiveCallTransport {
+    override suspend fun createCall(offer: String, wakeScore: Float?, activationId: String) = api.createLiveCall(offer, wakeScore, activationId)
+    override suspend fun state() = api.liveSessionState()
+    override suspend fun closeCall(sessionId: String, generation: Int) = api.closeLive(sessionId, generation)
+}
 
 class LiveController(
-    context: Context,
+    private val context: Context,
     private val api: CockpitApi,
+    private val transport: LiveCallTransport = ApiLiveCallTransport(api),
 ) : AutoCloseable {
+    private val capturedFrames = AtomicLong()
+    private val playedFrames = AtomicLong()
     private val audioModule = JavaAudioDeviceModule.builder(context)
         .apply {
             setInputSampleRate(LiveActivationAudioBuffer.SAMPLE_RATE)
             setAudioFormat(AudioFormat.ENCODING_PCM_16BIT)
         }
         .setAudioBufferCallback { buffer, audioFormat, channels, sampleRate, byteCount, captureTimeNs ->
+            capturedFrames.incrementAndGet()
+            AcceptanceAudioInput.replaceWebRtcFrame(buffer, audioFormat, channels, sampleRate, byteCount)
             LiveActivationAudioHandoff.processWebRtcBuffer(
                 buffer, audioFormat, channels, sampleRate, byteCount,
             )
             captureTimeNs
+        }
+        .setPlaybackSamplesReadyCallback { samples ->
+            if (samples.data.any { it != 0.toByte() }) playedFrames.incrementAndGet()
+            AcceptanceAudioInput.observePlayback(samples.data)
         }
         .createAudioDeviceModule()
     private val factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory()
@@ -55,11 +78,31 @@ class LiveController(
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
     private var call: LiveCall? = null
+    private var closingCall: LiveCall? = null
+    @Volatile private var readyCall: LiveCall? = null
     private var iceReady = CompletableDeferred<Unit>()
-    private var liveClosed = CompletableDeferred<Unit>()
     private var eventsChannel: DataChannel? = null
     private var liveActivationId: String? = null
     private var attemptEpoch = 0
+    fun currentCall(): LiveCall? = call
+    fun audioMetrics() = JSONObject().put("captured_frames", capturedFrames.get()).put("played_frames", playedFrames.get())
+    fun observeAcceptanceContinuation(): Boolean {
+        val current = call ?: return false
+        if (readyCall != current || eventsChannel?.state() != DataChannel.State.OPEN ||
+            peer?.connectionState() != PeerConnection.PeerConnectionState.CONNECTED) return false
+        AcceptanceAudioInput.observeReady(current.sessionId, current.generation)
+        observeAcceptanceTransport()
+        return true
+    }
+    fun observeAcceptanceTransport(checkpoint: Boolean = false) {
+        diagnosticScope.launch { AcceptanceAudioInput.observeHealth(context, audioModule, checkpoint) }
+        peer?.getStats { report ->
+            val audio = report.statsMap.values.filter { it.type == "outbound-rtp" &&
+                (it.members["kind"] == "audio" || it.members["mediaType"] == "audio") }
+            AcceptanceAudioInput.observeRtp(audio.sumOf { (it.members["bytesSent"] as? Number)?.toLong() ?: 0 },
+                audio.sumOf { (it.members["packetsSent"] as? Number)?.toLong() ?: 0 })
+        }
+    }
     private val diagnosticScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     suspend fun connect(
@@ -70,7 +113,6 @@ class LiveController(
         val attempt = ++attemptEpoch
         closePeerOnly()
         iceReady = CompletableDeferred()
-        liveClosed = CompletableDeferred()
         var accepted: LiveCall? = null
         var readiness: LiveStartupReadiness? = null
         var backendObserver: Job? = null
@@ -84,7 +126,7 @@ class LiveController(
         fun record(event: String, detail: JSONObject = JSONObject()) {
             recordDiagnostic(event, attempt, activationId, accepted, detail)
         }
-        if (activationId != null) {
+        if (activationId != null && wakeScore != null) {
             LiveActivationAudioHandoff.releaseRecorder(activationId).getOrThrow()
             liveActivationId = activationId
             onState("activation_audio_ready")
@@ -94,6 +136,7 @@ class LiveController(
             override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
                 if (attempt != attemptEpoch) return
                 latestPeerState = state
+                onState("peer:${state.name}")
                 record("peer_state", JSONObject().put("state", state.name))
                 readiness?.observePeer(state.name)
             }
@@ -173,12 +216,13 @@ class LiveController(
             runCatching { withTimeout(750) { iceReady.await() } }
             ensureCurrent()
             val local = connection.localDescription ?: offer
-            val established = api.createLiveCall(local.description, wakeScore, effectiveActivationId)
+            val established = transport.createCall(local.description, wakeScore, effectiveActivationId)
             accepted = established
             ensureCurrent()
             // Store the accepted identity before applying the answer or waiting;
             // failure and cancellation must close this exact backend attempt.
             call = established
+            onState("accepted")
             readiness = LiveStartupReadiness(established.sessionId, established.generation).also {
                     it.observePeer(latestPeerState.name)
                     it.observeIce(latestIceState.name)
@@ -187,7 +231,7 @@ class LiveController(
                 }
                 backendObserver = launch(Dispatchers.IO) {
                     while (attempt == attemptEpoch && readiness?.current()?.ready != true) {
-                        val stateResult = runCatching { api.liveSessionState() }
+                        val stateResult = runCatching { transport.state() }
                         if (stateResult.isFailure) {
                             val cause = stateResult.exceptionOrNull()
                             record("backend_readiness_failed", JSONObject().put("message", cause?.message))
@@ -219,7 +263,7 @@ class LiveController(
                             val snapshot = readiness?.current() ?: error("GPT-Live readiness was not initialized")
                             snapshot.failure?.let { error(it) }
                             if (snapshot.ready) {
-                                val finalState = withContext(Dispatchers.IO) { api.liveSessionState() }
+                                val finalState = withContext(Dispatchers.IO) { transport.state() }
                                 readiness?.observeBackend(finalState)
                                 val confirmed = readiness?.current()
                                     ?: error("GPT-Live readiness was not initialized")
@@ -242,7 +286,7 @@ class LiveController(
                     )
                 }
                 record("backend_health_confirmed")
-                if (activationId != null) LiveActivationAudioHandoff.claim(activationId).getOrThrow()
+                if (activationId != null && wakeScore != null) LiveActivationAudioHandoff.claim(activationId).getOrThrow()
                 record(
                     "activation_audio_released",
                     JSONObject()
@@ -251,6 +295,8 @@ class LiveController(
                 )
             ensureCurrent()
             onState("connected")
+            readyCall = established
+            AcceptanceAudioInput.observeReady(established.sessionId, established.generation)
             established
         } catch (cause: Throwable) {
             val snapshot = readiness?.current()
@@ -261,11 +307,12 @@ class LiveController(
                     .put("missing", snapshot?.missing()?.joinToString(", ") ?: "session acceptance"),
             )
             if (attempt == attemptEpoch) attemptEpoch += 1
-            call = null
+            stopAudio()
             val exact = accepted
             if (exact != null) withContext(NonCancellable + Dispatchers.IO) {
-                runCatching { api.closeLive(exact.sessionId, exact.generation) }
+                withTimeoutOrNull(3_000) { runCatching { transport.closeCall(exact.sessionId, exact.generation) } }
             }
+            closingCall = null
             closePeerOnly()
             throw cause
         } finally {
@@ -310,23 +357,29 @@ class LiveController(
                 }
             }
             if (reduced.closed) {
-                liveClosed.complete(Unit)
                 onState("session.closed")
             }
         }
     }
 
-    suspend fun disconnect() {
+    /** Release all local audio before any network cleanup or close acknowledgement. */
+    fun stopAudio() {
         attemptEpoch += 1
-        val active = call
+        audioModule.setMicrophoneMute(true)
+        audioModule.setSpeakerMute(true)
+        if (call != null) closingCall = call
         call = null
-        if (eventsChannel?.state() == DataChannel.State.OPEN) {
-            val closeJson = "{\"type\":\"session.close\"}".toByteArray(Charsets.UTF_8)
-            eventsChannel?.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(closeJson), false))
-            withTimeoutOrNull(2_000) { liveClosed.await() }
+        readyCall = null
+        closePeerOnly()
+    }
+
+    suspend fun disconnect() {
+        withContext(Dispatchers.Main) { stopAudio() }
+        val active = closingCall
+        closingCall = null
+        if (active != null) withContext(Dispatchers.IO) {
+            withTimeoutOrNull(3_000) { runCatching { transport.closeCall(active.sessionId, active.generation) } }
         }
-        if (active != null) runCatching { api.closeLive(active.sessionId, active.generation) }
-        withContext(Dispatchers.Main) { closePeerOnly() }
     }
 
     override fun close() {
@@ -340,10 +393,11 @@ class LiveController(
     private fun closePeerOnly() {
         liveActivationId?.let(LiveActivationAudioHandoff::clear)
         liveActivationId = null
+        peer?.close()
         eventsChannel?.close(); eventsChannel?.dispose(); eventsChannel = null
         audioTrack?.dispose(); audioTrack = null
         audioSource?.dispose(); audioSource = null
-        peer?.close(); peer?.dispose(); peer = null
+        peer?.dispose(); peer = null
     }
 
     private fun recordDiagnostic(
@@ -354,6 +408,7 @@ class LiveController(
         detail: JSONObject = JSONObject(),
     ) {
         val traceId = activationId ?: activeCall?.sessionId ?: "android-live-attempt-$attempt"
+        AcceptanceAudioInput.observeDiagnostic(event, JSONObject(detail.toString()).put("attempt", attempt))
         diagnosticScope.launch {
             runCatching {
                 api.submitLiveDiagnostic(

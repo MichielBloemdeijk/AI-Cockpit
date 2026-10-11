@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
-from app.db.tables import Task, TaskAttempt
+from app.db.tables import Task, TaskAttempt, TaskExecutionRun
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import TaskSnapshot, task_service
 from app.services.jarvis_time import DEFAULT_TIME_ZONE, resolve_reminder_time
@@ -98,6 +98,11 @@ class ReminderScheduler:
                 task.updated_at = timestamp
                 task.scheduled_delivered_at = timestamp
                 task.terminal_summary = str(delivery.get("text") or task.goal)
+                run = await session.get(TaskExecutionRun, task.current_run_id)
+                if run is not None:
+                    run.status = "completed"
+                    run.finished_at = timestamp
+                    run.terminal_summary = task.terminal_summary
                 await repo.append_event(
                     task_id=task.id,
                     event_type="task.reminder.due",
@@ -116,6 +121,7 @@ class ReminderScheduler:
                 attempt = TaskAttempt(
                     id=str(uuid4()),
                     task_id=task.id,
+                    execution_run_id=task.current_run_id,
                     attempt_number=max_attempt + 1,
                 )
                 session.add(attempt)
@@ -127,6 +133,12 @@ class ReminderScheduler:
                     else "No live worker is available; this task has not started."
                 )
                 task.current_attempt_id = attempt.id
+                task.queue_entered_at = timestamp
+                run = await session.get(TaskExecutionRun, task.current_run_id)
+                if run is not None:
+                    run.status = task.status
+                    run.current_attempt_id = attempt.id
+                    run.queue_entered_at = timestamp
                 task.waiting_until = None
                 task.resume_at = None
                 task.wait_reason = None

@@ -696,7 +696,7 @@ async def test_live_tool_call_uses_correlated_transcript_turn_not_older_history(
             "name": "dispatch_task",
             "origin_item_id": "live-user:current",
             "origin_correlation_id": "live-delegation:current",
-            "arguments": {"goal": "Prepare the correlated launch note"},
+            "arguments": {"goal": "Prepare the correlated launch note", "intent_id": "launch-note"},
         },
     )
     tasks = await task_service.list_tasks()
@@ -780,7 +780,7 @@ async def test_live_tool_executes_unattributed_then_repairs_from_delegation_matc
             "name": "dispatch_task",
             "origin_correlation_id": correlation_id,
             "origin_timeline": {"start_ms": 900, "end_ms": 950},
-            "arguments": {"goal": "Prepare the late-correlated brief"},
+            "arguments": {"goal": "Prepare the late-correlated brief", "intent_id": "launch-brief"},
         },
     )
     tasks = await task_service.list_tasks()
@@ -892,6 +892,34 @@ async def test_live_assistant_transcript_is_history_not_delivery_evidence() -> N
         item for item in detail.presentations if item.id in reservation.presentation_ids
     )
     assert presentation.state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_native_live_transcript_retries_question_deferred_by_busy_floor(monkeypatch):
+    accepted = await jarvis_coordinator.accept_text_turn("Begin", idempotency_key="native-floor")
+    live = await jarvis_coordinator.get_active_session()
+    task = await task_service.dispatch(goal="Recipe awaiting a choice", origin_surface="test",
+        idempotency_key="native-floor-task", result_request={"mode": "answer"})
+    question = await task_service.ask_question(task.task.id, question="Vegetarian option?", idempotency_key="native-floor-question")
+    await task_presentation_service.sync_candidates()
+    requests = []
+    async def capture_request(**kwargs):
+        requests.append(kwargs)
+    monkeypatch.setattr(fake_voice_session_adapter, "create_response", capture_request)
+    await jarvis_coordinator.handle_provider_event(live.id, live.generation,
+        VoiceProviderEvent(event_id="native-floor-thinking", kind="assistant_generating"))
+    await jarvis_coordinator._queue_controlled_response(live.id, live.generation, "task_update")
+    assert not requests
+    await jarvis_coordinator.handle_provider_event(live.id, live.generation,
+        VoiceProviderEvent(event_id="native-floor-release", kind="assistant_transcript",
+            payload={"item_id": "native-segment", "transcript": "Your recipe is admitted.", "start_ms": 100, "end_ms": 600}))
+    assert len(requests) == 1
+    assert any(fact.get("task_id") == task.task.id and fact.get("question") == question.question
+        for fact in requests[0]["facts"])
+    detail = await task_service.get_task(task.task.id)
+    assert detail.questions[0].state == "asked"
+    messages = await conversation_store.list_messages(accepted.conversation.id, final_only=True)
+    assert next(message for message in messages if message.content == "Your recipe is admitted.").communication_state == "generated"
 
 
 @pytest.mark.asyncio
@@ -1264,6 +1292,11 @@ async def test_interruption_does_not_release_the_floor_while_user_is_speaking() 
 
     current = await jarvis_coordinator.get_session(session.id)
     assert current is not None and current.floor_state == "user_speaking"
+    await jarvis_coordinator.handle_provider_event(session.id, session.generation,
+        VoiceProviderEvent(event_id="floor-native-segment", kind="assistant_transcript",
+            payload={"item_id": "floor-native", "transcript": "The earlier speech ended.", "start_ms": 100, "end_ms": 600}))
+    current = await jarvis_coordinator.get_session(session.id)
+    assert current is not None and current.floor_state == "user_speaking"
     await jarvis_coordinator._queue_controlled_response(
         session.id,
         session.generation,
@@ -1424,14 +1457,22 @@ async def test_duplicate_reminder_stays_pending_without_model_report() -> None:
     assert presentation.state == "pending"
     assert "required_spoken_phrase" not in presentation.required_facts_json
     await route_pending_task_notifications(voice_connected=False)
-    await asyncio.sleep(0.05)
-    async with session_scope() as db:
-        outbox = list((await db.execute(
-            select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
-        )).scalars().all())
-        live_notifications = list((await db.execute(
-            select(JarvisLiveEvent).where(JarvisLiveEvent.event_type == "notification.available")
-        )).scalars().all())
+    async def delivered_notification():
+        while True:
+            async with session_scope() as db:
+                outbox = list((await db.execute(
+                    select(NotificationOutbox).where(NotificationOutbox.task_id == reminder.task.id)
+                )).scalars().all())
+                live_notifications = list((await db.execute(
+                    select(JarvisLiveEvent).where(JarvisLiveEvent.event_type == "notification.available")
+                )).scalars().all())
+            if outbox and outbox[0].status == "delivered":
+                return outbox, live_notifications
+            await asyncio.sleep(0.01)
+
+    # Observe the committed transport outcome, not a machine-specific 50 ms
+    # sleep. Slow SDK/emulator load must not turn delivery into a false failure.
+    outbox, live_notifications = await asyncio.wait_for(delivered_notification(), 5)
     assert len(outbox) == 1
     assert outbox[0].status == "delivered"
     assert len(live_notifications) == 1
@@ -1488,7 +1529,7 @@ async def test_question_answer_and_fresh_log_keep_task_identity() -> None:
 async def test_live_workspace_api_exposes_independent_domain_cursors_and_lab() -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         accepted = await client.post(
             "/api/jarvis/turns/text",
             json={"content": "API command", "idempotency_key": "api-command"},

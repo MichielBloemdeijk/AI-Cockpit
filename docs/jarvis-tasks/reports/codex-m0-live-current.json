@@ -1,0 +1,546 @@
+{
+  "schema_version": "jarvis-codex-probe.v2",
+  "run_id": "m0-20260922T162209Z-f1f6c841",
+  "started_at": "2026-09-22T16:22:09.790562+00:00",
+  "completed_at": "2026-09-22T16:22:27.566543+00:00",
+  "mode": "live",
+  "status": "passed",
+  "runtime": {
+    "sdk": {
+      "package": "openai-codex",
+      "version": "0.155.1"
+    },
+    "bundled": {
+      "package": "openai-codex-cli-bin",
+      "version": "0.155.1",
+      "cli_version": "codex-cli 0.155.1"
+    },
+    "desktop_cli": {
+      "available": true,
+      "version": "codex-cli 0.154.0-alpha.6.2"
+    },
+    "python": "3.12.9",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "app_server": {
+      "serverInfo": {
+        "name": "Codex Desktop",
+        "version": "0.155.1 (Windows 10.0.19045; x86_64) dumb (jarvis_m0_probe; 0.155.1)"
+      },
+      "userAgent": "Codex Desktop/0.155.1 (Windows 10.0.19045; x86_64) dumb (jarvis_m0_probe; 0.155.1)",
+      "platformFamily": "windows",
+      "platformOs": "windows"
+    }
+  },
+  "profile": {
+    "kind": "disposable",
+    "desktop_profile_used": false,
+    "desktop_sensitive_files_unchanged": true,
+    "retained": false
+  },
+  "auth": {
+    "credentials_reported": false,
+    "isolated_profile_account_type": null,
+    "requires_openai_auth": true
+  },
+  "models": [
+    {
+      "id": "gpt-6-astra",
+      "hidden": false,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "hidden": false,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "hidden": false,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "hidden": false,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-daybreak-blue-latest",
+      "hidden": true,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-daybreak-red-latest",
+      "hidden": true,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.5",
+      "hidden": false,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.4",
+      "hidden": true,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "codex-auto-review",
+      "hidden": true,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    }
+  ],
+  "protocol": {
+    "observed_methods": [
+      "initialize",
+      "account/read",
+      "model/list",
+      "thread/list",
+      "command/exec",
+      "host/process-tree-kill"
+    ],
+    "live_session": {
+      "account_type": "apiKey",
+      "thread_id": "01a0c9ec-c8f5-7630-9e30-95ba4b4523d8",
+      "first_turn_id": "01a0c9ec-c974-77c1-8c17-24fd1960c8fc",
+      "workflow_profile": {
+        "thread_id": "01a0c9ec-e780-7323-ae52-04fe4665a640",
+        "mcp_tools": [
+          "jarvis_probe.journal_commit"
+        ],
+        "mcp_server_states": {
+          "jarvis_probe": "connected"
+        }
+      }
+    }
+  },
+  "strategy": {
+    "client": "official Python SDK",
+    "lifecycle_fallback": "pinned App Server stdio for SDK-unwrapped methods",
+    "session_storage": "dedicated Jarvis CODEX_HOME; never copy desktop credentials",
+    "subscription_concurrency": 1,
+    "authentication": "API continuation is enabled; subscription execution remains disabled until a separate Jarvis ChatGPT profile passes this probe.",
+    "workflow_native_tools": "disabled; workflow hosts expose only explicitly allowlisted brokered Jarvis MCP tools",
+    "action_persistence": "brokered Jarvis tools fsync/commit operation state before returning success; native side-effect completion events are observational only",
+    "containment": "Native stop evidence plus OS sandbox enforcement; Windows uses the unelevated ACL sandbox for this host and must fail closed when the configured backend or workspace boundary is unavailable. Immediate Windows stop kills the per-execution App Server process tree because command/exec/terminate is unsupported for Windows-sandboxed processes."
+  },
+  "assertions": [
+    {
+      "id": "runtime.version_pin",
+      "status": "pass",
+      "summary": "The Python SDK and its bundled runtime use the same exact pin.",
+      "evidence": {
+        "sdk_version": "0.155.1",
+        "runtime_package_version": "0.155.1",
+        "expected": "0.155.1"
+      },
+      "elapsed_ms": 0.002,
+      "gating": true
+    },
+    {
+      "id": "runtime.app_server_reads",
+      "status": "pass",
+      "summary": "Initialized App Server and completed typed account/model/thread reads.",
+      "evidence": {
+        "server_version": "0.155.1 (Windows 10.0.19045; x86_64) dumb (jarvis_m0_probe; 0.155.1)",
+        "platform_family": "windows"
+      },
+      "elapsed_ms": 225.039,
+      "gating": true
+    },
+    {
+      "id": "model.luna_low",
+      "status": "pass",
+      "summary": "The runtime model catalog advertises Luna with low effort.",
+      "evidence": {
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "observed": {
+          "id": "gpt-5.6-luna",
+          "hidden": false,
+          "default_effort": "medium",
+          "supported_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "input_modalities": [
+            "text",
+            "image"
+          ]
+        }
+      },
+      "elapsed_ms": 0.007,
+      "gating": true
+    },
+    {
+      "id": "sandbox.read_only",
+      "status": "pass",
+      "summary": "The runtime denied the prohibited filesystem write.",
+      "evidence": {
+        "policy": {
+          "type": "readOnly"
+        },
+        "expected_file_exists": false,
+        "actual_file_exists": false,
+        "denied": true,
+        "error_type": "InternalRpcError"
+      },
+      "elapsed_ms": 71.622,
+      "gating": true
+    },
+    {
+      "id": "sandbox.workspace_inside",
+      "status": "pass",
+      "summary": "Filesystem behavior matched the requested sandbox policy.",
+      "evidence": {
+        "policy": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "$RUN_ROOT\\workspace\\sandbox-workspace"
+          ],
+          "networkAccess": false
+        },
+        "expected_file_exists": true,
+        "actual_file_exists": true,
+        "exit_code": 0,
+        "stderr_present": false
+      },
+      "elapsed_ms": 791.685,
+      "gating": true
+    },
+    {
+      "id": "sandbox.workspace_escape",
+      "status": "pass",
+      "summary": "The runtime denied the prohibited filesystem write.",
+      "evidence": {
+        "policy": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "$RUN_ROOT\\workspace\\sandbox-workspace"
+          ],
+          "networkAccess": false
+        },
+        "expected_file_exists": false,
+        "actual_file_exists": false,
+        "denied": true,
+        "error_type": "InternalRpcError"
+      },
+      "elapsed_ms": 115.713,
+      "gating": true
+    },
+    {
+      "id": "stop.native_descendant",
+      "status": "pass",
+      "summary": "The execution-boundary stop terminated the descendant writer.",
+      "evidence": {
+        "process_id": "jarvis-m0-9e459411b2114d1caadbba6be3ce95b3",
+        "child_pid_observed": true,
+        "host_pid_observed": true,
+        "terminate_response": {
+          "strategy": "app_server_process_tree",
+          "host_pid_observed": true
+        },
+        "request_finished": true,
+        "post_stop_write_observed": false
+      },
+      "elapsed_ms": 839.449,
+      "gating": true
+    },
+    {
+      "id": "auth.single_profile_owner",
+      "status": "pass",
+      "summary": "The dedicated profile can be guarded by a non-blocking single-owner file lock.",
+      "evidence": {
+        "exclusive_lock_observed": true,
+        "strategy": "one credential owner per profile; no copied credential caches"
+      },
+      "elapsed_ms": 0.959,
+      "gating": true
+    },
+    {
+      "id": "auth.billing_error_fixture",
+      "status": "pass",
+      "summary": "Billing/quota failures are classified without spending or exhausting credits.",
+      "evidence": {
+        "cases": {
+          "insufficient_quota": "billing_exhausted",
+          "billing_hard_limit_reached": "billing_exhausted",
+          "rate_limit_exceeded": "rate_limited",
+          "401 unauthorized": "authentication"
+        }
+      },
+      "elapsed_ms": 0.016,
+      "gating": true
+    },
+    {
+      "id": "action.crash_recovery",
+      "status": "pass",
+      "summary": "Completed work is reusable; interrupted side effects restore as uncertain.",
+      "evidence": {
+        "completed_states": [
+          "started",
+          "succeeded"
+        ],
+        "completed_reusable": true,
+        "interrupted_states": [
+          "started"
+        ],
+        "interrupted_restored_as": "uncertain",
+        "automatic_replay_allowed": false
+      },
+      "elapsed_ms": 244.682,
+      "gating": true
+    },
+    {
+      "id": "auth.live_profile",
+      "status": "pass",
+      "summary": "The isolated Jarvis profile has supported Codex authentication.",
+      "evidence": {
+        "account_type": "apiKey",
+        "requires_openai_auth": true,
+        "credentials_reported": false
+      },
+      "elapsed_ms": 104.672,
+      "gating": true
+    },
+    {
+      "id": "session.create_stream_history",
+      "status": "pass",
+      "summary": "Created a native thread and observed streamed, persisted turn items.",
+      "evidence": {
+        "thread_id": "01a0c9ec-c8f5-7630-9e30-95ba4b4523d8",
+        "turn_id": "01a0c9ec-c974-77c1-8c17-24fd1960c8fc",
+        "completed_status": "completed",
+        "event_methods": [
+          "item/agentMessage/delta",
+          "item/completed",
+          "item/started",
+          "thread/tokenUsage/updated",
+          "turn/completed",
+          "turn/started"
+        ],
+        "item_ids": [
+          "01a0c9ec-ccae-7013-b191-3780bfbe4a24",
+          "msg_0317a4830f47ac87016ab2ab3738c887d2a5025c819ee16ded"
+        ],
+        "persisted_turn_count": 1
+      },
+      "elapsed_ms": 1889.77,
+      "gating": true
+    },
+    {
+      "id": "session.restart_resume_followup",
+      "status": "pass",
+      "summary": "A new App Server host resumed the same native thread and appended a follow-up.",
+      "evidence": {
+        "thread_id": "01a0c9ec-c8f5-7630-9e30-95ba4b4523d8",
+        "same_thread": true,
+        "persisted_turn_count": 2,
+        "final_response_sha256": "36d4ed98b06e3edb9b9e2ac4b2a1be0f0db3996587273ab75615b9820da805ac",
+        "expected_response_observed": true
+      },
+      "elapsed_ms": 4938.162,
+      "gating": true
+    },
+    {
+      "id": "turn.interrupt",
+      "status": "pass",
+      "summary": "The live turn completed with interrupted status.",
+      "evidence": {
+        "thread_id": "01a0c9ec-c8f5-7630-9e30-95ba4b4523d8",
+        "turn_id": "01a0c9ec-e5e1-7b31-ad64-b8b9d330f21a",
+        "turn_started": true,
+        "completion_status": "interrupted",
+        "stream_finished": true,
+        "interrupt_error": null,
+        "event_methods": [
+          "item/completed",
+          "item/started",
+          "turn/completed",
+          "turn/started"
+        ]
+      },
+      "elapsed_ms": 86.267,
+      "gating": true
+    },
+    {
+      "id": "auth.api_continuation",
+      "status": "pass",
+      "summary": "API-authenticated continuation survived an App Server restart.",
+      "evidence": {
+        "account_type": "apiKey",
+        "same_thread": true
+      },
+      "elapsed_ms": 86.276,
+      "gating": true
+    },
+    {
+      "id": "auth.subscription_continuation",
+      "status": "blocked",
+      "summary": "A separately authenticated Jarvis ChatGPT profile was not used in this run.",
+      "evidence": {
+        "account_type": "apiKey"
+      },
+      "elapsed_ms": 86.279,
+      "gating": false
+    },
+    {
+      "id": "action.persistence_boundary",
+      "status": "pass",
+      "summary": "The allowlisted Jarvis tool durably committed before reporting success.",
+      "evidence": {
+        "operation_committed": true,
+        "committed_before_success_by_contract": true,
+        "completed_tool_item_observed": true,
+        "journal_record_count": 1,
+        "enabled_tools": [
+          "jarvis_probe.journal_commit"
+        ]
+      },
+      "elapsed_ms": 4163.259,
+      "gating": true
+    },
+    {
+      "id": "profile.forbidden_tool_denial",
+      "status": "pass",
+      "summary": "The restricted workflow profile exposed only the brokered Jarvis tool.",
+      "evidence": {
+        "enabled_tools": [
+          "jarvis_probe.journal_commit"
+        ],
+        "marker_created": false,
+        "forbidden_item_types": [],
+        "undeclared_mcp_call_observed": false,
+        "allowlisted_tool_reused": false,
+        "shell_tool": false,
+        "unified_exec": false,
+        "subagents": false,
+        "web_search": "disabled"
+      },
+      "elapsed_ms": 1768.201,
+      "gating": true
+    },
+    {
+      "id": "profile.desktop_files_untouched",
+      "status": "pass",
+      "summary": "Desktop Codex configuration/authentication file metadata stayed unchanged.",
+      "evidence": {
+        "profile_is_separate": true,
+        "sensitive_file_metadata_unchanged": true
+      },
+      "elapsed_ms": 0.0,
+      "gating": true
+    }
+  ],
+  "summary": {
+    "passed": 18,
+    "failed": 0,
+    "blocked": 1,
+    "gating_failed": 0,
+    "gating_blocked": 0
+  }
+}

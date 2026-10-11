@@ -53,7 +53,7 @@ function fakePc(options: { autoConnect?: boolean; remoteDescription?: Promise<vo
     onclose: null as (() => void) | null,
     onmessage: null as ((event: MessageEvent) => void) | null,
     onerror: null as (() => void) | null,
-  } as unknown as RTCDataChannel;
+  };
   const pc = {
     iceGatheringState: "complete",
     iceConnectionState: "new",
@@ -81,7 +81,7 @@ function fakePc(options: { autoConnect?: boolean; remoteDescription?: Promise<vo
     addTrack: vi.fn(),
     close: vi.fn(),
     ontrack: null,
-  } as unknown as RTCPeerConnection;
+  };
   return {
     channel,
     pc,
@@ -142,7 +142,7 @@ function candidateAudio(initial: Float32Array) {
       });
       return unsubscribe;
     },
-    observeEndpoint: vi.fn(() => new Promise(() => undefined)),
+    observeEndpoint: vi.fn(() => new Promise<import("./jarvis-activation-audio").JarvisLocalEndpoint>(() => undefined)),
     promoteToConversation: vi.fn(),
     close: vi.fn(),
   };
@@ -188,7 +188,7 @@ describe("JarvisLiveController", () => {
     vi.stubGlobal("setTimeout", strictSetTimeout);
     vi.stubGlobal("clearTimeout", strictClearTimeout);
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
@@ -207,7 +207,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {
       onDiagnostic: (event) => diagnostics.push(event.event),
     }, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: vi.fn(async () => fakeBackendState()),
       createCall: async () => fakeCall(),
@@ -239,7 +239,7 @@ describe("JarvisLiveController", () => {
     const controller = new JarvisLiveController("c", {
       onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.event),
     }, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       audioContext: () => audio.context,
       getBackendState: async () => fakeBackendState(),
       createCall,
@@ -264,7 +264,7 @@ describe("JarvisLiveController", () => {
     const second = fakePc();
     const peers = [first.pc, second.pc];
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => peers.shift()!,
+      peerConnection: () => peers.shift()! as unknown as RTCPeerConnection,
       audioContext: () => fakeAudioContext().context,
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
@@ -282,7 +282,7 @@ describe("JarvisLiveController", () => {
     const backend = deferred<void>();
     const createCall = vi.fn(async () => fakeCall());
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => { await backend.promise; return fakeBackendState(); },
       createCall,
@@ -304,14 +304,14 @@ describe("JarvisLiveController", () => {
     const setTimeout = vi.fn((callback: () => void) => {
       queueMicrotask(callback);
       return 1 as unknown as ReturnType<typeof globalThis.setTimeout>;
-    }) as typeof globalThis.setTimeout;
+    });
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
       closeCall,
-      setTimeout,
+      setTimeout: setTimeout as unknown as typeof globalThis.setTimeout,
       clearTimeout: vi.fn() as typeof globalThis.clearTimeout,
     });
 
@@ -323,7 +323,7 @@ describe("JarvisLiveController", () => {
     const { pc } = fakePc();
     const closeCall = vi.fn(async () => undefined);
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState("disconnected"),
       createCall: async () => fakeCall(),
@@ -339,7 +339,7 @@ describe("JarvisLiveController", () => {
     const closeCall = vi.fn(async () => undefined);
     const getBackendState = vi.fn(async () => fakeBackendState());
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState,
       createCall: async () => fakeCall(),
@@ -367,7 +367,7 @@ describe("JarvisLiveController", () => {
     const response = deferred<JarvisLiveCallResponse>();
     const closeCall = vi.fn(async () => undefined);
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: () => response.promise,
@@ -391,7 +391,7 @@ describe("JarvisLiveController", () => {
     const firstResponse = deferred<JarvisLiveCallResponse>();
     const controllers = [first.pc, second.pc];
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => controllers.shift()!,
+      peerConnection: () => controllers.shift()! as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: vi.fn()
@@ -409,7 +409,7 @@ describe("JarvisLiveController", () => {
     })();
 
     const next = controller.start();
-    staleOnMessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    staleOnMessage?.call(first.channel as unknown as RTCDataChannel, { data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
     await next;
     expect(controller.current().status).toBe("connected");
   });
@@ -417,7 +417,7 @@ describe("JarvisLiveController", () => {
   it("does not send raw audio or legacy cancellation events", async () => {
     const { pc, channel } = fakePc();
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
@@ -439,7 +439,7 @@ describe("JarvisLiveController", () => {
     const audio = fakeAudioContext();
     const activation = candidateAudio(new Float32Array([0.1, 0.2]));
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
@@ -464,7 +464,7 @@ describe("JarvisLiveController", () => {
     const audio = fakeAudioContext();
     const activation = candidateAudio(new Float32Array(16_000));
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
@@ -484,7 +484,7 @@ describe("JarvisLiveController", () => {
     const quietSpeech = new Float32Array(16_000).fill(0.002);
     const activation = candidateAudio(quietSpeech);
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
@@ -504,14 +504,14 @@ describe("JarvisLiveController", () => {
     const setTimeout = vi.fn((callback: () => void, delay = 0) => {
       scheduled.push({ callback, delay });
       return scheduled.length as unknown as ReturnType<typeof globalThis.setTimeout>;
-    }) as typeof globalThis.setTimeout;
+    });
     const clearTimeout = vi.fn() as typeof globalThis.clearTimeout;
     const controller = new JarvisLiveController("c", {}, {
-      peerConnection: () => pc,
+      peerConnection: () => pc as unknown as RTCPeerConnection,
       getUserMedia: async () => fakeMediaStream(),
       getBackendState: async () => fakeBackendState(),
       createCall: async () => fakeCall(),
-      setTimeout,
+      setTimeout: setTimeout as unknown as typeof globalThis.setTimeout,
       clearTimeout,
     });
     const pending = controller.start();

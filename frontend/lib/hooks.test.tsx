@@ -514,8 +514,8 @@ describe("useChat single-model streaming", () => {
   });
 
   it("keeps the live assistant message visible while the initial conversation load is still pending", async () => {
-    const pendingDetail = deferred<ReturnType<typeof conversationDetail>>();
-    const pendingEvents = deferred<{ events: never[]; artifacts: never[]; timeline_items: never[]; active_run: null }>();
+    const pendingDetail = deferred<ReturnType<typeof buildConversationDetail>>();
+    const pendingEvents = deferred<ReturnType<typeof buildConversationEventsResponse>>();
     apiMocks.getConversation.mockImplementationOnce(() => pendingDetail.promise);
     apiMocks.getConversationEvents.mockImplementationOnce(() => pendingEvents.promise);
     apiMocks.streamChat.mockImplementation((opts: {

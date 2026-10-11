@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
 import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.presenters.tasks import present_task_summary
 from app.models.jarvis import (
     JarvisFreshLogRequest,
     JarvisFreshLogResponse,
@@ -20,6 +23,7 @@ from app.models.jarvis import (
     JarvisPreferencesPatch,
     JarvisPreferencesView,
     JarvisLiveCallRequest,
+    JarvisLiveActivationContext,
     JarvisLiveCallResponse,
     JarvisLiveTelemetryAccepted,
     JarvisLiveTelemetryBatch,
@@ -38,7 +42,8 @@ from app.models.jarvis import (
 )
 from app.presenters.conversations import present_conversation_message
 from app.presenters.conversations import present_conversation_event
-from app.services.jarvis_devices import require_jarvis_auth
+from app.services.jarvis_devices import require_jarvis_auth, jarvis_device_service
+from app.services.auth import SESSION_COOKIE_NAME, verify_session_token, authorization_scheme
 from app.services.conversation_read_model import conversation_read_model
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.jarvis_daily import jarvis_daily_service
@@ -57,36 +62,22 @@ from app.models.tasks import TaskSummaryView, WorkerHealthView
 router = APIRouter(prefix="/api/jarvis", tags=["jarvis"], dependencies=[Depends(require_jarvis_auth)])
 
 
+@router.get("/runtime-candidate")
+async def runtime_candidate(request: Request):
+    """Authenticated development acceptance identity; no credentials or paths."""
+    from app.jarvis_tasks.acceptance import candidate_identity, database_identity
+    runtime = getattr(request.app.state, "acceptance_runtime", None)
+    if runtime is None:
+        raise HTTPException(503, "Backend startup identity is unavailable")
+    current = await asyncio.to_thread(candidate_identity)
+    if current != runtime["candidate"] or database_identity(settings.database_path) != runtime["database_identity"]:
+        raise HTTPException(409, "Backend source/configuration changed after startup")
+    return JSONResponse(runtime, headers={"Cache-Control": "no-store"})
+
+
 def _session_view(session) -> JarvisSessionView | None:
     return None if session is None else JarvisSessionView.model_validate(session, from_attributes=True)
 
-
-def _task_summary(snapshot) -> TaskSummaryView:
-    task = snapshot.task
-    return TaskSummaryView(
-        id=task.id,
-        origin_surface=task.origin_surface,
-        origin_conversation_id=task.origin_conversation_id,
-        origin_turn_id=task.origin_turn_id,
-        goal=task.goal,
-        status=task.status,
-        status_reason=task.status_reason,
-        creation_order=task.creation_order,
-        current_attempt_id=task.current_attempt_id,
-        cancellation_requested_at=task.cancellation_requested_at,
-        importance=task.importance,
-        presentation_policy=task.presentation_policy,
-        terminal_summary=task.terminal_summary,
-        waiting_until=task.waiting_until,
-        resume_at=task.resume_at,
-        wait_reason=task.wait_reason,
-        scheduled_delivery=task.scheduled_delivery_json,
-        scheduled_delivered_at=task.scheduled_delivered_at,
-        queue_position=snapshot.queue_position,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        finished_at=task.finished_at,
-    )
 
 
 def _http_error(exc: ValueError) -> HTTPException:
@@ -150,7 +141,7 @@ async def get_jarvis_state() -> JarvisStateResponse:
         situation_revision=0 if situation is None else situation.revision,
         live_event_cursor=live_event_cursor,
         current_log=detail,
-        tasks=[_task_summary(item) for item in tasks],
+        tasks=[present_task_summary(item.task, item.queue_position) for item in tasks],
         pending_questions=questions,
         pending_presentations=[
             JarvisPresentationView(
@@ -228,15 +219,21 @@ async def stream_jarvis_live_events(
 
 @router.get("/live/replay", response_model=JarvisLiveEventReplayResponse)
 async def replay_jarvis_live_events(
+    request: Request,
     after: int = Query(default=0, ge=0),
     limit: int = Query(default=250, ge=1, le=1000),
 ) -> JarvisLiveEventReplayResponse:
     latest, rows = await jarvis_live_service.replay(after=after, limit=limit)
+    cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    browser_owner = bool(cookie and verify_session_token(cookie))
+    device = None if browser_owner else await jarvis_device_service.authenticate(request)
+    viewer_device_id = None if device is None else device.id
     return JarvisLiveEventReplayResponse(
         latest_sequence=latest,
         events=[
-            JarvisLiveEventView.model_validate(jarvis_live_service.event_payload(row))
+            JarvisLiveEventView.model_validate(jarvis_live_service.event_payload(row, native_device=device is not None and authorization_scheme(request) == "bearer"))
             for row in rows
+            if row.target_device_id is None or browser_owner or row.target_device_id == viewer_device_id
         ],
     )
 
@@ -267,7 +264,7 @@ async def resolve_task_reference(request: TaskReferenceRequest) -> TaskResolutio
 async def list_reminders() -> list[TaskSummaryView]:
     snapshots = await task_service.list_tasks()
     return [
-        _task_summary(item)
+        present_task_summary(item.task, item.queue_position)
         for item in snapshots
         if (item.task.scheduled_delivery_json or {}).get("kind") == "reminder"
     ]
@@ -290,7 +287,7 @@ async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await natural_task_resolver.touch(snapshot.task.id)
-    return _task_summary(snapshot)
+    return present_task_summary(snapshot.task, snapshot.queue_position)
 
 
 @router.post("/reminders/{task_id}/snooze")
@@ -308,7 +305,7 @@ async def cancel_reminder(task_id: str) -> TaskSummaryView:
         snapshot = await task_service.cancel(task_id, idempotency_key=f"reminder-api:{uuid4()}")
     except ValueError as exc:
         raise _http_error(exc) from exc
-    return _task_summary(snapshot)
+    return present_task_summary(snapshot.task, snapshot.queue_position)
 
 
 @router.post(
@@ -366,7 +363,16 @@ async def replay_jarvis_log_events(
 
 
 @router.post("/live/calls", response_model=JarvisLiveCallResponse)
-async def create_live_call(request: JarvisLiveCallRequest) -> JarvisLiveCallResponse:
+async def create_live_call(request: JarvisLiveCallRequest, http_request: Request) -> JarvisLiveCallResponse:
+    # A paired browser's random tab identifier is not a screenshot device.
+    # Derive ownership from authentication, never from client-supplied IDs.
+    device = await jarvis_device_service.authenticate(http_request)
+    phone_browser = device is not None and authorization_scheme(http_request) != "bearer"
+    if device is not None:
+        request = request.model_copy(update={"controller_id": device.id})
+    if phone_browser and request.activation_context is None:
+        request = request.model_copy(update={"activation_context": JarvisLiveActivationContext(
+            source="manual", activation_id=str(uuid4()))})
     request_id = str(uuid4())
     request_started = time.monotonic()
     server_received_at = datetime.now(timezone.utc)
@@ -420,6 +426,10 @@ async def create_live_call(request: JarvisLiveCallRequest) -> JarvisLiveCallResp
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Live provider connection failed",
         ) from exc
+    if phone_browser:
+        from app.services.task_capture import task_capture_service
+        await task_capture_service.request_browser_activation(
+            session_id=bootstrap.session.id, generation=bootstrap.session.generation)
     server_responded_at = datetime.now(timezone.utc)
     result = JarvisLiveCallResponse(
         role="controller",

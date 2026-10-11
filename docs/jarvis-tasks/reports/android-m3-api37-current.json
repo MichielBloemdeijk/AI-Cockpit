@@ -1,0 +1,100 @@
+{
+  "task_id": "c9fc77eb-e4f7-43e2-accf-461b37bc3dba",
+  "activation_id": "99d97031-6e0d-458c-b217-cdd00d797dbd",
+  "capture_id": "0240c151-950c-4f5c-b4dc-cd65cfa238d4",
+  "execution_run_id": "7dd5e14f-713a-4c41-aac9-7817b21edff2",
+  "result_url": "/results/5cb91049-88ac-4975-bed8-20321184c2bf",
+  "image_sha256": "ddfc7ad271df37234ad5b51004d6f0613ed402d6dc5e68c4b403022abf172224",
+  "image_size": [
+    921,
+    2048
+  ],
+  "fake_live_cold_to_ready_s": 0.810766,
+  "backend_ready_call_to_admission_ms": 63.0,
+  "backend_capture_preflight_ms": 16.0,
+  "capture_to_admission_s": 1.208848,
+  "admission_to_upload_s": 0.959164,
+  "queue_to_worker_start_s": 1.216163,
+  "orchestration": {
+    "status": "pass",
+    "scenarios": [
+      {
+        "scenario": "answer",
+        "task_id": "10b920ad-0658-4b25-ae71-3d15aa966642",
+        "question_id": "c2f8eb2e-1ab6-4e61-8941-8b425db6abcf",
+        "decision_status": "completed",
+        "native_calls": 1,
+        "question_state": "answered",
+        "mobile_history_and_reconnect": "pass"
+      },
+      {
+        "scenario": "presentation",
+        "task_id": "6694dd56-d871-46c4-9070-79fabd79442e",
+        "question_id": "f3595ed1-28a0-400c-829f-af337b58b1cb",
+        "decision_status": "completed",
+        "native_calls": 1,
+        "question_state": "asked",
+        "mobile_history_and_reconnect": "pass"
+      }
+    ],
+    "telemetry": {
+      "counts": {
+        "action_attempt": 2,
+        "decision_queue": 2,
+        "factual_forwarding": 1,
+        "feedback_batch": 109,
+        "native_turn": 2,
+        "native_usage": 2,
+        "runtime_invocation": 2
+      },
+      "action_outcomes": {
+        "committed": 2
+      },
+      "recent_duration_samples": {
+        "feedback_batch": {
+          "sample_count": 44,
+          "max_ms": 484.99999998603016,
+          "p95_ms": 94.0000000409782
+        },
+        "runtime_invocation": {
+          "sample_count": 2,
+          "max_ms": 11062.000000034459,
+          "p95_ms": 11062.000000034459
+        },
+        "decision_queue": {
+          "sample_count": 1,
+          "max_ms": 588.748,
+          "p95_ms": 588.748
+        },
+        "action_attempt": {
+          "sample_count": 1,
+          "max_ms": 265.00000001396984,
+          "p95_ms": 265.00000001396984
+        }
+      },
+      "sample_window": 50,
+      "native_usage": {
+        "observed_turns": 2,
+        "totals": {
+          "inputTokens": 74686,
+          "cacheWriteInputTokens": 26175,
+          "totalTokens": 75413,
+          "cachedInputTokens": 48493,
+          "reasoningOutputTokens": 264,
+          "outputTokens": 727
+        },
+        "cost_usd": null,
+        "cost_status": "provider_cost_unavailable"
+      }
+    },
+    "scope": "Isolated API profile; fake Live admission; actual Android WebView; no physical/audio sign-off"
+  },
+  "emulator": "emulator-5554",
+  "avd": "JarvisM3Api37",
+  "system_image": "system-images;android-37.0;google_apis;x86_64",
+  "android_api": "37",
+  "local_network_permission_ui": "deny_then_allow_and_pair",
+  "invocation": "system_assist_key",
+  "evidence_dir": "C:\\Users\\Sander\\AppData\\Local\\Temp\\jarvis-m2-screen-fqd6rf9c",
+  "mobile_url": "http://10.0.2.2:60388/results/5cb91049-88ac-4975-bed8-20321184c2bf"
+}

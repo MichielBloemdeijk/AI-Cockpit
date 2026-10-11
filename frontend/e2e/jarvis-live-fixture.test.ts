@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadJarvisLiveSmokeFixture } from "./jarvis-live-fixture.mjs";
 
@@ -18,6 +18,12 @@ function writeBundle(path: string): void {
 }
 
 describe("Jarvis Live smoke fixture selection", () => {
+  beforeEach(() => {
+    for (const name of ["JARVIS_SMOKE_AUDIO", "JARVIS_SMOKE_CATEGORY", "JARVIS_SMOKE_SAMPLE_ID"]) {
+      vi.stubEnv(name, "");
+    }
+  });
+  afterEach(() => vi.unstubAllEnvs());
   it("selects the newest requested positive calibration example", () => {
     const root = mkdtempSync(join(tmpdir(), "jarvis-smoke-"));
     const path = join(root, "calibration.json");

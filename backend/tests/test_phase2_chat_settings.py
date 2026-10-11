@@ -43,7 +43,7 @@ async def test_chat_settings_apply_to_future_sessions_only(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
 
         updated_defaults = {
             "defaults": {
@@ -133,7 +133,7 @@ async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkey
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        await client.post("/api/auth/login", json={"password": "dev"})
+        await client.post("/api/auth/login", json={"password": ""})
         update = await client.put(
             "/api/chat/settings",
             json={

@@ -90,7 +90,7 @@ export function ChatInput({ onSend, onStop, loading, canStop = false, disabled, 
       : "Message AI Cockpit…";
 
   return (
-    <div className="border-t border-zinc-700 bg-zinc-900 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-3 md:p-4">
+    <div className="mobile-safe-chat-input border-t border-zinc-700 bg-zinc-900 px-3 pt-3 md:p-4">
       {parsedInput.helperText && (
         <div className="mb-3 text-xs text-zinc-500">
           {parsedInput.helperText}

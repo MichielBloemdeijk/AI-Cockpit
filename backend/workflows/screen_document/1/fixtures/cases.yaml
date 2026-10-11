@@ -1,0 +1,4 @@
+cases:
+- id: visible_marker
+  request: Describe the visible marker in this screen.
+  expected: Produces a valid workflow result.

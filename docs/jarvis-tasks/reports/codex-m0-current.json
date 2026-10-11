@@ -1,0 +1,459 @@
+{
+  "schema_version": "jarvis-codex-probe.v2",
+  "run_id": "m0-20260922T162151Z-8a7402ad",
+  "started_at": "2026-09-22T16:21:51.890989+00:00",
+  "completed_at": "2026-09-22T16:21:55.772749+00:00",
+  "mode": "inventory",
+  "status": "incomplete",
+  "runtime": {
+    "sdk": {
+      "package": "openai-codex",
+      "version": "0.155.1"
+    },
+    "bundled": {
+      "package": "openai-codex-cli-bin",
+      "version": "0.155.1",
+      "cli_version": "codex-cli 0.155.1"
+    },
+    "desktop_cli": {
+      "available": true,
+      "version": "codex-cli 0.154.0-alpha.6.2"
+    },
+    "python": "3.12.9",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "app_server": {
+      "serverInfo": {
+        "name": "Codex Desktop",
+        "version": "0.155.1 (Windows 10.0.19045; x86_64) dumb (jarvis_m0_probe; 0.155.1)"
+      },
+      "userAgent": "Codex Desktop/0.155.1 (Windows 10.0.19045; x86_64) dumb (jarvis_m0_probe; 0.155.1)",
+      "platformFamily": "windows",
+      "platformOs": "windows"
+    }
+  },
+  "profile": {
+    "kind": "disposable",
+    "desktop_profile_used": false,
+    "desktop_sensitive_files_unchanged": true,
+    "retained": false
+  },
+  "auth": {
+    "credentials_reported": false,
+    "isolated_profile_account_type": null,
+    "requires_openai_auth": true
+  },
+  "models": [
+    {
+      "id": "gpt-6-astra",
+      "hidden": false,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "hidden": false,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "hidden": false,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "hidden": false,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-daybreak-blue-latest",
+      "hidden": true,
+      "default_effort": "low",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-daybreak-red-latest",
+      "hidden": true,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.5",
+      "hidden": false,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.4",
+      "hidden": true,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "codex-auto-review",
+      "hidden": true,
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ]
+    }
+  ],
+  "protocol": {
+    "observed_methods": [
+      "initialize",
+      "account/read",
+      "model/list",
+      "thread/list",
+      "command/exec",
+      "host/process-tree-kill"
+    ]
+  },
+  "strategy": {
+    "client": "official Python SDK",
+    "lifecycle_fallback": "pinned App Server stdio for SDK-unwrapped methods",
+    "session_storage": "dedicated Jarvis CODEX_HOME; never copy desktop credentials",
+    "subscription_concurrency": 1,
+    "authentication": "API continuation is enabled; subscription execution remains disabled until a separate Jarvis ChatGPT profile passes this probe.",
+    "workflow_native_tools": "disabled; workflow hosts expose only explicitly allowlisted brokered Jarvis MCP tools",
+    "action_persistence": "brokered Jarvis tools fsync/commit operation state before returning success; native side-effect completion events are observational only",
+    "containment": "Native stop evidence plus OS sandbox enforcement; Windows uses the unelevated ACL sandbox for this host and must fail closed when the configured backend or workspace boundary is unavailable. Immediate Windows stop kills the per-execution App Server process tree because command/exec/terminate is unsupported for Windows-sandboxed processes."
+  },
+  "assertions": [
+    {
+      "id": "runtime.version_pin",
+      "status": "pass",
+      "summary": "The Python SDK and its bundled runtime use the same exact pin.",
+      "evidence": {
+        "sdk_version": "0.155.1",
+        "runtime_package_version": "0.155.1",
+        "expected": "0.155.1"
+      },
+      "elapsed_ms": 0.002,
+      "gating": true
+    },
+    {
+      "id": "runtime.app_server_reads",
+      "status": "pass",
+      "summary": "Initialized App Server and completed typed account/model/thread reads.",
+      "evidence": {
+        "server_version": "0.155.1 (Windows 10.0.19045; x86_64) dumb (jarvis_m0_probe; 0.155.1)",
+        "platform_family": "windows"
+      },
+      "elapsed_ms": 251.519,
+      "gating": true
+    },
+    {
+      "id": "model.luna_low",
+      "status": "pass",
+      "summary": "The runtime model catalog advertises Luna with low effort.",
+      "evidence": {
+        "model": "gpt-5.6-luna",
+        "effort": "low",
+        "observed": {
+          "id": "gpt-5.6-luna",
+          "hidden": false,
+          "default_effort": "medium",
+          "supported_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "input_modalities": [
+            "text",
+            "image"
+          ]
+        }
+      },
+      "elapsed_ms": 0.007,
+      "gating": true
+    },
+    {
+      "id": "sandbox.read_only",
+      "status": "pass",
+      "summary": "The runtime denied the prohibited filesystem write.",
+      "evidence": {
+        "policy": {
+          "type": "readOnly"
+        },
+        "expected_file_exists": false,
+        "actual_file_exists": false,
+        "denied": true,
+        "error_type": "InternalRpcError"
+      },
+      "elapsed_ms": 72.816,
+      "gating": true
+    },
+    {
+      "id": "sandbox.workspace_inside",
+      "status": "pass",
+      "summary": "Filesystem behavior matched the requested sandbox policy.",
+      "evidence": {
+        "policy": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "$RUN_ROOT\\workspace\\sandbox-workspace"
+          ],
+          "networkAccess": false
+        },
+        "expected_file_exists": true,
+        "actual_file_exists": true,
+        "exit_code": 0,
+        "stderr_present": false
+      },
+      "elapsed_ms": 983.333,
+      "gating": true
+    },
+    {
+      "id": "sandbox.workspace_escape",
+      "status": "pass",
+      "summary": "The runtime denied the prohibited filesystem write.",
+      "evidence": {
+        "policy": {
+          "type": "workspaceWrite",
+          "writableRoots": [
+            "$RUN_ROOT\\workspace\\sandbox-workspace"
+          ],
+          "networkAccess": false
+        },
+        "expected_file_exists": false,
+        "actual_file_exists": false,
+        "denied": true,
+        "error_type": "InternalRpcError"
+      },
+      "elapsed_ms": 146.145,
+      "gating": true
+    },
+    {
+      "id": "stop.native_descendant",
+      "status": "pass",
+      "summary": "The execution-boundary stop terminated the descendant writer.",
+      "evidence": {
+        "process_id": "jarvis-m0-b5661edacc684f8d8c55f8f2dc594d9f",
+        "child_pid_observed": true,
+        "host_pid_observed": true,
+        "terminate_response": {
+          "strategy": "app_server_process_tree",
+          "host_pid_observed": true
+        },
+        "request_finished": true,
+        "post_stop_write_observed": false
+      },
+      "elapsed_ms": 862.763,
+      "gating": true
+    },
+    {
+      "id": "auth.single_profile_owner",
+      "status": "pass",
+      "summary": "The dedicated profile can be guarded by a non-blocking single-owner file lock.",
+      "evidence": {
+        "exclusive_lock_observed": true,
+        "strategy": "one credential owner per profile; no copied credential caches"
+      },
+      "elapsed_ms": 0.898,
+      "gating": true
+    },
+    {
+      "id": "auth.billing_error_fixture",
+      "status": "pass",
+      "summary": "Billing/quota failures are classified without spending or exhausting credits.",
+      "evidence": {
+        "cases": {
+          "insufficient_quota": "billing_exhausted",
+          "billing_hard_limit_reached": "billing_exhausted",
+          "rate_limit_exceeded": "rate_limited",
+          "401 unauthorized": "authentication"
+        }
+      },
+      "elapsed_ms": 0.015,
+      "gating": true
+    },
+    {
+      "id": "action.crash_recovery",
+      "status": "pass",
+      "summary": "Completed work is reusable; interrupted side effects restore as uncertain.",
+      "evidence": {
+        "completed_states": [
+          "started",
+          "succeeded"
+        ],
+        "completed_reusable": true,
+        "interrupted_states": [
+          "started"
+        ],
+        "interrupted_restored_as": "uncertain",
+        "automatic_replay_allowed": false
+      },
+      "elapsed_ms": 250.172,
+      "gating": true
+    },
+    {
+      "id": "session.create_stream_history",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": true
+    },
+    {
+      "id": "session.restart_resume_followup",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": true
+    },
+    {
+      "id": "turn.interrupt",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": true
+    },
+    {
+      "id": "action.persistence_boundary",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": true
+    },
+    {
+      "id": "profile.forbidden_tool_denial",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": true
+    },
+    {
+      "id": "auth.subscription_continuation",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": false
+    },
+    {
+      "id": "auth.api_continuation",
+      "status": "blocked",
+      "summary": "Live Codex model evidence requires the explicit --live flag.",
+      "evidence": {},
+      "elapsed_ms": 0.0,
+      "gating": true
+    },
+    {
+      "id": "profile.desktop_files_untouched",
+      "status": "pass",
+      "summary": "Desktop Codex configuration/authentication file metadata stayed unchanged.",
+      "evidence": {
+        "profile_is_separate": true,
+        "sensitive_file_metadata_unchanged": true
+      },
+      "elapsed_ms": 0.0,
+      "gating": true
+    }
+  ],
+  "summary": {
+    "passed": 11,
+    "failed": 0,
+    "blocked": 7,
+    "gating_failed": 0,
+    "gating_blocked": 6
+  }
+}

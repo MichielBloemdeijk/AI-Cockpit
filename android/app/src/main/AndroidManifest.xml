@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
@@ -15,10 +18,17 @@
         android:theme="@style/Theme.Jarvis"
         android:label="@string/app_name">
         <activity android:name=".web.JarvisWebViewActivity" android:exported="false" />
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="jarvis" android:host="pair" />
+                <data android:scheme="jarvis" android:host="setup" />
             </intent-filter>
         </activity>
 
@@ -39,7 +49,7 @@
             android:permission="android.permission.BIND_SPEECH_RECOGNITION_SERVICE"
             android:exported="true" />
         <service
-            android:name=".wake.WakeForegroundService"
+            android:name=".audio.JarvisAudioService"
             android:foregroundServiceType="microphone"
             android:exported="false" />
         <receiver android:name=".notifications.NotificationActionReceiver" android:exported="false" />

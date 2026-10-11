@@ -5,6 +5,8 @@ from copy import deepcopy
 from typing import Any
 
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS
+from app.config import settings
+from app.services.task_workflows import enabled_workflows
 
 
 def get_jarvis_tool_definitions(provider: str = "openai") -> list[dict[str, Any]]:
@@ -15,6 +17,27 @@ def get_jarvis_tool_definitions(provider: str = "openai") -> list[dict[str, Any]
 
 
 def _canonical_tools() -> list[dict[str, Any]]:
+    from app.services.task_execution_preferences import preferences_schema
+    from app.services.task_result_contract import ResultRequest
+    result_request_schema = ResultRequest.model_json_schema()
+    # Generic agents publish Documents. Workflow-specific kinds are selected
+    # from their pinned definition by start_workflow, never invented here.
+    result_request_schema["properties"]["kind"] = {
+        "anyOf": [{"type": "string", "enum": ["document.v1"]}, {"type": "null"}],
+        "default": None,
+        "description": "Only document.v1 for maintained generic results. Omit for answer mode.",
+    }
+    result_request_schema["description"] = (
+        "Use answer for ordinary task completion, new for a maintained Document, "
+        "or update for an existing Document with its exact public_id and expected_revision."
+    )
+    execution_preferences = {"execution_preferences": preferences_schema(),
+        "intent_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                      "description": "Stable per-outcome ID within this user turn; share across admission routes."}}
+    screen_definitions: list[str] = []
+    available = enabled_workflows()
+    for loaded in available:
+        screen_definitions.append(f"{loaded.id}@{loaded.version}")
     object_schema = {"type": "object", "properties": {}, "additionalProperties": False}
     task_reference = {
         "type": "string",
@@ -57,11 +80,13 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "dispatch_task",
-            "description": "Delegate substantial work to a durable background task and acknowledge it immediately.",
+            "description": "Delegate substantial work to a durable background task and acknowledge it immediately. Only goal and intent_id are required; omit optional fields unless the request needs them. For a maintained Document, request result mode new; its URL is allocated during admission and the final Markdown is published automatically.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "goal": {"type": "string"},
+                    "result": result_request_schema,
+                    **execution_preferences,
                     "importance": {"type": "string", "enum": ["low", "normal", "high"]},
                     "presentation_policy": {"type": "string", "enum": ["critical_only", "follow_progress", "silent"]},
                     "targets": {
@@ -77,7 +102,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
                         },
                     },
                 },
-                "required": ["goal"],
+                "required": ["goal", "intent_id"],
             },
         },
         {"type": "function", "name": "list_tasks", "description": "List recent active or historical tasks.", "parameters": object_schema},
@@ -113,10 +138,12 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "answer_task_question",
-            "description": "Answer a pending question using a natural task reference.",
+            "description": "Answer a pending question using a natural task reference. Permission questions require the user's explicit approve or deny decision about the displayed exact action; never approve them yourself.",
             "parameters": {
                 "type": "object",
-                "properties": {"task_reference": task_reference, "question": {"type": "string"}, "answer": {"type": "string"}},
+                "properties": {"task_reference": task_reference,
+                    "question": {"type": ["string", "null"], "default": None,
+                        "description": "Omit/null when this task has one pending question."}, "answer": {"type": "string"}},
                 "required": ["task_reference", "answer"],
             },
         },
@@ -125,6 +152,46 @@ def _canonical_tools() -> list[dict[str, Any]]:
             "name": "cancel_task",
             "description": "Cancel an unambiguous task using a natural reference.",
             "parameters": {"type": "object", "properties": {"task_reference": task_reference}, "required": ["task_reference"]},
+        },
+        {
+            "type": "function",
+            "name": "continue_task",
+            "description": "Add a follow-up to the same task. For results, explicitly select answer (no revision), update (public_id and expected_revision), or new (additional result). Use get_task to inspect IDs/revisions; never guess them.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_reference": task_reference,
+                    "content": {"type": "string"},
+                    "result": result_request_schema,
+                    **execution_preferences,
+                    "screen_context_mode": {"anyOf": [{"type": "string", "enum": ["activation", "fresh"]}, {"type": "null"}],
+                        "default": None, "description": "Omit/null to reuse retained context for ordinary follow-ups. Select activation/fresh only when the user explicitly requests newly captured screen context."},
+                    "capture_id": {"type": ["string", "null"], "minLength": 1, "default": None},
+                },
+                "required": ["task_reference", "content", "intent_id"],
+            },
+        },
+        {
+            "type": "function",
+            "name": "control_task",
+            "description": "Change a task's importance, yield, suspend, resume, retry, restart or cancel it. Supply a brief reason for the audit trail.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_reference": task_reference,
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "set_importance", "yield", "suspend", "resume", "cancel",
+                            "retry", "restart_execution", "restart_from_beginning",
+                        ],
+                    },
+                    "importance": {"type": "string", "enum": ["low", "normal", "high"]},
+                    "immediate": {"type": "boolean"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["task_reference", "action", "reason"],
+            },
         },
         {
             "type": "function",
@@ -188,8 +255,33 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {"type": "function", "name": "start_new_jarvis_log", "description": "Close the current Jarvis daily log and start a fresh one.", "parameters": object_schema},
         {"type": "function", "name": "end_voice_session", "description": "End the active voice session when the user asks Jarvis to sleep or disconnect.", "parameters": object_schema},
     ]
-    if {str(item["name"]) for item in tools} != set(ALLOWED_SHELL_TOOLS):
+    if screen_definitions:
+        tools.append({
+            "type": "function", "name": "start_workflow",
+            "description": "Start an enabled workflow. Workflows requiring a screen use this invocation's captured screen and require capture readiness. " + " ".join(
+                f"{item.id}@{item.version}: {item.purpose}. Required context: {', '.join(item.required_initial_context) or 'none'}. Examples: {'; '.join(item.routing_examples)}."
+                for item in available
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "definition": {"type": "string", "enum": sorted(set(screen_definitions))},
+                    "screen_context_mode": {"type": "string", "enum": ["activation", "fresh"]},
+                    **execution_preferences,
+                    "capture_id": {"type": ["string", "null"], "minLength": 1, "default": None, "description": "Exact capture ID if known; otherwise omit/null."},
+                },
+                "required": ["goal", "definition", "intent_id"], "additionalProperties": False,
+            },
+        })
+    expected = set(ALLOWED_SHELL_TOOLS) if screen_definitions else set(ALLOWED_SHELL_TOOLS) - {"start_workflow"}
+    if {str(item["name"]) for item in tools} != expected:
         raise RuntimeError("Jarvis voice tools do not match the restricted gateway allowlist")
+    for tool in tools:
+        # Responses otherwise normalizes optional fields into required ones.
+        # Jarvis still validates every completed call against these parameters.
+        tool["strict"] = False
+        tool["parameters"].setdefault("additionalProperties", False)
     return tools
 
 

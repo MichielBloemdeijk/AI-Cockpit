@@ -1,3 +1,5 @@
+import { createUuid } from "./uuid";
+
 /**
  * API client for the AI Cockpit backend.
  * All requests go to /api/* (proxied in dev, same-origin in prod).
@@ -5,6 +7,15 @@
 
 function resolveApiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/$/, "") ?? "";
+}
+
+export async function postResultObservation(publicId: string, observation: {
+  view_id: string; sequence: number; kind: string; duration_ms: number; revision_number: number;
+}): Promise<void> {
+  await fetchWithTimeout(`${BASE}/api/results/${encodeURIComponent(publicId)}/observations`, {
+    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(observation),
+  }, 2000);
 }
 
 const BASE = resolveApiBase();
@@ -412,6 +423,18 @@ export async function checkAuth(): Promise<boolean> {
 }
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
+export interface AccessSession {
+  authenticated: boolean;
+  scope: "owner" | "device";
+  device: { id: string; label: string; paired: boolean } | null;
+}
+
+export async function getAccessSession(): Promise<AccessSession> {
+  const res = await fetchWithTimeout(`${BASE}/api/auth/status`, { credentials: "include" }, AUTH_CHECK_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`Unable to check connection (HTTP ${res.status}).`);
+  return res.json();
+}
+
 
 export interface ChatStreamOptions {
   messages: Message[];
@@ -524,16 +547,30 @@ export async function listConversations(
   return res.json();
 }
 
+export async function getAccessConfig(): Promise<{ password_required: boolean }> {
+  const res = await fetchWithTimeout(`${BASE}/api/auth/config`, {}, AUTH_CHECK_TIMEOUT_MS);
+  if (!res.ok) throw new Error("Unable to check access settings.");
+  return res.json();
+}
+
 export interface TaskSummary {
   id: string;
+  result_url?: string | null;
   origin_surface: string;
   origin_conversation_id: string | null;
   origin_turn_id: string | null;
   goal: string;
-  status: "queued" | "waiting_for_worker" | "running" | "waiting_for_input" | "waiting_until" | "completed" | "failed" | "interrupted" | "cancelled";
+  status: "queued" | "waiting_for_worker" | "running" | "waiting_for_input" | "waiting_until" | "paused" | "completed" | "failed" | "interrupted" | "cancelled";
+  execution_kind: "agent" | "workflow";
   status_reason: string | null;
   creation_order: number;
   current_attempt_id: string | null;
+  current_run_id: string | null;
+  pending_control_id: string | null;
+  goal_revision: number;
+  control_revision: number;
+  workspace_generation: number;
+  queue_entered_at: string;
   cancellation_requested_at: string | null;
   importance: string;
   presentation_policy: string;
@@ -552,11 +589,21 @@ export interface TaskSummary {
 export interface TaskAttempt {
   id: string;
   attempt_number: number;
+  execution_run_id: string | null;
+  supervisor_generation: number | null;
+  parent_attempt_id: string | null;
+  resume_reason: string | null;
   worker_id: string | null;
   workspace_path: string | null;
   checkpoint: Record<string, unknown> | null;
+  checkpoint_version: number;
   claimed_at: string | null;
   heartbeat_at: string | null;
+  last_progress_at: string | null;
+  active_operation: string | null;
+  operation_started_at: string | null;
+  operation_deadline: string | null;
+  recovery_metadata: Record<string, unknown> | null;
   started_at: string | null;
   ended_at: string | null;
   terminal_reason: string | null;
@@ -570,6 +617,8 @@ export interface TaskEvent {
   sequence: number;
   task_id: string;
   attempt_id: string | null;
+  execution_run_id: string | null;
+  native_item_id: string | null;
   event_type: string;
   payload: Record<string, unknown> | null;
   causality: Record<string, unknown> | null;
@@ -578,10 +627,13 @@ export interface TaskEvent {
 
 export interface TaskQuestion {
   id: string;
+  asking_run_id: string | null;
+  resolution_revision: number | null;
   asked_attempt_id: string | null;
   answered_attempt_id: string | null;
   source_task_event_id: string | null;
   question: string;
+  permission?: { connector: string; account: string; tool: string; arguments: Record<string, unknown> } | null;
   answer: string | null;
   state: string;
   asked_at: string;
@@ -593,6 +645,7 @@ export type AttentionState = "pending" | "handled" | "superseded";
 export interface TaskArtifact {
   id: string;
   attempt_id: string | null;
+  execution_run_id: string | null;
   source_task_event_id: string | null;
   artifact_type: string;
   mime_type: string;
@@ -626,13 +679,168 @@ export interface TaskPresentation {
 }
 
 export interface TaskDetail extends TaskSummary {
+  results?: TaskResultLink[];
   attempts: TaskAttempt[];
+  turns: TaskTurn[];
+  runs: TaskExecutionRun[];
+  controls: TaskControl[];
+  operations: TaskOperation[];
   events: TaskEvent[];
   questions: TaskQuestion[];
   artifacts: TaskArtifact[];
   targets: TaskTarget[];
   presentations: TaskPresentation[];
   worker_health: { status: string; worker_id: string | null; heartbeat_at: string | null };
+}
+
+export interface TaskResultLink {
+  public_id: string; url: string; result_kind: string; revision_number: number;
+  title: string; status: string;
+}
+
+export type TaskResultIntent = { mode: "new"; kind?: string } |
+  { mode: "update"; public_id: string; expected_revision: number; kind?: string } |
+  { mode: "answer"; public_id?: string };
+
+export interface DocumentResult {
+  public_id: string;
+  url: string;
+  app_slug: "documents";
+  result_kind: "document.v1";
+  status: "building" | "updating" | "ready" | "failed" | "cancelled";
+  task_status: string;
+  task_status_reason: string | null;
+  task_id: string;
+  active_execution_run_id: string | null;
+  revision_number: number;
+  title: string;
+  summary: string | null;
+  warning: string | null;
+  content: { title: string; summary?: string; body: string; source_event_sequences: number[];
+    attachments?: { artifact_id: string; label: string }[];
+    sources?: { url: string; label: string; source_event_sequence?: number }[];
+  } | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecipeContent {
+  title: string;
+  ingredients: string[];
+  instructions: string[];
+  sources: { source_event_sequence: number; url: string; title: string }[];
+  source_event_sequences: number[];
+  uncertainty?: string;
+  servings?: string;
+  timing?: string;
+}
+
+export type MaintainedResult = Omit<DocumentResult, "app_slug" | "result_kind" | "content"> & {
+  app_slug: string;
+  result_kind: string;
+  content: DocumentResult["content"] | RecipeContent;
+  app?: { id: string; slug: string; title: string; route_path: string };
+  state_revision?: number;
+  display_state?: string;
+  progress_label?: string;
+  actions?: ResultAction[];
+};
+
+export interface ResultAction {
+  id: string;
+  value: { saved: boolean };
+  revision: number;
+}
+
+export interface CockpitApp {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  kind: "collection" | "generated";
+  route_path: string;
+  runtime: string;
+  status: string;
+  generated_app_id: string | null;
+}
+
+export type ResultCard = Pick<MaintainedResult, "public_id" | "url" | "title" | "summary" | "status" | "display_state" | "progress_label" | "warning" | "actions" | "updated_at">;
+
+export interface TaskTurn {
+  id: string;
+  sequence: number;
+  role: string;
+  content: string | null;
+  origin: string;
+  execution_run_id: string | null;
+  created_at: string;
+}
+
+export interface TaskExecutionRun {
+  id: string;
+  ordinal: number;
+  status: string;
+  execution_kind: "agent" | "workflow";
+  configuration?: { tools?: ToolOverrides; workflow?: { capabilities?: string[] } };
+  current_attempt_id: string | null;
+  terminal_summary: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface TaskControl {
+  id: string;
+  action: string;
+  state: string;
+  requester: string;
+  reason: string | null;
+  requested_at: string;
+  confirmed_at: string | null;
+}
+
+export interface TaskOperation {
+  id: string;
+  operation_type: string;
+  state: string;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface TaskPool {
+  enabled: boolean;
+  supervisor_generation: number | null;
+  supervisor_heartbeat_at: string | null;
+  busy: number;
+  standby: number;
+  starting: number;
+  stale: number;
+  queue_depth: number;
+  waiting_for_worker: number;
+  max_busy: number;
+  saturated: boolean;
+  workers: Array<{ id: string; state: string; assignment_attempt_id: string | null; heartbeat_at: string }>;
+}
+
+export type TaskPoolAction = "repair_capacity" | "replace_worker" | "restart_pool";
+
+export async function controlTaskPool(
+  action: TaskPoolAction,
+  reason: string,
+  workerId?: string,
+): Promise<{ id: string; state: string; affected_worker_ids: string[] }> {
+  const res = await fetch(`${BASE}/api/tasks/pool/control`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      action,
+      idempotency_key: createUuid(),
+      reason,
+      worker_id: workerId ?? null,
+    }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 export interface TaskDispatch {
@@ -643,6 +851,8 @@ export interface TaskDispatch {
   origin_turn_id?: string;
   importance?: string;
   presentation_policy?: string;
+  result?: TaskResultIntent;
+  execution_config?: { tools: ToolOverrides };
   targets?: Array<{ resource_type: string; resource_key: string; mutable?: boolean }>;
 }
 
@@ -695,6 +905,20 @@ export async function updateJarvisPreferences(
 export interface JarvisPairingCode {
   code: string;
   expires_at: string;
+  server_url: string;
+  link: string;
+  qr_svg: string;
+}
+
+export interface LinkedDevice { id: string; label: string; last_seen_at: string | null }
+export async function getLinkedDevices(): Promise<LinkedDevice[]> {
+  const res = await fetch(`${BASE}/api/jarvis/devices`, { credentials: "include" });
+  if (!res.ok) throw new Error(`Unable to load phones (HTTP ${res.status}).`);
+  return res.json();
+}
+export async function unlinkDevice(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/jarvis/devices/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+  if (!res.ok) throw new Error(`Unable to unlink phone (HTTP ${res.status}).`);
 }
 
 export async function createJarvisPairingCode(): Promise<JarvisPairingCode> {
@@ -896,9 +1120,85 @@ export async function getTask(taskId: string): Promise<TaskDetail> {
   return res.json();
 }
 
+export async function getResult(publicId: string): Promise<MaintainedResult> {
+  const res = await fetchWithTimeout(`${BASE}/api/results/${encodeURIComponent(publicId)}`, {
+    credentials: "include", cache: "no-store",
+  }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function listAppCatalog(): Promise<CockpitApp[]> {
+  const res = await fetchWithTimeout(`${BASE}/api/app-catalog`, { credentials: "include", cache: "no-store" }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function listCollectionResults(slug: string, options: { search?: string; order?: string; cursor?: string } = {}): Promise<{ items: ResultCard[]; next_cursor: string | null }> {
+  const params = new URLSearchParams(options);
+  const res = await fetchWithTimeout(`${BASE}/api/app-catalog/${encodeURIComponent(slug)}/results?${params}`, { credentials: "include", cache: "no-store" }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function setResultSaved(publicId: string, saved: boolean, expectedRevision: number): Promise<{ value: { saved: boolean }; revision: number }> {
+  const res = await fetchWithTimeout(`${BASE}/api/results/${encodeURIComponent(publicId)}/actions/set_saved`, {
+    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ saved, expected_revision: expectedRevision }),
+  }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export function resultEventsUrl(publicId: string, cursor?: string): string {
+  return `${BASE}/api/results/${encodeURIComponent(publicId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
+}
+
 export async function getTaskWorkerHealth(): Promise<{ status: string; worker_id: string | null; heartbeat_at: string | null }> {
   const res = await fetch(`${BASE}/api/tasks/worker`, { credentials: "include", cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getTaskPool(): Promise<TaskPool> {
+  const res = await fetch(`${BASE}/api/tasks/pool`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function continueTask(taskId: string, content: string, result?: TaskResultIntent, executionConfig?: { tools: ToolOverrides }): Promise<{ run_id: string; status: string; result_url?: string | null }> {
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}/turns`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ content, idempotency_key: createUuid(), ...(result ? { result } : {}), ...(executionConfig ? { execution_config: executionConfig } : {}) }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+export async function controlTask(
+  taskId: string,
+  action: string,
+  parameters: Record<string, unknown> = {},
+  expectedRunId?: string | null,
+  expectedControlRevision?: number,
+  reason?: string,
+): Promise<{ task: TaskSummary; command: TaskControl }> {
+  const res = await fetch(`${BASE}/api/tasks/${encodeURIComponent(taskId)}/control`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({
+      action,
+      parameters,
+      idempotency_key: createUuid(),
+      expected_run_id: expectedRunId,
+      expected_control_revision: expectedControlRevision,
+      reason,
+    }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
@@ -918,7 +1218,7 @@ async function taskAction(taskId: string, action: "cancel" | "retry"): Promise<T
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+    body: JSON.stringify({ idempotency_key: createUuid() }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -943,10 +1243,37 @@ export async function answerTaskQuestion(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ answer, idempotency_key: crypto.randomUUID() }),
+      body: JSON.stringify({ answer, idempotency_key: createUuid() }),
     },
   );
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export type NativeToolGroup = "native.local" | "native.research" | "native.subagents" | "native.skills";
+export interface ToolOverrides { add: NativeToolGroup[]; remove: NativeToolGroup[] }
+export interface WorkerToolPolicy {
+  defaults: NativeToolGroup[];
+  disabled: NativeToolGroup[];
+  command_network: boolean;
+  approved_skills: string[];
+}
+export interface WorkerToolSettings {
+  revision: number;
+  policy: WorkerToolPolicy;
+  groups: NativeToolGroup[];
+  local_execution_mode: "native" | "trusted";
+  connectors: { connector: string; tool: string; description: string }[];
+}
+export async function getWorkerToolSettings(): Promise<WorkerToolSettings> {
+  const res = await fetch(`${BASE}/api/worker-tools`, { credentials: "include", cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+export async function saveWorkerToolSettings(settings: WorkerToolSettings): Promise<{ revision: number; policy: WorkerToolPolicy }> {
+  const res = await fetch(`${BASE}/api/worker-tools`, { method: "PUT", credentials: "include",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_revision: settings.revision, policy: settings.policy }) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.json()).detail ?? "Unable to save tool settings"}`);
   return res.json();
 }
 

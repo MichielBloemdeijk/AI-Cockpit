@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import time
 from typing import Any
 
 from app.services.agent_tools.base import AgentTool
@@ -15,6 +18,9 @@ from app.services.agent_tools.base import emit_tool_progress
 
 
 SEARCH_RESULT_LIMIT = 20
+SEARCH_FILE_LIMIT = 10_000
+SEARCH_FILE_BYTES_LIMIT = 2 * 1024 * 1024
+SEARCH_SECONDS_LIMIT = 5.0
 
 
 def _line_count(content: str) -> int:
@@ -29,50 +35,68 @@ async def run_workspace_search(query: str, *, context: ToolExecutionContext) -> 
     matches: list[dict[str, str | int]] = []
     ignored_dirs = {".git", "node_modules", ".next", ".venv", "dist", "build", "__pycache__"}
     scanned_files = 0
+    truncated = False
+    deadline = time.monotonic() + SEARCH_SECONDS_LIMIT
     await emit_tool_progress(context, f"Searching for {query.strip()!r}")
     for root in context.read_roots:
         await emit_tool_progress(context, f"Scanning {_display_path(root)}")
-        for file_path in root.rglob("*"):
-            if len(matches) >= SEARCH_RESULT_LIMIT:
+        for current, dirs, names in os.walk(root, followlinks=False):
+            dirs[:] = sorted(
+                name for name in dirs
+                if name not in ignored_dirs and not (Path(current) / name).is_symlink()
+            )
+            for name in sorted(names):
+                if (
+                    len(matches) >= SEARCH_RESULT_LIMIT
+                    or scanned_files >= SEARCH_FILE_LIMIT
+                    or time.monotonic() >= deadline
+                ):
+                    truncated = scanned_files >= SEARCH_FILE_LIMIT or time.monotonic() >= deadline
+                    break
+                file_path = Path(current) / name
+                if file_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".ico", ".db", ".sqlite"}:
+                    continue
+                try:
+                    if file_path.is_symlink() or not file_path.is_file():
+                        continue
+                    if file_path.stat().st_size > SEARCH_FILE_BYTES_LIMIT:
+                        continue
+                    text = file_path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                scanned_files += 1
+                if scanned_files % 100 == 0:
+                    await emit_tool_progress(context, f"Scanned {scanned_files} files")
+                for line_number, line in enumerate(text.splitlines(), start=1):
+                    if normalized_query in line.lower():
+                        display_path = _display_path(file_path)
+                        matches.append(
+                            {"path": display_path, "line_number": line_number, "line": line.strip()}
+                        )
+                        if len(matches) <= 3:
+                            await emit_tool_progress(context, f"Found a match in {display_path}")
+                        if len(matches) >= SEARCH_RESULT_LIMIT:
+                            break
+            if (
+                len(matches) >= SEARCH_RESULT_LIMIT
+                or scanned_files >= SEARCH_FILE_LIMIT
+                or time.monotonic() >= deadline
+            ):
+                truncated = scanned_files >= SEARCH_FILE_LIMIT or time.monotonic() >= deadline
                 break
-            if not file_path.is_file():
-                continue
-            if any(part in ignored_dirs for part in file_path.parts):
-                continue
-            if file_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".ico", ".db", ".sqlite"}:
-                continue
-            scanned_files += 1
-            if scanned_files % 100 == 0:
-                await emit_tool_progress(context, f"Scanned {scanned_files} files")
-            try:
-                text = file_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                if normalized_query in line.lower():
-                    display_path = _display_path(file_path)
-                    matches.append(
-                        {
-                            "path": display_path,
-                            "line_number": line_number,
-                            "line": line.strip(),
-                        }
-                    )
-                    if len(matches) <= 3:
-                        await emit_tool_progress(context, f"Found a match in {display_path}")
-                    if len(matches) >= SEARCH_RESULT_LIMIT:
-                        break
-        if len(matches) >= SEARCH_RESULT_LIMIT:
+        if len(matches) >= SEARCH_RESULT_LIMIT or truncated:
             break
 
     if not matches:
-        output = f"No matches found for '{query.strip()}'."
+        output = f"Workspace search: No matches found for '{query.strip()}'."
     else:
         rendered_matches = [
             f"- {match['path']}:{match['line_number']} - {match['line']}"
             for match in matches
         ]
         output = "Workspace search results:\n" + "\n".join(rendered_matches)
+    if truncated:
+        output += "\nSearch stopped at its file/time limit; narrow the query or roots."
 
     await emit_tool_progress(
         context,
@@ -82,7 +106,7 @@ async def run_workspace_search(query: str, *, context: ToolExecutionContext) -> 
     return ToolExecutionResult(
         tool="workspace_search",
         output=output,
-        metadata={"query": query.strip(), "matches": matches},
+        metadata={"query": query.strip(), "matches": matches, "truncated": truncated},
     )
 
 
