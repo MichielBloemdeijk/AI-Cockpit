@@ -1,5 +1,7 @@
 # Personal phone setup and troubleshooting
 
+**Natural task updates (19 October 2026):** run the 15-minute [final phone check](natural-updates-phone-check.md) after updating.
+
 **M11 personal use was accepted on 2026-10-11**, including working tasks and
 screenshot-based recipe creation. See the [acceptance record](reports/personal-use-accepted-2026-10-11.md).
 The checks below are optional regression/troubleshooting steps, not outstanding
