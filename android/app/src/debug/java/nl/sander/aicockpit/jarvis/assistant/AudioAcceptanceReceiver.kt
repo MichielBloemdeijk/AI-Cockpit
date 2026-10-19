@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput
+import nl.sander.aicockpit.jarvis.live.AcceptancePlaybackRecording
 import nl.sander.aicockpit.jarvis.audio.JarvisAudioService
 import java.io.File
 import java.nio.ByteBuffer
@@ -14,6 +15,19 @@ import java.nio.ByteOrder
 class AudioAcceptanceReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         runCatching {
+            intent.getStringExtra("recording_id")?.let {
+                AcceptancePlaybackRecording.start(context, it)
+                return
+            }
+            if (intent.getBooleanExtra("finish_recording", false)) {
+                AcceptancePlaybackRecording.finish()
+                return
+            }
+            if (intent.getBooleanExtra("activity", false)) {
+                File(context.filesDir, "audio-acceptance/playback-activity.json")
+                    .writeText(AcceptancePlaybackRecording.activity().toString())
+                return
+            }
             if (intent.getBooleanExtra("snapshot", false)) {
                 check(JarvisVoiceInteractionSession.snapshotAcceptanceHealth()) { "No active Live session for health observation" }
                 return

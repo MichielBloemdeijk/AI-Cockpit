@@ -22,7 +22,7 @@ import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
 class CockpitRequestException(val status: Int, message: String) : IllegalStateException(message)
-data class LiveCall(val sessionId: String, val generation: Int, val sdpAnswer: String)
+data class LiveCall(val sessionId: String, val generation: Int, val sdpAnswer: String, val playbackEvidence: Boolean = false)
 data class LiveSessionState(val sessionId: String, val generation: Int, val lifecycleState: String,
     val controllerId: String? = null, val activationId: String? = null)
 data class JarvisComponentIssue(val name: String, val status: String, val detail: String?)
@@ -139,11 +139,19 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
             .post(payload.toString().toRequestBody(json)).build())
         val body = JSONObject(response.body?.string().orEmpty())
         val session = body.getJSONObject("session")
-        return LiveCall(session.getString("id"), session.getInt("generation"), body.getString("sdp_answer"))
+        return LiveCall(session.getString("id"), session.getInt("generation"), body.getString("sdp_answer"),
+            body.optJSONObject("provider_capabilities")?.optBoolean("playback_evidence") == true)
     }
 
     suspend fun closeLive(sessionId: String, generation: Int) {
         execute(authenticated("/api/jarvis/live/sessions/$sessionId?generation=$generation").delete().build()).close()
+    }
+
+    suspend fun submitPlayback(call: LiveCall, sequence: Long, report: JSONObject) {
+        val payload = JSONObject().put("controller_id", store.deviceId).put("generation", call.generation)
+            .put("sequence", sequence).put("reports", org.json.JSONArray().put(report))
+        execute(authenticated("/api/jarvis/live/sessions/${call.sessionId}/playback")
+            .post(payload.toString().toRequestBody(json)).build()).close()
     }
 
     suspend fun liveSessionState(): LiveSessionState? {

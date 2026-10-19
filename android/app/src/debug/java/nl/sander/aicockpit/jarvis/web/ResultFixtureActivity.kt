@@ -31,6 +31,7 @@ class ResultFixtureActivity : Activity() {
                     val api = CockpitApi(store)
                     val paired = api.pair(server, code, "M5 result emulator fixture")
                     store.savePairing(server, paired)
+                    if (intent.getBooleanExtra("audio_evaluation", false)) store.setupComplete = true
                     api.updateDevice("unlocked")
                 }
                 (application as JarvisApplication).eventStream.start()

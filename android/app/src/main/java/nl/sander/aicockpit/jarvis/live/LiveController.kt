@@ -55,7 +55,7 @@ class LiveController(
 ) : AutoCloseable {
     private val capturedFrames = AtomicLong()
     private val playedFrames = AtomicLong()
-    private val audioModule = JavaAudioDeviceModule.builder(context)
+    private val audioModule: JavaAudioDeviceModule = JavaAudioDeviceModule.builder(context)
         .apply {
             setInputSampleRate(LiveActivationAudioBuffer.SAMPLE_RATE)
             setAudioFormat(AudioFormat.ENCODING_PCM_16BIT)
@@ -66,11 +66,15 @@ class LiveController(
             LiveActivationAudioHandoff.processWebRtcBuffer(
                 buffer, audioFormat, channels, sampleRate, byteCount,
             )
+            AcceptancePlaybackRecording.input(buffer, byteCount, sampleRate, channels, audioFormat)
             captureTimeNs
         }
         .setPlaybackSamplesReadyCallback { samples ->
+            playbackEvidence.lastCallback = android.os.SystemClock.elapsedRealtime()
             if (samples.data.any { it != 0.toByte() }) playedFrames.incrementAndGet()
             AcceptanceAudioInput.observePlayback(samples.data)
+            AcceptancePlaybackRecording.append(samples.data, samples.sampleRate, samples.channelCount,
+                samples.audioFormat, audioModule)
         }
         .createAudioDeviceModule()
     private val factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory()
@@ -104,6 +108,15 @@ class LiveController(
         }
     }
     private val diagnosticScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val playbackEvidence by lazy { PlaybackEvidence(context, api, audioModule) { readPlaybackStats() } }
+
+    private suspend fun readPlaybackStats(): org.webrtc.RTCStatsReport? = withTimeoutOrNull(500) {
+        kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+            val active = peer
+            if (active == null) continuation.resume(null)
+            else active.getStats { report -> if (continuation.isActive) continuation.resume(report) }
+        }
+    }
 
     suspend fun connect(
         wakeScore: Float? = null,
@@ -216,7 +229,9 @@ class LiveController(
             runCatching { withTimeout(750) { iceReady.await() } }
             ensureCurrent()
             val local = connection.localDescription ?: offer
+            playbackEvidence.originLower = android.os.SystemClock.elapsedRealtime()
             val established = transport.createCall(local.description, wakeScore, effectiveActivationId)
+            if (established.playbackEvidence) playbackEvidence.start(diagnosticScope, established)
             accepted = established
             ensureCurrent()
             // Store the accepted identity before applying the answer or waiting;
@@ -350,6 +365,7 @@ class LiveController(
             val event = String(bytes, Charsets.UTF_8)
             val reduced = reduceLiveEvent(LiveEventState(), event)
             if (reduced.started) {
+                playbackEvidence.originUpper = android.os.SystemClock.elapsedRealtime()
                 onSessionStarted()
                 onState("session.started")
                 if (diagnosticsEnabled) {
@@ -391,6 +407,7 @@ class LiveController(
     }
 
     private fun closePeerOnly() {
+        playbackEvidence.stop()
         liveActivationId?.let(LiveActivationAudioHandoff::clear)
         liveActivationId = null
         peer?.close()

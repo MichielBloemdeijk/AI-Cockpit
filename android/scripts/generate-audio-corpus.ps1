@@ -1,6 +1,7 @@
-param([Parameter(Mandatory=$true)][string]$OutputDirectory)
+param([Parameter(Mandatory=$true)][string]$OutputDirectory,
+      [string]$ManifestPath = (Join-Path $PSScriptRoot 'audio-corpus-v1.json'))
 $ErrorActionPreference='Stop'
-$taskManifest=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'audio-corpus-v1.json') -Raw | ConvertFrom-Json
+$taskManifest=Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 $taskDestination=[IO.Path]::GetFullPath($OutputDirectory)
 if ((Test-Path -LiteralPath $taskDestination) -and (Get-ChildItem -LiteralPath $taskDestination)) {
     throw 'Use a fresh corpus directory.'
