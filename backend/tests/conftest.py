@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+import asyncio
 import os
 import socket
 import shutil
@@ -12,9 +13,14 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 
-# A personal .env (password access, secure cookies) must not change test behavior.
-# Environment variables take precedence over the .env file in Settings.
-os.environ.update(SESSION_COOKIE_SECURE="false", AUTH_PASSWORD="", JARVIS_ACCESS_MODE="personal")
+# Tests never read the personal .env (passwords, cookies, deployment switches, models):
+# Settings start from their code defaults; tests that need a value set it explicitly.
+os.environ["AI_COCKPIT_ENV_FILE"] = str(Path(__file__).parent / "no-personal-env")
+# Agent-run tests must never wait for an administrator (UAC) prompt, and they exercise the
+# deployed command mode (trusted). The native sandbox currently fails on this host (scratch
+# folder permission denied unelevated; elevated waits for UAC); it has its own probe tests.
+os.environ.setdefault("TASK_WINDOWS_SANDBOX", "unelevated")
+os.environ.setdefault("TASK_COMMAND_MODE", "trusted")
 
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
@@ -106,6 +112,13 @@ async def configured_database(tmp_path: Path):
         from app.services.jarvis_coordinator import jarvis_coordinator
         await conversation_observer.stop()
         await jarvis_coordinator.stop()
+        # Fire-and-forget push deliveries may still hold a database connection
+        # (Windows then cannot delete the test database).
+        from app.services import task_notifications
+        pending = list(task_notifications._outbox_tasks)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         fake_voice_session_adapter.reset()
         await close_engine()
         settings.database_url = original_database_url

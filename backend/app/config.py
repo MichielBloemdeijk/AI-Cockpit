@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
+import os
 from pathlib import Path
 import socket
 from typing import List, Literal
@@ -15,7 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).parent.parent.parent / ".env",
+        # AI_COCKPIT_ENV_FILE lets tests and isolated hosts ignore the personal .env.
+        env_file=os.environ.get("AI_COCKPIT_ENV_FILE") or Path(__file__).parent.parent.parent / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         hide_input_in_errors=True,
