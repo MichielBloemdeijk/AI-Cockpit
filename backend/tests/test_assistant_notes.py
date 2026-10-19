@@ -252,3 +252,13 @@ async def test_notes_mention_a_running_retry_of_a_failed_task(monkeypatch):
     async with session_scope() as db:
         notes = await assistant_notes.render(db, session_id=live.id)
     assert "A retry is already running" in notes["text"]
+
+
+@pytest.mark.asyncio
+async def test_notes_list_background_follow_up_tasks(monkeypatch):
+    live, task, _ = await requested_outcome(monkeypatch)
+    await task_service.dispatch(goal="Write a desk checklist using only the user's request", origin_surface="orchestration",
+        idempotency_key="follow-up")
+    async with session_scope() as db:
+        notes = await assistant_notes.render(db, session_id=live.id)
+    assert "Started in the background" in notes["text"] and "desk checklist" in notes["text"]

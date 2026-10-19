@@ -88,7 +88,7 @@ async def replay(name: str, *, only: list[str] | None = None) -> dict:
         for label in labels:
             source = h.ROOT / "data" / label["path"]
             case = source.name
-            if only and not any(o in case for o in only):
+            if only and not any(o in label["path"] for o in only):
                 continue
             if not (source / "application.db").exists():
                 results.append({"case": case, "expect": label["expect"], "verdict": "missing_recording"})

@@ -59,3 +59,7 @@ cases:
   - path: selftest/l2-20261019-iter3/question_and_reminder-browser
     expect: communicated
     note: Both the completion and the reminder ("Time to stretch") were delivered.
+  # Final round (2026-10-19).
+  - path: selftest/final2-20261019-l2/talked_over_update-browser
+    expect: not_communicated
+    note: The user started "Oh sorry! Before I forget..." 0.14 s into the update; Jarvis finished generating before the user's words were transcribed. Never re-offered.

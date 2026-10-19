@@ -47,7 +47,12 @@ it: classify possibly_unheard. Also classify possibly_unheard when, right after 
 the user asks to hear a result or update again or later (including phrasings like "tell me
 the result after I finish" or "hold on, let me finish first"), or asks what was said, even
 when the assistant's words were complete: they evidently did not take it in.
-Otherwise, a user changing topic after a clear outcome is not evidence that they missed it. A brief acknowledgement, a related follow-up, or a natural move
+Likewise, if the user's very next words start something unrelated without acknowledging
+the outcome, especially opening with an interjection or apology ("oh sorry", "wait",
+"before I forget"), they probably spoke over it: classify possibly_unheard. A brief
+re-offer costs little; a missed update the user asked for costs more.
+A user who acknowledges the outcome, reacts to it, or changes topic after a pause or
+after other conversation is not evidence that they missed it. A brief acknowledgement, a related follow-up, or a natural move
 to another topic after a clear outcome is complete. Silence after a clear outcome is
 complete. Judge the dialogue as a whole: if the outcome is stated again later (for
 example answering a status question) and the user does not react as if they missed

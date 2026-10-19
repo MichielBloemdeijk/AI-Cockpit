@@ -19,6 +19,7 @@ from app.services.orchestration_visibility import live_context_visible, visible_
 
 RECENTLY_TOLD = timedelta(hours=12)
 RECENTLY_TOLD_LIMIT = 5
+FOLLOW_UP_WINDOW = timedelta(hours=1)
 
 
 def utc(value: datetime | None) -> datetime | None:
@@ -131,6 +132,12 @@ async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
     lines.append("Waiting for the user:")
     lines += ([waiting_line(row, now, session_start, statuses.get(row.task_id)) for row in pending]
         + [open_question_line(row) for row in checking]) or ["- Nothing."]
+    follow_ups = list((await db.execute(select(Task).where(Task.origin_surface == "orchestration",
+        Task.status.in_(["queued", "waiting_for_worker", "running"]), Task.created_at >= now - FOLLOW_UP_WINDOW)
+        .order_by(Task.created_at))).scalars().all())
+    if follow_ups:
+        lines.append("Started in the background on the user's behalf (mention briefly when relevant, e.g. after a failure):")
+        lines += [f'- "{clean(t.goal, 120)}" ({t.status})' for t in follow_ups]
     if promises:
         lines.append("You promised:")
         lines += [f'- "{clean(p.text)}" ({ago(utc(p.created_at), now)}). Keep it when the moment comes.' for p in promises]
@@ -142,5 +149,6 @@ async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
         "pending": [(r.id, r.source_task_event_id, ((r.required_facts_json or {}).get("notification") or {}).get("intent"),
             ((r.required_facts_json or {}).get("communication_assessment") or {}).get("classification")) for r in pending],
         "promises": [(p.id, p.status) for p in promises], "told": [r.id for r in told],
-        "checking": [r.id for r in checking], "statuses": sorted(statuses.items())}).encode()).hexdigest()[:16]
+        "checking": [r.id for r in checking], "statuses": sorted(statuses.items()),
+        "follow_ups": [(t.id, t.status) for t in follow_ups]}).encode()).hexdigest()[:16]
     return {"text": "\n".join(lines), "signature": signature}
