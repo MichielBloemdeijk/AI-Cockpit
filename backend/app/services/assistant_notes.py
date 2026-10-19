@@ -13,9 +13,9 @@ import json
 
 from sqlalchemy import select
 
-from app.db.tables import AssistantPromise, LiveSession, TaskPresentation
+from app.db.tables import AssistantPromise, LiveSession, Task, TaskPresentation
 from app.services.live_task_updates import TERMINAL_WORDS
-from app.services.orchestration_visibility import live_context_visible
+from app.services.orchestration_visibility import live_context_visible, visible_attention
 
 RECENTLY_TOLD = timedelta(hours=12)
 RECENTLY_TOLD_LIMIT = 5
@@ -74,7 +74,7 @@ async def promise_signature(db) -> str:
     return sha256(json.dumps([list(r) for r in rows]).encode()).hexdigest()[:16]
 
 
-def waiting_line(row: TaskPresentation, now: datetime, session_start: datetime | None) -> str:
+def waiting_line(row: TaskPresentation, now: datetime, session_start: datetime | None, task_status: str | None = None) -> str:
     facts = row.required_facts_json or {}
     goal = clean(facts.get("goal"), 90)
     if row.candidate_type == "question":
@@ -98,7 +98,15 @@ def waiting_line(row: TaskPresentation, now: datetime, session_start: datetime |
             " If it is still relevant, re-offer it briefly, once, at a natural opening.")
     elif assessment.get("classification") == "partial":
         line += " You started telling them but did not finish."
+    if facts.get("event_type") in {"task.failed", "task.interrupted"} and task_status in {"queued", "running", "claimed"}:
+        line += " A retry is already running; when you tell them about the failure, mention briefly that you are retrying."
     return line
+
+
+def open_question_line(row: TaskPresentation) -> str:
+    facts = row.required_facts_json or {}
+    return (f'- The task "{clean(facts.get("goal"), 90)}" needs a decision: "{clean(facts.get("question"))}". '
+        "Background is checking whether it can decide this itself; if the user brings it up, ask them.")
 
 
 async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
@@ -114,9 +122,15 @@ async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
         .order_by(TaskPresentation.handled_at.desc()).limit(RECENTLY_TOLD_LIMIT))).scalars().all())
     promises = list((await db.execute(select(AssistantPromise).where(AssistantPromise.status == "open",
         AssistantPromise.session_id.in_(await recent_session_ids(db, session_id))).order_by(AssistantPromise.created_at))).scalars().all())
+    statuses = dict((await db.execute(select(Task.id, Task.status).where(
+        Task.id.in_([row.task_id for row in pending])))).all()) if pending else {}
+    # Questions the background orchestration has not yet released to the user (it may answer them itself).
+    checking = list((await db.execute(select(TaskPresentation).where(TaskPresentation.state == "pending",
+        TaskPresentation.candidate_type == "question", ~visible_attention()))).scalars().all())
     lines = ["JARVIS NOTES - your own memory of what the user is waiting for. Facts, not a script."]
     lines.append("Waiting for the user:")
-    lines += [waiting_line(row, now, session_start) for row in pending] or ["- Nothing."]
+    lines += ([waiting_line(row, now, session_start, statuses.get(row.task_id)) for row in pending]
+        + [open_question_line(row) for row in checking]) or ["- Nothing."]
     if promises:
         lines.append("You promised:")
         lines += [f'- "{clean(p.text)}" ({ago(utc(p.created_at), now)}). Keep it when the moment comes.' for p in promises]
@@ -127,5 +141,6 @@ async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
     signature = sha256(json.dumps({
         "pending": [(r.id, r.source_task_event_id, ((r.required_facts_json or {}).get("notification") or {}).get("intent"),
             ((r.required_facts_json or {}).get("communication_assessment") or {}).get("classification")) for r in pending],
-        "promises": [(p.id, p.status) for p in promises], "told": [r.id for r in told]}).encode()).hexdigest()[:16]
+        "promises": [(p.id, p.status) for p in promises], "told": [r.id for r in told],
+        "checking": [r.id for r in checking], "statuses": sorted(statuses.items())}).encode()).hexdigest()[:16]
     return {"text": "\n".join(lines), "signature": signature}

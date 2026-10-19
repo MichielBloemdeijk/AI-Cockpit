@@ -581,7 +581,7 @@ class TaskPresentationService:
             # A spoken-update prompt while the user is talking makes Live talk over
             # them; hold it until the next opening (Live's next reply re-queues it).
             and not (user_owns_floor and commentary and candidate.candidate_type == "terminal_result"
-                and self._requires_commentary(candidate))
+                and self._requires_commentary(candidate) and not self._urgent(candidate))
         ][: min(max(1, limit), 1)]
         if not candidates:
             return None
@@ -1121,6 +1121,12 @@ class TaskPresentationService:
             return created_at, presentation_id
         except (ValueError, TypeError, KeyError, UnicodeDecodeError, binascii.Error, json.JSONDecodeError):
             return None
+
+    @staticmethod
+    def _urgent(candidate: TaskPresentation) -> bool:
+        """A failure of an important task the user is waiting on may politely interrupt."""
+        event_type = str((candidate.required_facts_json or {}).get("event_type") or "")
+        return candidate.importance == "high" and event_type in {"task.failed", "task.interrupted"}
 
     @staticmethod
     def _requires_commentary(candidate: TaskPresentation) -> bool:

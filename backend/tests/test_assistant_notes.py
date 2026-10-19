@@ -223,3 +223,32 @@ async def test_bookkeeper_assesses_delivered_reminders(monkeypatch):
     async with session_scope() as db:
         job = (await db.execute(select(ConversationObservation))).scalars().one()
         assert row.id in {p["presentation_id"] for p in job.input_json["presentations"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("importance,event_type,held", [("normal", "task.failed", True), ("high", "task.failed", False),
+    ("high", "task.completed", True)])
+async def test_only_important_failures_may_interrupt_a_speaking_user(monkeypatch, importance, event_type, held):
+    live, task, pid = await requested_outcome(monkeypatch)
+    async with session_scope() as db:
+        row = await db.get(TaskPresentation, pid)
+        row.importance = importance
+        row.required_facts_json = {**row.required_facts_json, "event_type": event_type}
+    async with session_scope() as db:
+        result = await task_presentation_service.reserve_in_session(db, session_id=live.id, generation=live.generation,
+            user_owns_floor=True, commentary=True, terminal_only=True, quiet_context=True)
+        assert (result is None) is held
+
+
+@pytest.mark.asyncio
+async def test_notes_mention_a_running_retry_of_a_failed_task(monkeypatch):
+    from app.db.tables import Task
+    live, task, pid = await requested_outcome(monkeypatch)
+    async with session_scope() as db:
+        row = await db.get(TaskPresentation, pid)
+        row.required_facts_json = {**row.required_facts_json, "event_type": "task.failed"}
+        stored = (await db.execute(select(Task).where(Task.id == row.task_id))).scalar_one()
+        stored.status = "queued"
+    async with session_scope() as db:
+        notes = await assistant_notes.render(db, session_id=live.id)
+    assert "A retry is already running" in notes["text"]
