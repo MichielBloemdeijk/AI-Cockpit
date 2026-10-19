@@ -93,12 +93,12 @@ def run_adaptive(spec, root, helper, serial, broadcast, state, action, poll, evi
             if relay.error:
                 raise RuntimeError(relay.error)
             snapshot = state()
-            for task in snapshot["tasks"][:len(schedule)]:
+            for task in snapshot["tasks"]:  # unscheduled tasks (background retries) finish after a default delay
                 if task["id"] not in admitted:
                     admitted[task["id"]] = time.monotonic(); evidence["target_task_ids"].append(task["id"])
                     evidence["markers"].append({"type": "adaptive.admission", "epoch_ms": time.time() * 1000})
             for index, task_id in enumerate(evidence["target_task_ids"]):
-                plan = schedule[index]
+                plan = schedule[index] if index < len(schedule) else {"finish_after_seconds": 12}
                 if task_id in done or time.monotonic() - admitted[task_id] < plan.get("finish_after_seconds", 12):
                     continue
                 action(action="finish", task_id=task_id, status=plan.get("status", "completed"),

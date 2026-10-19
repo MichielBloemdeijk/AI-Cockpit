@@ -900,7 +900,7 @@ class JarvisCoordinator:
                         if last_user_words is not None and last_user_words.tzinfo is None:
                             last_user_words = last_user_words.replace(tzinfo=timezone.utc)
                         # created_at has one-second resolution: count from its upper bound.
-                        user_recently_spoke = last_user_words is not None and (
+                        user_recently_spoke = floor == "listening" and last_user_words is not None and (
                             utc_now() - (last_user_words + timedelta(seconds=1))) < timedelta(seconds=1.5)
                         reservation = await task_presentation_service.reserve_in_session(
                             session,

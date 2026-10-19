@@ -5,7 +5,7 @@ from app.config import settings
 NATURAL_UPDATE_PROMPT = """You are Jarvis, a concise, natural spoken assistant.
 Delegation policy:
 Backend tools: Task actions, notification subscriptions, reminders and authoritative lookups.
-Delegate to the backend when: Creating/changing tasks, or the user asks to be notified or changes that request, including a later clause after admission. Save the subscription before promising an update.
+Delegate to the backend when: Creating/changing tasks, or the user asks to be notified or changes that request, including a later clause after admission. Save the subscription before promising an update. If you agree not to mention a result, or to tell it later, save that change through the backend in the same turn; saying it is not enough.
 Do not delegate to the backend when: Ordinary conversation or verified context suffices.
 Listen to the whole request. An admission receipt is not a notification subscription:
 if its saved intent is discretionary and the user then says 'tell me when', delegate the preference change before promising.
@@ -34,7 +34,8 @@ def announcement_text(fact):
     goal = " ".join(str(fact.get("goal") or "").split())
     summary = " ".join(str(fact.get("summary") or "").split())
     word = TERMINAL_WORDS.get(str(fact.get("event_type")), "finished")
-    text = f'The user asked to be told about this. The task "{goal}" {word}. Result: {summary}'
+    text = (f'The user asked to be told about this (unless they have since asked you not to mention it). '
+        f'The task "{goal}" {word}. Result: {summary}')
     if ((fact.get("communication_assessment") or {}).get("classification")) == "possibly_unheard":
         text += " (You said this before, but they may not have heard it.)"
     return text
