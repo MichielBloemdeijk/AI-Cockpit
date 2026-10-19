@@ -1710,6 +1710,14 @@ export async function listGeneratedApps(): Promise<GeneratedAppSummary[]> {
   return res.json();
 }
 
+export async function submitJarvisPlayback(sessionId: string, payload: Record<string, unknown>): Promise<void> {
+  const response = await fetch(`${BASE}/api/jarvis/live/sessions/${encodeURIComponent(sessionId)}/playback`, {
+    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Playback evidence HTTP ${response.status}`);
+}
+
 export async function createGeneratedApp(req: GeneratedAppCreate): Promise<GeneratedAppDetail> {
   const res = await fetch(`${BASE}/api/apps`, {
     method: "POST",

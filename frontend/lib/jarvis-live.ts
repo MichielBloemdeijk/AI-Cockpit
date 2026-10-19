@@ -10,6 +10,7 @@ import {
 } from "./api";
 import type { JarvisVoiceClient, JarvisVoiceSnapshot } from "./jarvis-voice-client";
 import type { JarvisCandidateAudio } from "./jarvis-activation-audio";
+import { JarvisPlaybackEvidence } from "./jarvis-playback-evidence";
 
 export interface JarvisLiveStartOptions {
   stream?: MediaStream;
@@ -39,6 +40,7 @@ export interface JarvisLiveDependencies {
 export interface JarvisLiveControllerOptions {
   onSnapshot?: (snapshot: JarvisVoiceSnapshot) => void;
   onRemoteStream?: (stream: MediaStream | null) => void;
+  playbackElement?: () => HTMLAudioElement | null;
   onProviderEvent?: (event: Record<string, unknown>) => void;
   onDiagnostic?: (diagnostic: JarvisLiveDiagnostic) => void;
 }
@@ -86,6 +88,8 @@ export class JarvisLiveController implements JarvisVoiceClient {
   private localStream: MediaStream | null = null;
   private ownsLocalStream = false;
   private remoteAudio: HTMLAudioElement | null = null;
+  private playbackEvidence: JarvisPlaybackEvidence | null = null;
+  private providerStartedAt: number | null = null;
   private activationBridge: LiveActivationBridge | null = null;
   private session: JarvisSession | null = null;
   private idleTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -299,6 +303,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
       });
       const pc = transport.pc;
       const requestStartedAt = monotonicNow();
+      this.providerStartedAt = null;
       diagnose("connection_request_started", {
         wake_to_request_ms: options.wakeDetectedMonotonicMs === undefined
           ? undefined
@@ -318,6 +323,12 @@ export class JarvisLiveController implements JarvisVoiceClient {
       const sdpAnswer = response.sdp_answer;
       acceptedSession = responseSession;
       if (acceptedSession) this.session = acceptedSession;
+      if (acceptedSession && response.provider_capabilities.playback_evidence) {
+        this.playbackEvidence = new JarvisPlaybackEvidence(acceptedSession, this.controllerId,
+          () => this.options.playbackElement?.() ?? this.remoteAudio, requestStartedAt, undefined,
+          () => transport.pc.getStats());
+        if (this.providerStartedAt !== null) this.playbackEvidence.started(this.providerStartedAt);
+      }
       if (!sdpAnswer || !responseSession) {
         throw new Error("GPT-Live backend returned incomplete connection material");
       }
@@ -497,6 +508,10 @@ export class JarvisLiveController implements JarvisVoiceClient {
         return;
       }
       const type = typeof event.type === "string" ? event.type : "";
+      if (type === "session.started") {
+        this.providerStartedAt = performance.now();
+        this.playbackEvidence?.started(this.providerStartedAt);
+      }
       if (type === "session.closed") this.closeWaiter?.();
       if (this.events !== events) return;
       this.options.onProviderEvent?.(event);
@@ -638,6 +653,8 @@ export class JarvisLiveController implements JarvisVoiceClient {
   }
 
   private async dispose(closeBackend: boolean): Promise<void> {
+    this.playbackEvidence?.stop();
+    this.playbackEvidence = null;
     if (this.idleTimer) this.deps.clearTimeout(this.idleTimer);
     this.idleTimer = null;
     this.closeWaiter = null;

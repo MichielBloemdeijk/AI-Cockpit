@@ -329,6 +329,7 @@ export default function JarvisPage() {
       {
         onSnapshot: handleLiveSnapshot,
         onRemoteStream: handleRemoteStream,
+        playbackElement: () => remoteAudioRef.current,
         onProviderEvent: handleProviderEvent,
         onDiagnostic: (diagnostic) => {
           const traceId = diagnostic.activationId
