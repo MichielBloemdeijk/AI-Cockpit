@@ -9,6 +9,9 @@ depends_on = None
 
 
 def upgrade():
+    # Recovery may replay DDL that committed before the Alembic head stamp.
+    if "assistant_promises" in sa.inspect(op.get_bind()).get_table_names():
+        return
     op.create_table(
         "assistant_promises",
         sa.Column("id", sa.String(36), primary_key=True),
