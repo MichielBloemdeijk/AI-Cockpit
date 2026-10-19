@@ -44,7 +44,7 @@ Optional:
   - your phone model.
 
   An agent can then diagnose it from `.cockpit/jarvis/logs/` and the session records, and add a matching self-test scenario.
-- **Rolling back:** set `JARVIS_CONVERSATION_OBSERVER_MODE=off` in `.env`, then run `Jarvis.cmd Stop` and `Jarvis.cmd Start`.
+- **Rolling back:** the legacy update path no longer exists. Report the failure instead; an agent can revert the responsible commit.
 
 **Known limits that are not failures:**
 - Jarvis cannot yet read a finished document's text aloud; it will say so.
