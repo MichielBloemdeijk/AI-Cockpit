@@ -71,11 +71,22 @@ def render_speech(texts: list[str], folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     missing = [t for t in sorted(set(texts)) if not (folder / f"{utterance_id(t)}-command.wav").exists()]
     if missing:
-        manifest = folder / "speech-manifest.json"
+        # The renderer requires a fresh directory; render there, then keep the files.
+        batch = folder.parent / f"{folder.name}-render-{secrets.token_hex(4)}"
+        manifest = folder.parent / f"{batch.name}.json"
         write(manifest, {"wake": "Hey Jarvis", "cases": [{"id": utterance_id(t), "text": t} for t in missing]})
-        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(RENDERER),
-            "-OutputDirectory", str(folder), "-ManifestPath", str(manifest)], check=True, timeout=300,
-            stdout=subprocess.DEVNULL)
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(RENDERER),
+                "-OutputDirectory", str(batch), "-ManifestPath", str(manifest)], check=True, timeout=300,
+                stdout=subprocess.DEVNULL)
+            for rendered in batch.glob("*.wav"):
+                rendered.replace(folder / rendered.name)
+        finally:
+            manifest.unlink(missing_ok=True)
+            for leftover in batch.glob("*"):
+                leftover.unlink()
+            if batch.exists():
+                batch.rmdir()
     for text in texts:
         with wave.open(str(folder / f"{utterance_id(text)}-command.wav")) as audio:
             if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()) != (1, 2, 16000) or audio.getnframes() < 1600:

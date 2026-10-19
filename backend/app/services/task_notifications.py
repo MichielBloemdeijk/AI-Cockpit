@@ -223,10 +223,11 @@ async def route_pending_task_notifications(
             created_at = row.created_at
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
-            grace_deadline = created_at + timedelta(
-                seconds=max(0.0, settings.jarvis_notification_grace_seconds)
-            )
             hard_deadline = created_at + timedelta(seconds=30.0)
+            # The conversation bookkeeper records delivery only after the user's
+            # reaction; give it until the hard cap before buzzing an active user.
+            grace_deadline = hard_deadline if settings.jarvis_conversation_observer_mode == "enabled" else (
+                created_at + timedelta(seconds=max(0.0, settings.jarvis_notification_grace_seconds)))
             if voice_connected and voice_floor_held:
                 next_attempt = hard_deadline
                 row.next_attempt_at = next_attempt
