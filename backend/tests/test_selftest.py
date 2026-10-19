@@ -42,10 +42,10 @@ def test_run_root_is_confined(tmp_path):
 
 
 def test_service_environment_isolates_personal_settings(tmp_path):
-    env = h.service_environment(tmp_path, 1234, overrides={"JARVIS_CONVERSATION_OBSERVER_MODE": "enabled"})
+    env = h.service_environment(tmp_path, 1234, overrides={"OPENAI_LIVE_VOICE": "cedar"})
     assert env["AUTH_PASSWORD"] == "" and env["SESSION_COOKIE_SECURE"] == "false"
     assert env["DATABASE_URL"].endswith((tmp_path / "application.db").as_posix())
-    assert env["TASK_POOL_ENABLED"] == "false" and env["JARVIS_CONVERSATION_OBSERVER_MODE"] == "enabled"
+    assert env["TASK_POOL_ENABLED"] == "false" and env["OPENAI_LIVE_VOICE"] == "cedar"
 
 
 def test_drain_observer_waits_for_settled_jobs():

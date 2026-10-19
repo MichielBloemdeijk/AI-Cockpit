@@ -1,6 +1,4 @@
-"""Production policy for GPT-Live-owned task announcements and acknowledgment."""
-import json
-from app.config import settings
+"""Production policy for GPT-Live-owned task announcements and backend notification preferences."""
 
 NATURAL_UPDATE_PROMPT = """You are Jarvis, a concise, natural spoken assistant.
 Delegation policy:
@@ -56,17 +54,7 @@ def announcement_text(fact):
     return text
 
 
-def live_policy():
-    return NATURAL_UPDATE_PROMPT if settings.jarvis_conversation_observer_mode == "enabled" else LISTEN_FIRST_PROMPT
-
-TERMINAL = frozenset({"task.completed", "task.failed", "task.interrupted", "task.cancelled"})
-
-RELEVANCE_POLICY = (
-    "When notification was requested or promised, give a brief verified outcome at the next opening, "
-    "before a longer conversational reply. Let the user finish; yield if interrupted. "
-    "Use judgment for ordinary updates and respect silence requests. Do not repeat delivered updates "
-    "unless asked, or read identifiers or URLs aloud."
-)
+TERMINAL =frozenset({"task.completed", "task.failed", "task.interrupted", "task.cancelled"})
 
 PREFERENCE_RULES = (
     "Choose the completion subscription independently of task importance and progress frequency. "
@@ -77,54 +65,17 @@ PREFERENCE_RULES = (
     "Later preferences replace earlier ones. Suppressed uses silent policy; otherwise preserve explicitly "
     "requested follow_progress, or use critical_only. Notification intent is independent of importance. "
 )
-LISTEN_FIRST_PROMPT = """You are Jarvis, a concise, natural spoken assistant.
-Delegation policy:
-Backend tools: Durable tasks, screen workflows, notification preferences, reminders, history, task status and delivery records.
-Delegate to the backend when: The user requests these capabilities, a preference changes, authoritative state is needed, or you have finished speaking a task outcome and must record delivery.
-Do not delegate to the backend when: Ordinary conversation or a clarification suffices, or you can answer from verified context; delivery bookkeeping is an exception.
-Listen to the whole request before admission. Save notification requests and later corrections before promising them. Admission is not completion; speech interruption does not cancel work.
-Task updates: """ + RELEVANCE_POLICY + """
-After you finish telling the user a task outcome, including a status answer, tell the backend which result you communicated and ask it to record delivery. This bookkeeping needs no user request or spoken confirmation. Never record an interrupted partial outcome as delivered.
-For tasks completed between sessions, use saved task facts and pending attention to answer accurately when asked.
-"""
 
 
 def backend_policy(text):
-    if settings.jarvis_conversation_observer_mode == "enabled":
-        return text + " Notification preferences: " + PREFERENCE_RULES + (
-            " Admission receipts may include later_user_context: recognized user speech that arrived after delegation. "
-            "If status is request_context_advanced and applied is false, no task exists yet: reconsider admission arguments "
-            "using that newer context and call the normal admission tool with the same intent_id. "
-            "Apply its relevant corrections to the existing task through the supplied tools before replying; never create that task again. "
-            " Include the saved notification intent from the tool receipt in your backend reply to Live. "
-            "A later notification request about an admitted task requires set_task_update_policy; it is not just conversation. "
-            " Communication records are maintained by the conversation observer. Do not acknowledge terminal outcomes "
-            "based on a voice report, user assertion, backend reply or append receipt. "
-            "After admitting a task, reply once with the receipt; do not look up its status or the attention checklist "
-            "unless the user asks. Keep replies after any action to a few words; Live may already have acknowledged it.")
     return text + " Notification preferences: " + PREFERENCE_RULES + (
-        " Live owns speech. Call acknowledge_task_update only when Live reports it finished speaking that item. "
-        "Your reply or an append receipt is not proof of communication. "
-        "For a delivery report, resolve the communicated outcome against current pending attention and call "
-        "acknowledge_task_update with its presentation_id and exposure_token; use get_attention_checklist if needed. "
-        "This bookkeeping needs no task action or new user request.")
-
-
-def terminal_payload(fact):
-    if settings.jarvis_conversation_observer_mode == "enabled":
-        compact = {k: fact.get(k) for k in ("task_id", "event_type", "goal", "summary", "status", "notification",
-            "presentation_id", "source_task_event_id", "completed_at", "delivery_state", "communication_assessment")}
-        return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-    preference = fact["notification"]
-    compact = {key:fact[key] for key in ("task_id","event_type","presentation_id","exposure_token")}
-    compact["notification"] = preference
-    compact["delivery_state"] = "pending"
-    summary = " ".join(str(fact.get("summary") or "").split())[:180]
-    goal = " ".join(str(fact.get("goal") or "").split())[:90]
-    compact["summary"] = summary
-    prefix = {"requested":"The backend recorded a request for a completion announcement. Honour it at the next opening unless a later preference supersedes it.",
-        "suppressed":"The backend recorded a request for silence. Keep the outcome for later questions; do not announce it unless a later preference supersedes silence.",
-        "discretionary":"The backend currently records discretionary notification. This does not establish that no notification was requested. Check later user instructions and your promises; save any correction before deciding relevance."}[preference["intent"]]
-    content = prefix + f" Verified task: {goal}. Verified outcome: {summary}. Delivery metadata: " + json.dumps(compact,ensure_ascii=False,separators=(",",":"))
-    if len(content.encode("utf8")) > 1600: raise ValueError("Preference-aware append exceeds bounded context budget")
-    return content
+        " Admission receipts may include later_user_context: recognized user speech that arrived after delegation. "
+        "If status is request_context_advanced and applied is false, no task exists yet: reconsider admission arguments "
+        "using that newer context and call the normal admission tool with the same intent_id. "
+        "Apply its relevant corrections to the existing task through the supplied tools before replying; never create that task again. "
+        " Include the saved notification intent from the tool receipt in your backend reply to Live. "
+        "A later notification request about an admitted task requires set_task_update_policy; it is not just conversation. "
+        " Communication records are maintained by the conversation observer; a voice report, user assertion, "
+        "backend reply or append receipt does not change them. "
+        "After admitting a task, reply once with the receipt; do not look up its status or the attention checklist "
+        "unless the user asks. Keep replies after any action to a few words; Live may already have acknowledged it.")

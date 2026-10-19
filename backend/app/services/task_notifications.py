@@ -219,7 +219,7 @@ async def route_pending_task_notifications(
             .order_by(NotificationOutbox.created_at.asc(), NotificationOutbox.id.asc())
         )).scalars().all())
         settle_until = None
-        if not voice_connected and settings.jarvis_conversation_observer_mode == "enabled":
+        if not voice_connected:
             last_end = await session.scalar(select(LiveSession.disconnected_at)
                 .where(LiveSession.disconnected_at.is_not(None)).order_by(LiveSession.disconnected_at.desc()).limit(1))
             if last_end is not None:
@@ -232,11 +232,9 @@ async def route_pending_task_notifications(
             created_at = row.created_at
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
-            hard_deadline = created_at + timedelta(seconds=30.0)
             # The conversation bookkeeper records delivery only after the user's
-            # reaction; give it until the hard cap before buzzing an active user.
-            grace_deadline = hard_deadline if settings.jarvis_conversation_observer_mode == "enabled" else (
-                created_at + timedelta(seconds=max(0.0, settings.jarvis_notification_grace_seconds)))
+            # reaction; give it until this cap before buzzing an active user.
+            hard_deadline = created_at + timedelta(seconds=30.0)
             if voice_connected and voice_floor_held:
                 next_attempt = hard_deadline
                 row.next_attempt_at = next_attempt
@@ -244,16 +242,12 @@ async def route_pending_task_notifications(
                     due_ids.append(row.id)
                 continue
             if voice_connected:
-                next_attempt = grace_deadline
-                if row.next_attempt_at is not None:
+                next_attempt = hard_deadline
+                if row.next_attempt_at is not None and row.status != "failed":
                     existing_due = row.next_attempt_at
                     if existing_due.tzinfo is None:
                         existing_due = existing_due.replace(tzinfo=timezone.utc)
-                    next_attempt = (
-                        min(max(grace_deadline, existing_due), hard_deadline)
-                        if row.status == "failed"
-                        else min(existing_due, grace_deadline)
-                    )
+                    next_attempt = min(existing_due, hard_deadline)
                 row.next_attempt_at = next_attempt
             elif row.status == "queued" or row.next_attempt_at is None:
                 row.next_attempt_at = max(now, settle_until) if settle_until else now

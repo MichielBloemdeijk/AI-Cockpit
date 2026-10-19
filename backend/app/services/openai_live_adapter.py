@@ -401,64 +401,8 @@ class OpenAILiveAdapter:
                 },
             },
         )
-        notes = context.get("assistant_notes") if isinstance(context.get("assistant_notes"), dict) else None
-        if notes is not None:
-            await self._send_notes_update(provider_session, request_id=request_id, facts=facts, notes=notes,
-                deltas=attention_context.get("deltas") or [])
-            return
-        append_items: list[tuple[dict[str, Any], tuple[str, ...], bool]] = [
-            (fact, (str(fact.get("presentation_id") or ""),), bool(fact.get("commentary")))
-            for fact in facts
-        ]
-        raw_deltas = attention_context.get("deltas")
-        if isinstance(raw_deltas, list):
-            append_items.extend(
-                (dict(delta), (), False)
-                for delta in raw_deltas
-                if isinstance(delta, dict)
-            )
-        if not append_items:
-            # The checklist is already in the router instructions. With no
-            # facts or tombstones there is nothing to inject into Live; release
-            # the transport lease without inventing a provider append/ack.
-            await self._emit(
-                provider_session,
-                "assistant_update_submitted",
-                {
-                    "request_id": request_id,
-                    "presentation_ids": [],
-                    "response_kind": "task_update",
-                    "submission_ack": "no_context_to_append",
-                },
-                event_id=f"live-empty-update:{request_id}",
-            )
-            return
-        for index, (item, item_ids, item_commentary) in enumerate(append_items):
-            verified = json.dumps(item, separators=(",", ":"), ensure_ascii=False)
-            event_id = f"jarvis-live-update:{request_id}:{index}"
-            provider_session.pending_commentary[event_id] = (
-                request_id,
-                tuple(value for value in item_ids if value),
-                verified,
-            )
-            from app.services.live_task_updates import TERMINAL, terminal_payload
-            terminal = item.get("event_type") in TERMINAL
-            append_type = "session.commentary.append" if item_commentary else "session.thinking.append"
-            content = (
-                "Speak this update naturally, then acknowledge it. "
-                if item_commentary
-                else "Quiet application context. Do not announce this solely because it was appended. "
-            ) + verified
-            if terminal: content = terminal_payload(item)
-            await self._send(
-                provider_session,
-                {
-                    "type": append_type,
-                    "event_id": event_id,
-                    "delegation_id": None,
-                    "content": content,
-                },
-            )
+        await self._send_notes_update(provider_session, request_id=request_id, facts=facts,
+            notes=context["assistant_notes"], deltas=attention_context.get("deltas") or [])
 
     async def _send_notes_update(self, provider_session: _LiveSession, *, request_id: str,
                                  facts: tuple[dict[str, Any], ...], notes: dict[str, Any], deltas: list) -> None:
@@ -823,8 +767,7 @@ class OpenAILiveAdapter:
                 },
             }
         event_id = f"live-tool:{delegation_id}:{response_id}:{call_id}"
-        if name in {"start_workflow", "continue_task"} or (
-                name == "dispatch_task" and settings.jarvis_conversation_observer_mode == "enabled"):
+        if name in {"start_workflow", "continue_task", "dispatch_task"}:
             # Capture preflight can legitimately wait two seconds. Keep the
             # sideband receive loop free to observe transcript and terminal
             # events while the guarded admission runs.
@@ -1308,8 +1251,8 @@ class OpenAILiveAdapter:
         voice = str(preferences.get("voice") or settings.openai_live_voice)
         if voice not in {"marin", "cedar"}:
             voice = settings.openai_live_voice
-        from app.services.live_task_updates import live_policy
-        conversation_prompt = live_policy() + (
+        from app.services.live_task_updates import NATURAL_UPDATE_PROMPT
+        conversation_prompt = NATURAL_UPDATE_PROMPT + (
             " An explicit request to create, save, start or continue a task requires backend tools. "
             "When the requested outcome is undefined, ask a short clarification before creating a task. "
             "A request to save something useful does not specify which result the user wants; do not choose it for them. "
@@ -1338,21 +1281,10 @@ class OpenAILiveAdapter:
                 "Only a direct user request authorizes answering worker questions, retrying or repairing tasks; "
                 "recording communicated outcomes is separate delivery bookkeeping. User answers and controls remain immediate."
             )
-        attention_context = (
-            context.get("attention_context")
-            if isinstance(context.get("attention_context"), dict)
-            else {"items": [], "total_pending": 0, "next_cursor": None}
-        )
         notes = context.get("assistant_notes")
         if isinstance(notes, dict) and notes.get("text"):
-            # Natural updates: Live reads one readable notes view instead of JSON.
+            # Live reads one readable notes view; the router keeps the JSON checklist.
             conversation_prompt += "\n\n" + notes["text"]
-        else:
-            conversation_prompt += " CURRENT_ATTENTION_CHECKLIST=" + json.dumps(
-                attention_context,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
         return {
             "model": settings.openai_live_model,
             "instructions": conversation_prompt,
@@ -1400,7 +1332,7 @@ class OpenAILiveAdapter:
             "An explicit current-screen request selects screen_context_mode fresh in start_workflow or continue_task; "
             "no separate capture call is needed. Ordinary continuations omit screen_context_mode. "
             "Choose optional execution_preferences in this delegation; changed model or effort needs override_reason. "
-            "Use get_attention_checklist for pending outcomes and delivery handles. Do not read identifiers aloud. "
+            "Use get_attention_checklist for pending outcomes. Do not read identifiers aloud. "
             "Existing completed or cancelled tasks do not satisfy a request to create new tasks. "
             "Acknowledging an update never creates, continues or cancels a task."
         )

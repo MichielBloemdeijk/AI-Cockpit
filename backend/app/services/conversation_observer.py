@@ -294,7 +294,7 @@ class ConversationObserver:
         self._versions = {}
 
     async def start(self):
-        if settings.jarvis_conversation_observer_mode == "off" or self.task is not None:
+        if self.task is not None:
             return
         self.failure = None
         self._versions.clear()
@@ -531,8 +531,6 @@ class ConversationObserver:
                 if candidate.source_task_event_id != source[pid]["source_task_event_id"]:
                     validations[pid] = {"supported": False, "reason": "result_version_changed"}
                     continue
-                if settings.jarvis_conversation_observer_mode != "enabled":
-                    continue
                 updated = await db.execute(update(TaskPresentation).where(TaskPresentation.id == pid,
                     TaskPresentation.state == "pending", TaskPresentation.source_task_event_id == candidate.source_task_event_id)
                     .values(state="handled", handled_at=now(), handled_by="conversation_observer", lease_token=None,
@@ -547,8 +545,7 @@ class ConversationObserver:
                         "source_task_event_id": candidate.source_task_event_id, "fragment_ids": finding["fragment_ids"],
                         "source_window": {"fragment_ids": finding["fragment_ids"]}, "playback": support, "policy_hash": usage.get("policy_hash", POLICY_HASH), "model": usage.get("model", MODEL)})
                 await task_presentation_service._supersede_notification(db, candidate.source_task_event_id)
-            if settings.jarvis_conversation_observer_mode == "enabled":
-                await self._apply_promises(db, job, evidence, result)
+            await self._apply_promises(db, job, evidence, result)
             job.result_json = {**result, "validation": validations}
             job.usage_json = {**usage, "attempts": (job.usage_json or {}).get("attempts", [])}
             job.status, job.completed_at, job.lease_until = "completed", now(), None

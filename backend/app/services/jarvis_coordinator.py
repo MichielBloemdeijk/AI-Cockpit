@@ -546,11 +546,10 @@ class JarvisCoordinator:
                         voice_floor_held = busy_floor and not stale_voice_floor
                         pending = await task_presentation_service.list_pending(include_terminal_context=active.provider_adapter == "openai_live")
                         fingerprint = task_presentation_service.semantic_fingerprint(pending)
-                        if settings.jarvis_conversation_observer_mode == "enabled":
-                            # Anything in Jarvis's notes (retries, follow-ups, promises) refreshes them.
-                            from app.services import assistant_notes
-                            async with session_scope() as session:
-                                fingerprint += ":" + (await assistant_notes.render(session, session_id=active.id))["signature"]
+                        # Anything in Jarvis's notes (retries, follow-ups, promises) refreshes them.
+                        from app.services import assistant_notes
+                        async with session_scope() as session:
+                            fingerprint += ":" + (await assistant_notes.render(session, session_id=active.id))["signature"]
                         attention_key = (active.id, active.generation)
                         previous_fingerprint = self._attention_context_fingerprints.get(attention_key)
                         if fingerprint != previous_fingerprint:
@@ -886,9 +885,8 @@ class JarvisCoordinator:
                             "next_cursor": attention_update.next_cursor,
                             "deltas": tombstones,
                         }
-                        if settings.jarvis_conversation_observer_mode == "enabled":
-                            from app.services import assistant_notes
-                            context["assistant_notes"] = await assistant_notes.render(session, session_id=session_id)
+                        from app.services import assistant_notes
+                        context["assistant_notes"] = await assistant_notes.render(session, session_id=session_id)
                     reservation_started = situation_finished
                     if selected_reason == "task_update":
                         # Live's voice activity treats a mid-sentence pause as the end of the
@@ -1389,9 +1387,8 @@ class JarvisCoordinator:
                 "next_cursor": attention_update.next_cursor,
                 "deltas": [],
             }
-            if settings.jarvis_conversation_observer_mode == "enabled":
-                from app.services import assistant_notes
-                context["assistant_notes"] = await assistant_notes.render(session, session_id=realtime.id)
+            from app.services import assistant_notes
+            context["assistant_notes"] = await assistant_notes.render(session, session_id=realtime.id)
             if wake_activation is not None and wake_activation.activation_id:
                 context = {**context, "activation_id": wake_activation.activation_id,
                     "activation_source": "wake_word"}
@@ -1567,7 +1564,6 @@ class JarvisCoordinator:
         clear_wake_activation = False
         discard_activation: _WakeActivation | None = None
         replay_tool_result: tuple[bool, dict[str, Any]] | None = None
-        atomic_tool_result: tuple[str, bool, dict[str, Any], str] | None = None
         async with session_scope() as session:
             realtime = await self._require_current_generation(session, session_id, generation)
             repo = JarvisDomainRepository(session)
@@ -1907,37 +1903,6 @@ class JarvisCoordinator:
                         origin_timeline,
                         event.event_id,
                     )
-                    if tool_name == "acknowledge_task_update":
-                        result = await task_presentation_service.acknowledge_task_update_in_session(
-                            session,
-                            session_id=session_id,
-                            generation=generation,
-                            presentation_id=str(arguments.get("presentation_id") or ""),
-                            exposure_token=str(arguments.get("exposure_token") or ""),
-                            provider_event_id=event.event_id,
-                            provider_call_id=call_id,
-                        )
-                        await repo.append_session_event(
-                            session_id=session_id,
-                            event_type="brain.tool.result",
-                            payload_json={
-                                "call_id": call_id,
-                                "name": tool_name,
-                                "ok": True,
-                                "output": result,
-                                "origin_item_id": origin_item_id,
-                                "origin_correlation_id": origin_correlation_id,
-                                "origin_timeline": origin_timeline,
-                            },
-                            idempotency_key=f"brain-result:{session_id}:{generation}:{call_id}",
-                        )
-                        atomic_tool_result = (
-                            call_id,
-                            True,
-                            result,
-                            realtime.provider_adapter,
-                        )
-                        shell_call = None
                     raw_presentation_ids = payload.get("presentation_ids")
                     requeue_presentations = tuple(
                         str(item)
@@ -2109,21 +2074,6 @@ class JarvisCoordinator:
                 origin_timeline=origin_timeline,
                 provider_event_id=provider_event_id,
             )
-        elif atomic_tool_result is not None:
-            call_id, ok, output, provider_adapter = atomic_tool_result
-            adapter = get_voice_session_adapter(provider_adapter)
-            await adapter.send_tool_result(
-                session_id=session_id,
-                generation=generation,
-                call_id=call_id,
-                output={"ok": ok, "result": output},
-            )
-            if adapter.capabilities.supports_manual_response:
-                await self._queue_controlled_response(
-                    session_id,
-                    generation,
-                    "tool_continuation",
-                )
 
     def _schedule_background_response(
         self,
@@ -2527,7 +2477,7 @@ class JarvisCoordinator:
             }:
                 raise ValueError("That action is unavailable while the device is locked")
             freshness = None
-            if settings.jarvis_conversation_observer_mode == "enabled" and tool_name in {"dispatch_task", "start_workflow"}:
+            if tool_name in {"dispatch_task", "start_workflow"}:
                 from app.services.live_request_context import advanced_context, admission_reserved
                 reserved = await admission_reserved(session_id, generation,
                     origin_item_id or last_turn_id or origin_correlation_id, arguments.get("intent_id"))
@@ -2561,8 +2511,7 @@ class JarvisCoordinator:
                     turn_scope=origin_item_id or last_turn_id or origin_correlation_id,
                 )
             output = result.output
-            if (settings.jarvis_conversation_observer_mode == "enabled"
-                    and tool_name in {"dispatch_task", "start_workflow"}
+            if (tool_name in {"dispatch_task", "start_workflow"}
                     and isinstance((origin_timeline or {}).get("offset_ms"), int)):
                 # Managed delegation can begin before the caller's next clause.
                 # Supply newly recognized speech to the admission model through

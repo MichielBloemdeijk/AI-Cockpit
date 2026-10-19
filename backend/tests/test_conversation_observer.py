@@ -27,9 +27,8 @@ def test_context_is_not_eligible_completion_evidence():
     assert validate_finding(e,finding())["supported"]
 
 
-def test_explicit_subscription_required_in_enabled_voice_tools(monkeypatch):
+def test_explicit_subscription_required_in_voice_tools(monkeypatch):
     from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
-    monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","enabled")
     for t in get_jarvis_tool_definitions("openai_live"):
         if t["name"] in {"dispatch_task","start_workflow","set_task_update_policy"}:
             assert {"notification_intent","notification_reason"} <= set(t["parameters"]["required"])
@@ -40,7 +39,6 @@ async def test_admission_receipt_exposes_later_speech_without_repairing_preferen
     from app.services.voice_session_adapter import fake_voice_session_adapter
     from app.services.task_notification_preferences import current
     from app.db.tables import Task
-    monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","enabled")
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="late-start")
     live=await jarvis_coordinator.get_active_session()
     async with session_scope() as db:
@@ -67,7 +65,6 @@ async def test_admission_receipt_exposes_later_speech_without_repairing_preferen
 @pytest.mark.asyncio
 async def test_batch_age_starts_with_relevant_speech_not_old_admission(monkeypatch):
     from app.services import conversation_observer as module
-    monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","enabled")
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="batch-start")
     live=await jarvis_coordinator.get_active_session()
     async with session_scope() as db:
@@ -166,7 +163,6 @@ def test_invalid_citations_remain_pending(change):
 
 
 async def prepared(monkeypatch):
-    monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","enabled")
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="observer-start")
     live=await jarvis_coordinator.get_active_session()
     async with session_scope() as db:
@@ -180,16 +176,8 @@ async def prepared(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_terminal_self_report_cannot_bypass_observer(monkeypatch):
-    live,task,item=await prepared(monkeypatch)
-    result=await task_presentation_service.acknowledge_task_update(session_id=live.id,generation=live.generation,
-        presentation_id=item["presentation_id"],exposure_token=item["exposure_token"])
-    assert result["status"]=="verification_pending"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("closed,shadow,partial",[(False,False,False),(True,False,False),(False,True,False),(False,False,True)])
-async def test_observer_commit_exact_result_and_idempotency(monkeypatch,closed,shadow,partial):
+@pytest.mark.parametrize("closed,partial",[(False,False),(True,False),(False,True)])
+async def test_observer_commit_exact_result_and_idempotency(monkeypatch,closed,partial):
     live,task,item=await prepared(monkeypatch)
     e=evidence(); f=finding(); f["presentation_id"]=item["presentation_id"]
     if partial: f["classification"]="partial"
@@ -199,12 +187,11 @@ async def test_observer_commit_exact_result_and_idempotency(monkeypatch,closed,s
         job=ConversationObservation(session_id=live.id,generation=live.generation,evidence_hash="h",input_json=e)
         db.add(job); await db.flush(); job_id=job.id
         if closed: (await db.get(LiveSession,live.id)).lifecycle_state="disconnected"
-    if shadow: monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","shadow")
     await conversation_observer.apply(job_id,{"outcomes":[f],"flags":[],"promises":[]},{"policy_hash":"test"})
     await conversation_observer.apply(job_id,{"outcomes":[f],"flags":[],"promises":[]},{})
     async with session_scope() as db:
         p=await db.get(TaskPresentation,item["presentation_id"])
-        assert p.state==("pending" if shadow or partial else "handled")
+        assert p.state==("pending" if partial else "handled")
         if p.state=="handled": assert p.handled_by=="conversation_observer"
         assert (await db.get(ConversationObservation,job_id)).status=="completed"
 
@@ -447,7 +434,6 @@ async def test_new_user_turn_during_assistant_speech_is_marked_overlapped(monkey
 async def test_admission_refreshes_context_once_per_request_even_if_the_user_keeps_talking(monkeypatch):
     from app.services.voice_session_adapter import fake_voice_session_adapter
     from app.db.tables import Task
-    monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","enabled")
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="keep-talking")
     live=await jarvis_coordinator.get_active_session()
     async def speak(i,start,text):

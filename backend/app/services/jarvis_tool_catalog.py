@@ -5,7 +5,6 @@ from copy import deepcopy
 from typing import Any
 
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS
-from app.config import settings
 from app.services.task_workflows import enabled_workflows
 
 
@@ -212,8 +211,8 @@ def _canonical_tools() -> list[dict[str, Any]]:
             "type": "function",
             "name": "get_attention_checklist",
             "description": (
-                "Read pending Jarvis updates. Mention an item naturally before acknowledging it; "
-                "do not read internal identifiers aloud. Quiet context does not require an immediate announcement."
+                "Read pending Jarvis updates. Do not read internal identifiers aloud. "
+                "Quiet context does not require an immediate announcement."
             ),
             "parameters": {
                 "type": "object",
@@ -221,23 +220,6 @@ def _canonical_tools() -> list[dict[str, Any]]:
                     "cursor": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
                 },
-            },
-        },
-        {
-            "type": "function",
-            "name": "acknowledge_task_update",
-            "description": (
-                "Mark exactly one pending update handled after communicating it. Use the opaque presentation_id "
-                "and exposure_token returned by get_attention_checklist. Bookkeeping does not require spoken confirmation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "presentation_id": {"type": "string"},
-                    "exposure_token": {"type": "string"},
-                },
-                "required": ["presentation_id", "exposure_token"],
-                "additionalProperties": False,
             },
         },
         {
@@ -278,9 +260,6 @@ def _canonical_tools() -> list[dict[str, Any]]:
     if {str(item["name"]) for item in tools} != expected:
         raise RuntimeError("Jarvis voice tools do not match the restricted gateway allowlist")
     for tool in tools:
-        if tool["name"] == "acknowledge_task_update" and settings.jarvis_conversation_observer_mode != "off":
-            tool["description"] = ("Record a communicated reminder or clarification item using its presentation_id and exposure_token. "
-                "Terminal task outcomes are recorded independently by the conversation observer; this tool cannot mark them handled.")
         if tool["name"] in {"dispatch_task","start_workflow","set_task_update_policy"}:
             if tool["name"] == "start_workflow":
                 tool["parameters"]["properties"]["presentation_policy"] = {"type":"string","enum":["critical_only","follow_progress","silent"]}
@@ -290,9 +269,8 @@ def _canonical_tools() -> list[dict[str, Any]]:
                 "notification_reason":{"type":"string","minLength":1,"maxLength":160,
                     "description":"Brief user request or assistant promise establishing the preference. Required when intent is supplied."}})
             tool["description"] += " Record notification preferences and later corrections through these fields."
-            if settings.jarvis_conversation_observer_mode == "enabled":
-                tool["parameters"]["required"] = list(dict.fromkeys([
-                    *tool["parameters"].get("required", []), "notification_intent", "notification_reason"]))
+            tool["parameters"]["required"] = list(dict.fromkeys([
+                *tool["parameters"].get("required", []), "notification_intent", "notification_reason"]))
         # Responses otherwise normalizes optional fields into required ones.
         # Jarvis still validates every completed call against these parameters.
         tool["strict"] = False

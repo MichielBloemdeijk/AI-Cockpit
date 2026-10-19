@@ -65,16 +65,12 @@ general promises in unrelated small talk are not assessed (cost bound).
 The L1 replay (`python -m app.selftest replay`) re-checks these rules against
 13 recorded real conversations with agreed truth (`app/selftest/replay_labels.yaml`).
 
-`JARVIS_CONVERSATION_OBSERVER_MODE`:
-
-| Value | Behavior |
-|---|---|
-| `off` | Legacy model-reported acknowledgment (to be removed) |
-| `shadow` | Observes without committing |
-| `enabled` | **Default since 19 October 2026.** Observer-owned acknowledgment of results and reminders, plus Jarvis notes |
-
-Changing it requires a backend restart. Existing sessions keep their startup
-configuration.
+The observer is always on (default since 19 October 2026; the `off`/`shadow`
+modes and model-reported acknowledgment were removed afterwards). It alone
+records that results and reminders were communicated; Live reads Jarvis notes.
+Questions close when the user answers them, and progress updates when a newer
+update or the result supersedes them. Opening a push notification still handles
+its exact update.
 
 The observer uses `gpt-5.6-luna` with low reasoning, the priority tier and
 structured output, and no tools. It never blocks voice or task control. It holds

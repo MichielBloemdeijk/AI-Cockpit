@@ -134,10 +134,12 @@ The final round ran one scenario at a time after credits were restored. Each fin
 
 **Adopted.** `JARVIS_CONVERSATION_OBSERVER_MODE` now defaults to `enabled` (commit after 2b2ef60). Set it to `off` to return to legacy behavior; a backend restart is needed. Tests still default to the legacy mode until its code is removed (follow-up).
 
+*Update, 19 October 2026 (plan step 2f):* the legacy path is removed. The setting, the `off`/`shadow` modes, the listen-first prompt, the `acknowledge_task_update` tool and the eight-second notification grace no longer exist; the observer is always on. Roll back by checking out an earlier commit.
+
 ### Open findings (not natural updates)
 
 - **Reading result contents by voice.** Jarvis cannot see a finished document's text, so it cannot read a checklist aloud. It now says so honestly instead of improvising.
 - **Two requests in quick succession** (an answer, then "and remind me in ten seconds…"). The second request was dropped in 1 of 3 runs; a prompt rule improved it.
-- **Legacy cleanup.** Remove the `off`/`shadow` modes, the listen-first prompt, model-reported acknowledgment of results and their tests (plan step 2f, second half).
+- **Legacy cleanup.** Done (see the update above).
 - **Full backend test suite repair.** Proposed as its own session.
 - **Manual phone check** (about 15 minutes) as the last step.

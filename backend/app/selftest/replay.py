@@ -49,7 +49,6 @@ async def replay_case(source: Path, destination: Path) -> dict:
     config.set_main_option("sqlalchemy.url", settings.database_url.replace("+aiosqlite", ""))
     command.upgrade(config, "head")
     initialize_engine(settings.database_url)
-    settings.jarvis_conversation_observer_mode = "enabled"
     observer = module.ConversationObserver()
     jobs = 0
     try:
@@ -82,7 +81,7 @@ async def replay_case(source: Path, destination: Path) -> dict:
 async def replay(name: str, *, only: list[str] | None = None) -> dict:
     labels = yaml.safe_load(LABELS.read_text(encoding="utf-8"))["cases"]
     output = h.run_root(name)
-    original_url, original_mode = settings.database_url, settings.jarvis_conversation_observer_mode
+    original_url = settings.database_url
     results = []
     try:
         for label in labels:
@@ -104,7 +103,7 @@ async def replay(name: str, *, only: list[str] | None = None) -> dict:
             print(json.dumps({"case": case, "expect": label["expect"], "verdict": verdict,
                 "outcomes": [(o["state"], o["classification"]) for o in result["outcomes"]]}), flush=True)
     finally:
-        settings.database_url, settings.jarvis_conversation_observer_mode = original_url, original_mode
+        settings.database_url = original_url
     summary = {"passed": sum(r["verdict"] == "pass" for r in results), "total": len(results), "results": results}
     h.write(output / "replay.json", summary)
     return summary

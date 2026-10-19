@@ -38,7 +38,6 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "create_reminder",
         "list_reminders",
         "get_attention_checklist",
-        "acknowledge_task_update",
         "history_grep",
         "set_jarvis_voice",
         "start_new_jarvis_log",
@@ -532,21 +531,6 @@ class RestrictedBrainGateway:
                 "total_pending": checklist.total_pending,
                 "next_cursor": checklist.next_cursor,
             })
-
-        if tool_name == "acknowledge_task_update":
-            if not session_id or generation is None:
-                raise ValueError("Task update acknowledgement requires the active voice session")
-            from app.services.task_presentations import task_presentation_service
-
-            result = await task_presentation_service.acknowledge_task_update(
-                session_id=session_id,
-                generation=generation,
-                presentation_id=str(arguments.get("presentation_id") or ""),
-                exposure_token=str(arguments.get("exposure_token") or ""),
-                provider_event_id=provider_event_id,
-                provider_call_id=provider_call_id or call_id,
-            )
-            return BrainResult(output=result)
 
         if tool_name == "history_grep":
             matches, truncated, elapsed_ms = await history_retrieval_service.search(

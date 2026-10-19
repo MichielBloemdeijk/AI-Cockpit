@@ -1,4 +1,5 @@
 """Managed selection overlaps transcript grouping and uses one guarded tool path."""
+import asyncio
 import json
 
 import pytest
@@ -38,6 +39,16 @@ def envelope(inner):
     return {"type": "response.event", "delegation_id": "selection", "event": inner}
 
 
+async def shell_calls(events, count):
+    # Admission routes off the sideband receive loop.
+    for _ in range(100):
+        calls = [event for event in events if event.kind == "shell_call"]
+        if len(calls) >= count:
+            return calls
+        await asyncio.sleep(0.01)
+    return [event for event in events if event.kind == "shell_call"]
+
+
 @pytest.mark.asyncio
 async def test_attention_refresh_preserves_two_calls_from_segmented_user_request(monkeypatch):
     events = []
@@ -45,7 +56,7 @@ async def test_attention_refresh_preserves_two_calls_from_segmented_user_request
     try:
         context = {"attention_context": {"items": [
             {"summary": "Earlier Python task cancelled"}, {"summary": "Earlier notes outline completed"}],
-            "total_pending": 2}}
+            "total_pending": 2}, "assistant_notes": {"text": "JARVIS NOTES", "signature": ""}}
         await adapter.create_response(session_id="session", generation=1, request_id="older-updates",
             response_kind="task_update", presentation_ids=(), facts=(), context=context)
         update = next(message for message in socket.sent if message["type"] == "session.update")
@@ -60,8 +71,9 @@ async def test_attention_refresh_preserves_two_calls_from_segmented_user_request
         for intent, goal in [("compare", "Compare Python lists and tuples"), ("notes", "Outline a notes application")]:
             await adapter.handle_event("session", 1, envelope({"type": "response.output_item.done", "response_id": "r",
                 "item": {"type": "function_call", "call_id": intent, "name": "dispatch_task",
-                    "arguments": json.dumps({"intent_id": intent, "goal": goal})}}))
-        calls = [event for event in events if event.kind == "shell_call"]
+                    "arguments": json.dumps({"intent_id": intent, "goal": goal, "notification_intent": "discretionary",
+                        "notification_reason": "No update requested"})}}))
+        calls = await shell_calls(events, 2)
         assert len(calls) == 2
         assert {event.payload["arguments"]["intent_id"] for event in calls} == {"compare", "notes"}
         assert all(event.payload["name"] == "dispatch_task" for event in calls)
@@ -92,7 +104,7 @@ async def test_complete_stream_call_routes_before_terminal_and_continues_once(mo
     events = []
     adapter, socket = await connected(monkeypatch, events)
     item = {"type": "function_call", "call_id": "call", "name": "dispatch_task",
-        "arguments": '{"goal":"Draft a notes app plan","intent_id":"notes-plan"}'}
+        "arguments": '{"goal":"Draft a notes app plan","intent_id":"notes-plan","notification_intent":"discretionary","notification_reason":"No update requested"}'}
     try:
         await adapter.handle_event("session", 1, DELEGATION)
         await adapter.handle_event("session", 1, envelope({"type": "response.created", "response": {"id": "r"}}))
@@ -101,7 +113,7 @@ async def test_complete_stream_call_routes_before_terminal_and_continues_once(mo
         done = envelope({"type": "response.output_item.done", "response_id": "r", "item": item})
         await adapter.handle_event("session", 1, done)
         await adapter.handle_event("session", 1, done)
-        assert len([e for e in events if e.kind == "shell_call"]) == 1
+        assert len(await shell_calls(events, 1)) == 1
         assert not adapter._sessions[("session", 1)].responses[("selection", "r")].terminal
         result = {"accepted": True, "task_id": "task", "admission_timing": {"private": True},
             "result": {"status": "queued", "admission_timing": {"private": True}}}
