@@ -435,6 +435,24 @@ class ConversationObservation(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AssistantPromise(Base):
+    """Something Jarvis said it would do in conversation, tracked until kept or dropped."""
+
+    __tablename__ = "assistant_promises"
+    __table_args__ = (UniqueConstraint("session_id", "source_key", name="uq_assistant_promise_source"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(String(500), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    source_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fragment_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    resolution: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class JarvisLiveTraceEvent(Base):
     """Short-lived, metadata-only timing events for Live diagnosis."""
 

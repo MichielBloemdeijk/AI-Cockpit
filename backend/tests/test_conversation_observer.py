@@ -200,8 +200,8 @@ async def test_observer_commit_exact_result_and_idempotency(monkeypatch,closed,s
         db.add(job); await db.flush(); job_id=job.id
         if closed: (await db.get(LiveSession,live.id)).lifecycle_state="disconnected"
     if shadow: monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","shadow")
-    await conversation_observer.apply(job_id,{"outcomes":[f],"flags":[]},{"policy_hash":"test"})
-    await conversation_observer.apply(job_id,{"outcomes":[f],"flags":[]},{})
+    await conversation_observer.apply(job_id,{"outcomes":[f],"flags":[],"promises":[]},{"policy_hash":"test"})
+    await conversation_observer.apply(job_id,{"outcomes":[f],"flags":[],"promises":[]},{})
     async with session_scope() as db:
         p=await db.get(TaskPresentation,item["presentation_id"])
         assert p.state==("pending" if shadow or partial else "handled")
@@ -220,7 +220,7 @@ async def test_stale_result_and_wrong_owner(monkeypatch):
         job=ConversationObservation(session_id=live.id,generation=live.generation,evidence_hash="stale",input_json=e)
         db.add(job); await db.flush(); jid=job.id
     f=finding();f["presentation_id"]=item["presentation_id"]
-    await conversation_observer.apply(jid,{"outcomes":[f],"flags":[]},{})
+    await conversation_observer.apply(jid,{"outcomes":[f],"flags":[],"promises":[]},{})
     async with session_scope() as db:
         assert (await db.get(TaskPresentation,item["presentation_id"])).state=="pending"
 
@@ -237,7 +237,7 @@ async def test_late_caller_evidence_is_checked_before_commit(monkeypatch):
     async with session_scope() as db:
         await JarvisDomainRepository(db).append_session_event_once(session_id=live.id,event_type="provider.user_transcript_delta",
             payload_json={"delta":"Hold on", "start_ms":800,"end_ms":1600,"generation":live.generation},idempotency_key="late-caller")
-    await conversation_observer.apply(jid,{"outcomes":[f],"flags":[]},{})
+    await conversation_observer.apply(jid,{"outcomes":[f],"flags":[],"promises":[]},{})
     async with session_scope() as db:
         assert (await db.get(TaskPresentation,item["presentation_id"])).state=="pending"
         assert (await db.get(ConversationObservation,jid)).result_json["validation"][p.id]["reason"]=="newer_user_speech"
@@ -275,7 +275,7 @@ async def test_collection_deduplicates_and_recovery_uses_saved_evidence(monkeypa
     calls=[]
     async def fake(e):
         calls.append(e)
-        return {"outcomes":[{"presentation_id":item["presentation_id"],"classification":"none","fragment_ids":[],"reason":"fixture"}],"flags":[]},{}
+        return {"outcomes":[{"presentation_id":item["presentation_id"],"classification":"none","fragment_ids":[],"reason":"fixture"}],"flags":[],"promises":[]},{}
     monkeypatch.setattr(module,"infer",fake)
     assert await conversation_observer.process_one()
     assert not await conversation_observer.process_one()
@@ -308,7 +308,7 @@ async def test_delayed_negative_assessment_does_not_refresh_context_after_new_as
             event_type="provider.assistant_transcript_delta",payload_json={"delta":"The page is ready.",
             "start_ms":2000,"end_ms":2300,"generation":live.generation},idempotency_key="new-speech")
     f={"presentation_id":item["presentation_id"],"classification":"none","fragment_ids":[],"reason":"Older window"}
-    await conversation_observer.apply(jid,{"outcomes":[f],"flags":[]},{})
+    await conversation_observer.apply(jid,{"outcomes":[f],"flags":[],"promises":[]},{})
     async with session_scope() as db:
         p=await db.get(TaskPresentation,item["presentation_id"])
         assert p.state=="pending"
@@ -349,7 +349,7 @@ async def test_user_reaction_is_awaited_and_possibly_unheard_stays_pending(monke
     async def fake(e):
         outcome=next(f for f in e["fragments"] if f["speaker"]=="assistant")
         return {"outcomes":[{"presentation_id":item["presentation_id"],"classification":"possibly_unheard",
-            "fragment_ids":[outcome["id"]],"reason":"User asked to hear it after finishing"}],"flags":[]},{}
+            "fragment_ids":[outcome["id"]],"reason":"User asked to hear it after finishing"}],"flags":[],"promises":[]},{}
     monkeypatch.setattr(module,"infer",fake)
     assert await conversation_observer.process_one()
     async with session_scope() as db:
@@ -391,7 +391,7 @@ def test_model_handles_resolve_and_unknown_handles_stay_invalid():
     from app.services.conversation_observer import resolve_handles
     handles={"r1":"p1","a1":"f1"}
     result=resolve_handles({"outcomes":[{"presentation_id":"r1","classification":"complete","fragment_ids":["a1","a9"],"reason":"x"}],
-        "flags":[{"kind":"unrecorded_promise","fragment_ids":["a1"],"reason":"y"}]},handles)
+        "flags":[{"kind":"unrecorded_promise","fragment_ids":["a1"],"reason":"y"}],"promises":[]},handles)
     assert result["outcomes"][0]["presentation_id"]=="p1" and result["outcomes"][0]["fragment_ids"]==["f1","a9"]
     assert result["flags"][0]["fragment_ids"]==["f1"]
     assert validate_finding(evidence(),result["outcomes"][0])["reason"]=="invalid_citation"

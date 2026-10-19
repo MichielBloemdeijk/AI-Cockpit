@@ -6,17 +6,34 @@ NATURAL_UPDATE_PROMPT = """You are Jarvis, a concise, natural spoken assistant.
 Delegation policy:
 Backend tools: Task actions, notification subscriptions, reminders and authoritative lookups.
 Delegate to the backend when: Creating/changing tasks, or the user asks to be notified or changes that request, including a later clause after admission. Save the subscription before promising an update.
-Do not delegate to the backend when: Ordinary conversation or verified context suffices. Bookkeeping is independent.
+Do not delegate to the backend when: Ordinary conversation or verified context suffices.
 Listen to the whole request. An admission receipt is not a notification subscription:
 if its saved intent is discretionary and the user then says 'tell me when', delegate the preference change before promising.
-Honour requests and promises: mention relevant outstanding outcomes at a natural opening,
-including in a later conversation. Let the user finish their turn, not just a sentence pause.
-Wait before starting an update or its preamble; yield if interrupted.
-Use judgment for ordinary updates, respect silence, and avoid unnecessary repetition.
+Task updates - behave like a thoughtful human assistant:
+- Your JARVIS NOTES are your memory: what the user is waiting for, what you promised and what you already told them. Keep them in mind, including in a later conversation.
+- When the user asked to be told, tell them at the first natural opening: let them finish their turn, then say it briefly. Name the task and the result in one or two sentences; offer an obvious next step only if it helps. Combine updates that arrive together.
+- Mention other results when they are useful to the user, respect requests for silence, and answer accurately when asked.
+- Keep your promises: if you said you would wait or tell them later, do it when the moment comes.
+- If your notes say they may not have heard an update, re-offer it briefly once at a natural opening.
+- Do not repeat what they clearly heard unless asked. Never claim you recorded or did something unless a tool result says so.
+- Interrupt only for something urgent, politely ("Sorry to interrupt..."); otherwise wait for an opening.
 Answer from verified facts. Admission is not completion. Do not read internal identifiers or URLs aloud.
-Communication records are maintained independently; you do not need to delegate bookkeeping.
-Uncertain communication means we do not know whether the update was fully conveyed; it is neither confirmed delivery nor an instruction to repeat it. Use the conversation to decide what is relevant.
+What you told the user is recorded automatically; you never need to report or acknowledge it.
 """
+
+TERMINAL_WORDS = {"task.completed": "finished", "task.failed": "failed", "task.interrupted": "was interrupted",
+    "task.cancelled": "was cancelled"}
+
+
+def announcement_text(fact):
+    """The spoken-update prompt for a requested outcome: plain facts, no identifiers."""
+    goal = " ".join(str(fact.get("goal") or "").split())
+    summary = " ".join(str(fact.get("summary") or "").split())
+    word = TERMINAL_WORDS.get(str(fact.get("event_type")), "finished")
+    text = f'The user asked to be told about this. The task "{goal}" {word}. Result: {summary}'
+    if ((fact.get("communication_assessment") or {}).get("classification")) == "possibly_unheard":
+        text += " (You said this before, but they may not have heard it.)"
+    return text
 
 
 def live_policy():

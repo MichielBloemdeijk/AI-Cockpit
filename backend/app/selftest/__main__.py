@@ -24,7 +24,7 @@ ALLOWANCE = {"browser": 16, "android": 12}
 TEST_ENV = {"SESSION_COOKIE_SECURE": "false", "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal",
     "JARVIS_EVAL_NETWORK_BLOCKED": "1", "TASK_POOL_ENABLED": "false", "TASK_ORCHESTRATION_ENABLED": "false",
     "TASK_ORCHESTRATION_LIVE_ENABLED": "false", "PYTHONUTF8": "1"}
-JARVIS_TESTS = ["tests/test_conversation_observer.py", "tests/test_selftest.py", "tests/test_jarvis_coordinator.py",
+JARVIS_TESTS = ["tests/test_conversation_observer.py", "tests/test_assistant_notes.py", "tests/test_selftest.py", "tests/test_jarvis_coordinator.py",
     "tests/test_live_admission_intents.py", "tests/test_model_reported_attention.py", "tests/test_openai_live_adapter.py",
     "tests/test_notification_context_floors.py", "tests/test_task_notification_preferences.py",
     "tests/test_task_notifications.py", "tests/test_task_service.py", "tests/test_task_workflows.py",

@@ -658,7 +658,11 @@ class TaskPresentationService:
                     except (ValueError, TypeError):
                         previous = {}
                     if (previous.get("notification") or {}).get("intent") == "requested":
-                        fact["commentary"] = False
+                        # One re-offer is allowed when the user may not have heard it.
+                        unheard = ((fact.get("communication_assessment") or {}).get("classification") == "possibly_unheard"
+                            and ((previous.get("communication_assessment") or {}).get("classification")) != "possibly_unheard")
+                        if not unheard:
+                            fact["commentary"] = False
                     break
             facts.append(fact)
         if not facts:

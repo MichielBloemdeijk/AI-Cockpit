@@ -546,6 +546,11 @@ class JarvisCoordinator:
                         voice_floor_held = busy_floor and not stale_voice_floor
                         pending = await task_presentation_service.list_pending(include_terminal_context=active.provider_adapter == "openai_live")
                         fingerprint = task_presentation_service.semantic_fingerprint(pending)
+                        if settings.jarvis_conversation_observer_mode == "enabled":
+                            # Promises are part of Jarvis's notes; a change refreshes them too.
+                            from app.services import assistant_notes
+                            async with session_scope() as session:
+                                fingerprint += ":" + await assistant_notes.promise_signature(session)
                         attention_key = (active.id, active.generation)
                         previous_fingerprint = self._attention_context_fingerprints.get(attention_key)
                         if fingerprint != previous_fingerprint:
@@ -881,6 +886,9 @@ class JarvisCoordinator:
                             "next_cursor": attention_update.next_cursor,
                             "deltas": tombstones,
                         }
+                        if settings.jarvis_conversation_observer_mode == "enabled":
+                            from app.services import assistant_notes
+                            context["assistant_notes"] = await assistant_notes.render(session, session_id=session_id)
                     reservation_started = situation_finished
                     if selected_reason == "task_update":
                         reservation = await task_presentation_service.reserve_in_session(
@@ -1360,6 +1368,9 @@ class JarvisCoordinator:
                 "next_cursor": attention_update.next_cursor,
                 "deltas": [],
             }
+            if settings.jarvis_conversation_observer_mode == "enabled":
+                from app.services import assistant_notes
+                context["assistant_notes"] = await assistant_notes.render(session, session_id=realtime.id)
             if wake_activation is not None and wake_activation.activation_id:
                 context = {**context, "activation_id": wake_activation.activation_id,
                     "activation_source": "wake_word"}

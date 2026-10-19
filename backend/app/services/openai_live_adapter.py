@@ -122,6 +122,7 @@ class _LiveSession:
     sideband_started: float = 0.0
     sideband_finished: float = 0.0
     diagnostics: LiveModelDiagnostics | None = None
+    notes_signature: str = ""
 
 
 @dataclass(slots=True)
@@ -266,6 +267,7 @@ class OpenAILiveAdapter:
                 sideband_finished=sideband_finished,
                 priority_unsupported=pending.priority_rejection is not None,
                 diagnostics=pending.diagnostics,
+                notes_signature=str((pending.context.get("assistant_notes") or {}).get("signature") or ""),
             )
             self._sessions[key] = provider_session
             self._pending_connections.pop(key, None)
@@ -399,6 +401,11 @@ class OpenAILiveAdapter:
                 },
             },
         )
+        notes = context.get("assistant_notes") if isinstance(context.get("assistant_notes"), dict) else None
+        if notes is not None:
+            await self._send_notes_update(provider_session, request_id=request_id, facts=facts, notes=notes,
+                deltas=attention_context.get("deltas") or [])
+            return
         append_items: list[tuple[dict[str, Any], tuple[str, ...], bool]] = [
             (fact, (str(fact.get("presentation_id") or ""),), bool(fact.get("commentary")))
             for fact in facts
@@ -452,6 +459,36 @@ class OpenAILiveAdapter:
                     "content": content,
                 },
             )
+
+    async def _send_notes_update(self, provider_session: _LiveSession, *, request_id: str,
+                                 facts: tuple[dict[str, Any], ...], notes: dict[str, Any], deltas: list) -> None:
+        """Requested outcomes as spoken-update commentary; everything else as refreshed notes."""
+        from app.services.live_task_updates import announcement_text
+        appends: list[tuple[str, str, tuple[str, ...], str]] = []
+        quiet_ids: list[str] = []
+        for fact in facts:
+            presentation_id = str(fact.get("presentation_id") or "")
+            verified = json.dumps(fact, separators=(",", ":"), ensure_ascii=False)
+            if fact.get("commentary"):
+                appends.append(("session.commentary.append", announcement_text(fact), (presentation_id,), verified))
+            elif presentation_id:
+                quiet_ids.append(presentation_id)
+        if quiet_ids or deltas or notes.get("signature") != provider_session.notes_signature:
+            verified = json.dumps({"assistant_notes": notes.get("signature"), "presentation_ids": quiet_ids},
+                separators=(",", ":"))
+            appends.append(("session.thinking.append", "Your notes were updated. Do not announce this solely because "
+                "it was appended.\n" + notes["text"], tuple(quiet_ids), verified))
+            provider_session.notes_signature = str(notes.get("signature") or "")
+        if not appends:
+            await self._emit(provider_session, "assistant_update_submitted", {"request_id": request_id,
+                "presentation_ids": [], "response_kind": "task_update", "submission_ack": "no_context_to_append"},
+                event_id=f"live-empty-update:{request_id}")
+            return
+        for index, (append_type, content, item_ids, verified) in enumerate(appends):
+            event_id = f"jarvis-live-update:{request_id}:{index}"
+            provider_session.pending_commentary[event_id] = (request_id, tuple(i for i in item_ids if i), verified)
+            await self._send(provider_session, {"type": append_type, "event_id": event_id,
+                "delegation_id": None, "content": content})
 
     async def cancel_response(self, *, session_id: str, generation: int, response_id: str | None = None) -> None:
         # Full-duplex Live handles speech interruption. Explicit task cancellation
@@ -1306,11 +1343,16 @@ class OpenAILiveAdapter:
             if isinstance(context.get("attention_context"), dict)
             else {"items": [], "total_pending": 0, "next_cursor": None}
         )
-        conversation_prompt += " CURRENT_ATTENTION_CHECKLIST=" + json.dumps(
-            attention_context,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
+        notes = context.get("assistant_notes")
+        if isinstance(notes, dict) and notes.get("text"):
+            # Natural updates: Live reads one readable notes view instead of JSON.
+            conversation_prompt += "\n\n" + notes["text"]
+        else:
+            conversation_prompt += " CURRENT_ATTENTION_CHECKLIST=" + json.dumps(
+                attention_context,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
         return {
             "model": settings.openai_live_model,
             "instructions": conversation_prompt,

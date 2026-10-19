@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import ConversationObservation, LiveSession, LiveSessionEvent, TaskPresentation
+from app.db.tables import AssistantPromise, ConversationObservation, LiveSession, LiveSessionEvent, TaskPresentation
 from app.db.repositories.jarvis import JarvisDomainRepository
 
 log = logging.getLogger(__name__)
@@ -54,8 +54,14 @@ assistant fragment ids containing the outcome statement, excluding unrelated
 preambles and backchannels. No quotation is required. Choose only that result's
 eligible_fragment_ids. Transcript fragments from both speakers may interleave slightly.
 Flag unrecorded promises/preference mismatches without changing preferences.
-Return every supplied presentation once. A pending requested subscription already
-records a promise; do not flag that merely because its outcome is still pending.
+An unrecorded promise is any other concrete commitment by the assistant to do or
+say something later: to wait until the user is done, to give a result after they
+finish, to remind or follow up, to check something. Cite the assistant fragments
+that made it. Never flag a promise to report a task's outcome when it finishes:
+task notification requests are tracked separately.
+Return every supplied result once.
+For each open promise (p1, p2, ...) return kept if the assistant has now done what
+it promised, otherwise open.
 """
 POLICY_HASH = sha256(POLICY.encode()).hexdigest()
 SCHEMA = {"type": "object", "properties": {
@@ -68,8 +74,11 @@ SCHEMA = {"type": "object", "properties": {
     "flags": {"type": "array", "items": {"type": "object", "properties": {
         "kind": {"type": "string", "enum": ["unrecorded_promise", "preference_mismatch"]},
         "fragment_ids": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}},
-        "required": ["kind", "fragment_ids", "reason"], "additionalProperties": False}}},
-    "required": ["outcomes", "flags"], "additionalProperties": False}
+        "required": ["kind", "fragment_ids", "reason"], "additionalProperties": False}},
+    "promises": {"type": "array", "items": {"type": "object", "properties": {
+        "id": {"type": "string"}, "status": {"type": "string", "enum": ["kept", "open"]}, "reason": {"type": "string"}},
+        "required": ["id", "status", "reason"], "additionalProperties": False}}},
+    "required": ["outcomes", "flags", "promises"], "additionalProperties": False}
 
 
 def now():
@@ -217,7 +226,11 @@ def semantic_input(evidence):
             "eligible_fragment_ids": [reverse[f["id"]] for f in evidence["fragments"] if f["speaker"] == "assistant"
                 and (p.get("exposed_after_sequence") is None or f.get("sequence", 0) > p["exposed_after_sequence"])],
             "facts": {k: (p.get("facts") or {}).get(k) for k in ("goal", "event_type", "summary", "status", "notification")}})
-    return {"dialogue": dialogue, "results": results}, handles
+    promises = []
+    for index, promise in enumerate(evidence.get("promises") or [], 1):
+        handles[f"p{index}"] = promise["promise_id"]
+        promises.append({"id": f"p{index}", "text": promise["text"]})
+    return {"dialogue": dialogue, "results": results, "open_promises": promises}, handles
 
 
 async def infer(evidence):
@@ -251,6 +264,8 @@ def resolve_handles(result, handles):
         item["fragment_ids"] = [handles.get(i, i) for i in item["fragment_ids"]]
     for flag in result["flags"]:
         flag["fragment_ids"] = [handles.get(i, i) for i in flag["fragment_ids"]]
+    for promise in result.setdefault("promises", []):
+        promise["id"] = handles.get(promise["id"], promise["id"])
     return result
 
 
@@ -331,22 +346,32 @@ class ConversationObserver:
                     ConversationObservation.session_id == live.id).order_by(ConversationObservation.created_at.desc()).limit(1))).scalar_one_or_none()
                 presentations = (await db.execute(select(TaskPresentation).where(TaskPresentation.id.in_(exposed),
                     TaskPresentation.state == "pending", TaskPresentation.candidate_type == "terminal_result"))).scalars().all()
-                if not presentations:
+                from app.services.assistant_notes import recent_session_ids
+                open_promises = (await db.execute(select(AssistantPromise).where(AssistantPromise.status == "open",
+                    AssistantPromise.session_id.in_(await recent_session_ids(db, live.id)))
+                    .order_by(AssistantPromise.created_at))).scalars().all()
+                if not presentations and not open_promises:
                     self._versions[live.id] = live.last_event_sequence
                     continue
                 fragments = fragments[-200:]
                 values = [{"presentation_id": p.id, "task_id": p.task_id, "source_task_event_id": p.source_task_event_id,
                     "exposed_after_sequence": exposed[p.id],
                     "facts": p.required_facts_json} for p in presentations]
-                if not any(f["speaker"] == "assistant" and f.get("sequence", 0) > p["exposed_after_sequence"]
-                           for f in fragments for p in values):
+                # Speech after an outcome became known, or after a promise was made, needs assessment.
+                anchors = [p["exposed_after_sequence"] for p in values]
+                if open_promises:
+                    anchors.append(latest_job.input_json.get("assessed_through", 0) if latest_job else 0)
+                anchor = min(anchors)
+                if not any(f["speaker"] == "assistant" and f.get("sequence", 0) > anchor for f in fragments):
                     self._versions[live.id] = live.last_event_sequence
-                    continue  # No post-outcome speech to assess; telemetry alone needs no inference.
-                if not self._reaction_settled(events, values, latest_job):
+                    continue  # No new assistant speech to assess; telemetry alone needs no inference.
+                if not self._reaction_settled(events, anchor, latest_job):
                     continue  # Judge an update only once the user's reaction is known.
                 eligibility = {f["id"]: playback_support([f], playback).get("supported", False)
                     for f in fragments if f["speaker"] == "assistant"}
                 identity = {"fragments": fragments, "presentations": values, "eligible_fragments": eligibility,
+                            "promises": [{"promise_id": p.id, "text": p.text} for p in open_promises],
+                            "assessed_through": max((f.get("sequence", 0) for f in fragments), default=0),
                             "policy_hash": POLICY_HASH}
                 key = digest(identity)
                 if await db.scalar(select(ConversationObservation.id).where(ConversationObservation.session_id == live.id,
@@ -358,13 +383,12 @@ class ConversationObserver:
                 self._versions[live.id] = live.last_event_sequence
 
     @staticmethod
-    def _reaction_settled(events, values, latest_job) -> bool:
+    def _reaction_settled(events, anchor, latest_job) -> bool:
         def age(event):
             return (now() - observed_at(event).replace(tzinfo=timezone.utc)).total_seconds()
         speech = [e for e in events if e.event_type in {"provider.assistant_transcript_delta", "provider.user_transcript_delta"}
             and (e.payload_json or {}).get("delta")]
-        post = [e for e in speech if e.event_type == "provider.assistant_transcript_delta"
-            and any(e.sequence > p["exposed_after_sequence"] for p in values)]
+        post = [e for e in speech if e.event_type == "provider.assistant_transcript_delta" and e.sequence > anchor]
         if not post:
             return False
         batch_since = max(observed_at(post[0]), latest_job.created_at) if latest_job else observed_at(post[0])
@@ -477,9 +501,35 @@ class ConversationObserver:
                         "source_task_event_id": candidate.source_task_event_id, "fragment_ids": finding["fragment_ids"],
                         "source_window": {"fragment_ids": finding["fragment_ids"]}, "playback": support, "policy_hash": usage.get("policy_hash", POLICY_HASH), "model": usage.get("model", MODEL)})
                 await task_presentation_service._supersede_notification(db, candidate.source_task_event_id)
+            if settings.jarvis_conversation_observer_mode == "enabled":
+                await self._apply_promises(db, job, evidence, result)
             job.result_json = {**result, "validation": validations}
             job.usage_json = {**usage, "attempts": (job.usage_json or {}).get("attempts", [])}
             job.status, job.completed_at, job.lease_until = "completed", now(), None
+
+    @staticmethod
+    async def _apply_promises(db, job, evidence, result):
+        by_id = {f["id"]: f for f in evidence["fragments"]}
+        for flag in result["flags"]:
+            if flag["kind"] != "unrecorded_promise":
+                continue
+            cited = [by_id[i] for i in flag["fragment_ids"] if i in by_id and by_id[i]["speaker"] == "assistant"]
+            if not cited:
+                continue
+            key = digest(sorted(f["id"] for f in cited))
+            if await db.scalar(select(AssistantPromise.id).where(AssistantPromise.session_id == job.session_id,
+                    AssistantPromise.source_key == key)):
+                continue
+            text = " ".join("".join(f["text"] for f in sorted(cited, key=lambda f: f.get("sequence", 0))).split()).lstrip(".,;: ")[:500]
+            db.add(AssistantPromise(session_id=job.session_id, generation=job.generation, text=text, source_key=key,
+                source_fragment_ids=[f["id"] for f in cited], status="open"))
+        known = {p["promise_id"] for p in evidence.get("promises") or []}
+        for update_ in result.get("promises") or []:
+            if update_["status"] != "kept" or update_["id"] not in known:
+                continue
+            promise = await db.get(AssistantPromise, update_["id"])
+            if promise is not None and promise.status == "open":
+                promise.status, promise.resolution, promise.resolved_at = "kept", update_["reason"][:500], now()
 
     async def run(self):
         while not self.stop_event.is_set():

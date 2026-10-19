@@ -17,6 +17,32 @@ Jarvis keeps two kinds of memory about task updates:
   notification. Uncertain communication stays pending. It is shown to Live as a
   fact, not as an order to repeat.
 
+## Jarvis notes
+
+With the observer enabled, Live gets one readable notes view instead of JSON
+checklists. It is built by `app/services/assistant_notes.py`, put into the
+session instructions at start, and re-sent as quiet thinking context whenever it
+changes. It has three sections:
+
+- **Waiting for the user:** pending results with the user's wish (asked to be
+  told, asked for silence, or no request), questions and reminders, and a
+  one-time re-offer hint when an update was possibly unheard.
+- **You promised:** commitments Jarvis made in conversation ("I'll wait until
+  you're done"). The bookkeeper records them from its `unrecorded_promise`
+  findings and marks them kept once fulfilled. Unkept promises are dropped
+  after the following conversation.
+- **Already told them:** recently delivered results, so Jarvis avoids
+  repeating itself.
+
+Requested results still get one spoken-update prompt (commentary) per session,
+in plain words that name the task and the result. When the bookkeeper finds
+that update possibly unheard, one more prompt is allowed. The Live prompt asks
+for brief, self-contained updates at natural openings, kept promises, and polite
+interruptions only for urgent matters.
+
+Promises are tracked only while a task result or an open promise is in play;
+general promises in unrelated small talk are not assessed (cost bound).
+
 ## How the bookkeeper judges communication
 
 - **It waits for the user's reaction.** An update is assessed only after the
