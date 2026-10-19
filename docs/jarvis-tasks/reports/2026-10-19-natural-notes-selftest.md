@@ -1,6 +1,6 @@
 # Natural notes and agent self-testing: first iterations
 
-**Status (19 October 2026):** Iteration 3 (commit 7112b7a) passes every offline layer: L0, and L1 at 18/18 twice. It has **not run live yet**: the plan caps work at two live candidate iterations before reporting back. The conversation observer stays off by default, so nothing is adopted yet.
+**Status (19 October 2026, end of day):** Five candidate iterations. The latest (commit f27fe91) passes L0 and L1 (20/20). The final live verification round stopped after four browser scenarios because the OpenAI credit balance ran out (HTTP 429 `insufficient_quota`). The conversation observer stays off by default; adopting it is the next decision.
 
 ## What changed (summary)
 
@@ -65,3 +65,46 @@ Run iteration 3 live:
 - L4 Android scripted plus adaptive (≤12)
 
 Then decide adoption: no confirmed material issue in natural updates. After that, the 15-minute manual phone check.
+
+
+## Iterations 3 to 5 (later on 19 October)
+
+| Layer | Candidate | Runs | Outcome |
+|---|---|---|---|
+| L2 browser | iteration 3 (7112b7a) | 11 scenarios, 13 connections | 4 fine, 5 awkward, 2 material |
+| L3 adaptive | iteration 4 (63b4fc2) | 8 scenarios, 8 connections plus 8 simulated-user sessions | 3 fine, 4 awkward, 1 material. The simulated user was satisfied in 5 of 8 |
+| L4 Android | iteration 4 plus harness fixes | 9 runs, 12 connections | Adaptive interruption fine (talked over, then re-offered). Streamed scripted false-premise case fine. Earlier Android verdicts were limited by harness bugs, now fixed |
+| L1 replay | iteration 4 | 20 recordings | 20/20 |
+| Final round | iteration 5 (f27fe91) | 4 browser scenarios before credits ran out | 2 fine, 1 awkward, 1 not reviewed |
+
+### Remaining material findings, and what was done
+
+- **Talked-over update (L2 iteration 3).** Jarvis yielded, answered, then re-offered: the target behaviour. A push still went out as the session ended, 0.6 s before the re-offer was recorded as heard. Pushes now wait about 15 s after a session ends (iteration 4).
+- **Question and reminder (L2 iteration 3).** The delivered reminder stayed pending: Live no longer self-reports and the bookkeeper did not cover reminders. The bookkeeper now confirms reminders (iteration 4). The question reached the user about 13 s late, because background orchestration decides first. Pending questions now appear in the notes immediately (iteration 5).
+- **Urgent failure (L3 iteration 4).** Jarvis waited 12 s, then cut in politely. A failure of an important task may now interrupt politely straight away (iteration 5).
+- **Double reply at admission** ("it's queued… still queued"). The backend router made unprompted status lookups. It now replies once (iteration 4).
+- **Admission livelock.** When the user kept talking, task creation failed every retry. The newer-speech refresh now happens once per request (iteration 3).
+- **Android playback evidence.** Reports longer than 600 ms were ignored, so delivery was never confirmed. Now fixed, and confirmed on the emulator (handled).
+- **Retries.** A failed task is retried by background orchestration, which you consider a feature. Retries must now keep the original goal and intent (orchestrator instructions), and Jarvis mentions a running retry (notes).
+
+### Harness fixes found by running it
+
+- Android scripted speech now uses the live stream; the old clip path dropped every utterance after the first.
+- The Android renderer is sequential (bursty callbacks overwrote audio) and accepts 8 kHz.
+- The questionnaire is written on Android.
+- `wait_output` measures from completion.
+- Pairing logs in as the owner first.
+
+### Usage across the day
+
+- **Voice:** 70 voice runs, 74 Jarvis connections, 18 simulated-user sessions.
+- **Harness requests:** 68 transcriptions and 116 review/questionnaire requests.
+- **L1 replay:** about 218 bookkeeping requests.
+- **Monetary cost:** unknown. The credit balance is now exhausted.
+
+### Next
+
+1. Once credits are available, run the final verification round on f27fe91 (L2 core, L3 adaptive, Android subset).
+2. If no confirmed material issue in natural updates remains, enable the conversation observer by default and remove the legacy branches (plan step 2f).
+3. Repair the full backend test suite (separate session).
+4. The 15-minute manual phone check.
