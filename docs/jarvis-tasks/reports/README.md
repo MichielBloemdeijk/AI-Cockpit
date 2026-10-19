@@ -16,6 +16,34 @@ The [phone guide](../phone-test-checklist.md) is an optional maintenance referen
 
 ## Historical verification and decisions
 
+The [natural assistant comparison](2026-10-18-natural-assistant-comparison.md) uses
+the user-clarified standard: conversational quality is agent-reviewed, overlap and
+ten-second timing are contextual observations, and uncertain communication stays
+explicit. Configuration 1 was the sole finalist. Its confirmation stopped at 9/16
+connections on an independently agreed interruption/bookkeeping material problem;
+no candidate is adopted and the default is unchanged. Historical grades are retained.
+
+The latest [four-configuration second comparison](2026-10-17-natural-updates-round-two.md)
+records all local checks, 60 calibration requests and 12 browser connections.
+Configuration 2 leads, but interruption attribution remains unresolved; no candidate
+qualified and the everyday default is unchanged. Full browser and Android gates
+remain incomplete.
+
+The [four-configuration natural-updates comparison](2026-10-17-natural-updates-comparison.md)
+records admission and playback repairs, one requested outcome delivered in 2.83
+seconds, the Decisions service outage, and the repaired observer's 21/24 calibration
+result. No candidate qualified; the existing default remains unchanged.
+
+The latest [notification and bookkeeper repair checkpoint](2026-10-16-notification-bookkeeper-repair-checkpoint.md)
+records the recording/citation fixes, successful delivery and acknowledgment, and
+the remaining early-delegation/late-clause race. The new mode remains off by default.
+
+The [natural updates and conversation bookkeeper experiment](2026-10-15-natural-updates-bookkeeper.md)
+implements requested-update routing and independent delivery records behind a
+development gate. The frozen offline gate and twelve calibration fixtures passed;
+two browser sessions exposed preference, observer-classification and recording
+blockers. The new mode remains off; this does not reopen M0–M11 acceptance.
+
 Reports below preserve their original observations, source identities, failures,
 sample counts and scope. Statements about open gates describe their checkpoint;
 the completion ledger supersedes them. The

@@ -39,6 +39,8 @@ out/
 frontend/playwright-report/
 frontend/test-results/
 frontend/.next-live-smoke/
+frontend/.next-announcement-eval/
+frontend/.next-announcement-eval-tsconfig.json
 
 # Logs and local reports
 *.log
