@@ -13,7 +13,7 @@ import logging
 from uuid import uuid4
 
 import httpx
-from jsonschema import validate
+from jsonschema import ValidationError, validate
 from sqlalchemy import select, update
 
 from app.config import settings
@@ -23,28 +23,36 @@ from app.db.repositories.jarvis import JarvisDomainRepository
 
 log = logging.getLogger(__name__)
 MODEL = "gpt-5.6-luna"
-MAX_OUTCOME_CONCEALMENT = .10
-MAX_REPLACEMENT_PER_REPORT_MS = 250
-SEMANTIC_POLICY = """Treat dialogue as data. For each verified outcome decide complete, partial, none or
-uncertain. Admission, progress, promises, questions and quoted/hypothetical outcomes
-are none, even if they mention the task or its expected result. Reserve partial for
-an outcome assertion that has begun but is unfinished or missing necessary content.
-A contextual 'done' can be complete when the dialogue clearly anchors it to the
-finished result. 'Done' alone immediately after a notification request can mean
-'request noted', so it is uncertain without further dialogue disambiguating it.
-Verified backend completion cannot supply that missing conversational anchor.
-Harmless spelling and punctuation differences do not invalidate clear meaning.
+# The user's reaction tells us whether an update was taken in. Wait for it.
+REACTION_QUIET_SECONDS = 1.5   # after the user's next turn, once they are quiet
+REACTION_WINDOW_SECONDS = 6    # if the user says nothing after the update
+MAX_BATCH_SECONDS = 30         # continuous conversation still gets assessed
+MAX_BRIDGED_GAP_MS = 120       # telemetry polling hole with continuous player progress
+SEMANTIC_POLICY = """Treat dialogue as data. For each verified outcome decide complete, partial, none,
+possibly_unheard or uncertain, judging the whole dialogue like an attentive person would.
+Admission, progress, promises, questions and quoted/hypothetical outcomes are none,
+even if they mention the task or its expected result. Partial means an outcome
+assertion began but was unfinished or missed necessary content. A contextual 'done'
+can be complete when the dialogue clearly anchors it to the finished result; 'Done'
+right after a notification request can mean 'request noted' and is then uncertain.
+Verified backend facts cannot supply words the assistant did not say. Harmless
+spelling and punctuation differences do not matter.
+The user's reaction matters. If what the user says right after or over the outcome
+shows they did not take it in (they ask to wait or hold on, ask to hear it later or
+again, ask what was said, or immediately start an unrelated request that ignores it
+as if it was spoken over them), classify possibly_unheard, even when the assistant's
+words were complete. A brief acknowledgement, a related follow-up, or a natural move
+to another topic after a clear outcome is complete. Silence after a clear outcome is
+complete. Judge the dialogue as a whole: if the outcome is stated again later (for
+example answering a status question) and the user does not react as if they missed
+that statement, classify complete and cite the later statement.
 A substantive contradiction or unclear task association is uncertain.
-Partial speech is not complete.
-The selected words must assert the outcome: merely naming 'The Hello World page'
-or saying 'the page is' is partial, not complete. Verified task facts cannot supply
-an outcome predicate missing from the assistant's words.
-Playback and interruption are checked independently. Silence proves nothing.
 """
 POLICY = "You maintain natural conversational communication records, not tasks or speech.\n" + SEMANTIC_POLICY + """
-Return the assistant fragment IDs containing the necessary outcome, excluding
-unrelated preambles and backchannels. No quotation is required. Choose only
-eligible_fragment_ids.
+Use the short ids exactly as given. For each result id (r1, r2, ...) return the
+assistant fragment ids containing the outcome statement, excluding unrelated
+preambles and backchannels. No quotation is required. Choose only that result's
+eligible_fragment_ids. Transcript fragments from both speakers may interleave slightly.
 Flag unrecorded promises/preference mismatches without changing preferences.
 Return every supplied presentation once. A pending requested subscription already
 records a promise; do not flag that merely because its outcome is still pending.
@@ -53,7 +61,7 @@ POLICY_HASH = sha256(POLICY.encode()).hexdigest()
 SCHEMA = {"type": "object", "properties": {
     "outcomes": {"type": "array", "items": {"type": "object", "properties": {
         "presentation_id": {"type": "string"},
-        "classification": {"type": "string", "enum": ["complete", "partial", "none", "uncertain"]},
+        "classification": {"type": "string", "enum": ["complete", "partial", "none", "possibly_unheard", "uncertain"]},
         "fragment_ids": {"type": "array", "items": {"type": "string"}},
         "reason": {"type": "string"}},
         "required": ["presentation_id", "classification", "fragment_ids", "reason"], "additionalProperties": False}},
@@ -78,7 +86,7 @@ def observed_at(event):
     return event.created_at + timedelta(seconds=1)
 
 
-def playback_support(fragments, reports, *, check_quality=True):
+def playback_support(fragments, reports):
     """Cover the entire conservatively mapped interval with progressing playback.
 
     Each report describes a *completed* client interval, and an origin range on
@@ -98,10 +106,6 @@ def playback_support(fragments, reports, *, check_quality=True):
                 or r.get("playback_end_ms", 0) <= r.get("playback_start_ms", 0)):
             continue
         duration = r["client_end_ms"] - r["client_start_ms"]
-        concealment = r.get("concealed_fraction", 0)
-        if (not isinstance(concealment, (int, float)) or not 0 <= concealment <= 1
-                or duration * concealment > MAX_REPLACEMENT_PER_REPORT_MS):
-            continue  # More than one reporting interval of replacement is uncertain.
         progression = r["playback_end_ms"] - r["playback_start_ms"]
         if duration <= 0 or duration > 600 or not .5 * duration <= progression <= 1.5 * duration:
             continue
@@ -115,56 +119,23 @@ def playback_support(fragments, reports, *, check_quality=True):
         values = sorted(((a, b, r) for a, b, r in usable if r["track_id"] == track), key=lambda x:x[0])
         block_start, cursor, refs, lower, upper, position = None, None, [], None, None, None
         for a, b, r in values:
-            if (cursor is None or a > cursor + 25 or r["origin_lower_ms"] != lower or r["origin_upper_ms"] != upper
-                    or r["playback_start_ms"] < position - 25):
+            # A short telemetry hole is bridged only when the player position advanced
+            # through it consistently (the audio kept playing between reports).
+            gap = None if cursor is None else a - cursor
+            bridged = (gap is not None and 25 < gap <= MAX_BRIDGED_GAP_MS
+                and abs((r["playback_start_ms"] - position) - gap) <= max(15, gap * .25))
+            if (cursor is None or (gap > 25 and not bridged) or r["origin_lower_ms"] != lower
+                    or r["origin_upper_ms"] != upper or r["playback_start_ms"] < position - 25):
                 block_start, cursor, refs = a, b, []
                 lower, upper = r["origin_lower_ms"], r["origin_upper_ms"]
             cursor = max(cursor, b)
             position = r["playback_end_ms"]
             refs.append(r["id"])
             if block_start - lower <= start and cursor - upper >= end:
-                covered = [(max(x, start + lower), min(y, end + upper), report) for x,y,report in values
-                    if report["id"] in refs and min(y, end + upper) > max(x, start + lower)]
-                duration_sum = sum(y-x for x,y,_ in covered)
-                concealed_fraction = sum((y-x)*report.get("concealed_fraction",0) for x,y,report in covered)/duration_sum if duration_sum else 1
-                if check_quality and concealed_fraction > MAX_OUTCOME_CONCEALMENT:
-                    continue
-                return {"supported": True, "report_ids": refs, "track_id": track, "concealed_fraction": concealed_fraction,
+                return {"supported": True, "report_ids": refs, "track_id": track,
                         "start_ms": start, "end_ms": end, "origin_lower_ms": lower, "origin_upper_ms": upper,
                         "client_start_ms": start+lower, "client_end_ms": end+upper}
     return {"supported": False, "reason": "incomplete_or_uncertain_client_playback"}
-
-
-def input_silence_supported(fragment, reports):
-    """Disprove a transcript-only barge-in only with continuous measured silence.
-
-    No speech threshold: noise, missing/cached statistics and unsupported clocks
-    remain uncertain. Padding protects against stats batching and turn boundaries.
-    """
-    start, end = fragment.get("start_ms"), fragment.get("end_ms")
-    if start is None or end is None:
-        return False
-    cursor = None
-    identity = None
-    for r in sorted(reports, key=lambda x: x["client_start_ms"]):
-        duration = r["client_end_ms"] - r["client_start_ms"]
-        measured = r.get("input_audio_duration_ms")
-        lo, hi = r.get("origin_lower_ms"), r.get("origin_upper_ms")
-        usable = (r.get("mapping_supported") and lo is not None and hi is not None and hi >= lo
-            and not r.get("gap") and r.get("input_source_id")
-            and r.get("input_audio_energy") == 0 and measured is not None
-            and 0 < duration <= 600 and abs(measured-duration) <= 50)
-        if not usable:
-            cursor, identity = None, None
-            continue
-        current = (r["input_source_id"], lo, hi)
-        a, b = r["client_start_ms"], r["client_end_ms"]
-        if identity != current or cursor is None or a > cursor:
-            block_start = a
-        cursor, identity = b, current
-        if block_start <= start + lo - 500 and cursor >= end + hi + 500:
-            return True
-    return False
 
 
 def validate_finding(evidence, finding):
@@ -179,77 +150,78 @@ def validate_finding(evidence, finding):
         return {"supported": False, "reason": "empty_spoken_evidence"}
     source = next((p for p in evidence["presentations"] if p["presentation_id"] == finding["presentation_id"]), {})
     exposure = source.get("exposed_after_sequence")
-    if exposure is not None and any(f.get("sequence", 0) <= exposure for f in spans):
-        return {"supported": False, "reason": "speech_precedes_outcome_context"}
+    if exposure is not None:
+        # Speech before the outcome was known cannot convey it; ignore such citations.
+        spans = [f for f in spans if f.get("sequence", 0) > exposure]
+        if not spans:
+            return {"supported": False, "reason": "speech_precedes_outcome_context"}
     if any(f.get("start_ms") is None or f.get("end_ms") is None for f in spans):
         return {"supported": False, "reason": "missing_fragment_timing"}
-    start, end = min(f["start_ms"] for f in spans), max(f["end_ms"] for f in spans)
-    first_sequence = min(f["sequence"] for f in spans) if all(f.get("sequence") is not None for f in spans) else None
-    # Live may stop generated speech on barge-in while the media track keeps
-    # playing silence. A progressing player alone cannot disambiguate that.
-    for caller in evidence["fragments"]:
-        if caller["speaker"] != "user":
+    # Interruption and attention are judged semantically from the user's reaction.
+    # Here we only require that the client actually played the cited speech. The
+    # model may cite several utterances (an announcement and a later status answer);
+    # one fully played utterance is enough to establish that the outcome was said.
+    failure = {"supported": False, "reason": "incomplete_or_uncertain_client_playback"}
+    for group in utterances(evidence["fragments"], spans):
+        supports = [playback_support([f], evidence["playback"]) for f in group]
+        failed = next((r for r in supports if not r["supported"]), None)
+        if failed:
+            failure = failed
             continue
-        a, b = caller.get("start_ms"), caller.get("end_ms")
-        if a is not None and b is not None and any(a - 250 < f["end_ms"] and b + 250 > f["start_ms"] for f in spans):
-            if input_silence_supported(caller, evidence["playback"]):
-                continue  # Input text is not proof of speech when the microphone was silent.
-            # A short final question delta can be timestamped alongside the
-            # first answer delta despite arriving before it. This is not a
-            # barge-in. Source ordering and the short boundary tolerance establish
-            # this as a prior question tail. Semantic completeness must not depend
-            # on whether the provider split the answer into multiple fragments.
-            if (first_sequence is not None and caller.get("sequence") is not None
-                    and caller["sequence"] < first_sequence and 0 < b-a <= 250
-                    and b <= start+250):
-                continue
-            # A brief backchannel ending before the outcome completes is not
-            # evidence that the necessary result was cut off.
-            if b - a > 450 or b + 250 >= end:
-                return {"supported": False, "reason": "caller_overlap_or_interruption"}
-    supports = [playback_support([f], evidence["playback"], check_quality=False) for f in spans]
-    failed = next((r for r in supports if not r["supported"]), None)
-    if failed:
-        return failed
-    if len({(r["track_id"],r["origin_lower_ms"],r["origin_upper_ms"]) for r in supports})!=1:
-        return {"supported":False,"reason":"outcome_track_or_clock_replaced"}
-    # Coverage remains mandatory for every cited fragment. Evaluate coarse
-    # reception quality once over their mapped union, not repeatedly over each
-    # overlapping clock-uncertainty range. Never average across uncovered silence.
-    ranges=[]
-    for a,b in sorted((r["client_start_ms"],r["client_end_ms"]) for r in supports):
-        if ranges and a<=ranges[-1][1]:ranges[-1][1]=max(b,ranges[-1][1])
-        else:ranges.append([a,b])
-    refs=list(dict.fromkeys(i for r in supports for i in r["report_ids"]))
-    duration=concealed=0
-    for report in evidence["playback"]:
-        if report["id"] not in refs:continue
-        for a,b in ranges:
-            width=max(0,min(b,report["client_end_ms"])-max(a,report["client_start_ms"]))
-            duration+=width;concealed+=width*report.get("concealed_fraction",0)
-    fraction=concealed/duration if duration else 1
-    if fraction>MAX_OUTCOME_CONCEALMENT:
-        return {"supported":False,"reason":"uncertain_outcome_audio_quality","concealed_fraction":fraction}
-    return {"supported": True, "start_ms": start, "end_ms": end,
-        "report_ids":refs,"concealed_fraction":fraction}
+        if len({(r["track_id"], r["origin_lower_ms"], r["origin_upper_ms"]) for r in supports}) != 1:
+            failure = {"supported": False, "reason": "outcome_track_or_clock_replaced"}
+            continue
+        return {"supported": True, "start_ms": min(f["start_ms"] for f in group), "end_ms": max(f["end_ms"] for f in group),
+            "fragment_ids": [f["id"] for f in group],
+            "report_ids": list(dict.fromkeys(i for r in supports for i in r["report_ids"]))}
+    return failure
+
+
+def utterances(fragments, cited):
+    """Split cited assistant fragments into utterances separated by user speech."""
+    order = {f["id"]: index for index, f in enumerate(fragments)}
+    user_positions = [order[f["id"]] for f in fragments if f["speaker"] == "user"]
+    groups, current, previous = [], [], None
+    for fragment in sorted(cited, key=lambda f: order[f["id"]]):
+        position = order[fragment["id"]]
+        if current and any(previous < u < position for u in user_positions):
+            groups.append(current)
+            current = []
+        current.append(fragment)
+        previous = position
+    if current:
+        groups.append(current)
+    return groups
 
 
 def semantic_input(evidence):
-    # Raw telemetry remains in durable evidence for deterministic validation.
-    # The semantic model needs only a compact coverage summary, not hundreds
-    # of repetitive transport intervals or duplicated workflow payloads.
-    return {"fragments": evidence["fragments"], "presentations": [{
-        **{k:p.get(k) for k in ("presentation_id", "task_id", "source_task_event_id", "exposed_after_sequence")},
-        "eligible_fragment_ids": [f["id"] for f in evidence["fragments"] if f["speaker"] == "assistant"
-            and (p.get("exposed_after_sequence") is None or f.get("sequence", 0) > p["exposed_after_sequence"])],
-        "facts": {k:(p.get("facts") or {}).get(k) for k in ("goal", "event_type", "summary", "status", "notification")}}
-        for p in evidence["presentations"]], "playback_evidence": {
-            f["id"]: {k:v for k,v in playback_support([f], evidence["playback"]).items() if k in {"supported", "reason"}}
-            for f in evidence["fragments"] if f["speaker"] == "assistant"}}
+    """A compact, readable dialogue for the model, with short handles instead of UUIDs.
+
+    Raw identifiers, timings and telemetry stay in durable evidence for validation.
+    Returns the model input and the handle -> identifier map.
+    """
+    handles, dialogue = {}, []
+    counters = {"assistant": 0, "user": 0}
+    for f in evidence["fragments"]:
+        counters[f["speaker"]] += 1
+        handle = ("a" if f["speaker"] == "assistant" else "u") + str(counters[f["speaker"]])
+        handles[handle] = f["id"]
+        # Playback is validated deterministically afterwards; the model judges meaning only.
+        dialogue.append({"id": handle, "speaker": f["speaker"], "text": f["text"]})
+    reverse = {v: k for k, v in handles.items()}
+    results = []
+    for index, p in enumerate(evidence["presentations"], 1):
+        handle = f"r{index}"
+        handles[handle] = p["presentation_id"]
+        results.append({"id": handle,
+            "eligible_fragment_ids": [reverse[f["id"]] for f in evidence["fragments"] if f["speaker"] == "assistant"
+                and (p.get("exposed_after_sequence") is None or f.get("sequence", 0) > p["exposed_after_sequence"])],
+            "facts": {k: (p.get("facts") or {}).get(k) for k in ("goal", "event_type", "summary", "status", "notification")}})
+    return {"dialogue": dialogue, "results": results}, handles
 
 
 async def infer(evidence):
-    compact = semantic_input(evidence)
+    compact, handles = semantic_input(evidence)
     body = {"model": MODEL, "reasoning": {"effort": "low"}, "service_tier": "priority",
         "parallel_tool_calls": False, "store": False, "max_output_tokens": 2000,
         "instructions": POLICY,
@@ -262,14 +234,24 @@ async def infer(evidence):
         raw = response.json()
     text = "".join(c.get("text", "") for o in raw.get("output", []) if o.get("type") == "message"
                    for c in o.get("content", []) if c.get("type") == "output_text")
-    result = json.loads(text)
-    validate(result, SCHEMA)
+    result = resolve_handles(json.loads(text), handles)
     expected = {p["presentation_id"] for p in evidence["presentations"]}
     ids = [o["presentation_id"] for o in result["outcomes"]]
     if set(ids) != expected or len(ids) != len(expected):
         raise ValueError("Observer must classify each exact presentation once")
     return result, {"request_id": raw.get("id"), "model": raw.get("model", MODEL),
                     "usage": raw.get("usage"), "policy_hash": POLICY_HASH}
+
+
+def resolve_handles(result, handles):
+    validate(result, SCHEMA)
+    # Unknown handles are kept verbatim so validation rejects them as invalid citations.
+    for item in result["outcomes"]:
+        item["presentation_id"] = handles.get(item["presentation_id"], item["presentation_id"])
+        item["fragment_ids"] = [handles.get(i, i) for i in item["fragment_ids"]]
+    for flag in result["flags"]:
+        flag["fragment_ids"] = [handles.get(i, i) for i in flag["fragment_ids"]]
+    return result
 
 
 class ConversationObserver:
@@ -330,7 +312,6 @@ class ConversationObserver:
                     if (exposure.payload_json or {}).get("generation", live.generation) != live.generation:
                         continue
                     exposed.setdefault((exposure.payload_json or {}).get("presentation_id"), exposure.sequence)
-                last_speech = None
                 for e in events:
                     p = e.payload_json or {}
                     if p.get("generation", live.generation) != live.generation:
@@ -343,7 +324,6 @@ class ConversationObserver:
                         fragments.append({"id": e.id, "speaker": "assistant" if "assistant" in e.event_type else "user",
                             "text": p["delta"], "start_ms": p.get("start_ms"), "end_ms": p.get("end_ms"), "sequence": e.sequence,
                             "provider_event_id": p.get("provider_event_id")})
-                        last_speech = observed_at(e)
                 if not any(f["speaker"] == "assistant" for f in fragments) or not playback:
                     self._versions[live.id] = live.last_event_sequence
                     continue
@@ -362,17 +342,11 @@ class ConversationObserver:
                            for f in fragments for p in values):
                     self._versions[live.id] = live.last_event_sequence
                     continue  # No post-outcome speech to assess; telemetry alone needs no inference.
-                first_speech = next(observed_at(e) for e in events if e.event_type == "provider.assistant_transcript_delta"
-                    and any(e.sequence > p["exposed_after_sequence"] for p in values))
-                batch_since = max(first_speech, latest_job.created_at) if latest_job else first_speech
-                if (last_speech and (now() - last_speech.replace(tzinfo=timezone.utc)).total_seconds() < 1
-                        and (now() - batch_since.replace(tzinfo=timezone.utc)).total_seconds() < 8):
-                    continue  # Bound this relevant batch, not the age of the whole conversation.
+                if not self._reaction_settled(events, values, latest_job):
+                    continue  # Judge an update only once the user's reaction is known.
                 eligibility = {f["id"]: playback_support([f], playback).get("supported", False)
                     for f in fragments if f["speaker"] == "assistant"}
                 identity = {"fragments": fragments, "presentations": values, "eligible_fragments": eligibility,
-                            "input_silence": {f["id"]: input_silence_supported(f, playback)
-                                for f in fragments if f["speaker"] == "user"},
                             "policy_hash": POLICY_HASH}
                 key = digest(identity)
                 if await db.scalar(select(ConversationObservation.id).where(ConversationObservation.session_id == live.id,
@@ -382,6 +356,24 @@ class ConversationObserver:
                 db.add(ConversationObservation(session_id=live.id, generation=live.generation, evidence_hash=key,
                     input_json={**identity, "playback": playback[-800:]}))
                 self._versions[live.id] = live.last_event_sequence
+
+    @staticmethod
+    def _reaction_settled(events, values, latest_job) -> bool:
+        def age(event):
+            return (now() - observed_at(event).replace(tzinfo=timezone.utc)).total_seconds()
+        speech = [e for e in events if e.event_type in {"provider.assistant_transcript_delta", "provider.user_transcript_delta"}
+            and (e.payload_json or {}).get("delta")]
+        post = [e for e in speech if e.event_type == "provider.assistant_transcript_delta"
+            and any(e.sequence > p["exposed_after_sequence"] for p in values)]
+        if not post:
+            return False
+        batch_since = max(observed_at(post[0]), latest_job.created_at) if latest_job else observed_at(post[0])
+        if (now() - batch_since.replace(tzinfo=timezone.utc)).total_seconds() >= MAX_BATCH_SECONDS:
+            return age(speech[-1]) >= 1
+        reaction = [e for e in speech if e.event_type == "provider.user_transcript_delta" and e.sequence > post[-1].sequence]
+        if reaction:
+            return age(speech[-1]) >= REACTION_QUIET_SECONDS
+        return age(post[-1]) >= REACTION_WINDOW_SECONDS
 
     async def process_one(self):
         async with session_scope() as db:
@@ -403,6 +395,13 @@ class ConversationObserver:
         try:
             result, usage = await infer(evidence)
             await self.apply(job_id, result, usage)
+        except (ValueError, ValidationError) as exc:
+            # A malformed model answer fails only this assessment. Attention stays
+            # pending and newer dialogue creates a fresh assessment; no paid retry.
+            async with session_scope() as db:
+                job = await db.get(ConversationObservation, job_id)
+                job.status, job.error = "failed", type(exc).__name__ + ": " + str(exc)[:300]
+            log.warning("Conversation observer skipped an invalid assessment: %s", exc)
         except Exception as exc:
             async with session_scope() as db:
                 job = await db.get(ConversationObservation, job_id)
@@ -424,24 +423,22 @@ class ConversationObserver:
             if set(ids) != set(source) or len(ids) != len(source):
                 raise ValueError("Observer presentation set mismatch")
             validations = {}
-            # Include caller fragments that arrived while inference was in
-            # flight, so a stale evidence snapshot cannot hide a known barge-in.
-            late = (await db.execute(select(LiveSessionEvent).where(LiveSessionEvent.session_id == job.session_id,
+            # User speech that arrived during inference may be a reaction that
+            # changes the verdict. Defer; the next batch includes it.
+            late_user = await db.scalar(select(LiveSessionEvent.id).where(LiveSessionEvent.session_id == job.session_id,
                 LiveSessionEvent.sequence > max((f.get("sequence", 0) for f in evidence["fragments"]), default=0),
-                LiveSessionEvent.event_type == "provider.user_transcript_delta"))).scalars().all()
-            known = {f["id"] for f in evidence["fragments"]}
+                LiveSessionEvent.event_type == "provider.user_transcript_delta").limit(1))
             assessed_through = max((f.get("sequence", 0) for f in evidence["fragments"]), default=0)
             latest_assistant = await db.scalar(select(LiveSessionEvent.sequence).where(
                 LiveSessionEvent.session_id == job.session_id,
                 LiveSessionEvent.event_type == "provider.assistant_transcript_delta")
                 .order_by(LiveSessionEvent.sequence.desc()).limit(1))
-            current_evidence = {**evidence, "fragments": [*evidence["fragments"], *[
-                {"id":e.id,"speaker":"user","text":(e.payload_json or {}).get("delta", ""),
-                    "start_ms":(e.payload_json or {}).get("start_ms"),"end_ms":(e.payload_json or {}).get("end_ms")}
-                for e in late if e.id not in known and (e.payload_json or {}).get("generation", job.generation) == job.generation]]}
             for finding in result["outcomes"]:
                 pid = finding["presentation_id"]
-                support = validate_finding(current_evidence, finding)
+                if late_user is not None:
+                    validations[pid] = {"supported": False, "reason": "newer_user_speech"}
+                    continue
+                support = validate_finding(evidence, finding)
                 validations[pid] = support
                 candidate = await db.get(TaskPresentation, pid)
                 if (candidate is not None and candidate.state == "pending"

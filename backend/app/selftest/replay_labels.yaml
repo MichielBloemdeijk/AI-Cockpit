@@ -1,0 +1,39 @@
+# L1 bookkeeper replay corpus: real recorded conversations with an agreed truth.
+#
+# "communicated": the user genuinely received the task result (agent-reviewed).
+# "not_communicated": the result never effectively reached the user.
+# Paths are relative to data/. The recordings are kept outside git.
+
+cases:
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-explicit_idle-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-explicit_speaking-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-silence-1-immediate-browser
+    expect: communicated
+    note: Silence was respected; the later status answer genuinely told the user.
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-concurrent-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-changed_silence-1-immediate-browser
+    expect: communicated
+    note: Status answer communicated the result.
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-occupied-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/confirmation-baseline-production_A-interruption_reconnect-1-immediate-browser
+    expect: not_communicated
+    note: The user talked over "It's finished." and asked to hear the result after finishing; it was never repeated.
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-production_A-between_sessions-1-immediate-browser
+    expect: communicated
+    note: Previously left pending by clock-uncertainty heuristics although the conversation was fine.
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-production_A-explicit_speaking-1-immediate-browser
+    expect: communicated
+    note: The first outcome was wrongly rejected as interrupted (phantom input transcript) and then repeated.
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-1495c0fe803c-production_A-explicit_speaking-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-production_A-explicit_idle-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-7fc94d58eed2-production_A-explicit_idle-1-immediate-browser
+    expect: communicated
+  - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-addb93b63c47-production_A-changed_silence-1-immediate-browser
+    expect: communicated
+    note: The result was (wrongly) announced despite the silence correction; it did reach the user.

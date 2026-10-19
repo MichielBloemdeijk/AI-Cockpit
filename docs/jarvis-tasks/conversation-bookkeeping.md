@@ -17,6 +17,28 @@ Jarvis keeps two kinds of memory about task updates:
   notification. Uncertain communication stays pending. It is shown to Live as a
   fact, not as an order to repeat.
 
+## How the bookkeeper judges communication
+
+- **It waits for the user's reaction.** An update is assessed only after the
+  user's next turn has ended, or after about 6 s of silence following it
+  (30 s at most in continuous conversation). User speech that arrives during
+  inference defers the commit to the next batch.
+- **It judges meaning from the dialogue.** If the user's reaction shows they did
+  not take the update in (asks to wait, to hear it later or again, or talks over
+  it with something unrelated), the outcome is `possibly_unheard`. It stays
+  pending and Live sees that as a fact. A later status answer the user accepts
+  counts as complete.
+- **Validation is deterministic and narrow.** It checks result identity and
+  staleness, ignores citations made before the outcome was known, and requires
+  at least one cited utterance to be fully played by the client. Short telemetry
+  holes are bridged only when the player position advanced through them.
+- **The model sees short handles** (`a1`, `u2`, `r1`) instead of UUIDs.
+- **One malformed model answer fails only that assessment.** Provider and
+  transport failures still stop the observer.
+
+The L1 replay (`python -m app.selftest replay`) re-checks these rules against
+13 recorded real conversations with agreed truth (`app/selftest/replay_labels.yaml`).
+
 `JARVIS_CONVERSATION_OBSERVER_MODE`:
 
 | Value | Behavior |

@@ -18,10 +18,12 @@ def test_context_is_not_eligible_completion_evidence():
     from app.services.conversation_observer import semantic_input
     e=evidence(); e["fragments"][0]["sequence"]=5
     e["presentations"]=[{"presentation_id":"p1","exposed_after_sequence":6,"facts":{}}]
-    assert semantic_input(e)["presentations"][0]["eligible_fragment_ids"]==[]
+    assert semantic_input(e)[0]["results"][0]["eligible_fragment_ids"]==[]
     assert validate_finding(e,finding())["reason"]=="speech_precedes_outcome_context"
     e["fragments"][0]["sequence"]=7
-    assert semantic_input(e)["presentations"][0]["eligible_fragment_ids"]==["f1"]
+    compact,handles=semantic_input(e)
+    assert compact["results"][0]["eligible_fragment_ids"]==["a1"] and handles["a1"]=="f1" and handles["r1"]=="p1"
+    assert "f1" not in __import__("json").dumps(compact)  # the model sees short handles only
     assert validate_finding(e,finding())["supported"]
 
 
@@ -86,7 +88,12 @@ async def test_batch_age_starts_with_relevant_speech_not_old_admission(monkeypat
     await conversation_observer.collect()
     async with session_scope() as db:
         assert not (await db.execute(select(ConversationObservation))).scalars().all()
-    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=2))
+    # Without a user reaction, the update is judged after the reaction window.
+    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=3))
+    await conversation_observer.collect()
+    async with session_scope() as db:
+        assert not (await db.execute(select(ConversationObservation))).scalars().all()
+    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=8))
     await conversation_observer.collect()
     async with session_scope() as db:
         assert len((await db.execute(select(ConversationObservation))).scalars().all())==1
@@ -128,27 +135,17 @@ def test_gap_and_track_replacement_do_not_bridge_outcome():
     assert not validate_finding(e,finding())["supported"]
 
 
-def test_player_progress_during_barge_in_does_not_establish_delivery():
+def test_overlapping_caller_text_does_not_veto_played_speech():
+    # Whether the user took it in is a semantic judgment of their reaction,
+    # not a transcript-timestamp heuristic (provider input timestamps lag).
     e=evidence()
     e["fragments"].append({"id":"caller","speaker":"user","text":"Hold on", "start_ms":800,"end_ms":1600})
-    assert validate_finding(e,finding())["reason"]=="caller_overlap_or_interruption"
+    assert validate_finding(e,finding())["supported"]
 
 
-@pytest.mark.parametrize("damage",[None,"energy","missing","cached","gap","small_gap","source","clock"])
-def test_phantom_input_text_requires_independent_continuous_microphone_silence(damage):
-    e=evidence()
-    e["fragments"].append({"id":"phantom","speaker":"user","text":"ready", "start_ms":1300,"end_ms":1500})
-    for r in e["playback"]:
-        r.update(input_source_id="mic",input_audio_energy=0,input_audio_duration_ms=250)
-    r=e["playback"][4]
-    if damage=="energy":r["input_audio_energy"]=.000001
-    if damage=="missing":r.pop("input_audio_energy")
-    if damage=="cached":r["input_audio_duration_ms"]=1
-    if damage=="gap":r["gap"]=True
-    if damage=="small_gap":r["client_start_ms"]+=1
-    if damage=="source":r["input_source_id"]="replacement"
-    if damage=="clock":r["origin_upper_ms"]=5000
-    assert validate_finding(e,finding())["supported"] is (damage is None)
+def test_possibly_unheard_is_not_delivery():
+    e=evidence(); f=finding(); f["classification"]="possibly_unheard"
+    assert validate_finding(e,f)=={"supported":False,"reason":"possibly_unheard"}
 
 
 def test_caller_after_complete_outcome_does_not_block_delivery():
@@ -243,7 +240,7 @@ async def test_late_caller_evidence_is_checked_before_commit(monkeypatch):
     await conversation_observer.apply(jid,{"outcomes":[f],"flags":[]},{})
     async with session_scope() as db:
         assert (await db.get(TaskPresentation,item["presentation_id"])).state=="pending"
-        assert (await db.get(ConversationObservation,jid)).result_json["validation"][p.id]["reason"]=="caller_overlap_or_interruption"
+        assert (await db.get(ConversationObservation,jid)).result_json["validation"][p.id]["reason"]=="newer_user_speech"
 
 
 @pytest.mark.asyncio
@@ -269,7 +266,7 @@ async def test_collection_deduplicates_and_recovery_uses_saved_evidence(monkeypa
     await conversation_observer.ingest(session_id=live.id,generation=live.generation,controller_id="owner",
         sequence=1,reports=evidence()["playback"])
     # No provider calls: make the batching clock eligible.
-    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=2))
+    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=8))
     await conversation_observer.collect();await conversation_observer.collect()
     async with session_scope() as db:
         jobs=(await db.execute(select(ConversationObservation))).scalars().all()
@@ -327,3 +324,95 @@ def test_input_activity_schema_requires_measured_pairs_and_identity():
                    {"input_source_id":"mic","input_audio_energy":float("nan"),"input_audio_duration_ms":250}]:
         with pytest.raises(ValidationError):JarvisPlaybackInterval(**r,**change)
     assert JarvisPlaybackInterval(**r,input_source_id="mic",input_audio_energy=0,input_audio_duration_ms=250)
+
+
+@pytest.mark.asyncio
+async def test_user_reaction_is_awaited_and_possibly_unheard_stays_pending(monkeypatch):
+    from app.services import conversation_observer as module
+    live,task,item=await prepared(monkeypatch)
+    async with session_scope() as db:
+        row=await db.get(LiveSession,live.id);row.controller_id="owner"
+        repo=JarvisDomainRepository(db)
+        await repo.append_session_event_once(session_id=live.id,event_type="provider.assistant_transcript_delta",
+            payload_json={"delta":"The Hello World page is ready.","start_ms":500,"end_ms":1500},idempotency_key="outcome")
+        await repo.append_session_event_once(session_id=live.id,event_type="provider.user_transcript_delta",
+            payload_json={"delta":"Hold on, tell me after I finish.","start_ms":1600,"end_ms":2600},idempotency_key="reaction")
+    await conversation_observer.ingest(session_id=live.id,generation=live.generation,controller_id="owner",
+        sequence=1,reports=evidence()["playback"])
+    # The user reacted; once they are quiet the batch is ready (no 6 s wait).
+    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=3))
+    await conversation_observer.collect()
+    async with session_scope() as db:
+        jobs=(await db.execute(select(ConversationObservation))).scalars().all()
+        assert len(jobs)==1
+        assert any(f["speaker"]=="user" and "Hold on" in f["text"] for f in jobs[0].input_json["fragments"])
+    async def fake(e):
+        outcome=next(f for f in e["fragments"] if f["speaker"]=="assistant")
+        return {"outcomes":[{"presentation_id":item["presentation_id"],"classification":"possibly_unheard",
+            "fragment_ids":[outcome["id"]],"reason":"User asked to hear it after finishing"}],"flags":[]},{}
+    monkeypatch.setattr(module,"infer",fake)
+    assert await conversation_observer.process_one()
+    async with session_scope() as db:
+        p=await db.get(TaskPresentation,item["presentation_id"])
+        assert p.state=="pending"
+        assert p.required_facts_json["communication_assessment"]["classification"]=="possibly_unheard"
+
+
+def test_one_fully_played_utterance_establishes_communication():
+    e=evidence()
+    e["fragments"]=[{"id":"early","speaker":"assistant","text":"The page is ready.","start_ms":-5000,"end_ms":-4000,"sequence":1},
+        {"id":"q","speaker":"user","text":"Is it done?","start_ms":0,"end_ms":400,"sequence":2},
+        {"id":"late","speaker":"assistant","text":"Yes, it is finished.","start_ms":500,"end_ms":1500,"sequence":3}]
+    f=finding(); f["fragment_ids"]=["early","late"]
+    result=validate_finding(e,f)
+    assert result["supported"] and result["fragment_ids"]==["late"]
+    f["fragment_ids"]=["early"]
+    assert not validate_finding(e,f)["supported"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_model_answer_fails_one_job_without_stopping(monkeypatch):
+    from app.services import conversation_observer as module
+    live,task,item=await prepared(monkeypatch)
+    async with session_scope() as db:
+        db.add(ConversationObservation(session_id=live.id,generation=live.generation,evidence_hash="bad",
+            input_json={**evidence(),"presentations":[{"presentation_id":item["presentation_id"],"source_task_event_id":"x"}]}))
+    async def wrong(e):
+        raise ValueError("Observer must classify each exact presentation once")
+    monkeypatch.setattr(module,"infer",wrong)
+    assert await conversation_observer.process_one()
+    assert conversation_observer.failure is None
+    async with session_scope() as db:
+        job=(await db.execute(select(ConversationObservation))).scalars().one()
+        assert job.status=="failed" and "exact presentation" in job.error
+
+
+def test_model_handles_resolve_and_unknown_handles_stay_invalid():
+    from app.services.conversation_observer import resolve_handles
+    handles={"r1":"p1","a1":"f1"}
+    result=resolve_handles({"outcomes":[{"presentation_id":"r1","classification":"complete","fragment_ids":["a1","a9"],"reason":"x"}],
+        "flags":[{"kind":"unrecorded_promise","fragment_ids":["a1"],"reason":"y"}]},handles)
+    assert result["outcomes"][0]["presentation_id"]=="p1" and result["outcomes"][0]["fragment_ids"]==["f1","a9"]
+    assert result["flags"][0]["fragment_ids"]==["f1"]
+    assert validate_finding(evidence(),result["outcomes"][0])["reason"]=="invalid_citation"
+
+
+def test_pre_outcome_citations_are_ignored_not_fatal():
+    e=evidence()
+    e["fragments"]=[{"id":"early","speaker":"assistant","text":"You won't get updates.","start_ms":100,"end_ms":400,"sequence":1},
+        {"id":"f1","speaker":"assistant","text":"It is complete.","start_ms":500,"end_ms":1500,"sequence":5}]
+    e["presentations"]=[{"presentation_id":"p1","exposed_after_sequence":3}]
+    f=finding(); f["fragment_ids"]=["early","f1"]
+    assert validate_finding(e,f)["supported"]
+    f["fragment_ids"]=["early"]
+    assert validate_finding(e,f)["reason"]=="speech_precedes_outcome_context"
+
+
+@pytest.mark.parametrize("hole,progress,supported",[(40,40,True),(110,110,True),(40,0,False),(400,400,False)])
+def test_short_telemetry_hole_is_bridged_only_with_continuous_player_progress(hole,progress,supported):
+    e=evidence()
+    after=[r for r in e["playback"] if int(r["id"])>=6]
+    for r in after:
+        r["client_start_ms"]+=hole; r["client_end_ms"]+=hole
+        r["playback_start_ms"]+=progress; r["playback_end_ms"]+=progress
+    assert validate_finding(e,finding())["supported"] is supported

@@ -1,6 +1,7 @@
 """Self-test entry point.
 
     uv run python -m app.selftest offline
+    uv run python -m app.selftest replay --name <run> --live [--case SUBSTRING ...]
     uv run python -m app.selftest run --suite core --name <run> --live [--case ID ...] [--android]
 
 Paid stages require --live and stop on billing/quota/auth or evidence-integrity
@@ -90,6 +91,17 @@ def run(args) -> int:
     return 0
 
 
+def replay(args) -> int:
+    """Layer L1: re-assess recorded conversations with the current bookkeeper (paid Responses calls)."""
+    if not args.live:
+        raise SystemExit("Replay makes paid Responses calls; pass --live")
+    import asyncio
+    from app.selftest.replay import replay as run_replay
+    summary = asyncio.run(run_replay(args.name, only=args.case))
+    print(f"{summary['passed']}/{summary['total']} cases match their agreed truth")
+    return 0 if summary["passed"] == summary["total"] else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m app.selftest")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -97,6 +109,11 @@ def main() -> int:
     o.add_argument("--tests", nargs="*", help="Backend test paths (default: Jarvis suites)")
     o.add_argument("--skip", nargs="*", choices=["backend", "frontend", "drivers", "media", "android"])
     o.set_defaults(handler=offline)
+    l1 = commands.add_parser("replay", help="L1 bookkeeper replay of recorded conversations (paid Responses)")
+    l1.add_argument("--name", required=True, help="Run directory under data/selftest")
+    l1.add_argument("--case", nargs="*", help="Only cases whose folder contains one of these substrings")
+    l1.add_argument("--live", action="store_true")
+    l1.set_defaults(handler=replay)
     r = commands.add_parser("run", help="L2/L4 scripted voice scenarios (paid)")
     r.add_argument("--suite", default="core")
     r.add_argument("--case", nargs="*")
