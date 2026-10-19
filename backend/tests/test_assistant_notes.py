@@ -20,7 +20,6 @@ from tests.test_openai_live_adapter import FakeLiveSocket, wait_for_sideband
 
 
 async def requested_outcome(monkeypatch, *, assessment=None):
-    monkeypatch.setattr(settings, "jarvis_conversation_observer_mode", "enabled")
     await jarvis_coordinator.accept_text_turn("Begin", idempotency_key="notes-start")
     live = await jarvis_coordinator.get_active_session()
     async with session_scope() as db:

@@ -68,15 +68,13 @@ async def test_new_unjudged_issue_survives_disablement_without_rewinding_cursor(
 
 
 @pytest.mark.asyncio
-async def test_legacy_backlog_flag_transitions_retain_identity_and_require_backend_receipt(monkeypatch):
+async def test_backlog_flag_transitions_retain_identity_and_require_backend_receipt(monkeypatch):
     monkeypatch.setattr(settings, "task_orchestration_enabled", False)
     await jarvis_coordinator.accept_text_turn("Listen for task updates", idempotency_key="rollout-voice")
     live = await jarvis_coordinator.get_active_session()
     task, q = await question("Ask the user which environment to use")
     await task_presentation_service.sync_candidates()
     original = (await task_presentation_service.list_pending())[0]
-    checklist = await task_presentation_service.get_attention_checklist(session_id=live.id, generation=live.generation)
-    exposure = checklist.items[0]["exposure_token"]
     async with session_scope() as session:
         candidate = await session.get(TaskPresentation, original.id)
         # Worker/model facts cannot masquerade as a backend judgment.
@@ -88,10 +86,6 @@ async def test_legacy_backlog_flag_transitions_retain_identity_and_require_backe
     monkeypatch.setattr(settings, "task_orchestration_enabled", True)
     assert not await task_presentation_service.list_pending()
     assert not (await task_presentation_service.get_attention_checklist(session_id=live.id, generation=live.generation)).items
-    rejected = await task_presentation_service.acknowledge_task_update(
-        session_id=live.id, generation=live.generation, presentation_id=original.id, exposure_token=exposure,
-    )
-    assert rejected["status"] == "invalid_exposure"
     await _send_outbox_by_id(outbox_id)
     async with session_scope() as session:
         assert (await session.get(NotificationOutbox, outbox_id)).status == "queued"
@@ -146,19 +140,11 @@ async def test_active_voice_reconnect_with_blocked_decision_and_full_pool(monkey
             conversation_id=accepted.conversation.id, controller_id="reconnected-controller", adapter_name="fake",
         )
         old_item = old_checklist.items[0]
-        stale = await task_presentation_service.acknowledge_task_update(
-            session_id=old_live.id, generation=old_live.generation,
-            presentation_id=old_item["presentation_id"], exposure_token=old_item["exposure_token"],
-        )
-        assert stale["status"] == "invalid_exposure"
         runtime.release.set()
         await asyncio.wait_for(background, 3)
         checklist = await task_presentation_service.get_attention_checklist(session_id=new_live.id, generation=new_live.generation)
         item = next(item for item in checklist.items if item["task_id"] == task.id)
-        arguments = dict(session_id=new_live.id, generation=new_live.generation,
-                         presentation_id=item["presentation_id"], exposure_token=item["exposure_token"])
-        assert (await task_presentation_service.acknowledge_task_update(**arguments))["status"] == "handled"
-        assert (await task_presentation_service.acknowledge_task_update(**arguments))["status"] == "already_handled"
+        assert item["exposure_token"] != old_item["exposure_token"]  # re-exposed to the new session
         assert (await task_service.get_task(task.id)).questions[0].state == "asked"
         assert (await task_service.get_task(task.id)).questions[0].id == q.id
         assert len(runtime.calls) == 1

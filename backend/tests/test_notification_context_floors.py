@@ -34,8 +34,14 @@ async def test_production_context_eligibility_and_receipt(floor,intent,monkeypat
         notification_intent=intent,notification_reason="Frozen unit preference")).task
     await task_service.complete(task.id,summary="The page is ready",idempotency_key="floor-done")
     await jarvis_coordinator._queue_controlled_response(live.id,live.generation,"task_update")
-    assert recorded and recorded[-1]["facts"][0]["notification"]["intent"]==intent
-    assert recorded[-1]["facts"][0]["commentary"] is False
+    assert recorded
+    facts=recorded[-1]["facts"]
+    if intent=="requested" and floor=="user_speaking":
+        assert not facts  # a requested outcome waits until the user finishes their turn
+    else:
+        assert facts[0]["notification"]["intent"]==intent
+        # Only requested outcomes are spoken; the rest are quiet notes context.
+        assert facts[0]["commentary"] is (intent=="requested")
     before=await jarvis_coordinator.get_session(live.id)
     assert before.floor_state=={"assistant_generating":"thinking"}.get(floor,floor)
     submission=recorded[-1]
@@ -68,13 +74,9 @@ async def test_failed_live_context_does_not_wait_for_orchestration_or_grant_task
     assert {i["task_id"] for i in context.items}=={failed.id,question.id}
     async with session_scope() as db:
         before=list((await db.execute(select(TaskEvent))).scalars())
-    item=next(i for i in context.items if i["task_id"]==failed.id)
-    receipt=await task_presentation_service.acknowledge_task_update(session_id=live.id,generation=live.generation,
-        presentation_id=item["presentation_id"],exposure_token=item["exposure_token"])
-    assert receipt["status"]=="handled"
+    # Exposing context to Live grants no task action.
+    await task_presentation_service.build_attention_context(session_id=live.id,generation=live.generation)
     assert (await task_service.get_task(failed.id)).task.status=="failed"
     async with session_scope() as db:
         assert len(list((await db.execute(select(TaskEvent))).scalars()))==len(before)
-    remaining=(await task_presentation_service.build_attention_context(session_id=live.id,generation=live.generation)).items
-    assert [i["task_id"] for i in remaining]==[question.id]
 

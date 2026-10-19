@@ -7,7 +7,6 @@ from app.services.task_service import task_service
 from app.services.task_notification_preferences import current, normalize, EVENT
 from app.services.task_presentations import task_presentation_service
 from app.services.jarvis_coordinator import jarvis_coordinator, FLOOR_EVENT_TYPES
-from app.services.live_task_updates import terminal_payload
 from app.db.repositories.jarvis import JarvisDomainRepository
 
 
@@ -77,7 +76,7 @@ async def test_suppression_retains_terminal_context_and_retires_unsent_push():
     assert after.items[0]["presentation_id"] == before.items[0]["presentation_id"]
     assert after.items[0]["facts"]["notification"]["revision"] == 2
     assert after.items[0]["facts"]["notification"]["intent"] == "suppressed"
-    assert "Verified outcome" in terminal_payload(after.items[0]["facts"])
+    assert after.items[0]["facts"]["summary"] == "The page is ready"
     assert after.items[0]["facts"]["commentary"] is False
     async with session_scope() as session:
         notifications = (await session.execute(select(NotificationOutbox).where(NotificationOutbox.task_id == task.id))).scalars().all()

@@ -236,7 +236,6 @@ async def test_connected_voice_holds_fallback_until_disconnect(
     async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
         scheduled.append((outbox_id, delay_seconds))
 
-    monkeypatch.setattr(task_notifications.settings, "jarvis_notification_grace_seconds", 8.0)
     monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
     assert await task_notifications.route_pending_task_notifications(
         voice_connected=True,
@@ -379,7 +378,7 @@ async def test_retry_supersedes_an_unheard_terminal_update_deterministically() -
 
 
 @pytest.mark.asyncio
-async def test_bookkeeper_mode_holds_in_session_fallback_until_the_hard_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_bookkeeper_holds_in_session_fallback_until_the_hard_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshot = await task_service.dispatch(goal="Bookkeeper grace", idempotency_key="bookkeeper-grace-task", origin_surface="test")
     await task_service.complete(snapshot.task.id, summary="Ready.", idempotency_key="bookkeeper-grace-complete")
     await task_presentation_service.sync_candidates()
@@ -389,7 +388,6 @@ async def test_bookkeeper_mode_holds_in_session_fallback_until_the_hard_cap(monk
     async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
         scheduled.append(outbox_id)
 
-    monkeypatch.setattr(task_notifications.settings, "jarvis_conversation_observer_mode", "enabled")
     monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
     async with session_scope() as session:
         (await session.get(NotificationOutbox, row.id)).created_at = task_notifications.utc_now() - timedelta(seconds=12)
@@ -403,7 +401,7 @@ async def test_bookkeeper_mode_holds_in_session_fallback_until_the_hard_cap(monk
 
 
 @pytest.mark.asyncio
-async def test_bookkeeper_mode_waits_briefly_after_a_session_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_bookkeeper_waits_briefly_after_a_session_ends(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.db.tables import LiveSession
     from app.services.jarvis_coordinator import jarvis_coordinator
     snapshot = await task_service.dispatch(goal="Session end grace", idempotency_key="end-grace-task", origin_surface="test")
@@ -416,7 +414,6 @@ async def test_bookkeeper_mode_waits_briefly_after_a_session_ends(monkeypatch: p
     async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
         scheduled.append(outbox_id)
 
-    monkeypatch.setattr(task_notifications.settings, "jarvis_conversation_observer_mode", "enabled")
     monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
     async with session_scope() as session:
         (await session.get(LiveSession, live.id)).disconnected_at = task_notifications.utc_now()

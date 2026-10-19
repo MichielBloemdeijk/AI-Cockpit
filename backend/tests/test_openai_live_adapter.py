@@ -224,7 +224,7 @@ async def wait_for_sideband(adapter: OpenAILiveAdapter, key: tuple[str, int]) ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arguments, valid", [
-    ({"goal": "Draft a plan", "intent_id": "plan"}, True),
+    ({"goal": "Draft a plan", "intent_id": "plan", "notification_intent": "discretionary", "notification_reason": "No update requested"}, True),
     ({"goal": "Draft a plan"}, False),
     ({"intent_id": "plan"}, False),
     ({"goal": "Draft a plan", "intent_id": "plan", "importance": "invalid"}, False),
@@ -247,6 +247,11 @@ async def test_managed_optional_arguments_preserve_local_validation(monkeypatch,
     try:
         if valid:
             await adapter.handle_event("s", 1, event)
+            # Admission routes off the sideband receive loop.
+            for _ in range(100):
+                if any(row.kind == "shell_call" for row in events):
+                    break
+                await asyncio.sleep(0.01)
             assert next(row for row in events if row.kind == "shell_call").payload["arguments"] == arguments
         else:
             with pytest.raises(ValidationError):
@@ -352,7 +357,7 @@ async def test_screen_workflow_preflight_does_not_block_live_sideband(monkeypatc
         "type": "response.event", "delegation_id": "delegation-screen",
         "event": {"type": "response.output_item.done", "response_id": "response-screen",
                   "item": {"type": "function_call", "call_id": "call-screen",
-                           "name": "start_workflow", "arguments": json.dumps({"goal": "Describe this screen", "definition": "screen_document@1", "intent_id": "screen"})}},
+                           "name": "start_workflow", "arguments": json.dumps({"goal": "Describe this screen", "definition": "screen_document@1", "intent_id": "screen", "notification_intent": "discretionary", "notification_reason": "No update requested"})}},
     })
     await asyncio.wait_for(started.wait(), timeout=1)
     await asyncio.wait_for(adapter.handle_event("screen", 1, {
@@ -405,7 +410,7 @@ async def test_attached_sideband_is_ready_without_primary_started_replay(monkeyp
     assert config["delegation"]["responses"]["parallel_tool_calls"] is False
     assert all(tool["strict"] is False for tool in config["delegation"]["responses"]["tools"])
     dispatch = next(tool for tool in config["delegation"]["responses"]["tools"] if tool["name"] == "dispatch_task")
-    assert dispatch["parameters"]["required"] == ["goal", "intent_id"]
+    assert dispatch["parameters"]["required"] == ["goal", "intent_id", "notification_intent", "notification_reason"]
     assert socket_args["url"].endswith("/live_opaque%2Fid/attach")
     assert [event.kind for event in events] == ["ready"]
     assert events[0].payload["readiness_source"] == "authenticated_sideband_attachment"
@@ -690,8 +695,9 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
     async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
         events.append(event)
 
+    notes = {"text": "JARVIS NOTES\nWaiting for the user:\n- The report.", "signature": "n1"}
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
-    await adapter.connect(session_id="s", generation=4, context={}, on_event=on_event, sdp_offer="offer")
+    await adapter.connect(session_id="s", generation=4, context={"assistant_notes": notes}, on_event=on_event, sdp_offer="offer")
     await wait_for_sideband(adapter, ("s", 4))
     await adapter.create_response(
         session_id="s",
@@ -700,14 +706,15 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
         response_kind="task_update",
         presentation_ids=(),
         facts=({"summary": "The report is ready.", "commentary": True},),
-        context={"attention_context": {"items": [{"summary": "The report is ready."}], "total_pending": 1}},
+        context={"attention_context": {"items": [{"summary": "The report is ready."}], "total_pending": 1},
+            "assistant_notes": notes},
     )
     delegated_update = socket.sent[-2]
     assert delegated_update["type"] == "session.update"
     assert delegated_update["session"]["delegation"]["type"] == "responses"
     instructions = delegated_update["session"]["delegation"]["responses"]["instructions"]
     assert instructions.count("CURRENT_ATTENTION_CHECKLIST=") == 1
-    assert "Live owns speech" in instructions
+    assert "maintained by the conversation observer" in instructions
     commentary = socket.sent[-1]
     assert commentary["type"] == "session.commentary.append"
     assert commentary["delegation_id"] is None
@@ -739,13 +746,14 @@ async def test_empty_attention_refresh_does_not_inject_live_context(monkeypatch)
     async def on_event(_: str, __: int, event: VoiceProviderEvent) -> None:
         events.append(event)
 
+    notes = {"text": "JARVIS NOTES\nWaiting for the user:\n- Nothing.", "signature": "n1"}
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
-    await adapter.connect(session_id="s", generation=4, context={}, on_event=on_event, sdp_offer="offer")
+    await adapter.connect(session_id="s", generation=4, context={"assistant_notes": notes}, on_event=on_event, sdp_offer="offer")
     await wait_for_sideband(adapter, ("s", 4))
     await adapter.create_response(
         session_id="s", generation=4, request_id="empty-1",
         response_kind="task_update", presentation_ids=(), facts=(),
-        context={"attention_context": {"items": [], "total_pending": 0, "deltas": []}},
+        context={"attention_context": {"items": [], "total_pending": 0, "deltas": []}, "assistant_notes": notes},
     )
     assert [item["type"] for item in socket.sent] == ["session.update"]
     assert not adapter._sessions[("s", 4)].pending_commentary
@@ -754,17 +762,17 @@ async def test_empty_attention_refresh_does_not_inject_live_context(monkeypatch)
     assert submitted.payload["submission_ack"] == "no_context_to_append"
     assert submitted.payload["presentation_ids"] == []
     assert "submitted_transcript" not in submitted.payload
-    # An empty checklist after a handled update must still retire the old
-    # context. A tombstone is a real change, unlike an empty startup update.
+    # An empty checklist after a handled update must still refresh the notes.
+    # A tombstone is a real change, unlike an empty startup update.
     await adapter.create_response(
         session_id="s", generation=4, request_id="handled-1",
         response_kind="task_update", presentation_ids=(), facts=(),
         context={"attention_context": {"items": [], "total_pending": 0,
-            "deltas": [{"presentation_id": "old-update", "state": "handled"}]}},
+            "deltas": [{"presentation_id": "old-update", "state": "handled"}]}, "assistant_notes": notes},
     )
     assert socket.sent[-1]["type"] == "session.thinking.append"
-    assert "old-update" in socket.sent[-1]["content"]
-    assert "handled" in socket.sent[-1]["content"]
+    assert notes["text"] in socket.sent[-1]["content"]
+    assert "old-update" not in socket.sent[-1]["content"]
     assert "jarvis-live-update:handled-1:0" in adapter._sessions[("s", 4)].pending_commentary
     await adapter.close(session_id="s", generation=4, reason="test", emit_event=False)
 

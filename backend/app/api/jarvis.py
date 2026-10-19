@@ -436,8 +436,7 @@ async def create_live_call(request: JarvisLiveCallRequest, http_request: Request
         role="controller",
         request_id=request_id,
         session=_session_view(bootstrap.session),
-        provider_capabilities={**bootstrap.provider_capabilities,
-            "playback_evidence": settings.jarvis_conversation_observer_mode != "off"},
+        provider_capabilities={**bootstrap.provider_capabilities, "playback_evidence": True},
         sdp_answer=bootstrap.sdp_answer,
         server_received_at=server_received_at,
         server_responded_at=server_responded_at,
@@ -505,7 +504,7 @@ async def ingest_playback(session_id: str, request: JarvisPlaybackBatch, http_re
 @router.get("/live/observer")
 async def observer_health():
     from app.services.conversation_observer import conversation_observer
-    return {"mode": settings.jarvis_conversation_observer_mode, "failure": conversation_observer.failure,
+    return {"failure": conversation_observer.failure,
             "running": conversation_observer.task is not None and not conversation_observer.task.done()}
 
 

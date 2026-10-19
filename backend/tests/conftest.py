@@ -34,11 +34,15 @@ def evaluation_network_boundary(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def legacy_attention_mode_by_default(monkeypatch):
-    # Production now defaults to the conversation observer. Older suites still cover
-    # the legacy model-reported acknowledgment path until it is removed; tests of the
-    # observer path enable it explicitly.
-    monkeypatch.setattr(settings, "jarvis_conversation_observer_mode", "off")
+def offline_conversation_observer(monkeypatch):
+    # The application lifespan starts the conversation observer. Tests never reach
+    # the paid Responses assessment; observer tests substitute their own infer().
+    from app.services import conversation_observer
+
+    async def unavailable(evidence):
+        raise RuntimeError("Tests must not call the observer's Responses model")
+
+    monkeypatch.setattr(conversation_observer, "infer", unavailable)
 
 
 @pytest.fixture
@@ -98,7 +102,9 @@ async def configured_database(tmp_path: Path):
         yield
     finally:
         # Finish coordinator DB work before the test event loop/database closes.
+        from app.services.conversation_observer import conversation_observer
         from app.services.jarvis_coordinator import jarvis_coordinator
+        await conversation_observer.stop()
         await jarvis_coordinator.stop()
         fake_voice_session_adapter.reset()
         await close_engine()

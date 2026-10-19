@@ -688,7 +688,7 @@ class TaskPresentationService:
         cursor: str | None = None,
         limit: int = 20,
     ) -> AttentionChecklist:
-        """Expose pending attention with a session-bound acknowledgement token."""
+        """Expose pending attention, recording each exposure for the conversation observer."""
         bounded_limit = min(max(int(limit or 20), 1), 50)
         async with session_scope() as session:
             realtime = await session.get(LiveSession, session_id)
@@ -761,120 +761,6 @@ class TaskPresentationService:
                     ).where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
                 )).scalar_one()),
             )
-
-    async def acknowledge_task_update(
-        self,
-        *,
-        session_id: str,
-        generation: int,
-        presentation_id: str,
-        exposure_token: str,
-        provider_event_id: str | None = None,
-        provider_call_id: str | None = None,
-    ) -> dict:
-        """Trust one valid model self-report in a standalone transaction."""
-        async with session_scope() as session:
-            return await self.acknowledge_task_update_in_session(
-                session,
-                session_id=session_id,
-                generation=generation,
-                presentation_id=presentation_id,
-                exposure_token=exposure_token,
-                provider_event_id=provider_event_id,
-                provider_call_id=provider_call_id,
-            )
-
-    async def acknowledge_task_update_in_session(
-        self,
-        session,
-        *,
-        session_id: str,
-        generation: int,
-        presentation_id: str,
-        exposure_token: str,
-        provider_event_id: str | None = None,
-        provider_call_id: str | None = None,
-    ) -> dict:
-        """Transition attention without committing the caller's transaction."""
-        realtime = await session.get(LiveSession, session_id)
-        if (
-            realtime is None
-            or realtime.generation != generation
-            or realtime.lifecycle_state not in {"connecting", "ready"}
-        ):
-            return {"status": "invalid_exposure", "attention": None}
-        exposure = await session.get(LiveSessionEvent, str(exposure_token))
-        if (
-            exposure is None
-            or exposure.session_id != session_id
-            or exposure.event_type != "attention.context_exposed"
-            or int((exposure.payload_json or {}).get("generation") or 0) != generation
-            or str((exposure.payload_json or {}).get("presentation_id") or "") != presentation_id
-        ):
-            return {"status": "invalid_exposure", "attention": None}
-        candidate = await session.get(TaskPresentation, presentation_id)
-        if candidate is None:
-            return {"status": "invalid_exposure", "attention": None}
-        if candidate.state == "superseded":
-            return {"status": "superseded", "attention": self._attention_value(candidate)}
-        if candidate.state == "handled":
-            return {"status": "already_handled", "attention": self._attention_value(candidate)}
-        if candidate.candidate_type == "terminal_result" and settings.jarvis_conversation_observer_mode != "off":
-            return {"status": "verification_pending", "attention": self._attention_value(candidate)}
-
-        visible = (await session.execute(select(TaskPresentation.id).where(
-            TaskPresentation.id == candidate.id, live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention(),
-        ))).scalar_one_or_none()
-        if visible is None:
-            return {"status": "invalid_exposure", "attention": None}
-
-        now = utc_now()
-        transitioned = await session.execute(
-            update(TaskPresentation)
-            .where(TaskPresentation.id == candidate.id)
-            .where(TaskPresentation.state == "pending")
-            .where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
-            .values(
-                state="handled",
-                handled_at=now,
-                handled_by="model_report",
-                handled_turn_id=None,
-                reserved_session_id=None,
-                reserved_generation=None,
-                reserved_at=None,
-                lease_token=None,
-                updated_at=now,
-            )
-        )
-        if transitioned.rowcount != 1:
-            await session.refresh(candidate)
-            if candidate.state == "superseded":
-                return {"status": "superseded", "attention": self._attention_value(candidate)}
-            return {"status": "already_handled", "attention": self._attention_value(candidate)}
-        await session.refresh(candidate)
-        candidate.handled_event_id = await self._append_handled_audit(
-            session,
-            candidate,
-            handled_by="model_report",
-            idempotency_key=(
-                f"attention-handled:{session_id}:{generation}:{candidate.id}:{exposure.id}"
-            ),
-            payload={
-                "session_id": session_id,
-                "generation": generation,
-                "exposure_token": exposure.id,
-                "provider_event_id": provider_event_id,
-                "provider_call_id": provider_call_id,
-            },
-        )
-        if candidate.source_task_event_id:
-            await session.execute(
-                update(NotificationOutbox)
-                .where(NotificationOutbox.task_event_id == candidate.source_task_event_id)
-                .where(NotificationOutbox.status.in_(["queued", "failed"]))
-                .values(status="superseded", next_attempt_at=None)
-            )
-        return {"status": "handled", "attention": self._attention_value(candidate)}
 
     async def acknowledge_notification(
         self,
@@ -1007,7 +893,7 @@ class TaskPresentationService:
                 "source_task_event_id":candidate.source_task_event_id,"completed_at":raw.get("completed_at") or candidate.created_at.isoformat(),
                 "delivery_state":candidate.state,
                 "communication_assessment":raw.get("communication_assessment"),
-                "commentary":settings.jarvis_conversation_observer_mode == "enabled" and commentary and notification["intent"] != "suppressed"}
+                "commentary":commentary and notification["intent"] != "suppressed"}
         # Legacy projections may still contain the old canonical phrase. It
         # is diagnostic migration residue, never model-facing attention data.
         raw.pop("required_spoken_phrase", None)
@@ -1129,7 +1015,6 @@ class TaskPresentationService:
         """An unrequested result, offered once when the conversation is idle (a person waiting would hear it)."""
         facts = candidate.required_facts_json or {}
         return (candidate.candidate_type == "terminal_result" and candidate.commentary_attempted_at is None
-            and settings.jarvis_conversation_observer_mode == "enabled"
             and ((facts.get("notification") or {}).get("intent") or "discretionary") == "discretionary")
 
     @staticmethod
@@ -1140,27 +1025,13 @@ class TaskPresentationService:
 
     @staticmethod
     def _requires_commentary(candidate: TaskPresentation) -> bool:
-        if candidate.candidate_type == "terminal_result" and settings.jarvis_conversation_observer_mode == "enabled":
+        if candidate.candidate_type == "terminal_result":
             return (candidate.required_facts_json or {}).get("notification", {}).get("intent") == "requested"
         if candidate.commentary_attempted_at is not None:
             return False
         facts = candidate.required_facts_json if isinstance(candidate.required_facts_json, dict) else {}
         event_type = str(facts.get("event_type") or "")
         return event_type in {"task.reminder.due", "task.requires_input"}
-
-    @staticmethod
-    def _attention_value(candidate: TaskPresentation) -> dict:
-        facts = dict(candidate.required_facts_json or {})
-        return {
-            "presentation_id": candidate.id,
-            "task_id": candidate.task_id,
-            "state": candidate.state,
-            "summary": TaskPresentationService._checklist_summary(facts),
-            "priority": candidate.importance,
-            "handled_at": None if candidate.handled_at is None else candidate.handled_at.isoformat(),
-            "handled_by": candidate.handled_by,
-            "source_task_event_id": candidate.source_task_event_id,
-        }
 
     async def release_append_lease(
         self,

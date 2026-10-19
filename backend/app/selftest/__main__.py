@@ -27,7 +27,7 @@ TEST_ENV = {"SESSION_COOKIE_SECURE": "false", "AUTH_PASSWORD": "", "JARVIS_ACCES
     "JARVIS_EVAL_NETWORK_BLOCKED": "1", "TASK_POOL_ENABLED": "false", "TASK_ORCHESTRATION_ENABLED": "false",
     "TASK_ORCHESTRATION_LIVE_ENABLED": "false", "PYTHONUTF8": "1"}
 JARVIS_TESTS = ["tests/test_conversation_observer.py", "tests/test_assistant_notes.py", "tests/test_selftest.py", "tests/test_jarvis_coordinator.py",
-    "tests/test_live_admission_intents.py", "tests/test_model_reported_attention.py", "tests/test_openai_live_adapter.py",
+    "tests/test_live_admission_intents.py", "tests/test_task_attention.py", "tests/test_openai_live_adapter.py",
     "tests/test_notification_context_floors.py", "tests/test_task_notification_preferences.py",
     "tests/test_task_notifications.py", "tests/test_task_service.py", "tests/test_task_workflows.py",
     "tests/test_orchestration_rollout.py", "tests/test_android_audio_harness.py"]
@@ -71,14 +71,13 @@ def run(args) -> int:
     ledger = h.RequestLedger(output / "request-ledger.json")
     summary_path = output / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {"runs": []}
-    overrides = {"JARVIS_CONVERSATION_OBSERVER_MODE": args.observer}
     for scenario in scenarios:
         used = sum(h.connections_used(d) for d in output.iterdir() if d.is_dir())
         needed = 2 if any(s["type"] in {"reconnect", "resume"} for s in scenario.get("steps", [])) else 1
         if used + needed > allowance:
             print(f"Connection allowance reached ({used}/{allowance}); stopping before {scenario['id']}")
             break
-        folder = h.run_case(output, scenario, speech, android=args.android, env_overrides=overrides)
+        folder = h.run_case(output, scenario, speech, android=args.android)
         evidence = json.loads((folder / "evidence.json").read_text(encoding="utf-8"))
         row = {"scenario": scenario["id"], "folder": folder.name, "transport": transport,
             "connections": h.connections_used(folder), "error": evidence.get("error"),
@@ -171,7 +170,6 @@ def main() -> int:
     r.add_argument("--case", nargs="*")
     r.add_argument("--name", required=True, help="Run directory under data/selftest")
     r.add_argument("--android", action="store_true")
-    r.add_argument("--observer", default="enabled", choices=["off", "shadow", "enabled"])
     r.add_argument("--max-connections", type=int)
     r.add_argument("--live", action="store_true")
     r.set_defaults(handler=run)

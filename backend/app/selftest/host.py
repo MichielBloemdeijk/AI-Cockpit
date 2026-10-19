@@ -166,7 +166,6 @@ async def selftest_lifespan(application):
             recorder.worker_id = registration.worker_id if registration else None
             heart = asyncio.create_task(recorder.heartbeat()) if registration else None
             recorder.record("configuration", {"type": "selftest.started",
-                "observer_mode": settings.jarvis_conversation_observer_mode,
                 "live_model": settings.openai_live_model, "voice": settings.openai_live_voice,
                 "candidate": application.state.acceptance_runtime["candidate"]})
             try:
