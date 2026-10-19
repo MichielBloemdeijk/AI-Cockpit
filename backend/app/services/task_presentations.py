@@ -531,6 +531,7 @@ class TaskPresentationService:
         exclude_presentation_ids: frozenset[str] = frozenset(),
         terminal_only: bool = False,
         quiet_context: bool = False,
+        conversation_idle: bool = False,
     ) -> PresentationReservation | None:
         """Claim one short transport lease without changing attention state."""
         if user_owns_floor and not quiet_context:
@@ -592,7 +593,8 @@ class TaskPresentationService:
         lease_owner = aliased(TaskPresentation)
         for candidate in candidates:
             lease_token = str(uuid4())
-            commentary_attempt = commentary and self._requires_commentary(candidate)
+            commentary_attempt = commentary and (self._requires_commentary(candidate)
+                or (conversation_idle and self._optional_result(candidate)))
             claimed = await session.execute(
                 update(TaskPresentation)
                 .where(TaskPresentation.id == candidate.id)
@@ -1005,7 +1007,7 @@ class TaskPresentationService:
                 "source_task_event_id":candidate.source_task_event_id,"completed_at":raw.get("completed_at") or candidate.created_at.isoformat(),
                 "delivery_state":candidate.state,
                 "communication_assessment":raw.get("communication_assessment"),
-                "commentary":settings.jarvis_conversation_observer_mode == "enabled" and commentary and notification["intent"] == "requested"}
+                "commentary":settings.jarvis_conversation_observer_mode == "enabled" and commentary and notification["intent"] != "suppressed"}
         # Legacy projections may still contain the old canonical phrase. It
         # is diagnostic migration residue, never model-facing attention data.
         raw.pop("required_spoken_phrase", None)
@@ -1121,6 +1123,14 @@ class TaskPresentationService:
             return created_at, presentation_id
         except (ValueError, TypeError, KeyError, UnicodeDecodeError, binascii.Error, json.JSONDecodeError):
             return None
+
+    @staticmethod
+    def _optional_result(candidate: TaskPresentation) -> bool:
+        """An unrequested result, offered once when the conversation is idle (a person waiting would hear it)."""
+        facts = candidate.required_facts_json or {}
+        return (candidate.candidate_type == "terminal_result" and candidate.commentary_attempted_at is None
+            and settings.jarvis_conversation_observer_mode == "enabled"
+            and ((facts.get("notification") or {}).get("intent") or "discretionary") == "discretionary")
 
     @staticmethod
     def _urgent(candidate: TaskPresentation) -> bool:

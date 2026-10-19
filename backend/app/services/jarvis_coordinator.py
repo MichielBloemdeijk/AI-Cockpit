@@ -902,11 +902,21 @@ class JarvisCoordinator:
                         # created_at has one-second resolution: count from its upper bound.
                         user_recently_spoke = floor == "listening" and last_user_words is not None and (
                             utc_now() - (last_user_words + timedelta(seconds=1))) < timedelta(seconds=1.5)
+                        # Nobody has spoken for a while: an optional result may be mentioned.
+                        last_words = await session.scalar(select(LiveSessionEvent.created_at).where(
+                            LiveSessionEvent.session_id == session_id,
+                            LiveSessionEvent.event_type.in_(["provider.user_transcript_delta", "provider.assistant_transcript_delta"]))
+                            .order_by(LiveSessionEvent.sequence.desc()).limit(1))
+                        if last_words is not None and last_words.tzinfo is None:
+                            last_words = last_words.replace(tzinfo=timezone.utc)
+                        conversation_idle = floor == "listening" and (last_words is None
+                            or utc_now() - last_words >= timedelta(seconds=4))
                         reservation = await task_presentation_service.reserve_in_session(
                             session,
                             session_id=session_id,
                             generation=generation,
                             user_owns_floor=floor == "user_speaking" or user_recently_spoke,
+                            conversation_idle=conversation_idle,
                             limit=3,
                             commentary=True,
                             terminal_only=quiet_terminal_delivery and floor != "listening",

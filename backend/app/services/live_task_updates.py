@@ -38,8 +38,11 @@ def announcement_text(fact):
     goal = " ".join(str(fact.get("goal") or "").split())
     summary = " ".join(str(fact.get("summary") or "").split())
     word = TERMINAL_WORDS.get(str(fact.get("event_type")), "finished")
-    text = (f'The user asked to be told about this (unless they have since asked you not to mention it). '
-        f'The task "{goal}" {word}. Result: {summary}')
+    intent = ((fact.get("notification") or {}).get("intent")) or "discretionary"
+    lead = ("The user asked to be told about this (unless they have since asked you not to mention it). "
+        if intent == "requested" else
+        "No update was requested, but the conversation is quiet: mention this briefly if it seems welcome. ")
+    text = lead + f'The task "{goal}" {word}. Result: {summary}'
     if ((fact.get("communication_assessment") or {}).get("classification")) == "possibly_unheard":
         text += " (You said this before, but they may not have heard it.)"
     return text

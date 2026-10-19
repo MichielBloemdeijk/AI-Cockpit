@@ -262,3 +262,18 @@ async def test_notes_list_background_follow_up_tasks(monkeypatch):
     async with session_scope() as db:
         notes = await assistant_notes.render(db, session_id=live.id)
     assert "Started in the background" in notes["text"] and "desk checklist" in notes["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("idle", [True, False])
+async def test_optional_result_is_offered_once_when_the_conversation_is_idle(monkeypatch, idle):
+    live, task, pid = await requested_outcome(monkeypatch)
+    async with session_scope() as db:
+        row = await db.get(TaskPresentation, pid)
+        row.required_facts_json = {**row.required_facts_json, "notification": {"intent": "discretionary", "revision": 1}}
+    async with session_scope() as db:
+        result = await task_presentation_service.reserve_in_session(db, session_id=live.id, generation=live.generation,
+            user_owns_floor=False, commentary=True, conversation_idle=idle)
+        assert result.facts[0]["commentary"] is idle
+        if idle:
+            assert "No update was requested" in announcement_text(result.facts[0])
