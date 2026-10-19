@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     openai_live_reasoning_effort: Literal["low", "medium", "high"] = "low"
     openai_live_diagnostics_dir: str = ""
     openai_live_reasoning_summary: bool = False
-    jarvis_conversation_observer_mode: Literal["off", "shadow", "enabled"] = "off"
+    jarvis_conversation_observer_mode: Literal["off", "shadow", "enabled"] = "enabled"
     openai_live_idle_timeout_seconds: int = 60
     openai_live_connect_timeout_seconds: float = 12.0
     jarvis_update_poll_seconds: float = 0.2

@@ -33,6 +33,14 @@ def evaluation_network_boundary(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", local_only)
 
 
+@pytest.fixture(autouse=True)
+def legacy_attention_mode_by_default(monkeypatch):
+    # Production now defaults to the conversation observer. Older suites still cover
+    # the legacy model-reported acknowledgment path until it is removed; tests of the
+    # observer path enable it explicitly.
+    monkeypatch.setattr(settings, "jarvis_conversation_observer_mode", "off")
+
+
 @pytest.fixture
 def tmp_path():
     # Python's Windows mode=0o700 directory creation removes inherited ACLs.

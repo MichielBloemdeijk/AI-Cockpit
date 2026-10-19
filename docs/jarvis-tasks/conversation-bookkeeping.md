@@ -69,9 +69,9 @@ The L1 replay (`python -m app.selftest replay`) re-checks these rules against
 
 | Value | Behavior |
 |---|---|
-| `off` | Previous behavior; still the default until adoption |
+| `off` | Legacy model-reported acknowledgment (to be removed) |
 | `shadow` | Observes without committing |
-| `enabled` | Observer-owned terminal acknowledgment |
+| `enabled` | **Default since 19 October 2026.** Observer-owned acknowledgment of results and reminders, plus Jarvis notes |
 
 Changing it requires a backend restart. Existing sessions keep their startup
 configuration.

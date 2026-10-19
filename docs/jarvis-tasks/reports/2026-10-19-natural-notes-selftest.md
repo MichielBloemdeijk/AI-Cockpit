@@ -108,3 +108,36 @@ Then decide adoption: no confirmed material issue in natural updates. After that
 2. If no confirmed material issue in natural updates remains, enable the conversation observer by default and remove the legacy branches (plan step 2f).
 3. Repair the full backend test suite (separate session).
 4. The 15-minute manual phone check.
+
+
+## Final round and adoption (evening, 19 October)
+
+The final round ran one scenario at a time after credits were restored. Each finding was fixed and re-checked before going on:
+
+| Found live | Fix | Re-check |
+|---|---|---|
+| A talked-over update ("Oh sorry! Before I forget…") recorded as heard; no re-offer | Bookkeeper leans towards possibly_unheard for an unacknowledged interjection right after an update | Live: yielded, answered, re-offered; bookkeeping correct |
+| Task question only reached Jarvis after orchestration decided (~10 s), and only passively | Task questions are visible to Live at once | Browser and Android: asked immediately, answer applied |
+| A question was sent with result wording, so Jarvis claimed "ready" early (Android) | Spoken prompts per kind (result, question, reminder) | Android: question, answer, on-time reminder, result; all bookkept |
+| A requested update waited 56 s in a lively conversation | Hold only while the floor is the user's; updates join Jarvis's turns | Adaptive: the update arrived mid-chat |
+| "I won't bring it up" not saved; result announced anyway | Corrections must be saved; the prompt defers to a later request | Adaptive: silence respected |
+| Background retry not mentioned; same-task retries invisible to the notes | Notes list follow-ups and refresh on any notes change; aligned-retry orchestrator rule | Adaptive: "I've started a replacement checklist… it's ready now" |
+| Invented checklist items; HTML read aloud | Look results up before describing them; summarize code | Adaptive: honest "can't see the exact text" |
+| An optional result never mentioned while the user sat idle | One gentle spoken prompt when the conversation is idle | Scripted busy conversation stayed unintrusive (fine) |
+| Repeated acknowledgements ("Sure, I'll stay quiet… Understood, I won't mention it") | Do not repeat an acknowledgement when the backend confirms | — |
+
+**Final state on the latest version.**
+- Scripted browser suite: 5 fine and 6 awkward, with the reviewer's one material verdict judged awkward on inspection.
+- Android: question/reminder fine, adaptive interruption fine, silence fine.
+- Adaptive suite: the remaining dissatisfaction is outside natural updates (reading result contents aloud, see below).
+- No confirmed material issue in natural task updates remains, so the adoption rule is met.
+
+**Adopted.** `JARVIS_CONVERSATION_OBSERVER_MODE` now defaults to `enabled` (commit after 2b2ef60). Set it to `off` to return to legacy behavior; a backend restart is needed. Tests still default to the legacy mode until its code is removed (follow-up).
+
+### Open findings (not natural updates)
+
+- **Reading result contents by voice.** Jarvis cannot see a finished document's text, so it cannot read a checklist aloud. It now says so honestly instead of improvising.
+- **Two requests in quick succession** (an answer, then "and remind me in ten seconds…"). The second request was dropped in 1 of 3 runs; a prompt rule improved it.
+- **Legacy cleanup.** Remove the `off`/`shadow` modes, the listen-first prompt, model-reported acknowledgment of results and their tests (plan step 2f, second half).
+- **Full backend test suite repair.** Proposed as its own session.
+- **Manual phone check** (about 15 minutes) as the last step.
