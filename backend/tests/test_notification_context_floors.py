@@ -60,18 +60,21 @@ async def test_failed_live_context_does_not_wait_for_orchestration_or_grant_task
     question=(await task_service.dispatch(goal="Worker question",origin_surface="test",idempotency_key="held-question-task")).task
     await task_service.ask_question(question.id,question="Which input?",idempotency_key="held-question")
     await task_presentation_service.sync_candidates()
+    # Away routing still waits for orchestration; the live conversation does not:
+    # the failure and the worker's question are both visible to Live right away.
     assert not await task_presentation_service.list_pending()
-    assert len(await task_presentation_service.list_pending(include_terminal_context=True))==1
+    assert len(await task_presentation_service.list_pending(include_terminal_context=True))==2
     context=await task_presentation_service.build_attention_context(session_id=live.id,generation=live.generation)
-    assert len(context.items)==1 and context.items[0]["task_id"]==failed.id
+    assert {i["task_id"] for i in context.items}=={failed.id,question.id}
     async with session_scope() as db:
         before=list((await db.execute(select(TaskEvent))).scalars())
-    item=context.items[0]
+    item=next(i for i in context.items if i["task_id"]==failed.id)
     receipt=await task_presentation_service.acknowledge_task_update(session_id=live.id,generation=live.generation,
         presentation_id=item["presentation_id"],exposure_token=item["exposure_token"])
     assert receipt["status"]=="handled"
     assert (await task_service.get_task(failed.id)).task.status=="failed"
     async with session_scope() as db:
         assert len(list((await db.execute(select(TaskEvent))).scalars()))==len(before)
-    assert not (await task_presentation_service.build_attention_context(session_id=live.id,generation=live.generation)).items
+    remaining=(await task_presentation_service.build_attention_context(session_id=live.id,generation=live.generation)).items
+    assert [i["task_id"] for i in remaining]==[question.id]
 

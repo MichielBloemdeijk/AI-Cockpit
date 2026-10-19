@@ -29,10 +29,11 @@ def visible_attention(presentation=TaskPresentation):
 
 
 def live_context_visible(presentation=TaskPresentation):
-    """Verified terminal facts do not wait for a worker-action decision.
+    """Verified terminal facts and task questions do not wait for a worker-action decision.
 
-    This only grants factual context and communication bookkeeping. Worker
-    questions, remediation authority and away notification routing keep their
-    existing orchestration gate.
+    A user in an active conversation is the best person to answer a task's question,
+    so Live may ask it right away; background orchestration can still decide in
+    parallel and whichever answer arrives first resolves the question. Remediation
+    authority and away notification routing keep their existing orchestration gate.
     """
-    return or_(presentation.candidate_type == "terminal_result",visible_attention(presentation))
+    return or_(presentation.candidate_type.in_(["terminal_result", "question"]), visible_attention(presentation))
