@@ -108,5 +108,57 @@ class Relay:
             self.socket.close()
         except OSError:
             pass
-        if self.caller.poll() is None:
+        try:
+            self.caller.wait(60)  # the simulated user writes its questionnaire after closing
+        except subprocess.TimeoutExpired:
             self.caller.kill()
+
+
+class MicStream:
+    """Scripted speech over the same live stream (no simulated user); app output is drained."""
+
+    def __init__(self, port: int):
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=10)
+        self.socket.settimeout(None)
+        self.mic: queue.Queue[bytes] = queue.Queue()
+        self.stop = threading.Event()
+        self.queued_ms = 0.0
+        self.lock = threading.Lock()
+        threading.Thread(target=self._pace, daemon=True).start()
+        threading.Thread(target=self._drain, daemon=True).start()
+
+    def send(self, pcm16k: bytes) -> float:
+        """Queue speech; returns the epoch ms at which it will have been fully sent."""
+        step = MIC_RATE * 2 * CHUNK_MS // 1000
+        with self.lock:
+            for i in range(0, len(pcm16k), step):
+                self.mic.put(pcm16k[i:i + step])
+            self.queued_ms = max(self.queued_ms, time.time() * 1000) + len(pcm16k) / 32
+            return self.queued_ms
+
+    def _pace(self):
+        next_tick = time.monotonic()
+        while not self.stop.is_set():
+            next_tick += CHUNK_MS / 1000
+            try:
+                self.socket.sendall(self.mic.get_nowait())
+            except queue.Empty:
+                pass
+            except OSError:
+                return
+            time.sleep(max(0, next_tick - time.monotonic()))
+
+    def _drain(self):
+        try:
+            for _ in self.socket.makefile("r", encoding="utf-8"):
+                if self.stop.is_set():
+                    return
+        except OSError:
+            return
+
+    def close(self):
+        self.stop.set()
+        try:
+            self.socket.close()
+        except OSError:
+            pass

@@ -28,7 +28,7 @@ def render_recording(raw, frames, metadata, output, allowed_gaps=()):
     if not frames:
         raise ValueError("No Android playback recording frames")
     rate, channels, form = frames[0]["rate"], frames[0]["channels"], frames[0]["format"]
-    if channels not in (1, 2) or form != 2 or rate not in (16000, 24000, 44100, 48000):
+    if channels not in (1, 2) or form != 2 or rate not in (8000, 16000, 22050, 24000, 32000, 44100, 48000):
         raise ValueError(f"Unsupported recorded Android PCM format: {rate} Hz, {channels} ch, format {form}")
     if channels == 2:
         # Playback may be stereo on some images; review only needs a mono timeline.
@@ -37,8 +37,7 @@ def render_recording(raw, frames, metadata, output, allowed_gaps=()):
         frames = [{**f, "bytes": f["bytes"] // 2, "offset": f["offset"] // 2, "channels": 1} for f in frames]
         channels = 1
     base = frames[0]["epoch_ms"] - frames[0]["bytes"] / 2 / rate * 1000
-    total = round((frames[-1]["epoch_ms"] - base) / 1000 * rate)
-    samples = bytearray(max(total * 2, 0))
+    samples = bytearray()
     cursor = 0
     valid = metadata.get("complete") is True and metadata.get("frames") == len(frames)
     prior_time = frames[0]["epoch_ms"]
@@ -49,9 +48,12 @@ def render_recording(raw, frames, metadata, output, allowed_gaps=()):
         valid &= (frame["rate"], frame["channels"], frame["format"]) == (rate, channels, form)
         gap_known = any(start - 250 <= prior_time and frame["epoch_ms"] <= end + 250 for start, end in allowed_gaps)
         valid &= frame["epoch_ms"] >= prior_time and (frame["epoch_ms"] - prior_time < 250 or gap_known)
-        end = round((frame["epoch_ms"] - base) / 1000 * rate) * 2
-        start = max(0, end - count)
-        samples[start:end] = raw[cursor:cursor + count][-max(0, end - start):]
+        # Callbacks can arrive in bursts with one timestamp: append sequentially and
+        # only insert silence when the clock shows a real gap (never overwrite audio).
+        clock_start = max(0, round((frame["epoch_ms"] - base) / 1000 * rate) * 2 - count)
+        if clock_start > len(samples) + rate // 10 * 2:  # >100 ms behind the clock: real gap
+            samples.extend(bytes(clock_start - len(samples)))
+        samples.extend(raw[cursor:cursor + count])
         cursor += count; prior_time = frame["epoch_ms"]
         if frame.get("playback_head") is not None:
             heads.append(frame["playback_head"])
@@ -123,6 +125,7 @@ def main():
         "sessions": [], "markers": [], "input_understood": False, "clock_valid": False,
         "recording_complete": False, "playback_verified": False}
     spoken = []
+    mic = None
     tail_remaining_ms = spec["case"].get("observation_tail_ms",0)
     gaps = []
     seen_sessions = set()
@@ -171,6 +174,18 @@ def main():
                 pcm = wake + bytes(24000) + command + bytes(16000)
                 start = len(wake) // 2 + 12000
             sample_id = f"notification-{len(spoken)}"
+            if mic is not None:
+                # Live stream: the same microphone seam as adaptive runs, paced in real time.
+                before = time.time() * 1000
+                end = mic.send(pcm)
+                spoken.append({"text": text, "sample_id": sample_id, "epoch_ms": before,
+                    "duration_ms": len(pcm) / 32, "command_duration_ms": len(command) / 32,
+                    "verified_end_epoch_ms": end - 500})
+                if initial:
+                    ready = poll(lambda s: any(session["lifecycle_state"] == "ready" and session["id"] not in seen_sessions for session in s["sessions"]), 40)
+                    seen_sessions.update(session["id"] for session in ready["sessions"])
+                    if gaps and gaps[-1][1] is None: gaps[-1][1] = time.time() * 1000
+                return end
             path = root / f"{sample_id}.pcm"; path.write_bytes(pcm)
             staging = f"/data/local/tmp/{sample_id}.pcm"
             remote = f"files/audio-acceptance/{sample_id}.pcm"
@@ -212,6 +227,15 @@ def main():
             device_ms = float(helper.adb(serial, "shell", "date", "+%s%3N"))
             evidence["clock_valid"] = abs(device_ms - time.time() * 1000) < 250
             first, pending = True, None
+            if not spec.get("adaptive"):
+                import random
+                sys.path.insert(0, str(Path(__file__).parent))
+                from android_caller_relay import MicStream
+                stream_port = random.randint(47000, 48999)
+                helper.adb(serial, "forward", f"tcp:{stream_port}", f"tcp:{stream_port}")
+                broadcast("--ei", "stream_port", str(stream_port))
+                time.sleep(1.5)
+                mic = MicStream(stream_port)
             if spec.get("adaptive"):
                 run_adaptive(spec, root, helper, serial, broadcast, state, action, poll, evidence, seen_sessions)
             for step in ([] if spec.get("adaptive") else spec["case"]["steps"]):
@@ -276,7 +300,8 @@ def main():
                     evidence["eligible_ms"].update({id: time.time() * 1000 for id in evidence["target_task_ids"]})
                     evidence["eligible_input_sample_id"] = spoken[-1]["sample_id"]
                 elif kind == "wait_output":
-                    at = time.time() * 1000
+                    # Measure from completion (like the browser driver): the update may start before this step.
+                    at = evidence["eligible_ms"].get(evidence["target_task_ids"][0]) or time.time() * 1000
                     poll(lambda s: any(e["epoch_ms"] >= at and e["event"]["type"] == "session.output_transcript.delta" for e in s["provider_events"]), 12)
                 elif kind == "question": action(action="question", task_id=evidence["target_task_ids"][0])
                 elif kind in {"observer_stop", "observer_restart"}: action(action=kind)
@@ -296,6 +321,8 @@ def main():
                     audio("",initial=True); first=False
                 else: raise ValueError("Unsupported Android scenario step " + kind)
             observe_reply_tail()
+            if mic is not None:
+                mic.close()
             evidence["state"] = state()
             recognized = " ".join(e["event"].get("delta", "") for e in evidence["state"]["provider_events"] if e["event"]["type"] == "session.input_transcript.delta").lower()
             evidence["recognized_request"] = recognized
@@ -311,7 +338,10 @@ def main():
                         return subprocess.run([str(helper.ADB), "-s", serial, "exec-out", "run-as", PACKAGE,
                             "cat", "files/audio-acceptance/" + name], capture_output=True, check=True, timeout=15).stdout
                     raw = pull("announcements-output.pcm")
-                    frames = [json.loads(line) for line in pull("announcements-output.jsonl").decode().splitlines()]
+                    (root / "device-output.pcm").write_bytes(raw)
+                    output_jsonl = pull("announcements-output.jsonl")
+                    (root / "device-output.jsonl").write_bytes(output_jsonl)
+                    frames = [json.loads(line) for line in output_jsonl.decode().splitlines()]
                     metadata = json.loads(pull("announcements-recording.json"))
                     known_gaps = [pair for pair in gaps if pair[1] is not None]
                     evidence["controlled_reconnect_gaps"] = known_gaps
