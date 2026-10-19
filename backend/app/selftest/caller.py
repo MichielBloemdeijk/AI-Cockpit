@@ -1,4 +1,9 @@
-"""Independent Live caller. Its stdin receives audio only; never task events."""
+"""Simulated user: an independent GPT-Live session that talks to Jarvis.
+
+Its stdin receives Jarvis's audio only, never task events, expected answers or
+grading rules. After the call it answers a short private questionnaire as the
+user, which the reviewing agent uses as evidence.
+"""
 import asyncio
 import base64
 import json
@@ -12,20 +17,12 @@ from app.config import settings
 
 
 async def main():
-    agenda = json.loads(os.environ["JARVIS_CALLER_AGENDA"])
+    adaptive = json.loads(os.environ["JARVIS_CALLER_AGENDA"])
     root = Path(os.environ["JARVIS_EVAL_ROOT"])
-    instructions = (
-        "You are a person having a spoken conversation with the assistant Jarvis. "
-        "You initiate the conversation: begin with your first agenda request once "
-        "the session starts, without waiting for a greeting. Speak English. "
-        "Follow this conversational agenda: " + agenda +
-        " Once you have requested the task and expressed your notification preference, "
-        "do not ask about task progress or prompt for a notification. Allow at least "
-        "twenty seconds of silence or unrelated conversation. Respond naturally to "
-        "what you hear. Do not invent facts about task completion."
-    )
+    instructions = caller_instructions(adaptive)
     (root / "caller-prompt.txt").write_text(instructions, encoding="utf-8")
     started, closed = asyncio.Event(), asyncio.Event()
+    dialogue: list[list[str]] = []
     incoming = bytearray()
     usage = {"sessions_started": 0, "voice_usage": None, "backend": [], "cost": None}
 
@@ -73,6 +70,12 @@ async def main():
             async for raw in socket:
                 event = json.loads(raw)
                 emit(event)
+                if event["type"] in {"session.input_transcript.delta", "session.output_transcript.delta"}:
+                    speaker = "Jarvis" if event["type"] == "session.input_transcript.delta" else "You"
+                    if dialogue and dialogue[-1][0] == speaker:
+                        dialogue[-1][1] += event.get("delta") or ""
+                    else:
+                        dialogue.append([speaker, event.get("delta") or ""])
                 if event["type"] == "session.started":
                     usage["sessions_started"] += 1
                     usage["session_id"] = event["session"]["id"]
@@ -96,7 +99,50 @@ async def main():
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             usage["finalized"] = any(event.get("type") == "session.closed" for event in [locals().get("event", {})])
+            if dialogue:
+                try:
+                    answers, questionnaire_usage = await questionnaire(adaptive, dialogue)
+                    (root / "caller-questionnaire.json").write_text(json.dumps(answers, indent=2), encoding="utf-8")
+                    usage["questionnaire"] = questionnaire_usage
+                except Exception as error:  # evidence only; never fails the recorded call
+                    usage["questionnaire_error"] = type(error).__name__
             (root / "caller-usage.json").write_text(json.dumps(usage, indent=2), encoding="utf-8")
+
+
+def caller_instructions(adaptive: dict) -> str:
+    return (
+        f"You are {adaptive.get('persona') or 'a busy person'} having a spoken conversation with your assistant Jarvis. "
+        "You start the conversation: say your first request as soon as the session starts. Speak English, casually, "
+        "like a real person on the phone: short sentences, sometimes thinking aloud. "
+        "Your goals for this conversation: " + adaptive["agenda"] + " "
+        "Only pursue these goals; do not invent facts about tasks or their results. React honestly to what you hear: "
+        "if something is unclear, ask; if you did not catch something, say so. When your goals are done, wind down "
+        "naturally and then stay quiet."
+    )
+
+
+async def questionnaire(adaptive: dict, dialogue: list[list[str]]) -> tuple[dict, dict]:
+    import httpx
+    schema = {"type": "object", "properties": {
+        "got_what_i_wanted": {"type": "boolean"}, "naturalness_1_to_5": {"type": "integer"},
+        "missed_or_unclear": {"type": "string"}, "annoying_or_repeated": {"type": "string"},
+        "comment": {"type": "string"}},
+        "required": ["got_what_i_wanted", "naturalness_1_to_5", "missed_or_unclear", "annoying_or_repeated", "comment"],
+        "additionalProperties": False}
+    transcript = "\n".join(f"{speaker}: {text.strip()}" for speaker, text in dialogue if text.strip())
+    async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+        response = await client.post(settings.openai_live_base_url.rstrip("/") + "/responses",
+            headers={"Authorization": "Bearer " + settings.openai_api_key}, json={
+                "model": "gpt-5.6-luna", "reasoning": {"effort": "low"}, "store": False,
+                "instructions": ("You were the user in this phone conversation with your assistant Jarvis. Your goals were: "
+                    + adaptive["agenda"] + " Answer honestly as that user, from what you heard."),
+                "input": transcript,
+                "text": {"format": {"type": "json_schema", "name": "caller_questionnaire", "strict": True, "schema": schema}}})
+        response.raise_for_status()
+        raw = response.json()
+    text = "".join(c.get("text", "") for o in raw.get("output", []) if o.get("type") == "message"
+        for c in o.get("content", []) if c.get("type") == "output_text")
+    return json.loads(text), {"request_id": raw.get("id"), "usage": raw.get("usage")}
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ export async function runCaller({ page, spec, state, backend, mark, evidence }) 
   const root = process.env.JARVIS_EVAL_ROOT;
   const child = spawn(spec.python, ["-m", "app.selftest.caller"], {
     cwd: spec.backend_directory, windowsHide: true,
-    env: { ...process.env, JARVIS_CALLER_AGENDA: JSON.stringify(spec.adaptive.agenda) },
+    env: { ...process.env, JARVIS_CALLER_AGENDA: JSON.stringify(spec.adaptive) },
     stdio: ["pipe", "pipe", "pipe"] });
   let ready = false, closed = false, error, pending = Promise.resolve();
   const lines = createInterface({ input: child.stdout });
@@ -29,9 +29,12 @@ export async function runCaller({ page, spec, state, backend, mark, evidence }) 
   });
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   const beginning = Date.now();
-  let finished = false, admission, waitingForOpening = false;
+  // Scenario-controlled completion schedule; the caller never learns about it.
+  const schedule = spec.adaptive.tasks || [{ finish_after_seconds: 12 }];
+  const admitted = new Map(), done = new Set();
+  let finished = false, waitingForOpening = false;
   try {
-    while (Date.now() - beginning < 65_000) {
+    while (Date.now() - beginning < (spec.adaptive.max_seconds || 90) * 1000) {
       if (error) throw error;
       if (child.exitCode !== null) throw new Error("Simulated caller exited before conversation completed");
       if (ready) {
@@ -40,26 +43,28 @@ export async function runCaller({ page, spec, state, backend, mark, evidence }) 
       }
       const snapshot = await state();
       const speaking = await page.evaluate(() => window.__announcementEval.speaking());
-      if (snapshot.tasks.length && !admission) {
-        admission = Date.now(); evidence.target_task_ids = [snapshot.tasks[0].id];
-        await mark("adaptive.admission", { task_id: evidence.target_task_ids[0] });
+      for (const task of snapshot.tasks.slice(0, schedule.length)) {
+        if (!admitted.has(task.id)) {
+          admitted.set(task.id, Date.now()); evidence.target_task_ids.push(task.id);
+          await mark("adaptive.admission", { task_id: task.id });
+        }
       }
-      // A fixed delay gives preference changes room to occur. No completion events
-      // or grading information are delivered to the caller.
-      if (admission && !finished && Date.now() - admission > 12_000) {
-        await backend("action", { action: "finish", task_id: evidence.target_task_ids[0] });
-        const snapshot = await state();
-        evidence.eligible_ms[evidence.target_task_ids[0]] = snapshot.tasks[0].finished_at;
-        waitingForOpening = speaking;
-        finished = true;
+      // No completion events or grading information are delivered to the caller.
+      for (const [index, taskId] of evidence.target_task_ids.entries()) {
+        const plan = schedule[index];
+        if (done.has(taskId) || Date.now() - admitted.get(taskId) < (plan.finish_after_seconds ?? 12) * 1000) continue;
+        await backend("action", { action: "finish", task_id: taskId, status: plan.status || "completed", summary: plan.summary });
+        const after = await state();
+        evidence.eligible_ms[taskId] = after.tasks.find(t => t.id === taskId).finished_at;
+        await mark("completion", { task_id: taskId });
+        done.add(taskId); waitingForOpening = speaking; finished = true;
       }
       if (finished && waitingForOpening && !speaking) {
-        evidence.eligible_ms[evidence.target_task_ids[0]] = Date.now();
         await mark("adaptive.eligible"); waitingForOpening = false;
       }
       await delay(40);
     }
-    if (!finished) throw new Error("Independent caller did not admit its intended task");
+    if (schedule.length && !finished) throw new Error("Simulated user did not get its intended task admitted");
   } finally {
     if (child.exitCode === null) {
       child.stdin.write(JSON.stringify({ type: "close" }) + "\n");

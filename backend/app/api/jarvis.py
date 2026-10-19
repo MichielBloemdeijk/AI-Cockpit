@@ -509,6 +509,17 @@ async def observer_health():
             "running": conversation_observer.task is not None and not conversation_observer.task.done()}
 
 
+@router.get("/diagnostics")
+async def diagnostics():
+    """Read-only fault findings with proposed fixes (see app/services/diagnostics.py)."""
+    from app.services.conversation_observer import conversation_observer
+    from app.db.session import session_scope
+    from app.services.diagnostics import diagnose
+    async with session_scope() as db:
+        findings = await diagnose(db, observer=conversation_observer)
+    return {"status": "degraded" if any(f["severity"] == "high" for f in findings) else "ok", "findings": findings}
+
+
 @router.get(
     "/live/sessions/{session_id}/events",
     response_model=JarvisSessionEventReplayResponse,

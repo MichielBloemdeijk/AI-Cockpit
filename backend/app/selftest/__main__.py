@@ -92,6 +92,11 @@ def run(args) -> int:
             result = review_run(folder, scenario, ledger)
             row.update(verdict=result["verdict"], agreed=result.get("agreed"), summary=result["summary"])
             h.write(summary_path, summary)
+        if row.get("error") or row.get("verdict") == "material" or not row.get("recording_complete"):
+            import asyncio
+            from app.selftest.doctor import diagnose_run
+            row["diagnosis"] = asyncio.run(diagnose_run(folder))
+            h.write(summary_path, summary)
         print(json.dumps(row))
     return 0
 
@@ -121,6 +126,24 @@ def review(args) -> int:
     return 0
 
 
+def doctor(args) -> int:
+    """Read-only diagnosis of a database (default: the configured one) or a recorded run folder."""
+    import asyncio
+    from app.selftest.doctor import diagnose_database, diagnose_run
+    if args.run:
+        findings = asyncio.run(diagnose_run(Path(args.run).resolve()))
+    else:
+        database = Path(args.database).resolve() if args.database else settings_database()
+        findings = asyncio.run(diagnose_database(database))
+    print(json.dumps(findings, indent=2, ensure_ascii=False))
+    return 1 if any(f["severity"] == "high" for f in findings) else 0
+
+
+def settings_database() -> Path:
+    from app.config import settings
+    return settings.database_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m app.selftest")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -133,6 +156,10 @@ def main() -> int:
     l1.add_argument("--case", nargs="*", help="Only cases whose folder contains one of these substrings")
     l1.add_argument("--live", action="store_true")
     l1.set_defaults(handler=replay)
+    dr = commands.add_parser("doctor", help="Read-only diagnosis with proposed fixes (free)")
+    dr.add_argument("--database", help="SQLite database (default: the configured one)")
+    dr.add_argument("--run", help="A recorded run folder")
+    dr.set_defaults(handler=doctor)
     rv = commands.add_parser("review", help="Agent review of a recorded run folder (paid Responses)")
     rv.add_argument("--folder", required=True)
     rv.add_argument("--scenario", required=True, help="suite:id, e.g. core:requested_idle")

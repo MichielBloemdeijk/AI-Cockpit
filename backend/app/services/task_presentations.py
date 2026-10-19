@@ -578,6 +578,10 @@ class TaskPresentationService:
         candidates = [
             candidate for candidate in pending
             if candidate.id not in exclude_presentation_ids
+            # A spoken-update prompt while the user is talking makes Live talk over
+            # them; hold it until the next opening (Live's next reply re-queues it).
+            and not (user_owns_floor and commentary and candidate.candidate_type == "terminal_result"
+                and self._requires_commentary(candidate))
         ][: min(max(1, limit), 1)]
         if not candidates:
             return None

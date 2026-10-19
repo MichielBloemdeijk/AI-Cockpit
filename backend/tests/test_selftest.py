@@ -73,8 +73,10 @@ def test_connections_are_counted_from_recorded_events(tmp_path):
 def test_production_never_imports_selftest():
     from pathlib import Path
     app = Path(h.BACKEND / "app")
+    import re
+    pattern = re.compile(r"^\s*(from|import)\s+app\.selftest", re.MULTILINE)
     offenders = [p for p in app.rglob("*.py") if "selftest" not in p.parts
-        and "app.selftest" in p.read_text(encoding="utf-8", errors="ignore")]
+        and pattern.search(p.read_text(encoding="utf-8", errors="ignore"))]
     assert offenders == []
 
 
@@ -102,3 +104,31 @@ def test_review_pack_reads_both_recordings_and_state(tmp_path):
     text = pack_markdown(pack)
     assert 'JARVIS (played, transcribed) 3.0-3.8s: "It is ready"' in text
     assert "user voice 1.0" in text and "EVENT completion" in text and "Jarvis tells the user." in text
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_undelivered_requests_and_failed_bookkeeping(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.db.session import session_scope
+    from app.db.tables import ConversationObservation, LiveSession, TaskPresentation
+    from app.services.diagnostics import diagnose
+    from app.services.jarvis_coordinator import jarvis_coordinator
+    from app.services.task_presentations import task_presentation_service
+    from app.services.task_service import task_service
+    task = (await task_service.dispatch(goal="Doctor page", origin_surface="test", idempotency_key="doctor-task",
+        notification_intent="requested", notification_reason="Tell me")).task
+    await task_service.complete(task.id, summary="Ready.", idempotency_key="doctor-done")
+    await task_presentation_service.sync_candidates()
+    await jarvis_coordinator.accept_text_turn("Begin", idempotency_key="doctor-start")
+    live = await jarvis_coordinator.get_active_session()
+    async with session_scope() as db:
+        db.add(ConversationObservation(session_id=live.id, generation=live.generation, evidence_hash="x", input_json={},
+            status="failed", error="ValueError: Observer must classify each exact presentation once"))
+    class StoppedObserver:
+        failure = "HTTPStatusError"
+    async with session_scope() as db:
+        findings = await diagnose(db, now=datetime.now(timezone.utc) + timedelta(minutes=20), observer=StoppedObserver())
+    symptoms = " | ".join(f["symptom"] for f in findings)
+    assert "Requested update for \"Doctor page\" is still undelivered" in symptoms
+    assert "bookkeeper stopped" in symptoms and "assessment(s) failed" in symptoms
+    assert all(f["proposed_fix"] for f in findings)

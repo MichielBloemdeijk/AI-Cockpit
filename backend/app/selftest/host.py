@@ -85,6 +85,9 @@ class Recorder:
             await task_presentation_service.sync_candidates()
             return await task_service.get_task(task_id)
         claim = self.claims.get(task_id)
+        detail = await task_service.get_task(task_id)
+        if claim is None and detail.task.status not in {"queued"}:
+            raise HTTPException(409, f"Task is {detail.task.status}, not claimable; the scenario expected it to be queued")
         if claim is None:
             claimed = await worker_coordinator.claim_next(self.worker_id)
             claim = claimed.task

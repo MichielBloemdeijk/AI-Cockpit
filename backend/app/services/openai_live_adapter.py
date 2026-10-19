@@ -476,8 +476,8 @@ class OpenAILiveAdapter:
         if quiet_ids or deltas or notes.get("signature") != provider_session.notes_signature:
             verified = json.dumps({"assistant_notes": notes.get("signature"), "presentation_ids": quiet_ids},
                 separators=(",", ":"))
-            appends.append(("session.thinking.append", "Your notes were updated. Do not announce this solely because "
-                "it was appended.\n" + notes["text"], tuple(quiet_ids), verified))
+            appends.append(("session.thinking.append", "(Private context, not a message to respond to.)\n" + notes["text"],
+                tuple(quiet_ids), verified))
             provider_session.notes_signature = str(notes.get("signature") or "")
         if not appends:
             await self._emit(provider_session, "assistant_update_submitted", {"request_id": request_id,

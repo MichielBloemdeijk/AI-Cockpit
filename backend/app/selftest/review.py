@@ -125,8 +125,12 @@ def evidence_pack(folder: Path, scenario: dict) -> dict:
         timeline += [(a, f"user voice {a}-{b}s") for a, b in voiced(folder / "caller.wav")]
     transcription = folder / "assistant-transcription.json"
     if transcription.exists():
-        timeline += [(a, f'JARVIS (played, transcribed) {a}-{b}s: "{text}"')
-            for a, b, text in heard_phrases(json.loads(transcription.read_text(encoding="utf-8")))]
+        audio = voiced(folder / "assistant.wav") if (folder / "assistant.wav").exists() else []
+        for a, b, text in heard_phrases(json.loads(transcription.read_text(encoding="utf-8"))):
+            covered = sum(max(0, min(b, y) - max(a, x)) for x, y in audio)
+            if covered < .3 * max(b - a, .1):
+                continue  # no audio behind it: a transcription artifact, not speech
+            timeline.append((a, f'JARVIS (played, transcribed) {a}-{b}s: "{text}"'))
     elif (folder / "assistant.wav").exists():
         timeline += [(a, f"Jarvis voice {a}-{b}s (not transcribed)") for a, b in voiced(folder / "assistant.wav")]
     provider = [e for e in evidence.get("state", {}).get("provider_events", [])

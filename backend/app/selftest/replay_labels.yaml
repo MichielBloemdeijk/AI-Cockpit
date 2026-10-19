@@ -37,3 +37,14 @@ cases:
   - path: announcement-evaluation/pilot-20261018-natural-experience-01/exploration-baseline-addb93b63c47-production_A-changed_silence-1-immediate-browser
     expect: communicated
     note: The result was (wrongly) announced despite the silence correction; it did reach the user.
+  # First self-test L2 pass (2026-10-19), reviewed by agent and checked by hand.
+  - path: selftest/l2-20261019-core/requested_idle-browser
+    expect: communicated
+  - path: selftest/l2-20261019-core/between_sessions-browser
+    expect: communicated
+  - path: selftest/l2-20261019-core/talked_over_update-browser
+    expect: not_communicated
+    note: The user started an unrelated question while "It's finished, the Hello World page is ready" was playing; never re-offered.
+  - path: selftest/l2-20261019-core/ordinary_during_conversation-browser
+    expect: not_communicated
+    note: Only the admission ("is created") was said; the discretionary completion was never mentioned.

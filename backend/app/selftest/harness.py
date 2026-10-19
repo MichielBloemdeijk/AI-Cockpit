@@ -303,14 +303,61 @@ def connections_used(folder: Path) -> int:
                for line in events.read_text(encoding="utf-8").splitlines())
 
 
+def pack_voiced(source: Path, destination: Path, segments: list[tuple[float, float]], *, pad: float = .25,
+                gap: float = .6) -> list[dict]:
+    """Concatenate voiced segments (silence removed) and return the time map back to the original."""
+    with wave.open(str(source)) as audio:
+        params, rate = audio.getparams(), audio.getframerate()
+        frames = audio.readframes(audio.getnframes())
+    width = params.sampwidth * params.nchannels
+    silence = b"\x00" * int(gap * rate) * width
+    out, mapping, cursor = bytearray(), [], 0.0
+    for start, end in segments:
+        a, b = max(0.0, start - pad), end + pad
+        chunk = frames[int(a * rate) * width:int(b * rate) * width]
+        mapping.append({"packed_start": cursor, "original_start": a, "duration": len(chunk) / width / rate})
+        out += chunk + silence
+        cursor += len(chunk) / width / rate + gap
+    with wave.open(str(destination), "wb") as packed:
+        packed.setparams(params)
+        packed.writeframes(bytes(out))
+    return mapping
+
+
+def unpack_time(t: float, mapping: list[dict]) -> float | None:
+    for m in mapping:
+        if m["packed_start"] <= t <= m["packed_start"] + m["duration"]:
+            return m["original_start"] + (t - m["packed_start"])
+    return None
+
+
 def transcribe(folder: Path, ledger: RequestLedger) -> dict:
-    """Independent word-level transcript of what the client actually played (whisper-1)."""
+    """Independent word-level transcript of what the client actually played (whisper-1).
+
+    Only voiced audio is sent (silence removed), because Whisper invents words over
+    long silences; word times are mapped back to the original recording.
+    """
+    from app.selftest.review import voiced
     path = folder / "assistant-transcription.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    with httpx.Client(timeout=90, trust_env=False) as client, (folder / "assistant.wav").open("rb") as audio:
-        result = api_request(client, "/audio/transcriptions", ledger,
+    segments = voiced(folder / "assistant.wav")
+    if not segments:
+        result = {"words": [], "text": "", "note": "no assistant audio"}
+        write(path, result)
+        return result
+    packed = folder / "assistant-voiced.wav"
+    mapping = pack_voiced(folder / "assistant.wav", packed, segments)
+    with httpx.Client(timeout=90, trust_env=False) as client, packed.open("rb") as audio:
+        raw = api_request(client, "/audio/transcriptions", ledger,
             data={"model": "whisper-1", "response_format": "verbose_json", "language": "en",
                 "timestamp_granularities[]": "word"}, files={"file": ("assistant.wav", audio, "audio/wav")})
+    words = []
+    for word in raw.get("words", []):
+        start, end = unpack_time(word["start"], mapping), unpack_time(word["end"], mapping)
+        if start is None or end is None:
+            continue  # falls in inserted silence: not real speech
+        words.append({**word, "start": round(start, 2), "end": round(end, 2)})
+    result = {"text": raw.get("text"), "words": words, "packing": mapping}
     write(path, result)
     return result

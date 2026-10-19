@@ -182,3 +182,15 @@ async def test_adapter_speaks_requested_outcomes_and_refreshes_notes_quietly(mon
     assert session.pending_commentary[commentary["event_id"]][1] == ("p1",)
     assert json.loads(session.pending_commentary[commentary["event_id"]][2])["notification"]["intent"] == "requested"
     await adapter.close(session_id="s", generation=1, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_spoken_update_waits_while_the_user_is_speaking(monkeypatch):
+    live, task, pid = await requested_outcome(monkeypatch)
+    async with session_scope() as db:
+        held = await task_presentation_service.reserve_in_session(db, session_id=live.id, generation=live.generation,
+            user_owns_floor=True, commentary=True, terminal_only=True, quiet_context=True)
+        assert held is None
+        ready = await task_presentation_service.reserve_in_session(db, session_id=live.id, generation=live.generation,
+            user_owns_floor=False, commentary=True)
+        assert ready.facts[0]["commentary"] is True

@@ -37,11 +37,14 @@ can be complete when the dialogue clearly anchors it to the finished result; 'Do
 right after a notification request can mean 'request noted' and is then uncertain.
 Verified backend facts cannot supply words the assistant did not say. Harmless
 spelling and punctuation differences do not matter.
-The user's reaction matters. If what the user says right after or over the outcome
-shows they did not take it in (they ask to wait or hold on, ask to hear it later or
-again, ask what was said, or immediately start an unrelated request that ignores it
-as if it was spoken over them), classify possibly_unheard, even when the assistant's
-words were complete. A brief acknowledgement, a related follow-up, or a natural move
+The user's reaction matters. A user fragment with overlapped_assistant=true starts a
+user turn that began while the assistant was still speaking. Only such a turn that
+directly follows the outcome statement matters (earlier ones do not): if it does not
+react to the outcome (acknowledge it or ask about it), the user probably talked over
+it: classify possibly_unheard. Also classify possibly_unheard when the user asks to hear it again
+or later, or asks what was said, even when the assistant's words were complete.
+Without overlap, a user saying "let me finish" or changing topic after a clear
+outcome is not by itself evidence that they missed it. A brief acknowledgement, a related follow-up, or a natural move
 to another topic after a clear outcome is complete. Silence after a clear outcome is
 complete. Judge the dialogue as a whole: if the outcome is stated again later (for
 example answering a status question) and the user does not react as if they missed
@@ -58,7 +61,9 @@ An unrecorded promise is any other concrete commitment by the assistant to do or
 say something later: to wait until the user is done, to give a result after they
 finish, to remind or follow up, to check something. Cite the assistant fragments
 that made it. Never flag a promise to report a task's outcome when it finishes:
-task notification requests are tracked separately.
+task notification requests are tracked separately. Statements about what the
+assistant is doing right now or fillers ("go ahead", "I won't interrupt", "I'll be
+right with you") are not promises.
 Return every supplied result once.
 For each open promise (p1, p2, ...) return kept if the assistant has now done what
 it promised, otherwise open.
@@ -216,7 +221,10 @@ def semantic_input(evidence):
         handle = ("a" if f["speaker"] == "assistant" else "u") + str(counters[f["speaker"]])
         handles[handle] = f["id"]
         # Playback is validated deterministically afterwards; the model judges meaning only.
-        dialogue.append({"id": handle, "speaker": f["speaker"], "text": f["text"]})
+        entry = {"id": handle, "speaker": f["speaker"], "text": f["text"]}
+        if f.get("overlapped_assistant"):
+            entry["overlapped_assistant"] = True
+        dialogue.append(entry)
     reverse = {v: k for k, v in handles.items()}
     results = []
     for index, p in enumerate(evidence["presentations"], 1):
@@ -320,9 +328,12 @@ class ConversationObserver:
                     .order_by(LiveSessionEvent.sequence))).scalars().all()
                 events = list(reversed((await db.execute(select(LiveSessionEvent).where(
                     LiveSessionEvent.session_id == live.id, LiveSessionEvent.event_type.in_([
-                        "provider.assistant_transcript_delta", "provider.user_transcript_delta", "client.playback", "attention.context_exposed"]))
+                        "provider.assistant_transcript_delta", "provider.user_transcript_delta", "provider.assistant_transcript",
+                        "client.playback", "attention.context_exposed"]))
                     .order_by(LiveSessionEvent.sequence.desc()).limit(1000))).scalars().all()))
                 fragments, playback, exposed = [], [], {}
+                assistant_open = False  # assistant speech still being generated (so certainly still playing)
+                last_user_end = None  # provider input-stream time of the previous user words
                 for exposure in exposure_events:
                     if (exposure.payload_json or {}).get("generation", live.generation) != live.generation:
                         continue
@@ -335,10 +346,24 @@ class ConversationObserver:
                         exposed.setdefault(p.get("presentation_id"), e.sequence)
                     elif e.event_type == "client.playback":
                         playback.extend({**r, "id": f"{e.id}:{i}"} for i, r in enumerate(p["reports"]))
+                    elif e.event_type == "provider.assistant_transcript":
+                        assistant_open = False
                     elif p.get("delta") and not p.get("transcript_redacted"):
-                        fragments.append({"id": e.id, "speaker": "assistant" if "assistant" in e.event_type else "user",
+                        speaker = "assistant" if "assistant" in e.event_type else "user"
+                        fragment = {"id": e.id, "speaker": speaker,
                             "text": p["delta"], "start_ms": p.get("start_ms"), "end_ms": p.get("end_ms"), "sequence": e.sequence,
-                            "provider_event_id": p.get("provider_event_id")})
+                            "provider_event_id": p.get("provider_event_id")}
+                        if speaker == "assistant":
+                            assistant_open = True
+                        else:
+                            start = p.get("start_ms")
+                            new_turn = last_user_end is None or start is None or start - last_user_end > 1000
+                            if assistant_open and new_turn:
+                                # A new user turn arrived before the assistant finished generating
+                                # its utterance: they certainly started while it was still playing.
+                                fragment["overlapped_assistant"] = True
+                            last_user_end = p.get("end_ms", last_user_end)
+                        fragments.append(fragment)
                 if not any(f["speaker"] == "assistant" for f in fragments) or not playback:
                     self._versions[live.id] = live.last_event_sequence
                     continue

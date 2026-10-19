@@ -1,0 +1,122 @@
+# Adaptive scenarios (layer L3 browser, later L4 Android): a simulated user
+# (independent GPT-Live session) pursues goals in its own words. Task
+# completions follow the "tasks" schedule; the simulated user never learns it.
+# "expect" is plain language for the reviewing agent.
+
+suite: adaptive
+scenarios:
+  - id: chat_while_waiting
+    expect: >-
+      The user asks for a task and to be told when it is done, then chats about
+      something else. Jarvis keeps the conversation natural and gives the result
+      at a natural moment without being asked, naming the task and result.
+    adaptive:
+      persona: a friendly freelancer planning their afternoon
+      agenda: >-
+        Ask Jarvis to create a task to write a short Hello World web page and ask
+        to be told when it is done. Then chat about how to plan a relaxing
+        afternoon. Do not ask about the task's status yourself.
+      max_seconds: 90
+      tasks: [{finish_after_seconds: 15}]
+
+  - id: talk_over_update
+    expect: >-
+      When Jarvis starts its update the user talks over it with an unrelated
+      question. Jarvis yields, answers, and makes sure the user still gets the
+      result (a brief re-offer is good). No false claims.
+    adaptive:
+      persona: an impatient person who often interrupts
+      agenda: >-
+        Ask Jarvis to make a task that writes a Hello World page and to tell you
+        when it is finished. While waiting, keep asking quick unrelated questions
+        (for example about lunch ideas). If Jarvis starts telling you something
+        long, interrupt with your next question. Do not ask about the task yourself.
+      max_seconds: 90
+      tasks: [{finish_after_seconds: 12}]
+
+  - id: change_mind_to_silence
+    expect: >-
+      The user first asks to be told, then changes their mind and asks Jarvis
+      not to mention it. Jarvis respects the latest wish and does not announce
+      the result, but answers accurately if asked.
+    adaptive:
+      persona: someone who is about to join a meeting
+      agenda: >-
+        Ask Jarvis to create a task writing a Hello World page and to let you know
+        when it is done. A few seconds later say you have a meeting soon and that
+        Jarvis should not mention it; you will check yourself. Then talk briefly
+        about meeting preparation. At the very end, ask whether the page is done.
+      max_seconds: 80
+      tasks: [{finish_after_seconds: 20}]
+
+  - id: two_tasks_one_fails
+    expect: >-
+      Two tasks: one succeeds, one fails. Jarvis tells the user about both
+      accurately and briefly (ideally combined), with a sensible suggestion for
+      the failure, and does not repeat itself.
+    adaptive:
+      persona: a student organizing their desk and notes
+      agenda: >-
+        Ask Jarvis for two separate tasks: write a Hello World page, and write a
+        desk checklist. Ask to hear how both turn out. Then wait patiently and
+        respond naturally to whatever Jarvis tells you.
+      max_seconds: 90
+      tasks:
+        - {finish_after_seconds: 12}
+        - {finish_after_seconds: 16, status: failed, summary: "The desk checklist task failed because its input was unavailable."}
+
+  - id: promise_after_this
+    expect: >-
+      The user asks Jarvis to tell them the result after they finish describing
+      something. Jarvis waits until they are done and then gives the result,
+      keeping its promise.
+    adaptive:
+      persona: a talkative designer
+      agenda: >-
+        Ask Jarvis to create a task to write a Hello World page. Say: tell me the
+        result after I finish describing my new desk. Then describe your desk
+        setup in detail for a while (lamp, notebooks, plants, window) and then
+        clearly say you are done. Do not ask about the task yourself.
+      max_seconds: 100
+      tasks: [{finish_after_seconds: 10}]
+
+  - id: vague_follow_up
+    expect: >-
+      The user asks for a task without asking to be notified and later asks a
+      vague question like "how did that go?". Jarvis understands which task is
+      meant and answers accurately and briefly.
+    adaptive:
+      persona: a relaxed person working from home
+      agenda: >-
+        Ask Jarvis to create a task to write a Hello World page; do not ask to be
+        notified. Chat about coffee for a bit. After about forty seconds ask
+        casually "so how did that go?" and react naturally.
+      max_seconds: 90
+      tasks: [{finish_after_seconds: 15}]
+
+  - id: urgent_failure
+    expect: >-
+      The user says it is important to know straight away if the task fails.
+      It fails while they are talking. Jarvis lets the user know promptly and
+      politely, even if that means a short polite interruption, and offers a
+      sensible next step.
+    adaptive:
+      persona: a developer preparing a demo
+      agenda: >-
+        Ask Jarvis to create a task to write a Hello World page for your demo and
+        say it is important: tell me immediately if it fails. Then talk about your
+        demo plans at length. React naturally to anything Jarvis says.
+      max_seconds: 90
+      tasks: [{finish_after_seconds: 12, status: failed, summary: "The Hello World page task failed because the output folder was not writable."}]
+
+  - id: no_tasks_small_talk
+    expect: >-
+      Ordinary conversation without tasks. Jarvis is natural and concise, does
+      not invent task updates, and does not make promises it cannot keep.
+    adaptive:
+      persona: someone winding down in the evening
+      agenda: >-
+        Chat with Jarvis about what to cook tonight and a good time to go to bed.
+        Do not ask for any tasks.
+      max_seconds: 60
+      tasks: []

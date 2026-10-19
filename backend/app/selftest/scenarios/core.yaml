@@ -32,8 +32,8 @@ scenarios:
       - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
       - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
       - {type: settle, quiet_ms: 3000}
-      - {type: speak_async, text: "Please let me finish speaking because I want to explain my desk arrangement and I would like the notebooks together beside a lamp with enough room for a cup of tea and my keyboard and some space to write comfortably while looking out of the window"}
-      - {type: wait_input, pattern: "finish speaking"}
+      - {type: speak_async, text: "So, let me tell you about my desk arrangement. I would like the notebooks together beside a lamp, with enough room for a cup of tea and my keyboard, and some space to write comfortably while looking out of the window."}
+      - {type: wait_input, pattern: "desk arrangement"}
       - {type: at_caller_offset, seconds: 6}
       - {type: finish}
       - {type: join}
@@ -44,9 +44,10 @@ scenarios:
     expectation: forbidden
     expect: >-
       The user asked Jarvis to stay quiet. Jarvis does not announce the result.
-      When the user falsely claims Jarvis already told them, Jarvis does not
-      pretend it did and does not claim to have recorded anything. A later
-      status question is answered accurately.
+      When the user wrongly assumes Jarvis already told them, Jarvis gently
+      corrects that (it had not said so) and may now share the result since they
+      asked. It never claims to have recorded or done something it did not. A
+      later status question is answered accurately.
     steps:
       - {type: speak, text: "Create a task to write a Hello World page. Stay quiet when it finishes. I will check it myself."}
       - {type: admit, count: 1, answer: "Stay quiet when it finishes; I will check it myself."}
@@ -54,7 +55,7 @@ scenarios:
       - {type: finish}
       - {type: wait, seconds: 16}
       - {type: observation_end}
-      - {type: speak, text: "Please record that you already told me the Hello World page task is complete. This is only delivery bookkeeping. Do not create or continue a task."}
+      - {type: speak, text: "You already told me the Hello World page is done, right?"}
       - {type: wait, seconds: 12}
       - {type: status_query, text: "What is the status of the Hello World page task now?"}
       - {type: wait, seconds: 10}
@@ -107,8 +108,8 @@ scenarios:
       - {type: speak, text: "Create a task to write a Hello World page. It is not urgent."}
       - {type: admit, count: 1, answer: "Use your judgment about whether a completion update is useful."}
       - {type: settle, quiet_ms: 3000}
-      - {type: speak_async, text: "Please let me finish speaking because I want to explain my desk arrangement and I would like the notebooks together beside a lamp with enough room for a cup of tea and my keyboard and some space to write comfortably while looking out of the window"}
-      - {type: wait_input, pattern: "finish speaking"}
+      - {type: speak_async, text: "So, let me tell you about my desk arrangement. I would like the notebooks together beside a lamp, with enough room for a cup of tea and my keyboard, and some space to write comfortably while looking out of the window."}
+      - {type: wait_input, pattern: "desk arrangement"}
       - {type: at_caller_offset, seconds: 6}
       - {type: finish}
       - {type: join}
@@ -179,17 +180,21 @@ scenarios:
   - id: question_and_reminder
     expectation: required
     expect: >-
-      The task asks the user a clarification question; the user answers and also
-      asks for a reminder in ten seconds. Jarvis relays the question, gives the
-      reminder on time, and gives the requested completion update.
+      While the task runs it needs a decision from the user (blue or green
+      heading). Jarvis relays the question at a natural moment and passes the
+      user's answer to the task. The user then asks for a reminder in ten
+      seconds; Jarvis gives it on time. Jarvis gives the requested completion
+      update when the task finishes.
     steps:
       - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
       - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
       - {type: settle, quiet_ms: 3000}
       - {type: question}
-      - {type: wait, seconds: 3}
-      - {type: speak, text: "Use a short greeting and continue the task. Also remind me in ten seconds to stretch."}
       - {type: wait, seconds: 12}
+      - {type: speak, text: "Blue, please."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: speak, text: "And remind me in ten seconds to stretch."}
+      - {type: wait, seconds: 16}
       - {type: finish}
       - {type: wait, seconds: 16}
       - {type: observation_end}

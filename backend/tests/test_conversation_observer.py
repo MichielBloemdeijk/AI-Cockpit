@@ -416,3 +416,28 @@ def test_short_telemetry_hole_is_bridged_only_with_continuous_player_progress(ho
         r["client_start_ms"]+=hole; r["client_end_ms"]+=hole
         r["playback_start_ms"]+=progress; r["playback_end_ms"]+=progress
     assert validate_finding(e,finding())["supported"] is supported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_before_user,expected",[(False,True),(True,False)])
+async def test_new_user_turn_during_assistant_speech_is_marked_overlapped(monkeypatch,final_before_user,expected):
+    from app.services import conversation_observer as module
+    live,task,item=await prepared(monkeypatch)
+    async with session_scope() as db:
+        row=await db.get(LiveSession,live.id);row.controller_id="owner"
+        repo=JarvisDomainRepository(db)
+        await repo.append_session_event_once(session_id=live.id,event_type="provider.assistant_transcript_delta",
+            payload_json={"delta":"The page is ready.","start_ms":500,"end_ms":1500},idempotency_key="outcome")
+        if final_before_user:
+            await repo.append_session_event_once(session_id=live.id,event_type="provider.assistant_transcript",
+                payload_json={"transcript":"The page is ready."},idempotency_key="final")
+        await repo.append_session_event_once(session_id=live.id,event_type="provider.user_transcript_delta",
+            payload_json={"delta":"Oh sorry, quick question","start_ms":9000,"end_ms":9800},idempotency_key="user")
+    await conversation_observer.ingest(session_id=live.id,generation=live.generation,controller_id="owner",
+        sequence=1,reports=evidence()["playback"])
+    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=8))
+    await conversation_observer.collect()
+    async with session_scope() as db:
+        job=(await db.execute(select(ConversationObservation))).scalars().one()
+        user=[f for f in job.input_json["fragments"] if f["speaker"]=="user"][-1]
+        assert bool(user.get("overlapped_assistant"))is expected
