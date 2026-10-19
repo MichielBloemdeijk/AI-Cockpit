@@ -122,11 +122,6 @@ class _LiveSession:
     sideband_started: float = 0.0
     sideband_finished: float = 0.0
     diagnostics: LiveModelDiagnostics | None = None
-    decision_configs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    decision_context: list[dict[str, Any]] = field(default_factory=list)
-    decision_events: set[str] = field(default_factory=set)
-    decision_bookkeeping_variant: str = field(default_factory=lambda: settings.jarvis_decisions_bookkeeping_variant)
-    decision_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -404,14 +399,6 @@ class OpenAILiveAdapter:
                 },
             },
         )
-        if settings.jarvis_conversation_observer_mode == "enabled" and settings.jarvis_bookkeeper == "decisions":
-            from app.services.live_decisions import triggers, terminal_context
-            terminal_facts = terminal_context(attention_context, facts)
-            config_id = f"jarvis-decisions:{request_id}"
-            provider_session.decision_configs[config_id] = deepcopy(terminal_facts)
-            await self._send(provider_session, {"type": "session.update", "event_id": config_id,
-                "session": {"triggers": triggers(terminal_facts,
-                    bookkeeping_variant=provider_session.decision_bookkeeping_variant)}})
         append_items: list[tuple[dict[str, Any], tuple[str, ...], bool]] = [
             (fact, (str(fact.get("presentation_id") or ""),), bool(fact.get("commentary")))
             for fact in facts
@@ -577,22 +564,6 @@ class OpenAILiveAdapter:
         if event_type == "session.started":
             await self._announce_ready(provider_session)
             return
-        if event_type == "session.updated":
-            context = provider_session.decision_configs.pop(str(outer.get("client_event_id") or ""), None)
-            if context is not None:
-                provider_session.decision_context = context
-                await self._emit(provider_session, "decisions_context_ready", {"presentations": context,
-                    "client_event_id": outer.get("client_event_id")})
-            return
-        if event_type == "decision.event":
-            identity = str(outer.get("event_id") or "")
-            if not identity or identity in provider_session.decision_events:
-                return
-            provider_session.decision_events.add(identity)
-            provenance = provider_session.decision_sources.get(str(outer.get("source_event_id") or ""))
-            await self._emit(provider_session, "decision", {**outer,
-                **deepcopy(provenance or {"presentations": [], "source_provenance_missing": True})}, event_id=identity)
-            return
         if event_type == "session.closed":
             if provider_session.diagnostics:
                 await provider_session.diagnostics.checkpoint("provider_session_closed")
@@ -607,16 +578,6 @@ class OpenAILiveAdapter:
             # only after the coordinator has committed the disconnected state.
             provider_session.closed.set()
             return
-        if event_type in {"session.input_transcript.delta", "session.output_transcript.delta"}:
-            from app.services.live_decisions import question_identity
-            source = str(outer.get("event_id") or "")
-            if source:
-                context = deepcopy(provider_session.decision_context)
-                variant = provider_session.decision_bookkeeping_variant
-                provider_session.decision_sources.setdefault(source, {"presentations": context,
-                    "bookkeeping_variant": variant, "questions_hash": question_identity(context, variant)})
-                while len(provider_session.decision_sources) > 512:
-                    provider_session.decision_sources.pop(next(iter(provider_session.decision_sources)))
         if event_type == "session.input_transcript.delta":
             await self._handle_transcript_delta(provider_session, "user", outer)
             return
@@ -1350,10 +1311,8 @@ class OpenAILiveAdapter:
             separators=(",", ":"),
             ensure_ascii=False,
         )
-        from app.services.live_decisions import triggers
         return {
             "model": settings.openai_live_model,
-            **({"triggers": triggers()} if triggers() else {}),
             "instructions": conversation_prompt,
             "audio": {"output": {"voice": voice}},
             "delegation": {

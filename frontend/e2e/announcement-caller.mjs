@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 export async function runCaller({ page, spec, state, backend, mark, evidence }) {
   const root = process.env.JARVIS_EVAL_ROOT;
-  const child = spawn(spec.python, ["-m", "app.announcement_eval.caller"], {
+  const child = spawn(spec.python, ["-m", "app.selftest.caller"], {
     cwd: spec.backend_directory, windowsHide: true,
     env: { ...process.env, JARVIS_CALLER_AGENDA: JSON.stringify(spec.adaptive.agenda) },
     stdio: ["pipe", "pipe", "pipe"] });

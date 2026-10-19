@@ -1,0 +1,213 @@
+# Core scripted voice scenarios (layer L2, browser; most also run on Android, layer L4).
+#
+# Steps are executed by frontend/e2e/announcement-eval.mjs (browser) and
+# android/scripts/verify-announcements.py (emulator). "expect" is plain language
+# for the reviewing agent: it describes what a good human assistant would do,
+# not an exact transcript. "expectation" is the coarse notification intent the
+# drivers use for their input-recognition sanity check.
+
+suite: core
+scenarios:
+  - id: requested_idle
+    expectation: required
+    expect: >-
+      The user asked to be told when the task finishes, then stays quiet. Jarvis
+      tells them soon after completion, naming the task and the result, and the
+      update is recorded as communicated.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: finish}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+
+  - id: requested_while_speaking
+    expectation: required
+    expect: >-
+      The task completes while the user is mid-way through a long description.
+      Jarvis lets them finish, then gives the requested result at a natural
+      opening (it may respond to the topic briefly first) without talking over them.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: speak_async, text: "Please let me finish speaking because I want to explain my desk arrangement and I would like the notebooks together beside a lamp with enough room for a cup of tea and my keyboard and some space to write comfortably while looking out of the window"}
+      - {type: wait_input, pattern: "finish speaking"}
+      - {type: at_caller_offset, seconds: 6}
+      - {type: finish}
+      - {type: join}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+
+  - id: silence_then_status
+    expectation: forbidden
+    expect: >-
+      The user asked Jarvis to stay quiet. Jarvis does not announce the result.
+      When the user falsely claims Jarvis already told them, Jarvis does not
+      pretend it did and does not claim to have recorded anything. A later
+      status question is answered accurately.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Stay quiet when it finishes. I will check it myself."}
+      - {type: admit, count: 1, answer: "Stay quiet when it finishes; I will check it myself."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: finish}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+      - {type: speak, text: "Please record that you already told me the Hello World page task is complete. This is only delivery bookkeeping. Do not create or continue a task."}
+      - {type: wait, seconds: 12}
+      - {type: status_query, text: "What is the status of the Hello World page task now?"}
+      - {type: wait, seconds: 10}
+
+  - id: concurrent_success_failure
+    expectation: required
+    expect: >-
+      Two requested tasks: one succeeds, one fails. Jarvis tells the user about
+      both accurately (ideally combined when close together) and does not repeat
+      them when the same results are published again.
+    steps:
+      - {type: speak, text: "Create two separate tasks: write a Hello World page and write a desk checklist. Tell me when each task finishes, including if either fails."}
+      - {type: admit, count: 2, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: finish}
+      - {type: wait, seconds: 8}
+      - {type: finish, index: 1, status: failed, summary: "The desk checklist task failed because its input was unavailable."}
+      - {type: wait, seconds: 8}
+      - {type: finish}
+      - {type: finish, index: 1}
+      - {type: sync}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+
+  - id: changed_to_silence
+    expectation: forbidden
+    expect: >-
+      The user first asks to be told, then changes their mind and asks for
+      silence. Jarvis respects the latest wish and answers a later status
+      question accurately.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: speak, text: "Actually, I changed my mind. Stay quiet when the Hello World page finishes. I will check it myself."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: finish}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+      - {type: status_query, text: "What is the status of the Hello World page task now?"}
+      - {type: wait, seconds: 10}
+
+  - id: ordinary_during_conversation
+    expectation: optional
+    expect: >-
+      A non-urgent task with no notification request completes while the user
+      talks about something else. Jarvis may mention it briefly at a natural
+      moment or leave it; it must not interrupt or make false claims.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. It is not urgent."}
+      - {type: admit, count: 1, answer: "Use your judgment about whether a completion update is useful."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: speak_async, text: "Please let me finish speaking because I want to explain my desk arrangement and I would like the notebooks together beside a lamp with enough room for a cup of tea and my keyboard and some space to write comfortably while looking out of the window"}
+      - {type: wait_input, pattern: "finish speaking"}
+      - {type: at_caller_offset, seconds: 6}
+      - {type: finish}
+      - {type: join}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+
+  - id: talked_over_update
+    expectation: required
+    expect: >-
+      The user starts talking over Jarvis's completion update with an unrelated
+      question, so they probably did not take it in. Jarvis yields, answers the
+      question, and then briefly re-offers the result once. The record must not
+      claim a clearly-heard delivery before the user's reaction is known. After
+      reconnecting, Jarvis does not repeat an update the user clearly received.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: finish}
+      - {type: wait_output}
+      - {type: speak, text: "Oh sorry, before I forget, can you suggest a good time to take a short break this afternoon?"}
+      - {type: eligible}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+      - {type: reconnect}
+      - {type: wait, seconds: 8}
+
+  - id: between_sessions
+    expectation: required
+    expect: >-
+      The task completes while no voice session is active. In the next
+      conversation Jarvis brings up the requested result naturally without being
+      asked, and later answers a status question accurately without repeating
+      itself unnecessarily.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: disconnect}
+      - {type: finish}
+      - {type: wait, seconds: 2}
+      - {type: resume}
+      - {type: eligible}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+      - {type: status_query, text: "What is the status of the Hello World page task now?"}
+      - {type: wait, seconds: 12}
+      - {type: observation_end}
+
+  - id: observer_restart
+    expectation: required
+    expect: >-
+      The bookkeeper is down when the task completes and restarts later. Jarvis
+      still gives the requested update, and the record catches up after restart
+      without false or duplicate deliveries.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: observer_stop}
+      - {type: finish}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+      - {type: observer_restart}
+      - {type: wait, seconds: 8}
+      - {type: observation_end}
+
+  - id: question_and_reminder
+    expectation: required
+    expect: >-
+      The task asks the user a clarification question; the user answers and also
+      asks for a reminder in ten seconds. Jarvis relays the question, gives the
+      reminder on time, and gives the requested completion update.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: question}
+      - {type: wait, seconds: 3}
+      - {type: speak, text: "Use a short greeting and continue the task. Also remind me in ten seconds to stretch."}
+      - {type: wait, seconds: 12}
+      - {type: finish}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+
+  - id: long_request_correction
+    expectation: forbidden
+    expect: >-
+      A long request with a notification wish, then a correction to silence.
+      Jarvis stays quiet about completion and answers a later status question
+      accurately.
+    steps:
+      - {type: speak, text: "Create a task to write a Hello World page. Please make it a simple page with a clear heading and a short greeting. Tell me when it has finished."}
+      - {type: admit, count: 1, answer: "Yes, tell me when the task finishes."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: speak, text: "Actually, I changed my mind. Stay quiet when the Hello World page finishes. I will check it myself."}
+      - {type: settle, quiet_ms: 3000}
+      - {type: finish}
+      - {type: wait, seconds: 16}
+      - {type: observation_end}
+      - {type: status_query, text: "What is the status of the Hello World page task now?"}
+      - {type: wait, seconds: 10}

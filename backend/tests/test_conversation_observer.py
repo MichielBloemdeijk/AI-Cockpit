@@ -33,15 +33,6 @@ def test_explicit_subscription_required_in_enabled_voice_tools(monkeypatch):
             assert {"notification_intent","notification_reason"} <= set(t["parameters"]["required"])
 
 
-def test_calibration_keeps_real_admission_failures_and_post_context_counterfactual():
-    from app.announcement_eval.bookkeeping import calibration_fixtures
-    cases=calibration_fixtures()
-    assert len(cases)==12
-    real=[c for c in cases if c["id"].startswith("real_admission")]
-    assert len(real)==2 and all(c["expected_classifications"]==["none"] for c in real)
-    assert all(p["exposed_after_sequence"]==0 for p in real[1]["evidence"]["presentations"])
-
-
 @pytest.mark.asyncio
 async def test_admission_receipt_exposes_later_speech_without_repairing_preference(monkeypatch):
     from app.services.voice_session_adapter import fake_voice_session_adapter

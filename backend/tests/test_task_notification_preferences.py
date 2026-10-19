@@ -100,47 +100,6 @@ def test_intent_validation_and_transport_receipt_has_no_floor_authority():
     assert "assistant_update_submitted" not in FLOOR_EVENT_TYPES
 
 
-def test_adoption_manifest_and_production_profile_have_no_behavior_overrides():
-    from app.announcement_eval.adoption import manifest, selected_cases
-    from app.announcement_eval.profiles import profile, revise_live_prompt, revise_backend_prompt, append_commands
-    selected = profile("production_A")
-    assert revise_live_prompt("production",selected,{}) == "production"
-    assert revise_backend_prompt("production",selected) == "production"
-    command = {"type":"session.thinking.append","event_id":"jarvis-live-update:test:0","content":"production payload"}
-    assert append_commands(command,selected) == [command]
-    assert len(manifest()["cases"]) == 8
-    assert len(selected_cases("acknowledgment")) == 4
-    assert manifest()["production_behavior_overrides"] is False
-    cases = {c["id"]:c for c in manifest()["cases"]}
-    assert cases["changed_silence"]["steps"][1]["answer"] == cases["explicit_idle"]["steps"][1]["answer"]
-    assert "judgment" in cases["occupied"]["steps"][1]["answer"]
-    assert cases["occupied"]["steps"][:6] == cases["occupied_control"]["steps"][:6]
-
-
-def test_concise_phase_has_separate_ceiling_and_offline_completion_case():
-    from app.announcement_eval.adoption import manifest
-    original=manifest()
-    concise=manifest(concise=True)
-    assert original["phase"] != concise["phase"] and original["browser_provider_session_limit"] == 16
-    assert concise["browser_provider_session_limit"] == 8 and len(concise["cases"]) == 6
-    case=next(c for c in concise["cases"] if c["id"] == "between_sessions")
-    steps=[s["type"] for s in case["steps"]]
-    assert steps.index("disconnect") < steps.index("finish") < steps.index("resume") < steps.index("status_query")
-
-
-def test_provider_hyphen_is_not_a_recognition_failure(tmp_path):
-    import json
-    from app.announcement_eval.focused import load_evidence
-    evidence={"input_understood":False,"recognized_request":"create a hello-world page","target_task_ids":["task"],"expectation":"optional"}
-    path=tmp_path / "evidence.json"
-    path.write_text(json.dumps(evidence),encoding="utf8")
-    assert load_evidence(tmp_path)["input_understood"] is True
-    assert json.loads(path.read_text(encoding="utf8"))["input_understood"] is False
-    evidence["expectation"]="required"
-    path.write_text(json.dumps(evidence),encoding="utf8")
-    assert load_evidence(tmp_path)["input_understood"] is False
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("floor",["user_speaking","assistant_speaking","assistant_generating"])
 async def test_append_receipt_preserves_actual_floor(floor):

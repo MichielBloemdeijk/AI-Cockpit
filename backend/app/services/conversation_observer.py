@@ -249,9 +249,6 @@ def semantic_input(evidence):
 
 
 async def infer(evidence):
-    if evidence.get("classifier") == "decisions":
-        from app.services.live_decisions import native_assessment
-        return native_assessment(evidence)
     compact = semantic_input(evidence)
     body = {"model": MODEL, "reasoning": {"effort": "low"}, "service_tier": "priority",
         "parallel_tool_calls": False, "store": False, "max_output_tokens": 2000,
@@ -287,13 +284,6 @@ class ConversationObserver:
             return
         self.failure = None
         self._versions.clear()
-        # A preference inference interrupted by a process exit is uncertain.
-        # Preserve its attempted request and do not silently repeat paid work.
-        async with session_scope() as db:
-            jobs = (await db.execute(select(ConversationObservation).where(ConversationObservation.status == "running"))).scalars().all()
-            for job in jobs:
-                if job.input_json.get("kind") == "preference_review":
-                    job.status, job.error = "failed", "Preference review interrupted before durable completion"
         self.stop_event = asyncio.Event()
         self.task = asyncio.create_task(self.run(), name="conversation-observer")
 
@@ -333,9 +323,9 @@ class ConversationObserver:
                     .order_by(LiveSessionEvent.sequence))).scalars().all()
                 events = list(reversed((await db.execute(select(LiveSessionEvent).where(
                     LiveSessionEvent.session_id == live.id, LiveSessionEvent.event_type.in_([
-                        "provider.assistant_transcript_delta", "provider.user_transcript_delta", "provider.decision", "client.playback", "attention.context_exposed"]))
+                        "provider.assistant_transcript_delta", "provider.user_transcript_delta", "client.playback", "attention.context_exposed"]))
                     .order_by(LiveSessionEvent.sequence.desc()).limit(1000))).scalars().all()))
-                fragments, playback, exposed, native_decisions = [], [], {}, []
+                fragments, playback, exposed = [], [], {}
                 for exposure in exposure_events:
                     if (exposure.payload_json or {}).get("generation", live.generation) != live.generation:
                         continue
@@ -349,9 +339,6 @@ class ConversationObserver:
                         exposed.setdefault(p.get("presentation_id"), e.sequence)
                     elif e.event_type == "client.playback":
                         playback.extend({**r, "id": f"{e.id}:{i}"} for i, r in enumerate(p["reports"]))
-                    elif e.event_type == "provider.decision":
-                        if p.get("source_event_type") == "session.output_transcript.delta":
-                            native_decisions.append(p)
                     elif p.get("delta") and not p.get("transcript_redacted"):
                         fragments.append({"id": e.id, "speaker": "assistant" if "assistant" in e.event_type else "user",
                             "text": p["delta"], "start_ms": p.get("start_ms"), "end_ms": p.get("end_ms"), "sequence": e.sequence,
@@ -383,13 +370,10 @@ class ConversationObserver:
                     continue  # Bound this relevant batch, not the age of the whole conversation.
                 eligibility = {f["id"]: playback_support([f], playback).get("supported", False)
                     for f in fragments if f["speaker"] == "assistant"}
-                if settings.jarvis_bookkeeper == "decisions" and not native_decisions:
-                    continue
                 identity = {"fragments": fragments, "presentations": values, "eligible_fragments": eligibility,
                             "input_silence": {f["id"]: input_silence_supported(f, playback)
                                 for f in fragments if f["speaker"] == "user"},
-                            "policy_hash": POLICY_HASH, "classifier": settings.jarvis_bookkeeper,
-                            "native_decisions": native_decisions}
+                            "policy_hash": POLICY_HASH}
                 key = digest(identity)
                 if await db.scalar(select(ConversationObservation.id).where(ConversationObservation.session_id == live.id,
                     ConversationObservation.evidence_hash == key)):
@@ -412,8 +396,7 @@ class ConversationObserver:
             if claimed.rowcount != 1:
                 return False
             attempts = list((job.usage_json or {}).get("attempts", []))
-            if job.input_json.get("classifier") != "decisions":
-                attempts.append({"id": str(uuid4()), "started_at": now().isoformat(), "purpose": "conversation_bookkeeping"})
+            attempts.append({"id": str(uuid4()), "started_at": now().isoformat(), "purpose": "conversation_bookkeeping"})
             job.usage_json = {**(job.usage_json or {}), "attempts": attempts}
             job_id, evidence = job.id, job.input_json
         # No transaction or voice/task orchestration slot held during inference.
@@ -504,8 +487,6 @@ class ConversationObserver:
     async def run(self):
         while not self.stop_event.is_set():
             try:
-                from app.services.notification_preference_review import process_one as review_preferences
-                await review_preferences()
                 await self.collect()
                 await self.process_one()
             except Exception as exc:

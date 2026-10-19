@@ -45,10 +45,6 @@ class Settings(BaseSettings):
     openai_live_diagnostics_dir: str = ""
     openai_live_reasoning_summary: bool = False
     jarvis_conversation_observer_mode: Literal["off", "shadow", "enabled"] = "off"
-    jarvis_decisions_preferences: bool = False
-    jarvis_bookkeeper: Literal["responses", "decisions"] = "responses"
-    jarvis_decisions_preference_variant: Literal["existing", "concise", "separate"] = "existing"
-    jarvis_decisions_bookkeeping_variant: Literal["existing", "concise", "separate"] = "existing"
     openai_live_idle_timeout_seconds: int = 60
     openai_live_connect_timeout_seconds: float = 12.0
     jarvis_update_poll_seconds: float = 0.2

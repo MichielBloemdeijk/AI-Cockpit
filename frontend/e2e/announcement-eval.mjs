@@ -22,7 +22,7 @@ const evidence = { schema: "jarvis-announcement-evidence.v1", transport: "browse
 const errors = [];
 page.on("pageerror", e => errors.push(e.message));
 let pendingSpeech = null;
-let caseDeadline = Date.now() + (spec.profile === "production_A" ? 160_000 : 120_000) + (spec.case.observation_tail_ms || 0);
+let caseDeadline = Date.now() + 160_000 + (spec.case.observation_tail_ms || 0);
 let currentState;
 const drainPlayback = playbackQuietObserver(() => page.evaluate(() => window.__announcementEval.activity()),
   {maxMs: spec.case.observation_tail_ms || 0});

@@ -12,6 +12,10 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 
+# A personal .env (password access, secure cookies) must not change test behavior.
+# Environment variables take precedence over the .env file in Settings.
+os.environ.update(SESSION_COOKIE_SECURE="false", AUTH_PASSWORD="", JARVIS_ACCESS_MODE="personal")
+
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
 from app.services.voice_session_adapter import fake_voice_session_adapter
