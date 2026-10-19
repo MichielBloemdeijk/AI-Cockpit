@@ -547,10 +547,10 @@ class JarvisCoordinator:
                         pending = await task_presentation_service.list_pending(include_terminal_context=active.provider_adapter == "openai_live")
                         fingerprint = task_presentation_service.semantic_fingerprint(pending)
                         if settings.jarvis_conversation_observer_mode == "enabled":
-                            # Promises are part of Jarvis's notes; a change refreshes them too.
+                            # Anything in Jarvis's notes (retries, follow-ups, promises) refreshes them.
                             from app.services import assistant_notes
                             async with session_scope() as session:
-                                fingerprint += ":" + await assistant_notes.promise_signature(session)
+                                fingerprint += ":" + (await assistant_notes.render(session, session_id=active.id))["signature"]
                         attention_key = (active.id, active.generation)
                         previous_fingerprint = self._attention_context_fingerprints.get(attention_key)
                         if fingerprint != previous_fingerprint:

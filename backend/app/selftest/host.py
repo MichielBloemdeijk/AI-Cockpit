@@ -81,9 +81,13 @@ class Recorder:
 
     async def finish(self, task_id, status, summary):
         if task_id in self.completed:
-            # Redelivery resynchronizes the projection rather than reusing a stale worker fence.
-            await task_presentation_service.sync_candidates()
-            return await task_service.get_task(task_id)
+            current = await task_service.get_task(task_id)
+            if current.task.status != "queued":
+                # Redelivery resynchronizes the projection rather than reusing a stale worker fence.
+                await task_presentation_service.sync_candidates()
+                return current
+            # Re-queued after finishing (a background retry): work it again.
+            self.completed.pop(task_id); self.claims.pop(task_id, None)
         claim = self.claims.get(task_id)
         detail = await task_service.get_task(task_id)
         if claim is None and detail.task.status not in {"queued"}:

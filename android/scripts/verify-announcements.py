@@ -87,18 +87,20 @@ def run_adaptive(spec, root, helper, serial, broadcast, state, action, poll, evi
         seen_sessions.update(x["id"] for x in ready["sessions"])
         evidence["markers"].append({"type": "adaptive.ready", "epoch_ms": time.time() * 1000})
         schedule = adaptive.get("tasks", [{"finish_after_seconds": 12}])
-        admitted, done = {}, set()
+        admitted, done, retried = {}, set(), set()
         started = time.monotonic()
         while time.monotonic() - started < adaptive.get("max_seconds", 90):
             if relay.error:
                 raise RuntimeError(relay.error)
             snapshot = state()
             for task in snapshot["tasks"]:  # unscheduled tasks (background retries) finish after a default delay
+                if task["id"] in done and task["status"] in {"queued", "running", "waiting_for_worker"}:
+                    done.discard(task["id"]); admitted[task["id"]] = time.monotonic(); retried.add(task["id"])  # retried
                 if task["id"] not in admitted:
                     admitted[task["id"]] = time.monotonic(); evidence["target_task_ids"].append(task["id"])
                     evidence["markers"].append({"type": "adaptive.admission", "epoch_ms": time.time() * 1000})
             for index, task_id in enumerate(evidence["target_task_ids"]):
-                plan = schedule[index] if index < len(schedule) else {"finish_after_seconds": 12}
+                plan = schedule[index] if index < len(schedule) and task_id not in retried else {"finish_after_seconds": 12}
                 if task_id in done or time.monotonic() - admitted[task_id] < plan.get("finish_after_seconds", 12):
                     continue
                 action(action="finish", task_id=task_id, status=plan.get("status", "completed"),

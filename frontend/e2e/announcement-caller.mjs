@@ -31,7 +31,7 @@ export async function runCaller({ page, spec, state, backend, mark, evidence }) 
   const beginning = Date.now();
   // Scenario-controlled completion schedule; the caller never learns about it.
   const schedule = spec.adaptive.tasks || [{ finish_after_seconds: 12 }];
-  const admitted = new Map(), done = new Set();
+  const admitted = new Map(), done = new Set(), retried = new Set();
   let finished = false, waitingForOpening = false;
   try {
     while (Date.now() - beginning < (spec.adaptive.max_seconds || 90) * 1000) {
@@ -45,6 +45,9 @@ export async function runCaller({ page, spec, state, backend, mark, evidence }) 
       const speaking = await page.evaluate(() => window.__announcementEval.speaking());
       // Unscheduled tasks (e.g. background retries) finish after a default delay.
       for (const task of snapshot.tasks) {
+        if (done.has(task.id) && ["queued", "running", "waiting_for_worker"].includes(task.status)) {
+          done.delete(task.id); admitted.set(task.id, Date.now()); retried.add(task.id);  // retried after finishing
+        }
         if (!admitted.has(task.id)) {
           admitted.set(task.id, Date.now()); evidence.target_task_ids.push(task.id);
           await mark("adaptive.admission", { task_id: task.id });
@@ -52,7 +55,7 @@ export async function runCaller({ page, spec, state, backend, mark, evidence }) 
       }
       // No completion events or grading information are delivered to the caller.
       for (const [index, taskId] of evidence.target_task_ids.entries()) {
-        const plan = schedule[index] || { finish_after_seconds: 12 };
+        const plan = (!retried.has(taskId) && schedule[index]) || { finish_after_seconds: 12 };
         if (done.has(taskId) || Date.now() - admitted.get(taskId) < (plan.finish_after_seconds ?? 12) * 1000) continue;
         await backend("action", { action: "finish", task_id: taskId, status: plan.status || "completed", summary: plan.summary });
         const after = await state();
