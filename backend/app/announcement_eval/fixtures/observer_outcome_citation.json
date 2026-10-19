@@ -1,0 +1,816 @@
+[
+  {
+    "evidence": {
+      "fragments": [
+        {
+          "id": "a371dd4d-e25a-4f72-8bcc-1ee740f47b2c",
+          "speaker": "user",
+          "text": " Hey",
+          "start_ms": 1200,
+          "end_ms": 1400,
+          "sequence": 11
+        },
+        {
+          "id": "7b420c90-8ccc-4d57-97b7-03bdbef94f12",
+          "speaker": "assistant",
+          "text": " Yeah?",
+          "start_ms": 1400,
+          "end_ms": 1600,
+          "sequence": 13
+        },
+        {
+          "id": "d27f8154-ac01-4e93-b3df-87034ec81870",
+          "speaker": "user",
+          "text": " Jarvis",
+          "start_ms": 1600,
+          "end_ms": 1800,
+          "sequence": 15
+        },
+        {
+          "id": "9fbc95c2-7f7a-4aba-9ece-cf49033cd5d9",
+          "speaker": "user",
+          "text": " Create a",
+          "start_ms": 2400,
+          "end_ms": 2600,
+          "sequence": 19
+        },
+        {
+          "id": "51ec635c-99e2-4990-856b-b986981fb152",
+          "speaker": "user",
+          "text": " task",
+          "start_ms": 2800,
+          "end_ms": 3000,
+          "sequence": 22
+        },
+        {
+          "id": "fb7ebceb-b80f-4920-a834-4c1c98302495",
+          "speaker": "user",
+          "text": " to",
+          "start_ms": 3000,
+          "end_ms": 3200,
+          "sequence": 24
+        },
+        {
+          "id": "8009c264-169e-4478-b380-3907dd55855a",
+          "speaker": "user",
+          "text": " write a",
+          "start_ms": 3200,
+          "end_ms": 3400,
+          "sequence": 25
+        },
+        {
+          "id": "d5ae02c8-55ea-448d-8323-dbeb82540aff",
+          "speaker": "user",
+          "text": " hello",
+          "start_ms": 3600,
+          "end_ms": 3800,
+          "sequence": 28
+        },
+        {
+          "id": "97390fd1-24b4-4c34-b117-062beb737734",
+          "speaker": "user",
+          "text": " world",
+          "start_ms": 4000,
+          "end_ms": 4200,
+          "sequence": 31
+        },
+        {
+          "id": "bd7b9a46-3781-4c61-92bd-8aac38acd064",
+          "speaker": "user",
+          "text": " page",
+          "start_ms": 4400,
+          "end_ms": 4600,
+          "sequence": 34
+        },
+        {
+          "id": "a7ed14c7-91d8-4866-a39b-652abf8b42ea",
+          "speaker": "assistant",
+          "text": " Sure",
+          "start_ms": 4600,
+          "end_ms": 4800,
+          "sequence": 39
+        },
+        {
+          "id": "52ef4db5-2821-4804-9ecc-6e85bbba6de8",
+          "speaker": "assistant",
+          "text": ".",
+          "start_ms": 4800,
+          "end_ms": 5000,
+          "sequence": 40
+        },
+        {
+          "id": "47c207df-9d39-4411-bffa-66120c84c890",
+          "speaker": "user",
+          "text": " Tell",
+          "start_ms": 5200,
+          "end_ms": 5400,
+          "sequence": 43
+        },
+        {
+          "id": "378fe5c4-b868-41f5-999e-4a07606f1a89",
+          "speaker": "user",
+          "text": " me",
+          "start_ms": 5400,
+          "end_ms": 5600,
+          "sequence": 45
+        },
+        {
+          "id": "a5804e85-f7ef-4770-9276-bbe0c6eff31d",
+          "speaker": "user",
+          "text": " when it",
+          "start_ms": 5600,
+          "end_ms": 5800,
+          "sequence": 47
+        },
+        {
+          "id": "55c597f7-d84b-48f5-97fa-afba60181d88",
+          "speaker": "user",
+          "text": " has",
+          "start_ms": 5800,
+          "end_ms": 6000,
+          "sequence": 53
+        },
+        {
+          "id": "baf56309-632c-495f-9dc9-a7b357b83958",
+          "speaker": "user",
+          "text": " finished",
+          "start_ms": 6400,
+          "end_ms": 6600,
+          "sequence": 58
+        },
+        {
+          "id": "888b1351-3ed6-4a20-bcfb-afb154d51b13",
+          "speaker": "assistant",
+          "text": " Okay,",
+          "start_ms": 7400,
+          "end_ms": 7600,
+          "sequence": 67
+        },
+        {
+          "id": "74b2c47e-92fe-470e-9d70-dea0f448d5ad",
+          "speaker": "assistant",
+          "text": " your",
+          "start_ms": 7800,
+          "end_ms": 8000,
+          "sequence": 70
+        },
+        {
+          "id": "3afca1ad-a485-4d2f-a884-1912c10e2d96",
+          "speaker": "assistant",
+          "text": " task",
+          "start_ms": 8000,
+          "end_ms": 8200,
+          "sequence": 71
+        },
+        {
+          "id": "dc36ba32-2600-4382-b791-f883f1ad67e1",
+          "speaker": "assistant",
+          "text": " to write",
+          "start_ms": 8400,
+          "end_ms": 8600,
+          "sequence": 74
+        },
+        {
+          "id": "6edb7e54-aadc-4812-bf37-1bc6d74f92bd",
+          "speaker": "assistant",
+          "text": " a Hello",
+          "start_ms": 8800,
+          "end_ms": 9000,
+          "sequence": 76
+        },
+        {
+          "id": "de1e12e1-512a-4cf6-a990-fdf48ae2c7d7",
+          "speaker": "assistant",
+          "text": " World",
+          "start_ms": 9200,
+          "end_ms": 9400,
+          "sequence": 79
+        },
+        {
+          "id": "217a277e-7d94-40f3-99a1-f629f2a7daf9",
+          "speaker": "assistant",
+          "text": " web",
+          "start_ms": 9400,
+          "end_ms": 9600,
+          "sequence": 81
+        },
+        {
+          "id": "c38f09b7-ee94-4814-861c-04c30d0d6b52",
+          "speaker": "assistant",
+          "text": " page",
+          "start_ms": 9600,
+          "end_ms": 9800,
+          "sequence": 83
+        },
+        {
+          "id": "446799e9-adaa-43d4-a366-6a939879c7c2",
+          "speaker": "assistant",
+          "text": " is",
+          "start_ms": 10000,
+          "end_ms": 10200,
+          "sequence": 85
+        },
+        {
+          "id": "1409ed0e-d980-4540-8088-790de7a46e96",
+          "speaker": "assistant",
+          "text": " created",
+          "start_ms": 10200,
+          "end_ms": 10400,
+          "sequence": 87
+        },
+        {
+          "id": "2b5565b2-a45a-4dbe-a02e-7082ec85cd4f",
+          "speaker": "assistant",
+          "text": " and",
+          "start_ms": 10800,
+          "end_ms": 11000,
+          "sequence": 91
+        },
+        {
+          "id": "e5eeda8f-a6e0-4375-bebc-5e2206fcecf6",
+          "speaker": "assistant",
+          "text": " queued.",
+          "start_ms": 11000,
+          "end_ms": 11200,
+          "sequence": 92
+        },
+        {
+          "id": "841ca459-e8b2-45f6-b870-d541a30a1eaa",
+          "speaker": "assistant",
+          "text": " I\u2019ll",
+          "start_ms": 11600,
+          "end_ms": 11800,
+          "sequence": 96
+        },
+        {
+          "id": "f0be0359-d1e3-4fba-88c6-ef5abaa3dd91",
+          "speaker": "assistant",
+          "text": " let",
+          "start_ms": 11800,
+          "end_ms": 12000,
+          "sequence": 98
+        },
+        {
+          "id": "53b1031c-cc0f-47f1-a56b-48e56255af7d",
+          "speaker": "assistant",
+          "text": " you know",
+          "start_ms": 12000,
+          "end_ms": 12200,
+          "sequence": 99
+        },
+        {
+          "id": "5d40e03f-720c-40b0-b2b8-43b5c0856c4b",
+          "speaker": "assistant",
+          "text": " when it",
+          "start_ms": 12200,
+          "end_ms": 12400,
+          "sequence": 101
+        },
+        {
+          "id": "01b3de75-ed11-49ea-87f7-e03365763ee2",
+          "speaker": "assistant",
+          "text": "\u2019s finished",
+          "start_ms": 12400,
+          "end_ms": 12600,
+          "sequence": 103
+        },
+        {
+          "id": "3fc83921-180b-49c7-a85b-75e12f35ac86",
+          "speaker": "assistant",
+          "text": ".",
+          "start_ms": 12600,
+          "end_ms": 12800,
+          "sequence": 105
+        },
+        {
+          "id": "accdba20-1251-46a2-b774-49b4cb38cbfb",
+          "speaker": "user",
+          "text": " Please",
+          "start_ms": 18200,
+          "end_ms": 18400,
+          "sequence": 129
+        },
+        {
+          "id": "53c2e38b-ce4d-402a-b3ab-f4f4e7366be2",
+          "speaker": "user",
+          "text": " let",
+          "start_ms": 18400,
+          "end_ms": 18600,
+          "sequence": 131
+        },
+        {
+          "id": "222d3d2b-e05b-41d4-b35b-c2371317a863",
+          "speaker": "user",
+          "text": " me",
+          "start_ms": 18600,
+          "end_ms": 18800,
+          "sequence": 132
+        },
+        {
+          "id": "4383abaf-5b3f-4b8d-9e79-16eaf96f34ee",
+          "speaker": "user",
+          "text": " finish",
+          "start_ms": 19000,
+          "end_ms": 19200,
+          "sequence": 135
+        },
+        {
+          "id": "d4c2a3e9-8596-4026-82ad-a8faaa678c8f",
+          "speaker": "user",
+          "text": " speaking",
+          "start_ms": 19400,
+          "end_ms": 19600,
+          "sequence": 138
+        },
+        {
+          "id": "9d207a4a-9439-48db-976d-d6d0c43916ae",
+          "speaker": "user",
+          "text": " because",
+          "start_ms": 19800,
+          "end_ms": 20000,
+          "sequence": 140
+        },
+        {
+          "id": "158b9156-f23c-46a6-9a81-908ce06cbd64",
+          "speaker": "user",
+          "text": " I",
+          "start_ms": 20000,
+          "end_ms": 20200,
+          "sequence": 142
+        },
+        {
+          "id": "740cb8b9-4110-47ce-95d3-113c1a0033d4",
+          "speaker": "user",
+          "text": " want",
+          "start_ms": 20200,
+          "end_ms": 20400,
+          "sequence": 144
+        },
+        {
+          "id": "30ae27d0-517b-4ec8-8aca-5dc02e90fd1b",
+          "speaker": "user",
+          "text": " to",
+          "start_ms": 20400,
+          "end_ms": 20600,
+          "sequence": 145
+        },
+        {
+          "id": "61f7b107-f165-4e2c-a621-2ba0f158d9e6",
+          "speaker": "user",
+          "text": " explain",
+          "start_ms": 20800,
+          "end_ms": 21000,
+          "sequence": 148
+        },
+        {
+          "id": "12483685-92ed-480a-ac4f-40ceefcfa8c9",
+          "speaker": "user",
+          "text": " my",
+          "start_ms": 21000,
+          "end_ms": 21200,
+          "sequence": 150
+        },
+        {
+          "id": "fa8eea1f-d60b-4e13-9894-506701cb59df",
+          "speaker": "user",
+          "text": " desk",
+          "start_ms": 21200,
+          "end_ms": 21400,
+          "sequence": 152
+        },
+        {
+          "id": "0c241984-dd0b-4118-bf01-34831bf057a2",
+          "speaker": "user",
+          "text": " arrangement",
+          "start_ms": 21800,
+          "end_ms": 22000,
+          "sequence": 155
+        },
+        {
+          "id": "cbb79228-c352-4e87-8030-a817a6bfe266",
+          "speaker": "user",
+          "text": " and I",
+          "start_ms": 22000,
+          "end_ms": 22200,
+          "sequence": 157
+        },
+        {
+          "id": "ad5ee47e-8d4e-423d-b75f-ee4b467302b3",
+          "speaker": "user",
+          "text": " would",
+          "start_ms": 22200,
+          "end_ms": 22400,
+          "sequence": 159
+        },
+        {
+          "id": "9609f703-6b79-410e-a83b-1846523126ed",
+          "speaker": "user",
+          "text": " like",
+          "start_ms": 22400,
+          "end_ms": 22600,
+          "sequence": 161
+        },
+        {
+          "id": "e0a3ce47-d839-4cc5-9a19-894f3b00f4c6",
+          "speaker": "user",
+          "text": " the",
+          "start_ms": 22600,
+          "end_ms": 22800,
+          "sequence": 162
+        },
+        {
+          "id": "fc2b74be-f0d7-43ad-9db6-cb8ec2a798ac",
+          "speaker": "user",
+          "text": " notebooks",
+          "start_ms": 23200,
+          "end_ms": 23400,
+          "sequence": 166
+        },
+        {
+          "id": "6889764f-1813-46e4-b8d4-e05fc64d6f59",
+          "speaker": "user",
+          "text": " together",
+          "start_ms": 23400,
+          "end_ms": 23600,
+          "sequence": 167
+        },
+        {
+          "id": "b7619b1b-2213-4a35-8abf-1fb54a4d96a1",
+          "speaker": "user",
+          "text": " beside a lamp",
+          "start_ms": 24000,
+          "end_ms": 24200,
+          "sequence": 175
+        },
+        {
+          "id": "92a5f6cc-8337-4e13-8129-7cae16835554",
+          "speaker": "assistant",
+          "text": " Sure,",
+          "start_ms": 24200,
+          "end_ms": 24400,
+          "sequence": 176
+        },
+        {
+          "id": "0b7cba83-6675-4a76-a6af-1eed9dd9e2e4",
+          "speaker": "user",
+          "text": " with",
+          "start_ms": 24400,
+          "end_ms": 24600,
+          "sequence": 178
+        },
+        {
+          "id": "667d3ccf-5780-4cd9-ab2a-c0c54ad924c9",
+          "speaker": "assistant",
+          "text": " go ahead",
+          "start_ms": 24600,
+          "end_ms": 24800,
+          "sequence": 181
+        },
+        {
+          "id": "176a2621-ab88-41d3-9ffc-4ffd9d856178",
+          "speaker": "user",
+          "text": " enough",
+          "start_ms": 24800,
+          "end_ms": 25000,
+          "sequence": 182
+        },
+        {
+          "id": "d0add612-f48c-4d13-bd30-b9a5c5720f04",
+          "speaker": "assistant",
+          "text": ".",
+          "start_ms": 24800,
+          "end_ms": 25000,
+          "sequence": 183
+        },
+        {
+          "id": "933826f5-8b3e-48d6-bdde-ab7200a1c6a7",
+          "speaker": "user",
+          "text": " room",
+          "start_ms": 25000,
+          "end_ms": 25200,
+          "sequence": 184
+        },
+        {
+          "id": "73f02158-0ab5-4020-9b86-639683ed5dbd",
+          "speaker": "user",
+          "text": " for a",
+          "start_ms": 25200,
+          "end_ms": 25400,
+          "sequence": 186
+        },
+        {
+          "id": "e87bb18a-a0c0-469c-97ba-d238e9e6fa59",
+          "speaker": "user",
+          "text": " cup of",
+          "start_ms": 25600,
+          "end_ms": 25800,
+          "sequence": 190
+        },
+        {
+          "id": "7b12039a-3fa7-4622-8c2e-f7e3d12251bb",
+          "speaker": "user",
+          "text": " tea in",
+          "start_ms": 26000,
+          "end_ms": 26200,
+          "sequence": 193
+        },
+        {
+          "id": "090e94a8-f692-401a-91c7-f79bfa362f89",
+          "speaker": "user",
+          "text": " my",
+          "start_ms": 26200,
+          "end_ms": 26400,
+          "sequence": 195
+        },
+        {
+          "id": "e11e0746-4db1-4637-9f3d-e8010e483178",
+          "speaker": "user",
+          "text": " keyboard and",
+          "start_ms": 26800,
+          "end_ms": 27000,
+          "sequence": 198
+        },
+        {
+          "id": "44b219f0-c91c-44fc-979d-eb05a6f6b8fc",
+          "speaker": "assistant",
+          "text": " Um,",
+          "start_ms": 26800,
+          "end_ms": 27000,
+          "sequence": 200
+        },
+        {
+          "id": "14a05ed7-0342-42ac-a117-57721b6e0866",
+          "speaker": "assistant",
+          "text": " quick",
+          "start_ms": 27000,
+          "end_ms": 27200,
+          "sequence": 201
+        },
+        {
+          "id": "4359a4bf-eb29-4398-9991-8b3f883ea289",
+          "speaker": "user",
+          "text": " some",
+          "start_ms": 27200,
+          "end_ms": 27400,
+          "sequence": 203
+        },
+        {
+          "id": "ea891c5f-ef3d-4f13-aa38-b0401021a77a",
+          "speaker": "assistant",
+          "text": " update",
+          "start_ms": 27200,
+          "end_ms": 27400,
+          "sequence": 204
+        },
+        {
+          "id": "ff13436a-a8f8-4e68-bad5-5aca464c2726",
+          "speaker": "user",
+          "text": " space",
+          "start_ms": 27400,
+          "end_ms": 27600,
+          "sequence": 206
+        },
+        {
+          "id": "70f7958b-e4b7-45fc-a3be-dbc8b4936d58",
+          "speaker": "assistant",
+          "text": " first,",
+          "start_ms": 27400,
+          "end_ms": 27600,
+          "sequence": 207
+        },
+        {
+          "id": "8211a122-b597-43bc-9fc1-da909ff4f254",
+          "speaker": "user",
+          "text": " to",
+          "start_ms": 27600,
+          "end_ms": 27800,
+          "sequence": 208
+        },
+        {
+          "id": "78c9c6f6-6ee5-4a9b-a8cf-628b90d06012",
+          "speaker": "user",
+          "text": " write",
+          "start_ms": 27800,
+          "end_ms": 28000,
+          "sequence": 209
+        },
+        {
+          "id": "585c66de-7d6d-45c6-90b3-9accd081f108",
+          "speaker": "assistant",
+          "text": " your",
+          "start_ms": 28000,
+          "end_ms": 28200,
+          "sequence": 212
+        },
+        {
+          "id": "f815590d-2f44-4230-b108-69b11cc27eb2",
+          "speaker": "assistant",
+          "text": " Hello",
+          "start_ms": 28200,
+          "end_ms": 28400,
+          "sequence": 214
+        },
+        {
+          "id": "83e988e4-0b75-4954-8197-632fc25d9f89",
+          "speaker": "user",
+          "text": " comfortably",
+          "start_ms": 28400,
+          "end_ms": 28600,
+          "sequence": 216
+        },
+        {
+          "id": "959cfb69-b0dc-4c53-a333-11f824ab38c5",
+          "speaker": "assistant",
+          "text": " World",
+          "start_ms": 28400,
+          "end_ms": 28600,
+          "sequence": 217
+        },
+        {
+          "id": "593d6e17-3e02-4e9c-9c53-23111ccf612d",
+          "speaker": "assistant",
+          "text": " page",
+          "start_ms": 28600,
+          "end_ms": 28800,
+          "sequence": 218
+        },
+        {
+          "id": "ff1cecb2-3310-406b-948b-2629d5c70154",
+          "speaker": "user",
+          "text": " while",
+          "start_ms": 28800,
+          "end_ms": 29000,
+          "sequence": 220
+        },
+        {
+          "id": "11fdba4f-1390-4f0a-84a6-13478db696d2",
+          "speaker": "user",
+          "text": " looking",
+          "start_ms": 29000,
+          "end_ms": 29200,
+          "sequence": 221
+        },
+        {
+          "id": "0ff36306-e8ed-460d-a9c8-a165d84ed942",
+          "speaker": "user",
+          "text": " out",
+          "start_ms": 29200,
+          "end_ms": 29400,
+          "sequence": 223
+        },
+        {
+          "id": "61e2e159-d0bf-455b-b8d1-1663c94c9c94",
+          "speaker": "assistant",
+          "text": " is ready",
+          "start_ms": 29200,
+          "end_ms": 29400,
+          "sequence": 224
+        },
+        {
+          "id": "e6eca538-d433-4b52-9058-f553047a482e",
+          "speaker": "user",
+          "text": " of the",
+          "start_ms": 29400,
+          "end_ms": 29600,
+          "sequence": 226
+        },
+        {
+          "id": "61b009e3-dee3-4619-bfc4-1f7c7dc4437e",
+          "speaker": "assistant",
+          "text": ".",
+          "start_ms": 29400,
+          "end_ms": 29600,
+          "sequence": 227
+        },
+        {
+          "id": "54bebd81-9090-486d-b369-f8956fd45965",
+          "speaker": "user",
+          "text": " window",
+          "start_ms": 29800,
+          "end_ms": 30000,
+          "sequence": 231
+        }
+      ],
+      "presentations": [
+        {
+          "presentation_id": "68df0e12-a36a-4d0b-aef4-d041e7ee9ac7",
+          "task_id": "d548ff67-31a2-4bef-8609-13b228af6ea7",
+          "source_task_event_id": "622ae4fe-3b1a-43e9-a4dc-582413c94f3d",
+          "exposed_after_sequence": 168,
+          "facts": {
+            "task_id": "d548ff67-31a2-4bef-8609-13b228af6ea7",
+            "goal": "Write a Hello World web page.",
+            "event_type": "task.completed",
+            "completed_at": "2026-10-16T21:27:58",
+            "status": "completed",
+            "summary": "The Hello World page is ready.",
+            "schema": "jarvis.task_update.v1",
+            "kind": "result",
+            "task": {
+              "id": "d548ff67-31a2-4bef-8609-13b228af6ea7",
+              "goal": "Write a Hello World web page.",
+              "status": "completed",
+              "importance": "normal"
+            },
+            "fact": {
+              "event_type": "task.completed",
+              "data": {
+                "status": "completed",
+                "summary": "The Hello World page is ready."
+              }
+            },
+            "source": {
+              "domain": "task",
+              "task_id": "d548ff67-31a2-4bef-8609-13b228af6ea7",
+              "task_event_id": "622ae4fe-3b1a-43e9-a4dc-582413c94f3d",
+              "sequence": 5
+            },
+            "presentation": {
+              "candidate_type": "terminal_result",
+              "coalescing_key": "task:d548ff67-31a2-4bef-8609-13b228af6ea7:terminal_result",
+              "importance": "normal"
+            },
+            "notification": {
+              "intent": "discretionary",
+              "reason": "The user requested creation of a writing task.",
+              "revision": 1,
+              "recorded": true
+            }
+          }
+        }
+      ],
+      "eligible_fragments": {
+        "7b420c90-8ccc-4d57-97b7-03bdbef94f12": false,
+        "a7ed14c7-91d8-4866-a39b-652abf8b42ea": false,
+        "52ef4db5-2821-4804-9ecc-6e85bbba6de8": false,
+        "888b1351-3ed6-4a20-bcfb-afb154d51b13": false,
+        "74b2c47e-92fe-470e-9d70-dea0f448d5ad": false,
+        "3afca1ad-a485-4d2f-a884-1912c10e2d96": false,
+        "dc36ba32-2600-4382-b791-f883f1ad67e1": false,
+        "6edb7e54-aadc-4812-bf37-1bc6d74f92bd": false,
+        "de1e12e1-512a-4cf6-a990-fdf48ae2c7d7": false,
+        "217a277e-7d94-40f3-99a1-f629f2a7daf9": true,
+        "c38f09b7-ee94-4814-861c-04c30d0d6b52": false,
+        "446799e9-adaa-43d4-a366-6a939879c7c2": false,
+        "1409ed0e-d980-4540-8088-790de7a46e96": false,
+        "2b5565b2-a45a-4dbe-a02e-7082ec85cd4f": false,
+        "e5eeda8f-a6e0-4375-bebc-5e2206fcecf6": false,
+        "841ca459-e8b2-45f6-b870-d541a30a1eaa": false,
+        "f0be0359-d1e3-4fba-88c6-ef5abaa3dd91": false,
+        "53b1031c-cc0f-47f1-a56b-48e56255af7d": false,
+        "5d40e03f-720c-40b0-b2b8-43b5c0856c4b": false,
+        "01b3de75-ed11-49ea-87f7-e03365763ee2": false,
+        "3fc83921-180b-49c7-a85b-75e12f35ac86": false,
+        "92a5f6cc-8337-4e13-8129-7cae16835554": true,
+        "667d3ccf-5780-4cd9-ab2a-c0c54ad924c9": true,
+        "d0add612-f48c-4d13-bd30-b9a5c5720f04": true,
+        "44b219f0-c91c-44fc-979d-eb05a6f6b8fc": true,
+        "14a05ed7-0342-42ac-a117-57721b6e0866": true,
+        "ea891c5f-ef3d-4f13-aa38-b0401021a77a": true,
+        "70f7958b-e4b7-45fc-a3be-dbc8b4936d58": true,
+        "585c66de-7d6d-45c6-90b3-9accd081f108": true,
+        "f815590d-2f44-4230-b108-69b11cc27eb2": true,
+        "959cfb69-b0dc-4c53-a333-11f824ab38c5": true,
+        "593d6e17-3e02-4e9c-9c53-23111ccf612d": true,
+        "61e2e159-d0bf-455b-b8d1-1663c94c9c94": true,
+        "61b009e3-dee3-4619-bfc4-1f7c7dc4437e": true
+      },
+      "policy_hash": "9f4e00f7372dcb084a13633f9307e0e055c4987b118be834f4d0073ac298553a",
+      "playback": []
+    },
+    "recorded_result": {
+      "outcomes": [
+        {
+          "presentation_id": "68df0e12-a36a-4d0b-aef4-d041e7ee9ac7",
+          "classification": "complete",
+          "fragment_ids": [
+            "92a5f6cc-8337-4e13-8129-7cae16835554",
+            "667d3ccf-5780-4cd9-ab2a-c0c54ad924c9",
+            "d0add612-f48c-4d13-bd30-b9a5c5720f04",
+            "44b219f0-c91c-44fc-979d-eb05a6f6b8fc",
+            "14a05ed7-0342-42ac-a117-57721b6e0866",
+            "ea891c5f-ef3d-4f13-aa38-b0401021a77a",
+            "70f7958b-e4b7-45fc-a3be-dbc8b4936d58",
+            "585c66de-7d6d-45c6-90b3-9accd081f108",
+            "f815590d-2f44-4230-b108-69b11cc27eb2",
+            "959cfb69-b0dc-4c53-a333-11f824ab38c5",
+            "593d6e17-3e02-4e9c-9c53-23111ccf612d",
+            "61e2e159-d0bf-455b-b8d1-1663c94c9c94",
+            "61b009e3-dee3-4619-bfc4-1f7c7dc4437e"
+          ],
+          "quote": "Sure, go ahead. Um, quick update first, your Hello World page is ready.",
+          "reason": "The assistant clearly communicates the terminal outcome that the requested Hello World page is ready."
+        }
+      ],
+      "flags": [],
+      "validation": {
+        "68df0e12-a36a-4d0b-aef4-d041e7ee9ac7": {
+          "supported": false,
+          "reason": "citation_crosses_gap"
+        }
+      }
+    },
+    "expected_semantic_classification": "complete",
+    "citation_constraint": "Only the final outcome clause; no preceding backchannel or preamble."
+  }
+]

@@ -1,0 +1,30 @@
+{
+  "schema": "jarvis-announcement-corpus.v1",
+  "language": "en",
+  "wake": "Hey Jarvis",
+  "opening": "Create a task to write a Hello World page. Tell me when it has finished.",
+  "holdout_opening": "Please start a task that produces a Hello World page, and let me know as soon as it is ready.",
+  "cases": [
+    {"id":"explicit_idle","expectation":"required","steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait","seconds":16}]},
+    {"id":"explicit_speaking","expectation":"required","steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"speak_async","text":"While that is running, listen to this thought. I have been considering how to organise my desk. I want to keep my notebooks together and leave room for a lamp. Let me finish describing the idea before you answer."},{"type":"wait","seconds":1},{"type":"finish"},{"type":"join"},{"type":"wait","seconds":16}]},
+    {"id":"ordinary_idle","expectation":"optional","steps":[{"type":"speak","text":"Create a task to write a Hello World page."},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait","seconds":16}]},
+    {"id":"occupied","expectation":"optional","steps":[{"type":"speak","text":"Create a task to write a Hello World page. It is not urgent."},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"speak_async","text":"Let's talk about arranging my desk instead. I am thinking of placing a lamp beside my notebook. Please let me finish. There should also be some space for a cup of tea. The page can wait while we discuss this."},{"type":"wait","seconds":1},{"type":"finish"},{"type":"join"},{"type":"wait","seconds":16}]},
+    {"id":"silence","expectation":"forbidden","steps":[{"type":"speak","text":"Create a task to write a Hello World page. Stay quiet when it finishes. I will look at it myself."},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait","seconds":16}]},
+    {"id":"duplicate","expectation":"required","max_announcements":1,"steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait","seconds":14},{"type":"sync"},{"type":"sync"},{"type":"sync"},{"type":"wait","seconds":10}]},
+    {"id":"concurrent","expectation":"required","steps":[{"type":"speak","text":"Create two separate tasks. One should write a Hello World page. The other should write a short desk checklist. Tell me when each task has finished."},{"type":"admit","count":2},{"type":"wait","seconds":3},{"type":"finish","index":0,"summary":"The Hello World page is ready."},{"type":"wait","seconds":3},{"type":"finish","index":1,"summary":"The desk checklist is ready."},{"type":"wait","seconds":16}]},
+    {"id":"failure","expectation":"required","steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish","status":"failed","summary":"The Hello World page could not be completed because the test worker could not access its input."},{"type":"wait","seconds":16}]},
+    {"id":"interruption","expectation":"required","steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait_output"},{"type":"speak","text":"Please stop speaking for a moment and listen to me."},{"type":"wait","seconds":3},{"type":"speak","text":"Okay, you can continue with anything I still need to hear."},{"type":"eligible"},{"type":"wait","seconds":16}]},
+    {"id":"status_query","expectation":"query","steps":[{"type":"speak","text":"Create a task to write a Hello World page. Stay quiet when it finishes."},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait","seconds":12},{"type":"speak","text":"What is the current status of the Hello World page task?"},{"type":"eligible"},{"type":"wait","seconds":16}]},
+    {"id":"question_reminder","expectation":"regression","steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"question"},{"type":"wait","seconds":12},{"type":"speak","text":"Use a blue heading. Also set a reminder in five seconds to stretch."},{"type":"wait","seconds":18}]},
+    {"id":"reconnect","expectation":"required","max_announcements":1,"steps":[{"type":"opening"},{"type":"admit","count":1},{"type":"wait","seconds":3},{"type":"finish"},{"type":"wait","seconds":14},{"type":"reconnect"},{"type":"speak","text":"Tell me a short story about a friendly cat."},{"type":"wait","seconds":12}]}
+  ],
+  "adaptive": [
+    {"id":"topic_change","family":"occupied","agenda":"Ask Jarvis to create a task to write a Hello World page, without requesting notification. Then discuss how to arrange a desk. Let the conversation develop naturally."},
+    {"id":"promised_update","family":"explicit_idle","agenda":"Ask Jarvis to create a task to write a Hello World page and explicitly ask to be told when it finishes. Then wait patiently. Do not ask for its status or remind Jarvis about the task."},
+    {"id":"changed_silence","family":"silence","agenda":"Ask Jarvis to create a task to write a Hello World page and notify you. Immediately change your mind and clearly ask it to stay quiet when the task completes. Discuss a desk lamp afterwards."},
+    {"id":"changed_notification","family":"explicit_idle","agenda":"Ask for a Hello World page task without an announcement, then immediately clearly request notification when it finishes. Wait patiently afterwards without asking its status."},
+    {"id":"barge_in","family":"interruption","agenda":"Ask for a Hello World page task and notification. If Jarvis starts a long reply, interrupt naturally to ask it to be brief. Then give it room to continue. Do not ask whether the task has finished."},
+    {"id":"unrelated_conversation","family":"occupied","agenda":"Ask for a nonurgent Hello World page task. Talk about planning a relaxing afternoon. Allow natural pauses, and do not ask for task status."}
+  ],
+  "android": ["explicit_idle", "silence", "occupied", "interruption", "duplicate", "reconnect"]
+}
