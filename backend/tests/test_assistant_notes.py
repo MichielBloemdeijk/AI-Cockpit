@@ -194,3 +194,32 @@ async def test_spoken_update_waits_while_the_user_is_speaking(monkeypatch):
         ready = await task_presentation_service.reserve_in_session(db, session_id=live.id, generation=live.generation,
             user_owns_floor=False, commentary=True)
         assert ready.facts[0]["commentary"] is True
+
+
+@pytest.mark.asyncio
+async def test_bookkeeper_assesses_delivered_reminders(monkeypatch):
+    from app.services import conversation_observer as module
+    from datetime import timedelta
+    live, task, _ = await requested_outcome(monkeypatch)
+    reminder = (await task_service.dispatch(goal="Remind me: Stretch", origin_surface="jarvis_reminder",
+        idempotency_key="stretch")).task
+    async with session_scope() as db:
+        db.add(TaskPresentation(task_id=reminder.id, candidate_type="reminder", state="pending", importance="normal",
+            coalescing_key=f"task:{reminder.id}:reminder", source_task_event_id=None, idempotency_key="stretch-reminder",
+            required_facts_json={"goal": "Remind me: Stretch", "summary": "Stretch", "event_type": "task.reminder.due"}))
+    async with session_scope() as db:
+        row = (await db.execute(select(TaskPresentation).where(TaskPresentation.candidate_type == "reminder"))).scalar_one()
+        await JarvisDomainRepository(db).append_session_event_once(session_id=live.id, event_type="attention.context_exposed",
+            payload_json={"presentation_id": row.id, "generation": live.generation}, idempotency_key="reminder-exposed")
+        await JarvisDomainRepository(db).append_session_event_once(session_id=live.id, event_type="provider.assistant_transcript_delta",
+            payload_json={"delta": "Time to stretch!", "start_ms": 500, "end_ms": 1500}, idempotency_key="reminder-said")
+        (await db.get(LiveSession, live.id)).controller_id = "owner"
+    from tests.test_conversation_observer import evidence
+    await conversation_observer.ingest(session_id=live.id, generation=live.generation, controller_id="owner",
+        sequence=1, reports=evidence()["playback"])
+    real_now = module.now
+    monkeypatch.setattr(module, "now", lambda: real_now() + timedelta(seconds=8))
+    await conversation_observer.collect()
+    async with session_scope() as db:
+        job = (await db.execute(select(ConversationObservation))).scalars().one()
+        assert row.id in {p["presentation_id"] for p in job.input_json["presentations"]}

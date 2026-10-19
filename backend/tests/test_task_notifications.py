@@ -400,3 +400,29 @@ async def test_bookkeeper_mode_holds_in_session_fallback_until_the_hard_cap(monk
         stored.next_attempt_at = None
     assert await task_notifications.route_pending_task_notifications(voice_connected=True) == 1
     assert scheduled == [row.id]
+
+
+@pytest.mark.asyncio
+async def test_bookkeeper_mode_waits_briefly_after_a_session_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.db.tables import LiveSession
+    from app.services.jarvis_coordinator import jarvis_coordinator
+    snapshot = await task_service.dispatch(goal="Session end grace", idempotency_key="end-grace-task", origin_surface="test")
+    await task_service.complete(snapshot.task.id, summary="Ready.", idempotency_key="end-grace-complete")
+    await task_presentation_service.sync_candidates()
+    await jarvis_coordinator.accept_text_turn("Begin", idempotency_key="end-grace-session")
+    live = await jarvis_coordinator.get_active_session()
+    scheduled: list[str] = []
+
+    async def capture_schedule(outbox_id: str, *, delay_seconds: float = 0.0) -> None:
+        scheduled.append(outbox_id)
+
+    monkeypatch.setattr(task_notifications.settings, "jarvis_conversation_observer_mode", "enabled")
+    monkeypatch.setattr(task_notifications, "schedule_task_notification", capture_schedule)
+    async with session_scope() as session:
+        (await session.get(LiveSession, live.id)).disconnected_at = task_notifications.utc_now()
+    assert await task_notifications.route_pending_task_notifications(voice_connected=False) == 0
+    async with session_scope() as session:
+        (await session.get(LiveSession, live.id)).disconnected_at = task_notifications.utc_now() - timedelta(seconds=20)
+        for row in (await session.execute(__import__("sqlalchemy").select(NotificationOutbox))).scalars().all():
+            row.next_attempt_at = None
+    assert await task_notifications.route_pending_task_notifications(voice_connected=False) == 1

@@ -81,7 +81,9 @@ def backend_policy(text):
             " Include the saved notification intent from the tool receipt in your backend reply to Live. "
             "A later notification request about an admitted task requires set_task_update_policy; it is not just conversation. "
             " Communication records are maintained by the conversation observer. Do not acknowledge terminal outcomes "
-            "based on a voice report, user assertion, backend reply or append receipt. Read authoritative pending state.")
+            "based on a voice report, user assertion, backend reply or append receipt. "
+            "After admitting a task, reply once with the receipt; do not look up its status or the attention checklist "
+            "unless the user asks.")
     return text + " Notification preferences: " + PREFERENCE_RULES + (
         " Live owns speech. Call acknowledge_task_update only when Live reports it finished speaking that item. "
         "Your reply or an append receipt is not proof of communication. "

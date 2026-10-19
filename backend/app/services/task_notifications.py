@@ -17,6 +17,7 @@ from app.services.orchestration_visibility import visible_attention
 from app.db.session import session_scope
 from app.db.tables import (
     JarvisLiveEvent,
+    LiveSession,
     NotificationOutbox,
     PushSubscription,
     Task,
@@ -217,6 +218,14 @@ async def route_pending_task_notifications(
             .where(NotificationOutbox.attempts < settings.notification_retry_limit)
             .order_by(NotificationOutbox.created_at.asc(), NotificationOutbox.id.asc())
         )).scalars().all())
+        settle_until = None
+        if not voice_connected and settings.jarvis_conversation_observer_mode == "enabled":
+            last_end = await session.scalar(select(LiveSession.disconnected_at)
+                .where(LiveSession.disconnected_at.is_not(None)).order_by(LiveSession.disconnected_at.desc()).limit(1))
+            if last_end is not None:
+                last_end = last_end if last_end.tzinfo else last_end.replace(tzinfo=timezone.utc)
+                # The bookkeeper may still be judging the conversation's last moments.
+                settle_until = last_end + timedelta(seconds=15)
         for row in rows:
             if row.id in _scheduled_outbox_ids:
                 continue
@@ -247,7 +256,7 @@ async def route_pending_task_notifications(
                     )
                 row.next_attempt_at = next_attempt
             elif row.status == "queued" or row.next_attempt_at is None:
-                row.next_attempt_at = now
+                row.next_attempt_at = max(now, settle_until) if settle_until else now
             next_attempt = row.next_attempt_at or now
             if next_attempt.tzinfo is None:
                 next_attempt = next_attempt.replace(tzinfo=timezone.utc)

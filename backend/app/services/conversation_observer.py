@@ -36,7 +36,8 @@ even if they mention the task or its expected result. Partial means an outcome
 assertion began but was unfinished or missed necessary content. A contextual 'done'
 can be complete when the dialogue clearly anchors it to the finished result; 'Done'
 right after a notification request can mean 'request noted' and is then uncertain.
-Verified backend facts cannot supply words the assistant did not say. Harmless
+For a reminder (event_type task.reminder.due), complete means the assistant actually
+reminded the user of it. Verified backend facts cannot supply words the assistant did not say. Harmless
 spelling and punctuation differences do not matter.
 The user's reaction matters. A user fragment with overlapped_assistant=true starts a
 user turn that began while the assistant was still speaking. Only such a turn that
@@ -384,7 +385,8 @@ class ConversationObserver:
                 latest_job = (await db.execute(select(ConversationObservation).where(
                     ConversationObservation.session_id == live.id).order_by(ConversationObservation.created_at.desc()).limit(1))).scalar_one_or_none()
                 presentations = (await db.execute(select(TaskPresentation).where(TaskPresentation.id.in_(exposed),
-                    TaskPresentation.state == "pending", TaskPresentation.candidate_type == "terminal_result"))).scalars().all()
+                    TaskPresentation.state == "pending",
+                    TaskPresentation.candidate_type.in_(["terminal_result", "reminder"])))).scalars().all()
                 from app.services.assistant_notes import recent_session_ids
                 open_promises = (await db.execute(select(AssistantPromise).where(AssistantPromise.status == "open",
                     AssistantPromise.session_id.in_(await recent_session_ids(db, live.id)))
