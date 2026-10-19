@@ -82,3 +82,23 @@ def test_cli_refuses_paid_runs_without_live():
     completed = subprocess.run([sys.executable, "-m", "app.selftest", "run", "--name", "refused"],
         cwd=h.BACKEND, capture_output=True, text=True)
     assert completed.returncode != 0 and "--live" in (completed.stderr + completed.stdout)
+
+
+def test_review_pack_reads_both_recordings_and_state(tmp_path):
+    import math, struct, wave
+    from app.selftest.review import evidence_pack, pack_markdown, voiced
+    def tone(path, spans, seconds=6, rate=24000):
+        samples = [int(8000 * math.sin(i / 5)) if any(a <= i / rate < b for a, b in spans) else 0 for i in range(seconds * rate)]
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(struct.pack("<%dh" % len(samples), *samples))
+    tone(tmp_path / "caller.wav", [(1, 2)]); tone(tmp_path / "assistant.wav", [(3, 4.5)])
+    assert voiced(tmp_path / "assistant.wav")[0][0] == 3.0
+    (tmp_path / "evidence.json").write_text(json.dumps({"assistant_audio_epoch_ms": 1000, "markers": [
+        {"type": "caller.start", "epoch_ms": 2000, "text": "Tell me when it is done."}, {"type": "completion", "epoch_ms": 3500}],
+        "state": {"provider_events": [{"event": {"type": "session.output_transcript.delta", "delta": "It is ready."}}]}}), encoding="utf-8")
+    (tmp_path / "assistant-transcription.json").write_text(json.dumps({"words": [
+        {"word": "It", "start": 3.0, "end": 3.2}, {"word": "is", "start": 3.2, "end": 3.4}, {"word": "ready", "start": 3.4, "end": 3.8}]}), encoding="utf-8")
+    pack = evidence_pack(tmp_path, {"id": "demo", "expect": "Jarvis tells the user."})
+    text = pack_markdown(pack)
+    assert 'JARVIS (played, transcribed) 3.0-3.8s: "It is ready"' in text
+    assert "user voice 1.0" in text and "EVENT completion" in text and "Jarvis tells the user." in text

@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import os
 import subprocess
 import sys
 
 from app.selftest import harness as h
+from app.selftest.review import review_run
 from app.selftest.scenarios import load_suite, speech_texts
 
 ALLOWANCE = {"browser": 16, "android": 12}
@@ -87,6 +89,9 @@ def run(args) -> int:
             raise h.PaidFailure(evidence["paid_failure"])
         if not evidence.get("error") and evidence.get("recording_complete"):
             h.transcribe(folder, ledger)
+            result = review_run(folder, scenario, ledger)
+            row.update(verdict=result["verdict"], agreed=result.get("agreed"), summary=result["summary"])
+            h.write(summary_path, summary)
         print(json.dumps(row))
     return 0
 
@@ -102,6 +107,20 @@ def replay(args) -> int:
     return 0 if summary["passed"] == summary["total"] else 1
 
 
+def review(args) -> int:
+    """Review an existing recorded run folder against a scenario's expectation (paid Responses)."""
+    if not args.live:
+        raise SystemExit("Review makes paid Responses calls; pass --live")
+    folder = Path(args.folder).resolve()
+    suite, _, case = args.scenario.partition(":")
+    scenario = next(s for s in load_suite(suite) if s["id"] == case)
+    if args.expect:
+        scenario = {**scenario, "expect": args.expect}
+    ledger = h.RequestLedger(folder / "review-ledger.json")
+    print(json.dumps(review_run(folder, scenario, ledger), indent=2, ensure_ascii=False))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m app.selftest")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -114,6 +133,12 @@ def main() -> int:
     l1.add_argument("--case", nargs="*", help="Only cases whose folder contains one of these substrings")
     l1.add_argument("--live", action="store_true")
     l1.set_defaults(handler=replay)
+    rv = commands.add_parser("review", help="Agent review of a recorded run folder (paid Responses)")
+    rv.add_argument("--folder", required=True)
+    rv.add_argument("--scenario", required=True, help="suite:id, e.g. core:requested_idle")
+    rv.add_argument("--expect", help="Override the scenario expectation text")
+    rv.add_argument("--live", action="store_true")
+    rv.set_defaults(handler=review)
     r = commands.add_parser("run", help="L2/L4 scripted voice scenarios (paid)")
     r.add_argument("--suite", default="core")
     r.add_argument("--case", nargs="*")
