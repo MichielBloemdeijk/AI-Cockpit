@@ -126,8 +126,9 @@ async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
     statuses = dict((await db.execute(select(Task.id, Task.status).where(
         Task.id.in_([row.task_id for row in pending])))).all()) if pending else {}
     # Questions the background orchestration has not yet released to the user (it may answer them itself).
-    checking = list((await db.execute(select(TaskPresentation).where(TaskPresentation.state == "pending",
-        TaskPresentation.candidate_type == "question", ~visible_attention()))).scalars().all())
+    listed = {row.id for row in pending}
+    checking = [row for row in (await db.execute(select(TaskPresentation).where(TaskPresentation.state == "pending",
+        TaskPresentation.candidate_type == "question", ~visible_attention()))).scalars().all() if row.id not in listed]
     lines = ["JARVIS NOTES - your own memory of what the user is waiting for. Facts, not a script."]
     lines.append("Waiting for the user:")
     lines += ([waiting_line(row, now, session_start, statuses.get(row.task_id)) for row in pending]

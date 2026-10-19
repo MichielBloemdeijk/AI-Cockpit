@@ -51,7 +51,7 @@ def test_service_environment_isolates_personal_settings(tmp_path):
 def test_drain_observer_waits_for_settled_jobs():
     clock = [0.0]
     states = iter([{"jobs": [{"id": "j", "status": "running"}], "presentations": []}] * 3
-        + [{"jobs": [{"id": "j", "status": "completed", "completed_at": "t"}], "presentations": []}] * 50)
+        + [{"jobs": [{"id": "j", "status": "completed", "completed_at": "t"}], "presentations": []}] * 200)
     result = h.drain_observer(None, timeout=30, clock=lambda: clock[0],
         sleep=lambda s: clock.__setitem__(0, clock[0] + max(s, .2)), inspect=lambda: next(states))
     assert not result["timed_out"] and result["jobs"][0]["status"] == "completed"

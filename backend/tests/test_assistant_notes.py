@@ -277,3 +277,11 @@ async def test_optional_result_is_offered_once_when_the_conversation_is_idle(mon
         assert result.facts[0]["commentary"] is idle
         if idle:
             assert "No update was requested" in announcement_text(result.facts[0])
+
+
+def test_spoken_prompts_match_the_kind_of_update():
+    question = announcement_text({"event_type": "task.requires_input", "goal": "Write a page", "question": "Blue or green?"})
+    assert "needs a decision" in question and "not finished" in question and "Blue or green?" in question
+    reminder = announcement_text({"event_type": "task.reminder.due", "goal": "Remind me: Stretch", "summary": "Stretch"})
+    assert reminder.startswith("A reminder is due now: Stretch")
+    assert "finished" not in reminder

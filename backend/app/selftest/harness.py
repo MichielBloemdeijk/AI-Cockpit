@@ -209,7 +209,8 @@ def drain_observer(database: Path, *, timeout: float = 30, clock=time.monotonic,
         if busy or identity != previous:
             stable_since = clock()
         previous = identity
-        settled = not busy and clock() - start >= 2 and clock() - stable_since >= 2
+        # The bookkeeper may still create a job after its ~6 s reaction window.
+        settled = not busy and clock() - start >= 10 and clock() - stable_since >= 10
         if settled or clock() - start >= timeout:
             return {**state, "timed_out": not settled, "elapsed_ms": (clock() - start) * 1000}
         sleep(min(.2, max(0, timeout - (clock() - start))))

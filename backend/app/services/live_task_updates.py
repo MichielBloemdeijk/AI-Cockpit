@@ -34,9 +34,17 @@ TERMINAL_WORDS = {"task.completed": "finished", "task.failed": "failed", "task.i
 
 
 def announcement_text(fact):
-    """The spoken-update prompt for a requested outcome: plain facts, no identifiers."""
+    """The spoken-update prompt: plain facts per kind (result, question, reminder), no identifiers."""
     goal = " ".join(str(fact.get("goal") or "").split())
     summary = " ".join(str(fact.get("summary") or "").split())
+    if fact.get("event_type") == "task.requires_input":
+        question = " ".join(str(fact.get("question") or "").split())
+        return (f'The task "{goal}" needs a decision from the user: "{question}" '
+            "Ask them at the next natural opening and pass on their answer. The task is not finished.")
+    if fact.get("event_type") == "task.reminder.due":
+        return f"A reminder is due now: {summary or goal}. Remind the user."
+    if fact.get("event_type") not in TERMINAL:
+        return f'Update on the task "{goal}": {summary}'
     word = TERMINAL_WORDS.get(str(fact.get("event_type")), "finished")
     intent = ((fact.get("notification") or {}).get("intent")) or "discretionary"
     lead = ("The user asked to be told about this (unless they have since asked you not to mention it). "
