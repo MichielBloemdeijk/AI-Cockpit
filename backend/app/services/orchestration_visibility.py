@@ -26,3 +26,13 @@ def visible_attention(presentation=TaskPresentation):
     return or_(presentation.source_task_event_id.is_(None),
                presentation.source_task_event_id.not_in(raw_events),
                retained)
+
+
+def live_context_visible(presentation=TaskPresentation):
+    """Verified terminal facts do not wait for a worker-action decision.
+
+    This only grants factual context and communication bookkeeping. Worker
+    questions, remediation authority and away notification routing keep their
+    existing orchestration gate.
+    """
+    return or_(presentation.candidate_type == "terminal_result",visible_attention(presentation))

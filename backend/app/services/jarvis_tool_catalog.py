@@ -80,7 +80,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "dispatch_task",
-            "description": "Delegate substantial work to a durable background task and acknowledge it immediately. Only goal and intent_id are required; omit optional fields unless the request needs them. For a maintained Document, request result mode new; its URL is allocated during admission and the final Markdown is published automatically.",
+            "description": "After listening to the complete request, delegate substantial work to a durable background task and briefly confirm admission. Only goal and intent_id are required; omit optional fields unless the request needs them. For a maintained Document, request result mode new; its URL is allocated during admission and the final Markdown is published automatically.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -278,6 +278,21 @@ def _canonical_tools() -> list[dict[str, Any]]:
     if {str(item["name"]) for item in tools} != expected:
         raise RuntimeError("Jarvis voice tools do not match the restricted gateway allowlist")
     for tool in tools:
+        if tool["name"] == "acknowledge_task_update" and settings.jarvis_conversation_observer_mode != "off":
+            tool["description"] = ("Record a communicated reminder or clarification item using its presentation_id and exposure_token. "
+                "Terminal task outcomes are recorded independently by the conversation observer; this tool cannot mark them handled.")
+        if tool["name"] in {"dispatch_task","start_workflow","set_task_update_policy"}:
+            if tool["name"] == "start_workflow":
+                tool["parameters"]["properties"]["presentation_policy"] = {"type":"string","enum":["critical_only","follow_progress","silent"]}
+            tool["parameters"]["properties"].update({
+                "notification_intent":{"type":"string","enum":["requested","discretionary","suppressed"],
+                    "description":"Completion subscription, separate from progress policy: requested = user asked to be told or assistant promised; suppressed = user asked for silence; discretionary = neither request nor promise. 'Tell me when it finishes' MUST select requested."},
+                "notification_reason":{"type":"string","minLength":1,"maxLength":160,
+                    "description":"Brief user request or assistant promise establishing the preference. Required when intent is supplied."}})
+            tool["description"] += " Record notification preferences and later corrections through these fields."
+            if settings.jarvis_conversation_observer_mode == "enabled":
+                tool["parameters"]["required"] = list(dict.fromkeys([
+                    *tool["parameters"].get("required", []), "notification_intent", "notification_reason"]))
         # Responses otherwise normalizes optional fields into required ones.
         # Jarvis still validates every completed call against these parameters.
         tool["strict"] = False

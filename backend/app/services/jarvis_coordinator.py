@@ -61,7 +61,6 @@ FLOOR_EVENT_TYPES = {
     "assistant_speaking": "assistant_speaking",
     "assistant_transcript_delta": "assistant_speaking",
     "assistant_transcript": "listening",
-    "assistant_update_submitted": "listening",
     "assistant_response": "listening",
     "assistant_interrupted": "listening",
     "disconnected": "text_fallback",
@@ -545,7 +544,7 @@ class JarvisCoordinator:
                                 )
                             )
                         voice_floor_held = busy_floor and not stale_voice_floor
-                        pending = await task_presentation_service.list_pending()
+                        pending = await task_presentation_service.list_pending(include_terminal_context=active.provider_adapter == "openai_live")
                         fingerprint = task_presentation_service.semantic_fingerprint(pending)
                         attention_key = (active.id, active.generation)
                         previous_fingerprint = self._attention_context_fingerprints.get(attention_key)
@@ -801,6 +800,7 @@ class JarvisCoordinator:
                     realtime = await self._require_current_generation(session, session_id, generation)
                     floor = await self._floor_state(session, session_id)
                     adapter = get_voice_session_adapter(realtime.provider_adapter)
+                    quiet_terminal_delivery = selected_reason == "task_update" and realtime.provider_adapter == "openai_live"
                     if not adapter.is_connected(session_id=session_id, generation=generation):
                         self._trace_response_gate(
                             "response.arbiter.deferred",
@@ -810,8 +810,9 @@ class JarvisCoordinator:
                             detail={"blocked_by": "provider_not_connected", "floor": floor},
                         )
                         return
-                    if floor in {"assistant_speaking", "connecting", "text_fallback"} or (
+                    if floor in {"connecting", "text_fallback"} or (floor == "assistant_speaking" and not quiet_terminal_delivery) or (
                         floor == "user_speaking"
+                        and not quiet_terminal_delivery
                         and (
                             selected_reason != "user_turn"
                             or (activation is not None and activation.legacy_compat)
@@ -825,7 +826,7 @@ class JarvisCoordinator:
                             detail={"blocked_by": "floor", "floor": floor},
                         )
                         return
-                    if selected_reason == "task_update" and floor != "listening":
+                    if selected_reason == "task_update" and floor != "listening" and not quiet_terminal_delivery:
                         self._trace_response_gate(
                             "response.arbiter.deferred",
                             session_id=session_id,
@@ -886,9 +887,11 @@ class JarvisCoordinator:
                             session,
                             session_id=session_id,
                             generation=generation,
-                            user_owns_floor=False,
+                            user_owns_floor=floor == "user_speaking",
                             limit=3,
                             commentary=True,
+                            terminal_only=quiet_terminal_delivery and floor != "listening",
+                            quiet_context=quiet_terminal_delivery and floor != "listening",
                             exclude_presentation_ids=frozenset(
                                 self._attention_appended_ids.get(key, set())
                             ),
@@ -1968,7 +1971,7 @@ class JarvisCoordinator:
             attention_key = (session_id, generation)
             appended = self._attention_appended_ids.setdefault(attention_key, set())
             appended.update(append_acknowledged_presentations)
-            pending_attention = await task_presentation_service.list_pending()
+            pending_attention = await task_presentation_service.list_pending(include_terminal_context=realtime.provider_adapter == "openai_live")
             if any(item.id not in appended for item in pending_attention):
                 await self._queue_controlled_response(
                     session_id,
@@ -2004,7 +2007,7 @@ class JarvisCoordinator:
                 appended = self._attention_appended_ids.setdefault(
                     (session_id, generation), set()
                 )
-                pending_attention = await task_presentation_service.list_pending()
+                pending_attention = await task_presentation_service.list_pending(include_terminal_context=realtime.provider_adapter == "openai_live")
                 if any(item.id not in appended for item in pending_attention):
                     await self._queue_controlled_response(
                         session_id,
@@ -2491,22 +2494,61 @@ class JarvisCoordinator:
                 "set_task_update_policy", "set_jarvis_voice",
             }:
                 raise ValueError("That action is unavailable while the device is locked")
-            result = await restricted_brain_gateway.execute(
-                tool_name=tool_name,
-                arguments=arguments,
-                call_id=call_id,
-                conversation_id=conversation_id,
-                origin_turn_id=last_turn_id,
-                capture_request_identity=origin_correlation_id or origin_item_id or last_turn_id or call_id,
-                active_time_zone=active_time_zone or "Europe/Amsterdam",
-                now=utc_now(),
-                session_id=session_id,
-                generation=generation,
-                provider_event_id=provider_event_id or f"provider-tool:{session_id}:{generation}:{call_id}",
-                provider_call_id=call_id,
-                turn_scope=origin_item_id or last_turn_id or origin_correlation_id,
-            )
+            freshness = None
+            if settings.jarvis_conversation_observer_mode == "enabled" and tool_name in {"dispatch_task", "start_workflow"}:
+                from app.services.live_request_context import advanced_context, admission_reserved
+                reserved = await admission_reserved(session_id, generation,
+                    origin_item_id or last_turn_id or origin_correlation_id, arguments.get("intent_id"))
+                if not reserved:
+                    freshness = await advanced_context(session_id, generation,
+                        (origin_timeline or {}).get("offset_ms"), origin_correlation_id)
+                # Input batching yields to transport events. Recheck action
+                # authority after that wait, including a newly locked device.
+                async with session_scope() as session:
+                    current_live = await self._require_current_generation(session, session_id, generation)
+                    current_device = await session.get(JarvisDevice, current_live.controller_id) if current_live.controller_id else None
+                    if current_device is not None and current_device.lock_state == "locked":
+                        raise ValueError("That action is unavailable while the device is locked")
+            if freshness:
+                from types import SimpleNamespace
+                result = SimpleNamespace(output=freshness, control=None)
+            else:
+                result = await restricted_brain_gateway.execute(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    call_id=call_id,
+                    conversation_id=conversation_id,
+                    origin_turn_id=last_turn_id,
+                    capture_request_identity=origin_correlation_id or origin_item_id or last_turn_id or call_id,
+                    active_time_zone=active_time_zone or "Europe/Amsterdam",
+                    now=utc_now(),
+                    session_id=session_id,
+                    generation=generation,
+                    provider_event_id=provider_event_id or f"provider-tool:{session_id}:{generation}:{call_id}",
+                    provider_call_id=call_id,
+                    turn_scope=origin_item_id or last_turn_id or origin_correlation_id,
+                )
             output = result.output
+            if (settings.jarvis_conversation_observer_mode == "enabled"
+                    and tool_name in {"dispatch_task", "start_workflow"}
+                    and isinstance((origin_timeline or {}).get("offset_ms"), int)):
+                # Managed delegation can begin before the caller's next clause.
+                # Supply newly recognized speech to the admission model through
+                # its normal receipt. Interpret nothing here and change no task
+                # preference: the model must apply any correction via tools.
+                offset = origin_timeline["offset_ms"]
+                async with session_scope() as session:
+                    await self._require_current_generation(session, session_id, generation)
+                    rows = (await session.execute(select(LiveSessionEvent).where(
+                        LiveSessionEvent.session_id == session_id,
+                        LiveSessionEvent.event_type == "provider.user_transcript_delta")
+                        .order_by(LiveSessionEvent.sequence.desc()).limit(64))).scalars().all()
+                    later = [{"fragment_id":row.id,"text":p["delta"],"start_ms":p["start_ms"],"end_ms":p.get("end_ms")}
+                        for row in reversed(rows) if (p := row.payload_json or {}).get("generation") == generation
+                        and not p.get("transcript_redacted") and p.get("delta")
+                        and isinstance(p.get("start_ms"), (int,float)) and p["start_ms"] > offset]
+                if later:
+                    output = {**output,"later_user_context":{"fragments":later,"turn_completion":"unknown"}}
             output.setdefault("admission_timing", {}).update({
                 "shell_started_ns": shell_started_ns, "authority_ready_ns": authority_ready_ns})
             durable_output = output
@@ -2829,7 +2871,7 @@ class JarvisCoordinator:
                 continue
             if event_type.startswith("provider."):
                 provider_kind = event_type.removeprefix("provider.")
-                if provider_kind in {"usage", "delegation_usage", "delegation_tier_fallback", "provider_protocol_warning"}:
+                if provider_kind in {"usage", "delegation_usage", "delegation_tier_fallback", "provider_protocol_warning", "assistant_update_submitted"}:
                     continue
                 if provider_kind in {"user_transcript_delta", "user_transcript"}:
                     continue

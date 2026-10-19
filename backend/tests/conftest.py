@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+import os
+import socket
 import shutil
 from uuid import uuid4
 
@@ -13,6 +15,18 @@ from alembic.config import Config
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
 from app.services.voice_session_adapter import fake_voice_session_adapter
+
+
+@pytest.fixture(autouse=True)
+def evaluation_network_boundary(monkeypatch):
+    if os.environ.get("JARVIS_EVAL_NETWORK_BLOCKED") != "1":
+        return
+    connect = socket.socket.connect
+    def local_only(instance, address):
+        if isinstance(address, tuple) and address[0] not in {"127.0.0.1", "::1", "localhost"}:
+            raise AssertionError("Offline evaluation attempted external networking")
+        return connect(instance, address)
+    monkeypatch.setattr(socket.socket, "connect", local_only)
 
 
 @pytest.fixture

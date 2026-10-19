@@ -416,6 +416,25 @@ class LiveSessionEvent(Base):
     )
 
 
+class ConversationObservation(Base):
+    """Durable bounded observer work and its evidence; never a second inbox."""
+
+    __tablename__ = "conversation_observations"
+    __table_args__ = (UniqueConstraint("session_id", "evidence_hash", name="uq_conversation_observation_evidence"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    input_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class JarvisLiveTraceEvent(Base):
     """Short-lived, metadata-only timing events for Live diagnosis."""
 

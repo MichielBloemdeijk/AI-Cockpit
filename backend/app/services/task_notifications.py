@@ -73,6 +73,8 @@ async def enqueue_task_notification(
     """Enqueue one notification intent in the same transaction as its task fact."""
     if event.event_type not in NOTIFIABLE_TASK_EVENTS:
         return None
+    if task.presentation_policy == "silent":
+        return None
     if event.event_type == "task.requires_input" and question is None:
         raise ValueError("Blocking-question notifications require a question")
     question_id = None if question is None else question.id
@@ -189,6 +191,7 @@ async def recover_pending_task_notifications() -> int:
             select(NotificationOutbox)
             .where(NotificationOutbox.status.in_(["queued", "failed"]))
             .where(NotificationOutbox.attempts < settings.notification_retry_limit)
+            .where(NotificationOutbox.task_id.in_(select(Task.id).where(Task.presentation_policy != "silent")))
         )).scalars().all())
         for row in rows:
             row.next_attempt_at = None

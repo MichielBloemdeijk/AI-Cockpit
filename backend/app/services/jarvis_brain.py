@@ -56,19 +56,30 @@ class BrainResult:
 class RestrictedBrainGateway:
     """Maps a small allowlist to durable application services."""
 
+    async def _preference_receipt(self, result):
+        task_id = result.output.get("task_id")
+        if task_id:
+            from app.services.task_notification_preferences import current
+            async with read_session_scope() as session:
+                task = (await session.execute(select(Task).where(Task.id == task_id))).scalar_one()
+                preference = await current(session,task)
+            result.output.update(notification=preference,notification_intent=preference["intent"],notification_revision=preference["revision"])
+        return result
+
     @observe_admission
     async def execute(
         self, *, turn_scope: str | None = None, **kwargs,
     ) -> BrainResult:
         name = kwargs.get("tool_name")
         if name not in {"dispatch_task", "start_workflow", "continue_task"} or kwargs.get("session_id") is None:
-            return await self._execute(**kwargs)
+            result = await self._execute(**kwargs)
+            return await self._preference_receipt(result) if name in {"dispatch_task","start_workflow","set_task_update_policy"} else result
         from app.services.live_admission_intents import reserve_intent, finish_intent, pin_target
         receipt = await reserve_intent(session_id=kwargs["session_id"], generation=kwargs["generation"],
             turn_scope=turn_scope or kwargs.get("origin_turn_id"),
             intent_id=kwargs["arguments"].get("intent_id"), tool_name=name, arguments=kwargs["arguments"])
         if receipt.output_json is not None:
-            return BrainResult(output={**receipt.output_json, "replayed": True})
+            return await self._preference_receipt(BrainResult(output={**receipt.output_json, "replayed": True}))
         if receipt.error is not None:
             raise ValueError(receipt.error)
         # The receipt key is shared across routes; the receipt pins the route
@@ -86,6 +97,7 @@ class RestrictedBrainGateway:
         kwargs["capture_wait_seconds"] = max(0., PREFLIGHT_WAIT_SECONDS - (datetime.now(timezone.utc) - created).total_seconds())
         try:
             result = await self._execute(**kwargs)
+            if name in {"dispatch_task","start_workflow"}: await self._preference_receipt(result)
             result.output.setdefault("admission_timing", {"clock": "server_monotonic",
                 "admission_commit_ns": __import__("time").perf_counter_ns(),
                 "intent_id": receipt.intent_id if hasattr(receipt, "intent_id") else receipt.id})
@@ -114,9 +126,15 @@ class RestrictedBrainGateway:
         capture_wait_seconds: float | None = None,
         admission_task_id: str | None = None,
         capture_request_identity: str | None = None,
+        notification_review: dict | None = None,
     ) -> BrainResult:
         if tool_name not in ALLOWED_SHELL_TOOLS:
             raise ValueError(f"Jarvis shell tool is not allowed: {tool_name}")
+
+        preference_args = {"notification_intent":arguments.get("notification_intent"),
+            "notification_reason":arguments.get("notification_reason"),
+            "notification_authority":({"session_id":session_id,"generation":generation,"call_id":call_id,
+                **(notification_review or {})} if session_id else None)}
 
         if tool_name == "dispatch_task":
             goal = " ".join(str(arguments.get("goal") or "").split()).strip()
@@ -136,7 +154,8 @@ class RestrictedBrainGateway:
                 origin_conversation_id=conversation_id,
                 origin_turn_id=origin_turn_id,
                 importance=str(arguments.get("importance") or "normal"),
-                presentation_policy=str(arguments.get("presentation_policy") or "critical_only"),
+                presentation_policy=arguments.get("presentation_policy"),
+                **preference_args,
                 targets=self._targets(arguments.get("targets")),
                 idempotency_key=f"jarvis-shell:{call_id}:dispatch",
             )
@@ -175,7 +194,8 @@ class RestrictedBrainGateway:
                 if capture_id is not None:
                     raise ValueError("This workflow does not accept a screen capture")
                 created = await task_service.dispatch(goal=goal, origin_surface="jarvis_voice",
-                    execution_kind="workflow", execution_config=workflow_request, idempotency_key=key)
+                    execution_kind="workflow", execution_config=workflow_request, idempotency_key=key,
+                    presentation_policy=arguments.get("presentation_policy"), **preference_args)
                 async with read_session_scope() as session:
                     turn = (await session.execute(select(TaskTurn).where(TaskTurn.task_id == created.task.id,
                         TaskTurn.request_identity == key))).scalar_one()
@@ -232,6 +252,7 @@ class RestrictedBrainGateway:
                 origin_conversation_id=conversation_id, origin_turn_id=origin_turn_id,
                 execution_kind="workflow", execution_config=workflow_request,
                 capture_binding=binding,
+                presentation_policy=arguments.get("presentation_policy"), **preference_args,
             )
             admission_finished = monotonic()
             await natural_task_resolver.touch(snapshot.task.id)
@@ -462,14 +483,18 @@ class RestrictedBrainGateway:
             })
 
         if tool_name == "set_task_update_policy":
-            task = await self._resolve_task(arguments, mutation=True)
+            # Notification preferences remain editable for completed outcomes;
+            # this changes delivery metadata, never reopens task execution.
+            task = await self._resolve_task(arguments, mutation=True, allow_terminal=True)
             snapshot = await task_service.set_update_policy(
                 task.id,
-                str(arguments.get("presentation_policy") or "critical_only"),
+                arguments.get("presentation_policy"),
+                idempotency_key=f"jarvis-shell:{call_id}:update-policy", **preference_args,
             )
             await natural_task_resolver.touch(task.id)
             return BrainResult(output={
                 "title": task_title(task),
+                "task_id":task.id,
                 "presentation_policy": snapshot.task.presentation_policy,
             })
 

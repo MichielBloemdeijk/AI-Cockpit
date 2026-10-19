@@ -27,6 +27,7 @@ from app.models.jarvis import (
     JarvisLiveCallResponse,
     JarvisLiveTelemetryAccepted,
     JarvisLiveTelemetryBatch,
+    JarvisPlaybackBatch,
     JarvisLiveEventReplayResponse,
     JarvisLiveEventView,
     ReminderCreateRequest,
@@ -435,7 +436,8 @@ async def create_live_call(request: JarvisLiveCallRequest, http_request: Request
         role="controller",
         request_id=request_id,
         session=_session_view(bootstrap.session),
-        provider_capabilities=bootstrap.provider_capabilities,
+        provider_capabilities={**bootstrap.provider_capabilities,
+            "playback_evidence": settings.jarvis_conversation_observer_mode != "off"},
         sdp_answer=bootstrap.sdp_answer,
         server_received_at=server_received_at,
         server_responded_at=server_responded_at,
@@ -483,6 +485,28 @@ async def ingest_live_telemetry(
         for event in request.events
     ])
     return JarvisLiveTelemetryAccepted(accepted=accepted)
+
+
+@router.post("/live/sessions/{session_id}/playback", status_code=202)
+async def ingest_playback(session_id: str, request: JarvisPlaybackBatch, http_request: Request):
+    from app.services.conversation_observer import conversation_observer
+    device = await jarvis_device_service.authenticate(http_request)
+    if device is not None and request.controller_id != device.id:
+        raise HTTPException(403, "Playback belongs to another controller")
+    try:
+        await conversation_observer.ingest(session_id=session_id, generation=request.generation,
+            controller_id=request.controller_id, sequence=request.sequence,
+            reports=[r.model_dump() for r in request.reports])
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"accepted": len(request.reports)}
+
+
+@router.get("/live/observer")
+async def observer_health():
+    from app.services.conversation_observer import conversation_observer
+    return {"mode": settings.jarvis_conversation_observer_mode, "failure": conversation_observer.failure,
+            "running": conversation_observer.task is not None and not conversation_observer.task.done()}
 
 
 @router.get(

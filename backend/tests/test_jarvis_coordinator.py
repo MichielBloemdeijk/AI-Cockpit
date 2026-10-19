@@ -737,7 +737,7 @@ async def test_live_commentary_submission_is_not_persisted_as_heard_delivery() -
         )).scalars().all())
     assert len(deliveries) == before
     refreshed = await jarvis_coordinator.get_session(session.id)
-    assert refreshed is not None and refreshed.floor_state == "listening"
+    assert refreshed is not None and refreshed.floor_state == session.floor_state
 
 
 @pytest.mark.asyncio

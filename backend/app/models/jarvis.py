@@ -267,6 +267,48 @@ class JarvisLiveTelemetryBatch(BaseModel):
     events: list[JarvisLiveTelemetryEvent] = Field(min_length=1, max_length=100)
 
 
+class JarvisPlaybackInterval(BaseModel):
+    model_config = {"extra": "forbid", "allow_inf_nan": False}
+    track_id: str = Field(min_length=1, max_length=255)
+    client_start_ms: float = Field(ge=0)
+    client_end_ms: float = Field(ge=0)
+    playback_start_ms: float = Field(ge=0)
+    playback_end_ms: float = Field(ge=0)
+    origin_lower_ms: float | None = None
+    origin_upper_ms: float | None = None
+    mapping_supported: bool = False
+    paused: bool
+    muted: bool
+    volume: float = Field(ge=0, le=1)
+    track_live: bool
+    gap: bool = False
+    received_audio: bool = False
+    concealed_fraction: float = Field(default=0, ge=0, le=1)
+    input_source_id: str | None = Field(default=None, max_length=255)
+    input_audio_energy: float | None = Field(default=None, ge=0)
+    input_audio_duration_ms: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def valid_interval(self):
+        if (self.input_audio_energy is None) != (self.input_audio_duration_ms is None):
+            raise ValueError("Input activity requires both measured energy and duration")
+        if self.input_audio_energy is not None and not self.input_source_id:
+            raise ValueError("Input activity requires a source identity")
+        if self.client_end_ms <= self.client_start_ms or self.playback_end_ms < self.playback_start_ms:
+            raise ValueError("Playback intervals must advance monotonically")
+        if self.mapping_supported and (self.origin_lower_ms is None or self.origin_upper_ms is None
+                or self.origin_upper_ms < self.origin_lower_ms):
+            raise ValueError("Supported mapping requires ordered origin bounds")
+        return self
+
+
+class JarvisPlaybackBatch(BaseModel):
+    generation: int = Field(gt=0)
+    controller_id: str = Field(min_length=1, max_length=255)
+    sequence: int = Field(gt=0)
+    reports: list[JarvisPlaybackInterval] = Field(min_length=1, max_length=20)
+
+
 class JarvisLiveTelemetryAccepted(BaseModel):
     accepted: int = Field(ge=0)
 

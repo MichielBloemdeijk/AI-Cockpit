@@ -707,7 +707,7 @@ async def test_verified_task_update_uses_live_commentary_content(monkeypatch) ->
     assert delegated_update["session"]["delegation"]["type"] == "responses"
     instructions = delegated_update["session"]["delegation"]["responses"]["instructions"]
     assert instructions.count("CURRENT_ATTENTION_CHECKLIST=") == 1
-    assert "Fulfil the current user request before briefing older task updates" in instructions
+    assert "Live owns speech" in instructions
     commentary = socket.sent[-1]
     assert commentary["type"] == "session.commentary.append"
     assert commentary["delegation_id"] is None

@@ -32,7 +32,8 @@ from app.services.task_notifications import enqueue_task_notification
 from app.services.task_error_messages import public_failure_summary
 from app.services.runtime_health import runtime_health_service
 from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
-from app.services.orchestration_visibility import visible_attention
+from app.services.orchestration_visibility import visible_attention, live_context_visible
+from app.services.task_notification_preferences import current as current_notification
 
 
 PRESENTABLE_EVENT_TYPES = {
@@ -315,12 +316,14 @@ class TaskPresentationService:
             policy = normalize_task_update_policy(task.presentation_policy)
             if task.presentation_policy != policy:
                 task.presentation_policy = policy
-            if policy == SILENT or (candidate_type == "progress" and policy != FOLLOW_PROGRESS):
+            if not self._policy_allows_candidate(candidate_type, policy):
                 if existing is not None and existing.state in UNFINISHED_PRESENTATION_STATES:
                     await supersede(existing)
                 continue
 
             facts = self._facts(event, task)
+            if candidate_type == "terminal_result":
+                facts["notification"] = await current_notification(session,task)
             question = questions.get(str((event.payload_json or {}).get("question_id") or ""))
             if existing is not None:
                 existing.required_facts_json = facts
@@ -369,12 +372,16 @@ class TaskPresentationService:
             created += int(not held)
         return created
 
-    async def list_pending(self) -> tuple[TaskPresentation, ...]:
+    @staticmethod
+    def _policy_allows_candidate(candidate_type: str, policy: str) -> bool:
+        return candidate_type == "terminal_result" or (policy != SILENT and (candidate_type != "progress" or policy == FOLLOW_PROGRESS))
+
+    async def list_pending(self, *, include_terminal_context: bool = False) -> tuple[TaskPresentation, ...]:
         async with session_scope() as session:
             result = await session.execute(
                 select(TaskPresentation)
                 .where(TaskPresentation.state == "pending")
-                .where(visible_attention())
+                .where(live_context_visible() if include_terminal_context else visible_attention())
                 .order_by(
                     TaskPresentation.created_at.asc(),
                     TaskPresentation.id.asc(),
@@ -450,7 +457,8 @@ class TaskPresentationService:
         ):
             raise ValueError("Live session generation is stale")
         all_rows = list((await session.execute(
-            select(TaskPresentation).where(TaskPresentation.state == "pending").where(visible_attention())
+            select(TaskPresentation).where(TaskPresentation.state == "pending").where(
+                live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
         )).scalars().all())
         ordered = sorted(all_rows, key=self._delivery_priority)
         bounded_limit = min(max(int(limit or 20), 1), 50)
@@ -521,9 +529,11 @@ class TaskPresentationService:
         limit: int = 3,
         commentary: bool = False,
         exclude_presentation_ids: frozenset[str] = frozenset(),
+        terminal_only: bool = False,
+        quiet_context: bool = False,
     ) -> PresentationReservation | None:
         """Claim one short transport lease without changing attention state."""
-        if user_owns_floor:
+        if user_owns_floor and not quiet_context:
             return None
         realtime = await session.get(LiveSession, session_id)
         if (
@@ -542,7 +552,7 @@ class TaskPresentationService:
             .where(TaskPresentation.lease_token.is_not(None))
             .where(or_(
                 TaskPresentation.reserved_at < now - timedelta(seconds=DEFAULT_LEASE_SECONDS),
-                ~visible_attention(),
+                ~(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention()),
             ))
             .values(
                 lease_token=None,
@@ -555,7 +565,8 @@ class TaskPresentationService:
             select(TaskPresentation)
             .where(TaskPresentation.state == "pending")
             .where(TaskPresentation.lease_token.is_(None))
-            .where(visible_attention())
+            .where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
+            .where(TaskPresentation.candidate_type == "terminal_result" if terminal_only or quiet_context else True)
             .order_by(
                 TaskPresentation.created_at.asc(),
                 TaskPresentation.id.asc(),
@@ -583,11 +594,11 @@ class TaskPresentationService:
                 .where(TaskPresentation.id == candidate.id)
                 .where(TaskPresentation.state == "pending")
                 .where(TaskPresentation.lease_token.is_(None))
-                .where(visible_attention())
+                .where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
                 .where(
                     ~select(lease_owner.id)
                     .where(lease_owner.state == "pending")
-                    .where(visible_attention(lease_owner))
+                    .where(live_context_visible(lease_owner) if realtime.provider_adapter == "openai_live" else visible_attention(lease_owner))
                     .where(lease_owner.lease_token.is_not(None))
                     .where(lease_owner.reserved_session_id == session_id)
                     .exists()
@@ -629,6 +640,26 @@ class TaskPresentationService:
                 exposure_token=exposure.event.id,
                 commentary=commentary_attempt,
             )
+            if fact.get("commentary") and candidate.candidate_type == "terminal_result":
+                # A preference reason/revision refresh is factual context, not
+                # another request to announce the same unchanged outcome.
+                receipts = (await session.execute(select(LiveSessionEvent).where(
+                    LiveSessionEvent.session_id == session_id,
+                    LiveSessionEvent.event_type == "provider.assistant_update_submitted")
+                    .order_by(LiveSessionEvent.sequence.desc()).limit(100))).scalars().all()
+                for receipt in receipts:
+                    rp = receipt.payload_json or {}
+                    if rp.get("generation") != generation:
+                        continue
+                    if candidate.id not in rp.get("presentation_ids", []):
+                        continue
+                    try:
+                        previous = json.loads(rp.get("submitted_transcript") or "{}")
+                    except (ValueError, TypeError):
+                        previous = {}
+                    if (previous.get("notification") or {}).get("intent") == "requested":
+                        fact["commentary"] = False
+                    break
             facts.append(fact)
         if not facts:
             return None
@@ -660,7 +691,7 @@ class TaskPresentationService:
             query = (
                 select(TaskPresentation)
                 .where(TaskPresentation.state == "pending")
-                .where(visible_attention())
+                .where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
                 .order_by(TaskPresentation.created_at.asc(), TaskPresentation.id.asc())
             )
             if cursor:
@@ -717,7 +748,7 @@ class TaskPresentationService:
                 total_pending=int((await session.execute(
                     select(func.count()).select_from(TaskPresentation).where(
                         TaskPresentation.state == "pending"
-                    ).where(visible_attention())
+                    ).where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
                 )).scalar_one()),
             )
 
@@ -778,9 +809,11 @@ class TaskPresentationService:
             return {"status": "superseded", "attention": self._attention_value(candidate)}
         if candidate.state == "handled":
             return {"status": "already_handled", "attention": self._attention_value(candidate)}
+        if candidate.candidate_type == "terminal_result" and settings.jarvis_conversation_observer_mode != "off":
+            return {"status": "verification_pending", "attention": self._attention_value(candidate)}
 
         visible = (await session.execute(select(TaskPresentation.id).where(
-            TaskPresentation.id == candidate.id, visible_attention(),
+            TaskPresentation.id == candidate.id, live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention(),
         ))).scalar_one_or_none()
         if visible is None:
             return {"status": "invalid_exposure", "attention": None}
@@ -790,7 +823,7 @@ class TaskPresentationService:
             update(TaskPresentation)
             .where(TaskPresentation.id == candidate.id)
             .where(TaskPresentation.state == "pending")
-            .where(visible_attention())
+            .where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
             .values(
                 state="handled",
                 handled_at=now,
@@ -954,6 +987,17 @@ class TaskPresentationService:
     ) -> dict[str, object]:
         """Build one bounded append item without truncating opaque IDs."""
         raw = dict(candidate.required_facts_json or {})
+        if candidate.candidate_type == "terminal_result":
+            # Shared A payload keeps bounded human facts and full opaque handles.
+            notification = raw.get("notification") or {"intent":"discretionary","reason":"No notification preference recorded","revision":0,"recorded":False}
+            return {"schema":"jarvis.task_update.v1","task_id":candidate.task_id,"event_type":raw.get("event_type"),
+                "goal":" ".join(str(raw.get("goal") or "").split())[:90],
+                "summary":" ".join(str(raw.get("summary") or "").split())[:180],"status":raw.get("status"),
+                "notification":notification,"presentation_id":candidate.id,"exposure_token":exposure_token,
+                "source_task_event_id":candidate.source_task_event_id,"completed_at":raw.get("completed_at") or candidate.created_at.isoformat(),
+                "delivery_state":candidate.state,
+                "communication_assessment":raw.get("communication_assessment"),
+                "commentary":settings.jarvis_conversation_observer_mode == "enabled" and commentary and notification["intent"] == "requested"}
         # Legacy projections may still contain the old canonical phrase. It
         # is diagnostic migration residue, never model-facing attention data.
         raw.pop("required_spoken_phrase", None)
@@ -1072,22 +1116,13 @@ class TaskPresentationService:
 
     @staticmethod
     def _requires_commentary(candidate: TaskPresentation) -> bool:
+        if candidate.candidate_type == "terminal_result" and settings.jarvis_conversation_observer_mode == "enabled":
+            return (candidate.required_facts_json or {}).get("notification", {}).get("intent") == "requested"
         if candidate.commentary_attempted_at is not None:
             return False
         facts = candidate.required_facts_json if isinstance(candidate.required_facts_json, dict) else {}
         event_type = str(facts.get("event_type") or "")
-        return (
-            event_type in {"task.reminder.due", "task.requires_input"}
-            or (
-                event_type in {
-                    "task.completed",
-                    "task.failed",
-                    "task.interrupted",
-                    "task.cancelled",
-                }
-                and str(candidate.importance or "normal") == "high"
-            )
-        )
+        return event_type in {"task.reminder.due", "task.requires_input"}
 
     @staticmethod
     def _attention_value(candidate: TaskPresentation) -> dict:
@@ -1314,6 +1349,7 @@ class TaskPresentationService:
             "task_id": task.id,
             "goal": task.goal,
             "event_type": event.event_type,
+            "completed_at": event.created_at.isoformat(),
             **payload,
             "schema": "jarvis.task_update.v1",
             "kind": kind,

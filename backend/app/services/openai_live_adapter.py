@@ -122,6 +122,11 @@ class _LiveSession:
     sideband_started: float = 0.0
     sideband_finished: float = 0.0
     diagnostics: LiveModelDiagnostics | None = None
+    decision_configs: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    decision_context: list[dict[str, Any]] = field(default_factory=list)
+    decision_events: set[str] = field(default_factory=set)
+    decision_bookkeeping_variant: str = field(default_factory=lambda: settings.jarvis_decisions_bookkeeping_variant)
+    decision_sources: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -399,6 +404,14 @@ class OpenAILiveAdapter:
                 },
             },
         )
+        if settings.jarvis_conversation_observer_mode == "enabled" and settings.jarvis_bookkeeper == "decisions":
+            from app.services.live_decisions import triggers, terminal_context
+            terminal_facts = terminal_context(attention_context, facts)
+            config_id = f"jarvis-decisions:{request_id}"
+            provider_session.decision_configs[config_id] = deepcopy(terminal_facts)
+            await self._send(provider_session, {"type": "session.update", "event_id": config_id,
+                "session": {"triggers": triggers(terminal_facts,
+                    bookkeeping_variant=provider_session.decision_bookkeeping_variant)}})
         append_items: list[tuple[dict[str, Any], tuple[str, ...], bool]] = [
             (fact, (str(fact.get("presentation_id") or ""),), bool(fact.get("commentary")))
             for fact in facts
@@ -434,14 +447,15 @@ class OpenAILiveAdapter:
                 tuple(value for value in item_ids if value),
                 verified,
             )
-            append_type = (
-                "session.commentary.append" if item_commentary else "session.thinking.append"
-            )
+            from app.services.live_task_updates import TERMINAL, terminal_payload
+            terminal = item.get("event_type") in TERMINAL
+            append_type = "session.commentary.append" if item_commentary else "session.thinking.append"
             content = (
                 "Speak this update naturally, then acknowledge it. "
                 if item_commentary
                 else "Quiet application context. Do not announce this solely because it was appended. "
             ) + verified
+            if terminal: content = terminal_payload(item)
             await self._send(
                 provider_session,
                 {
@@ -563,6 +577,22 @@ class OpenAILiveAdapter:
         if event_type == "session.started":
             await self._announce_ready(provider_session)
             return
+        if event_type == "session.updated":
+            context = provider_session.decision_configs.pop(str(outer.get("client_event_id") or ""), None)
+            if context is not None:
+                provider_session.decision_context = context
+                await self._emit(provider_session, "decisions_context_ready", {"presentations": context,
+                    "client_event_id": outer.get("client_event_id")})
+            return
+        if event_type == "decision.event":
+            identity = str(outer.get("event_id") or "")
+            if not identity or identity in provider_session.decision_events:
+                return
+            provider_session.decision_events.add(identity)
+            provenance = provider_session.decision_sources.get(str(outer.get("source_event_id") or ""))
+            await self._emit(provider_session, "decision", {**outer,
+                **deepcopy(provenance or {"presentations": [], "source_provenance_missing": True})}, event_id=identity)
+            return
         if event_type == "session.closed":
             if provider_session.diagnostics:
                 await provider_session.diagnostics.checkpoint("provider_session_closed")
@@ -577,6 +607,16 @@ class OpenAILiveAdapter:
             # only after the coordinator has committed the disconnected state.
             provider_session.closed.set()
             return
+        if event_type in {"session.input_transcript.delta", "session.output_transcript.delta"}:
+            from app.services.live_decisions import question_identity
+            source = str(outer.get("event_id") or "")
+            if source:
+                context = deepcopy(provider_session.decision_context)
+                variant = provider_session.decision_bookkeeping_variant
+                provider_session.decision_sources.setdefault(source, {"presentations": context,
+                    "bookkeeping_variant": variant, "questions_hash": question_identity(context, variant)})
+                while len(provider_session.decision_sources) > 512:
+                    provider_session.decision_sources.pop(next(iter(provider_session.decision_sources)))
         if event_type == "session.input_transcript.delta":
             await self._handle_transcript_delta(provider_session, "user", outer)
             return
@@ -785,7 +825,8 @@ class OpenAILiveAdapter:
                 },
             }
         event_id = f"live-tool:{delegation_id}:{response_id}:{call_id}"
-        if name in {"start_workflow", "continue_task"}:
+        if name in {"start_workflow", "continue_task"} or (
+                name == "dispatch_task" and settings.jarvis_conversation_observer_mode == "enabled"):
             # Capture preflight can legitimately wait two seconds. Keep the
             # sideband receive loop free to observe transcript and terminal
             # events while the guarded admission runs.
@@ -851,6 +892,7 @@ class OpenAILiveAdapter:
             provider_session,
             f"{speaker}_transcript_delta",
             {"delta": delta, "start_ms": start_ms, "end_ms": end_ms,
+                "provider_event_id": event.get("event_id"),
                 "server_monotonic_ns": time.perf_counter_ns(), "stage": f"{speaker}_transcript_fragment"},
         )
 
@@ -1268,31 +1310,24 @@ class OpenAILiveAdapter:
         voice = str(preferences.get("voice") or settings.openai_live_voice)
         if voice not in {"marin", "cedar"}:
             voice = settings.openai_live_voice
-        conversation_prompt = (
-            "You are Jarvis, a concise spoken assistant. Keep listening while speaking. "
-            "Delegate actionable requests immediately when they need tools or "
-            "authoritative application state. Never claim success until the backend returns a "
-            "verified result. Speech interruption does not cancel durable work. "
-            "An explicit request to create, save, start or continue a task requires backend tools. "
+        from app.services.live_task_updates import live_policy
+        conversation_prompt = live_policy() + (
+            " An explicit request to create, save, start or continue a task requires backend tools. "
             "When the requested outcome is undefined, ask a short clarification before creating a task. "
             "A request to save something useful does not specify which result the user wants; do not choose it for them. "
             "A summary, report, plan, checklist or recipe is a defined outcome even without a file format. "
             "Use the matching workflow's result type, or a Document for ordinary prose; do not ask note versus document. "
-            "Delegate before composing an acknowledgement; keep any concurrent speech brief. The spoken answer must not replace the requested durable task. "
-            "Use the attention checklist for pending updates: mention an item naturally before "
-            "calling acknowledge_task_update with its opaque exposure token. Do not read identifiers aloud. "
-            "Fulfil the current user request before briefing older task updates. "
+            "The spoken answer must not replace the requested durable task. "
             "Existing completed or cancelled tasks do not satisfy a request to create new tasks. "
             "Acknowledging an update never creates, continues or cancels a task. "
-            "Quiet context does not require an immediate announcement, bookkeeping needs no spoken confirmation, "
-            "and handled or superseded items are not announced proactively again."
+            "Handled or superseded items are not announced proactively again."
         )
         if context.get("activation_source") == "wake_word":
             conversation_prompt += (
                 " The Android interface has already acknowledged this wake activation. "
                 "A wake name or greeting alone is an activation cue. Keep listening quietly "
                 "until the user gives a request; do not speak a startup greeting over their first command. "
-                "Answer substantive conversation normally and delegate actionable requests immediately."
+                "Answer substantive conversation normally; listen to the complete actionable request before delegating."
             )
         catalog = get_jarvis_tool_definitions("openai_live")
         workflow = next((tool for tool in catalog if tool["name"] == "start_workflow"), None)
@@ -1302,7 +1337,8 @@ class OpenAILiveAdapter:
             conversation_prompt += (
                 " Background orchestration is the sole automatic worker-feedback owner. "
                 "Task updates are facts for briefing, not requests to autonomously answer, retry or repair tasks. "
-                "Delegate task actions only for a direct user request; user answers and controls remain immediate."
+                "Only a direct user request authorizes answering worker questions, retrying or repairing tasks; "
+                "recording communicated outcomes is separate delivery bookkeeping. User answers and controls remain immediate."
             )
         attention_context = (
             context.get("attention_context")
@@ -1314,8 +1350,10 @@ class OpenAILiveAdapter:
             separators=(",", ":"),
             ensure_ascii=False,
         )
+        from app.services.live_decisions import triggers
         return {
             "model": settings.openai_live_model,
+            **({"triggers": triggers()} if triggers() else {}),
             "instructions": conversation_prompt,
             "audio": {"output": {"voice": voice}},
             "delegation": {
@@ -1361,10 +1399,7 @@ class OpenAILiveAdapter:
             "An explicit current-screen request selects screen_context_mode fresh in start_workflow or continue_task; "
             "no separate capture call is needed. Ordinary continuations omit screen_context_mode. "
             "Choose optional execution_preferences in this delegation; changed model or effort needs override_reason. "
-            "When reviewing pending attention, use get_attention_checklist, mention updates naturally, "
-            "and call acknowledge_task_update only after communicating exactly one item. Quiet context does not "
-            "require immediate speech; do not announce handled or superseded items or read identifiers aloud. "
-            "Fulfil the current user request before briefing older task updates. "
+            "Use get_attention_checklist for pending outcomes and delivery handles. Do not read identifiers aloud. "
             "Existing completed or cancelled tasks do not satisfy a request to create new tasks. "
             "Acknowledging an update never creates, continues or cancels a task."
         )
@@ -1386,7 +1421,8 @@ class OpenAILiveAdapter:
                 separators=(",", ":"),
                 ensure_ascii=False,
             )
-        return router_prompt
+        from app.services.live_task_updates import backend_policy
+        return backend_policy(router_prompt)
 
     async def _default_session_creator(
         self, *, api_key: str, sdp_offer: str, session_config: dict[str, Any]

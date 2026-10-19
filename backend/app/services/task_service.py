@@ -307,13 +307,16 @@ class TaskService:
         origin_conversation_id: str | None = None,
         origin_turn_id: str | None = None,
         importance: str = "normal",
-        presentation_policy: str = CRITICAL_ONLY,
+        presentation_policy: str | None = None,
         execution_kind: str = "agent",
         execution_config: dict[str, Any] | None = None,
         targets: tuple[tuple[str, str, bool], ...] = (),
         capture_binding: CaptureCollection | None = None,
         result_request: dict | None = None,
         decision_authority: DecisionAuthority | None = None,
+        notification_intent: str | None = None,
+        notification_reason: str | None = None,
+        notification_authority: dict | None = None,
     ) -> TaskSnapshot:
         normalized_goal = " ".join(goal.split()).strip()
         if not normalized_goal:
@@ -333,7 +336,8 @@ class TaskService:
             raise ValueError("Screen context requires a workflow execution")
         if normalized_kind == "agent":
             execution_config = normalize_agent_preferences(execution_config)
-        normalized_policy = normalize_task_update_policy(presentation_policy)
+        from app.services.task_notification_preferences import normalize, save
+        normalized_policy, preference = normalize(presentation_policy, notification_intent, notification_reason)
         async with session_scope() as session:
             if result_request is not None:
                 execution_config = dict(execution_config or {})
@@ -343,7 +347,7 @@ class TaskService:
                 raise ValueError("Background idempotency identity is backend-owned")
             receipt = await begin_action(session, decision_authority, action="dispatch", arguments={
                 "goal": normalized_goal, "kind": normalized_kind, "configuration": execution_config or {},
-                "importance": importance, "policy": normalized_policy, "targets": targets,
+                "importance": importance, "policy": normalized_policy, "notification": preference, "targets": targets,
             })
             repo = TaskRepository(session)
             task = await repo.dispatch_task(
@@ -356,6 +360,11 @@ class TaskService:
                 presentation_policy=normalized_policy,
             )
             task = await self._lock_task(session, task.id)
+            prior_dispatch = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == f"task.dispatch:{idempotency_key}"))).scalar_one_or_none()
+            if prior_dispatch and (prior_dispatch.payload_json.get("notification_input") != preference
+                    or prior_dispatch.payload_json.get("presentation_policy", CRITICAL_ONLY) != normalized_policy):
+                raise ValueError("Admission replay conflicts with notification preference arguments")
+            await save(session,task,preference,key=f"task.dispatch:{idempotency_key}:notification",authority=notification_authority)
             if receipt is not None:
                 receipt.outcome_json = {**(receipt.outcome_json or {}), "task_id": task.id, "relation": "delegated_repair"}
             original_turn = (await session.execute(
@@ -403,7 +412,7 @@ class TaskService:
                 task_id=task.id,
                 attempt_id=attempt.id,
                 event_type="task.queued",
-                payload_json={"goal": task.goal, "status": task.status},
+                payload_json={"goal": task.goal, "status": task.status,"notification_input":preference,"presentation_policy":normalized_policy},
                 idempotency_key=f"task.dispatch:{idempotency_key}",
             )
             await self._assign_worker_eligibility(
@@ -1058,28 +1067,41 @@ class TaskService:
             await session.flush()
             return TaskControlSnapshot(task, command, await self._queue_position(session, task))
 
-    async def set_update_policy(self, task_id: str, policy: str, *, idempotency_key: str | None = None,
-                                decision_authority: DecisionAuthority | None = None) -> TaskSnapshot:
-        normalized_policy = normalize_task_update_policy(policy)
+    async def set_update_policy(self, task_id: str, policy: str | None, *, idempotency_key: str | None = None,
+                                decision_authority: DecisionAuthority | None = None,
+                                notification_intent: str | None = None, notification_reason: str | None = None,
+                                notification_authority: dict | None = None) -> TaskSnapshot:
+        from app.services.task_notification_preferences import normalize, save
+        normalized_policy, preference = normalize(policy,notification_intent,notification_reason)
         async with session_scope() as session:
             if decision_authority and idempotency_key != decision_authority.idempotency_key:
                 raise ValueError("Decision action key must be backend-derived")
             receipt = await begin_action(session, decision_authority, action="set_update_policy",
-                                         arguments={"policy": normalized_policy}, task_id=task_id)
+                                         arguments={"policy": normalized_policy,"notification":preference}, task_id=task_id)
             task = await self._lock_task(session, task_id)
             event_key = idempotency_key or f"task.update-policy:{task.id}:{normalized_policy}:{uuid4()}"
             existing = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == event_key))).scalar_one_or_none()
             if existing:
-                if existing.task_id != task_id or existing.payload_json.get("presentation_policy") != normalized_policy:
+                if existing.task_id != task_id or existing.payload_json.get("presentation_policy") != normalized_policy or existing.payload_json.get("notification_input") != preference:
                     raise ValueError("Update-policy operation key conflicts with changed arguments")
+                await save(session,task,preference,key=event_key+":notification",authority=notification_authority)
                 return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
+            supplied_preference = preference
+            if preference is None:
+                from app.services.task_notification_preferences import current
+                old = await current(session,task)
+                if normalized_policy == "silent" and old["intent"] != "suppressed":
+                    preference = {"intent":"suppressed","reason":"Task update policy set to silent"}
+                elif normalized_policy != "silent" and old["intent"] == "suppressed":
+                    preference = {"intent":"discretionary","reason":"Task update policy no longer silent"}
             task.presentation_policy = normalized_policy
             task.updated_at = utc_now()
+            await save(session,task,preference,key=event_key+":notification",authority=notification_authority)
             await TaskRepository(session).append_event(
                 task_id=task.id,
                 attempt_id=task.current_attempt_id,
                 event_type="task.update_policy.changed",
-                payload_json={"presentation_policy": normalized_policy},
+                payload_json={"presentation_policy": normalized_policy,"notification_input":supplied_preference},
                 idempotency_key=event_key,
             )
             if receipt:
