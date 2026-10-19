@@ -28,6 +28,9 @@ does the work, tells the user what they asked to hear about at a natural moment,
 asked, keeps its promises, and never says misleading things. Overlap or a short delay is not a
 failure by itself; judge its effect (did the user miss something, was it disruptive, did Jarvis
 recover naturally). Timings come from audio energy and transcripts; treat them as approximate.
+For Jarvis's wording, trust the "generated transcript" lines; the "played, transcribed" lines are an
+independent speech recognizer that can mishear or invent words (e.g. "thank you") but show when
+audio actually played. If audio played around a generated utterance, it reached the user.
 The owner wants retries and self-repairs: a failed task that is retried or continued in the
 background is good, as long as it keeps the user's original goal and the user is told about it
 briefly. Only flag a retry if it changes what the user asked for or is never mentioned.
@@ -139,6 +142,22 @@ def evidence_pack(folder: Path, scenario: dict) -> dict:
         timeline += [(a, f"Jarvis voice {a}-{b}s (not transcribed)") for a, b in voiced(folder / "assistant.wav")]
     provider = [e for e in evidence.get("state", {}).get("provider_events", [])
         if e.get("event", {}).get("type") in {"session.input_transcript.delta", "session.output_transcript.delta"}]
+    if t0:
+        # What Jarvis generated, grouped into utterances on the recording clock (generation time,
+        # usually a little before playback). Whisper can mishear or invent words; this cannot.
+        utterance, started, last = "", None, None
+        for event in provider:
+            if event["event"]["type"] != "session.output_transcript.delta" or "epoch_ms" not in event:
+                continue
+            at = (event["epoch_ms"] - t0) / 1000
+            if last is not None and at - last > 1.5 and utterance.strip():
+                timeline.append((round(started, 2), f'JARVIS (generated transcript) ~{started:.1f}s: "{utterance.strip()}"'))
+                utterance, started = "", None
+            started = at if started is None else started
+            utterance += event["event"].get("delta") or ""
+            last = at
+        if utterance.strip():
+            timeline.append((round(started, 2), f'JARVIS (generated transcript) ~{started:.1f}s: "{utterance.strip()}"'))
     said = {"user": "", "jarvis": ""}
     for event in provider:
         said["user" if "input" in event["event"]["type"] else "jarvis"] += event["event"].get("delta") or ""
