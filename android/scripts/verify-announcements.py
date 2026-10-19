@@ -28,8 +28,14 @@ def render_recording(raw, frames, metadata, output, allowed_gaps=()):
     if not frames:
         raise ValueError("No Android playback recording frames")
     rate, channels, form = frames[0]["rate"], frames[0]["channels"], frames[0]["format"]
-    if channels != 1 or form != 2 or rate not in (16000, 24000, 44100, 48000):
-        raise ValueError("Unsupported recorded Android PCM format")
+    if channels not in (1, 2) or form != 2 or rate not in (16000, 24000, 44100, 48000):
+        raise ValueError(f"Unsupported recorded Android PCM format: {rate} Hz, {channels} ch, format {form}")
+    if channels == 2:
+        # Playback may be stereo on some images; review only needs a mono timeline.
+        import audioop
+        raw = audioop.tomono(bytes(raw), 2, .5, .5)
+        frames = [{**f, "bytes": f["bytes"] // 2, "offset": f["offset"] // 2, "channels": 1} for f in frames]
+        channels = 1
     base = frames[0]["epoch_ms"] - frames[0]["bytes"] / 2 / rate * 1000
     total = round((frames[-1]["epoch_ms"] - base) / 1000 * rate)
     samples = bytearray(max(total * 2, 0))
@@ -57,13 +63,62 @@ def render_recording(raw, frames, metadata, output, allowed_gaps=()):
         "playback_frames": frames, "device_recording": metadata}
 
 
+def run_adaptive(spec, root, helper, serial, broadcast, state, action, poll, evidence, seen_sessions):
+    """Simulated user over a live audio relay; task completions follow the scenario schedule."""
+    import random
+    sys.path.insert(0, str(Path(__file__).parent))
+    from android_caller_relay import Relay
+    adaptive = spec["adaptive"]
+    port = random.randint(47000, 48999)
+    helper.adb(serial, "forward", f"tcp:{port}", f"tcp:{port}")
+    broadcast("--ei", "stream_port", str(port))
+    time.sleep(1.5)
+    caller = subprocess.Popen([spec["python"], "-m", "app.selftest.caller"], cwd=spec["backend_directory"],
+        env={**os.environ, "JARVIS_CALLER_AGENDA": json.dumps(adaptive)}, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=(root / "caller.log").open("w", encoding="utf-8"), text=True, encoding="utf-8")
+    relay = Relay(port, caller, root)
+    relay.start()
+    try:
+        with wave.open(spec["wake_audio"], "rb") as stream:
+            relay.send_mic(stream.readframes(stream.getnframes()) + bytes(16000))
+        ready = poll(lambda s: any(x["lifecycle_state"] == "ready" and x["id"] not in seen_sessions for x in s["sessions"]), 40)
+        seen_sessions.update(x["id"] for x in ready["sessions"])
+        evidence["markers"].append({"type": "adaptive.ready", "epoch_ms": time.time() * 1000})
+        schedule = adaptive.get("tasks", [{"finish_after_seconds": 12}])
+        admitted, done = {}, set()
+        started = time.monotonic()
+        while time.monotonic() - started < adaptive.get("max_seconds", 90):
+            if relay.error:
+                raise RuntimeError(relay.error)
+            snapshot = state()
+            for task in snapshot["tasks"][:len(schedule)]:
+                if task["id"] not in admitted:
+                    admitted[task["id"]] = time.monotonic(); evidence["target_task_ids"].append(task["id"])
+                    evidence["markers"].append({"type": "adaptive.admission", "epoch_ms": time.time() * 1000})
+            for index, task_id in enumerate(evidence["target_task_ids"]):
+                plan = schedule[index]
+                if task_id in done or time.monotonic() - admitted[task_id] < plan.get("finish_after_seconds", 12):
+                    continue
+                action(action="finish", task_id=task_id, status=plan.get("status", "completed"),
+                    summary=plan.get("summary", "The Hello World page is ready."))
+                evidence["markers"].append({"type": "completion", "epoch_ms": time.time() * 1000, "task_id": task_id})
+                done.add(task_id)
+            time.sleep(.2)
+        if schedule and not done:
+            raise RuntimeError("Simulated user did not get its intended task admitted")
+    finally:
+        relay.close()
+        evidence["caller_finalized"] = relay.caller_closed.is_set()
+        helper.adb(serial, "forward", "--remove", f"tcp:{port}")
+
+
 def main():
     spec = json.loads(Path(os.environ["JARVIS_EVAL_SPEC"]).read_text(encoding="utf-8"))
     root = Path(os.environ["JARVIS_EVAL_ROOT"])
     helper = load_helper()
     serial = booted = None
     evidence = {"schema": "jarvis-announcement-evidence.v1", "transport": "android-webrtc",
-        "case_id": spec["case"]["id"], "expectation": spec["case"]["expectation"],
+        "case_id": spec["case"]["id"], "expectation": spec["case"].get("expectation"),
         "max_announcements": spec["case"].get("max_announcements"), "target_task_ids": [], "eligible_ms": {},
         "sessions": [], "markers": [], "input_understood": False, "clock_valid": False,
         "recording_complete": False, "playback_verified": False}
@@ -146,6 +201,7 @@ def main():
             helper.adb(serial, "shell", "run-as", PACKAGE, "mkdir", "-p", "files/audio-acceptance")
             # Pair through the real owner-issued code and existing debug fixture;
             # it does not create a fake voice session or bypass task admission.
+            client.post("/api/auth/login", json={"password": ""}).raise_for_status()  # owner session (personal mode)
             result = client.post("/api/jarvis/devices/pairing-code"); result.raise_for_status()
             helper.adb(serial, "shell", "am", "start", "-W", "-n", f"{PACKAGE}/.web.ResultFixtureActivity",
                 "--es", "server_url", spec["backend_url"].replace("127.0.0.1", "10.0.2.2"),
@@ -156,7 +212,9 @@ def main():
             device_ms = float(helper.adb(serial, "shell", "date", "+%s%3N"))
             evidence["clock_valid"] = abs(device_ms - time.time() * 1000) < 250
             first, pending = True, None
-            for step in spec["case"]["steps"]:
+            if spec.get("adaptive"):
+                run_adaptive(spec, root, helper, serial, broadcast, state, action, poll, evidence, seen_sessions)
+            for step in ([] if spec.get("adaptive") else spec["case"]["steps"]):
                 kind = step["type"]
                 if kind == "settle":
                     until=time.monotonic()+20
@@ -220,6 +278,16 @@ def main():
                 elif kind == "wait_output":
                     at = time.time() * 1000
                     poll(lambda s: any(e["epoch_ms"] >= at and e["event"]["type"] == "session.output_transcript.delta" for e in s["provider_events"]), 12)
+                elif kind == "question": action(action="question", task_id=evidence["target_task_ids"][0])
+                elif kind in {"observer_stop", "observer_restart"}: action(action=kind)
+                elif kind == "disconnect":
+                    gaps.append([time.time() * 1000, None])
+                    helper.adb(serial, "shell", "am", "broadcast", "-n", f"{PACKAGE}/.assistant.CaptureProbeReceiver", "--es", "command", "hide")
+                    poll(lambda s: all(x["lifecycle_state"] not in {"connecting","ready"} for x in s["sessions"]),10)
+                    evidence["markers"].append({"type": "session.disconnected", "epoch_ms": time.time() * 1000})
+                elif kind == "resume":
+                    audio("", initial=True); first = False
+                    evidence["markers"].append({"type": "session.resumed", "epoch_ms": time.time() * 1000})
                 elif kind == "reconnect":
                     gaps.append([time.time() * 1000, None])
                     helper.adb(serial, "shell", "am", "broadcast", "-n", f"{PACKAGE}/.assistant.CaptureProbeReceiver", "--es", "command", "hide")
@@ -231,7 +299,7 @@ def main():
             evidence["state"] = state()
             recognized = " ".join(e["event"].get("delta", "") for e in evidence["state"]["provider_events"] if e["event"]["type"] == "session.input_transcript.delta").lower()
             evidence["recognized_request"] = recognized
-            evidence["input_understood"] = "hello" in recognized and "world" in recognized and bool(evidence["target_task_ids"])
+            evidence["input_understood"] = bool(spec.get("adaptive")) or ("hello" in recognized and "world" in recognized and bool(evidence["target_task_ids"]))
             if evidence["expectation"] == "forbidden": evidence["input_understood"] &= any(w in recognized for w in ("quiet", "silent", "silence"))
         except Exception as error:
             evidence["error"] = str(error)

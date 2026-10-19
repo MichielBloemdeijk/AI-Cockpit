@@ -15,9 +15,18 @@ async def admission_reserved(session_id, generation, turn_scope, intent_id):
         return await db.get(LiveAdmissionIntent, identity) is not None
 
 
-async def advanced_context(session_id, generation, offset_ms, correlation_id, *, quiet=.8, bound=2.5):
+async def advanced_context(session_id, generation, offset_ms, correlation_id, *, intent_id=None, quiet=.8, bound=2.5):
     if not isinstance(offset_ms, int):
         return None
+    if intent_id:
+        # One refresh per task request. Without this, a user who keeps talking after
+        # asking makes every retry fail and the task is never created.
+        async with session_scope() as db:
+            earlier = (await db.execute(select(LiveSessionEvent).where(
+                LiveSessionEvent.session_id == session_id, LiveSessionEvent.event_type == "brain.tool.result"))).scalars().all()
+            if any((e.payload_json or {}).get("intent_id") == intent_id and (e.payload_json or {}).get("generation") == generation
+                    and ((e.payload_json or {}).get("output") or {}).get("status") == "request_context_advanced" for e in earlier):
+                return None
     clock = asyncio.get_running_loop().time
     deadline = clock() + bound
     seen, changed_at = None, clock()

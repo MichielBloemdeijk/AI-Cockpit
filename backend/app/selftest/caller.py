@@ -115,7 +115,8 @@ def caller_instructions(adaptive: dict) -> str:
         "You start the conversation: say your first request as soon as the session starts. Speak English, casually, "
         "like a real person on the phone: short sentences, sometimes thinking aloud. "
         "Your goals for this conversation: " + adaptive["agenda"] + " "
-        "Only pursue these goals; do not invent facts about tasks or their results. React honestly to what you hear: "
+        "You are only the user: never say what Jarvis would say, never confirm or report on tasks yourself, and never "
+        "describe results you have not heard from Jarvis. Only pursue these goals. React honestly to what you hear: "
         "if something is unclear, ask; if you did not catch something, say so. When your goals are done, wind down "
         "naturally and then stay quiet."
     )

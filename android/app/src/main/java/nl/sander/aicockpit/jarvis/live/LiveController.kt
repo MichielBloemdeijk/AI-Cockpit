@@ -75,6 +75,7 @@ class LiveController(
             AcceptanceAudioInput.observePlayback(samples.data)
             AcceptancePlaybackRecording.append(samples.data, samples.sampleRate, samples.channelCount,
                 samples.audioFormat, audioModule)
+            AcceptanceAudioStream.output(samples.data, samples.sampleRate, samples.channelCount)
         }
         .createAudioDeviceModule()
     private val factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory()

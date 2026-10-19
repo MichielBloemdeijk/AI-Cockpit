@@ -891,11 +891,22 @@ class JarvisCoordinator:
                             context["assistant_notes"] = await assistant_notes.render(session, session_id=session_id)
                     reservation_started = situation_finished
                     if selected_reason == "task_update":
+                        # Live's voice activity treats a mid-sentence pause as the end of the
+                        # user's turn. Like a person, wait until they have been quiet briefly.
+                        last_user_words = await session.scalar(select(LiveSessionEvent.created_at).where(
+                            LiveSessionEvent.session_id == session_id,
+                            LiveSessionEvent.event_type == "provider.user_transcript_delta")
+                            .order_by(LiveSessionEvent.sequence.desc()).limit(1))
+                        if last_user_words is not None and last_user_words.tzinfo is None:
+                            last_user_words = last_user_words.replace(tzinfo=timezone.utc)
+                        # created_at has one-second resolution: count from its upper bound.
+                        user_recently_spoke = last_user_words is not None and (
+                            utc_now() - (last_user_words + timedelta(seconds=1))) < timedelta(seconds=1.5)
                         reservation = await task_presentation_service.reserve_in_session(
                             session,
                             session_id=session_id,
                             generation=generation,
-                            user_owns_floor=floor == "user_speaking",
+                            user_owns_floor=floor == "user_speaking" or user_recently_spoke,
                             limit=3,
                             commentary=True,
                             terminal_only=quiet_terminal_delivery and floor != "listening",
@@ -2512,7 +2523,7 @@ class JarvisCoordinator:
                     origin_item_id or last_turn_id or origin_correlation_id, arguments.get("intent_id"))
                 if not reserved:
                     freshness = await advanced_context(session_id, generation,
-                        (origin_timeline or {}).get("offset_ms"), origin_correlation_id)
+                        (origin_timeline or {}).get("offset_ms"), origin_correlation_id, intent_id=arguments.get("intent_id"))
                 # Input batching yields to transport events. Recheck action
                 # authority after that wait, including a newly locked device.
                 async with session_scope() as session:
@@ -2593,6 +2604,7 @@ class JarvisCoordinator:
                     "origin_item_id": origin_item_id,
                     "origin_correlation_id": origin_correlation_id,
                     "origin_timeline": origin_timeline or {},
+                    "intent_id": arguments.get("intent_id") if isinstance(arguments, dict) else None,
                     "stage": "result_record_started",
                     "server_monotonic_ns": __import__("time").perf_counter_ns(),
                     "session_id": session_id, "generation": generation,

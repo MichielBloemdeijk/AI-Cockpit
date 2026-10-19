@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput
+import nl.sander.aicockpit.jarvis.live.AcceptanceAudioStream
 import nl.sander.aicockpit.jarvis.live.AcceptancePlaybackRecording
 import nl.sander.aicockpit.jarvis.audio.JarvisAudioService
 import java.io.File
@@ -34,6 +35,14 @@ class AudioAcceptanceReceiver : BroadcastReceiver() {
             }
             if (intent.getBooleanExtra("clear", false)) {
                 AcceptanceAudioInput.clear()
+                AcceptanceAudioStream.stop()
+                return
+            }
+            if (intent.hasExtra("stream_port")) {
+                // Live relay for a simulated user; the wake service starts on the relayed audio.
+                AcceptanceAudioStream.start(context, intent.getIntExtra("stream_port", 0))
+                context.startForegroundService(Intent(context, JarvisAudioService::class.java)
+                    .setAction(nl.sander.aicockpit.jarvis.audio.AudioAction.WAKE.wire))
                 return
             }
             val id = requireNotNull(intent.getStringExtra("sample_id"))

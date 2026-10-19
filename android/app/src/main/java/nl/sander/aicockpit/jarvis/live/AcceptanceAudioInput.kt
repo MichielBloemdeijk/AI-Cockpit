@@ -73,16 +73,20 @@ object AcceptanceAudioInput {
     /** AudioRecord already clocks these frames. Do not skip the microphone read. */
     @Synchronized
     fun replaceWakeFrame(frame: ShortArray, count: Int) {
-        if (samples == null) return
+        if (samples == null) {
+            if (AcceptanceAudioStream.active) AcceptanceAudioStream.fill(frame, count)
+            return
+        }
         fill(frame, count)
     }
 
     @Synchronized
     fun replaceWebRtcFrame(buffer: ByteBuffer, audioFormat: Int, channels: Int, rate: Int, count: Int) {
-        if (samples == null) return
+        val streaming = samples == null && AcceptanceAudioStream.active
+        if (samples == null && !streaming) return
         check(audioFormat == AudioFormat.ENCODING_PCM_16BIT && channels == 1 && rate == 16_000)
         val shorts = ShortArray(count / 2)
-        fill(shorts, shorts.size)
+        if (streaming) AcceptanceAudioStream.fill(shorts, shorts.size) else fill(shorts, shorts.size)
         val view = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         view.position(0)
         shorts.forEach(view::putShort)

@@ -48,3 +48,7 @@ cases:
   - path: selftest/l2-20261019-core/ordinary_during_conversation-browser
     expect: not_communicated
     note: Only the admission ("is created") was said; the discretionary completion was never mentioned.
+  # Second L2 pass (2026-10-19).
+  - path: selftest/l2-20261019-iter2/between_sessions-browser
+    expect: communicated
+    note: The late transcript of the wake word "Jarvis" was taken as talking over the update; the user heard it.

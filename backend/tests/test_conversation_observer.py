@@ -441,3 +441,61 @@ async def test_new_user_turn_during_assistant_speech_is_marked_overlapped(monkey
         job=(await db.execute(select(ConversationObservation))).scalars().one()
         user=[f for f in job.input_json["fragments"] if f["speaker"]=="user"][-1]
         assert bool(user.get("overlapped_assistant"))is expected
+
+
+@pytest.mark.asyncio
+async def test_admission_refreshes_context_once_per_request_even_if_the_user_keeps_talking(monkeypatch):
+    from app.services.voice_session_adapter import fake_voice_session_adapter
+    from app.db.tables import Task
+    monkeypatch.setattr(settings,"jarvis_conversation_observer_mode","enabled")
+    await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="keep-talking")
+    live=await jarvis_coordinator.get_active_session()
+    async def speak(i,start,text):
+        async with session_scope() as db:
+            await JarvisDomainRepository(db).append_session_event_once(session_id=live.id,event_type="provider.user_transcript_delta",
+                payload_json={"delta":text,"start_ms":start,"end_ms":start+200,"generation":live.generation},idempotency_key=f"talk-{i}")
+    await speak(0,100,"Create the page")
+    await speak(1,5200,"and tell me if it fails")
+    outputs=[]
+    async def capture(**kwargs): outputs.append(kwargs["output"])
+    monkeypatch.setattr(fake_voice_session_adapter,"send_tool_result",capture)
+    arguments={"goal":"Create a page","intent_id":"page","notification_intent":"requested","notification_reason":"Tell me if it fails"}
+    await jarvis_coordinator._execute_shell_call(session_id=live.id,generation=live.generation,tool_name="dispatch_task",
+        arguments=arguments,call_id="first",origin_timeline={"offset_ms":4400})
+    assert outputs[-1]["result"]["status"]=="request_context_advanced"
+    await speak(2,9000,"anyway, about my demo plans")  # the user keeps talking
+    await jarvis_coordinator._execute_shell_call(session_id=live.id,generation=live.generation,tool_name="dispatch_task",
+        arguments=arguments,call_id="second",origin_timeline={"offset_ms":4400})
+    assert outputs[-1]["result"].get("status")!="request_context_advanced"
+    async with session_scope() as db:
+        assert (await db.execute(select(Task).where(Task.goal=="Create a page"))).scalar_one_or_none() is not None
+
+
+@pytest.mark.asyncio
+async def test_late_wake_phrase_transcript_is_not_an_overlap(monkeypatch):
+    from app.services import conversation_observer as module
+    live,task,item=await prepared(monkeypatch)
+    async with session_scope() as db:
+        row=await db.get(LiveSession,live.id);row.controller_id="owner"
+        repo=JarvisDomainRepository(db)
+        await repo.append_session_event_once(session_id=live.id,event_type="provider.assistant_transcript_delta",
+            payload_json={"delta":"Quick update: the page is ready.","start_ms":500,"end_ms":1500},idempotency_key="outcome")
+        await repo.append_session_event_once(session_id=live.id,event_type="provider.user_transcript_delta",
+            payload_json={"delta":" Jarvis","start_ms":9000,"end_ms":9300},idempotency_key="late-wake")
+    await conversation_observer.ingest(session_id=live.id,generation=live.generation,controller_id="owner",
+        sequence=1,reports=evidence()["playback"])
+    monkeypatch.setattr(module,"now",lambda:now()+timedelta(seconds=8))
+    await conversation_observer.collect()
+    async with session_scope() as db:
+        job=(await db.execute(select(ConversationObservation))).scalars().one()
+        assert not any(f.get("overlapped_assistant") for f in job.input_json["fragments"])
+
+
+def test_long_android_report_intervals_still_cover_playback():
+    e=evidence()
+    merged=[]
+    for a,b in zip(e["playback"][0::2],e["playback"][1::2]):  # 500 ms reports instead of 250 ms
+        merged.append({**a,"client_end_ms":b["client_end_ms"],"playback_end_ms":b["playback_end_ms"]})
+    # One 1 s report (UI jank) spanning the cited outcome.
+    e["playback"]=merged[:3]+[{**merged[3],"client_end_ms":merged[4]["client_end_ms"],"playback_end_ms":merged[4]["playback_end_ms"]}]+merged[5:]
+    assert validate_finding(e,finding())["supported"]
