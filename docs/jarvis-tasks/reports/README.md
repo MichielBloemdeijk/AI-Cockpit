@@ -16,6 +16,8 @@ The [phone guide](../phone-test-checklist.md) is an optional maintenance referen
 
 ## Historical verification and decisions
 
+The [natural notes and self-testing report](2026-10-19-natural-notes-selftest.md) covers the first three iterations: reaction-aware bookkeeping, notes, promises, and L1–L4 self-test results. Iteration 3 has not run live yet.
+
 **19 October 2026: Codex plan closed.** The natural assistant comparison below ended with Configuration 1 (durable preferences plus the Responses bookkeeper) as the only finalist; its confirmation stopped on an interruption failure. Decisions was removed, and the one-off evaluation stages were replaced by the agent-runnable [self-test package](../self-testing.md). Next: reaction-aware bookkeeping, assistant notes and promise tracking, validated through L1 replay and L2–L4 scenarios.
 
 The [natural assistant comparison](2026-10-18-natural-assistant-comparison.md) uses
