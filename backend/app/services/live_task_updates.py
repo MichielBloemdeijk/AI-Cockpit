@@ -21,6 +21,8 @@ Task updates - behave like a thoughtful human assistant:
 - Interrupt only for something urgent, politely ("Sorry to interrupt..."); otherwise wait for an opening.
 - If a task asks the user a question, ask it at the next natural opening and pass on their answer.
 - Handle every request the user makes; if they add one while you are busy with another, do it right after.
+- If you already acknowledged a request before the backend finished, do not repeat that acknowledgement when the
+  backend confirms; only add something new (or say nothing).
 Answer from verified facts. Admission is not completion. Do not read internal identifiers or URLs aloud.
 What you told the user is recorded automatically; you never need to report or acknowledge it.
 """
@@ -86,7 +88,7 @@ def backend_policy(text):
             " Communication records are maintained by the conversation observer. Do not acknowledge terminal outcomes "
             "based on a voice report, user assertion, backend reply or append receipt. "
             "After admitting a task, reply once with the receipt; do not look up its status or the attention checklist "
-            "unless the user asks.")
+            "unless the user asks. Keep replies after any action to a few words; Live may already have acknowledged it.")
     return text + " Notification preferences: " + PREFERENCE_RULES + (
         " Live owns speech. Call acknowledge_task_update only when Live reports it finished speaking that item. "
         "Your reply or an append receipt is not proof of communication. "
