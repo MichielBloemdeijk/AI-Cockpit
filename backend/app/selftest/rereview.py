@@ -13,7 +13,7 @@ from app.selftest import harness as h
 from app.selftest.review import review_run
 
 
-def rereview(output: Path, *, transcribe_again: bool = True) -> list[dict]:
+def rereview(output: Path, *, transcribe_again: bool = False) -> list[dict]:
     ledger = h.RequestLedger(output / "request-ledger.json")
     rows = []
     for folder in sorted(p for p in output.iterdir() if (p / "spec.json").exists()):

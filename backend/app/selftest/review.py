@@ -28,8 +28,12 @@ does the work, tells the user what they asked to hear about at a natural moment,
 asked, keeps its promises, and never says misleading things. Overlap or a short delay is not a
 failure by itself; judge its effect (did the user miss something, was it disruptive, did Jarvis
 recover naturally). Timings come from audio energy and transcripts; treat them as approximate.
+The owner wants retries and self-repairs: a failed task that is retried or continued in the
+background is good, as long as it keeps the user's original goal and the user is told about it
+briefly. Only flag a retry if it changes what the user asked for or is never mentioned.
 Separately judge the bookkeeping: did the records of what was communicated match what actually
 reached the user (e.g. an update the user talked over should not be recorded as clearly heard)?
+An answered task question is recorded as "superseded" by design; that is correct, not a gap.
 Grade:
 - fine: a good human assistant would be happy with this.
 - awkward: noticeable but minor issues (wording, small overlap, slight delay, verbosity).
