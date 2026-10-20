@@ -127,7 +127,8 @@ uv run python -m app.worker
 
 The separate worker command is for the default legacy mode. With
 `TASK_POOL_ENABLED=true`, the API lifecycle elects and repairs the supervised
-pool automatically; do not also start `app.worker`. Drain the legacy worker
+pool automatically; `app.worker` (and the VS Code `Start All` worker
+task) then just reports that the pool is already supervised and exits. Drain the legacy worker
 before switching modes. Pool repair, worker replacement, and pool restart are
 available from the Tasks page once the pool flag is enabled.
 

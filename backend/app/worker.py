@@ -7,7 +7,7 @@ import logging
 
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
-from app.services.task_pool_supervisor import task_pool_supervisor
+from app.services.task_pool_supervisor import SupervisorLeaseBusy, task_pool_supervisor
 from app.services.task_worker import TaskWorker
 
 
@@ -74,7 +74,11 @@ async def worker_main(
             await worker.run_child()
         elif settings.task_pool_enabled:
             logger.info("Task pool supervisor starting")
-            await task_pool_supervisor.run()
+            try:
+                await task_pool_supervisor.run()
+            except SupervisorLeaseBusy:
+                # The API process normally owns the pool; a second launcher has nothing to do.
+                logger.info("Task pool is already supervised (normally by the API process); exiting")
         else:
             if settings.task_executor == "codex":
                 raise RuntimeError("Codex task execution requires the supervised process-tree pool")
