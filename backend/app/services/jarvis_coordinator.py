@@ -2471,7 +2471,7 @@ class JarvisCoordinator:
         authority_ready_ns = __import__("time").perf_counter_ns()
         try:
             if controller_locked and tool_name in {
-                "dispatch_task", "start_workflow", "answer_task_question", "cancel_task",
+                "dispatch_task", "start_workflow", "look_at_screen", "answer_task_question", "cancel_task",
                 "continue_task", "control_task",
                 "set_task_update_policy", "set_jarvis_voice",
             }:

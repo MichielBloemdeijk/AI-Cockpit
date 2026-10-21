@@ -235,7 +235,27 @@ def _canonical_tools() -> list[dict[str, Any]]:
             "parameters": {"type": "object", "properties": {"voice": {"type": "string", "enum": ["marin", "cedar"]}}, "required": ["voice"]},
         },
         {"type": "function", "name": "start_new_jarvis_log", "description": "Close the current Jarvis daily log and start a fresh one.", "parameters": object_schema},
-        {"type": "function", "name": "end_voice_session", "description": "End the active voice session when the user asks Jarvis to sleep or disconnect.", "parameters": object_schema},
+        {
+            "type": "function",
+            "name": "look_at_screen",
+            "description": (
+                "Look at the phone screen as it is right now and answer a question about it within this "
+                "conversation, for example who or what is shown, what an app says, or what to tap. "
+                "Returns a short description to speak. Use start_workflow instead only when the user "
+                "wants a saved result such as a recipe, document or research."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 1000,
+                    "description": "The user's question about the screen, faithful and self-contained."}},
+                "required": ["question"],
+            },
+        },
+        {"type": "function", "name": "end_voice_session", "description": (
+            "End this voice conversation so Jarvis goes back to waiting for its wake word. Call it whenever the "
+            "user asks to stop, end, close or hang up the session or conversation, says that's all or goodbye, "
+            "or asks Jarvis to sleep or disconnect. Only this call ends it; never claim it ended without it."),
+            "parameters": object_schema},
     ]
     if screen_definitions:
         tools.append({

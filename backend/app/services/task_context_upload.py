@@ -141,12 +141,14 @@ class TaskContextUploadService:
                     or _aware(capture.captured_at) != _aware(captured_at)
                     or capture_monotonic_ms < 0):
                 raise ValueError("Capture timing is invalid")
-            task = (await session.execute(select(Task).where(Task.id == row.task_id))).scalar_one()
-            run = await session.get(TaskExecutionRun, row.execution_run_id)
-            current = run is not None and task.current_run_id == run.id
-            if (run is None or (not current and run.status != "pending") or
-                    (current and (task.status != "waiting_for_input" or task.status_reason != "context_upload_pending"))):
-                raise ValueError("Task is no longer waiting for this context")
+            look = row.task_id is None
+            if not look:
+                task = (await session.execute(select(Task).where(Task.id == row.task_id))).scalar_one()
+                run = await session.get(TaskExecutionRun, row.execution_run_id)
+                current = run is not None and task.current_run_id == run.id
+                if (run is None or (not current and run.status != "pending") or
+                        (current and (task.status != "waiting_for_input" or task.status_reason != "context_upload_pending"))):
+                    raise ValueError("Task is no longer waiting for this context")
             blob = (await session.execute(select(TaskContextBlob).where(
                 TaskContextBlob.sha256 == digest,
             ))).scalar_one_or_none()
@@ -167,6 +169,11 @@ class TaskContextUploadService:
                 session.add(blob)
                 await session.flush()
             reference = f"context://{blob.id}"
+            if look:
+                # A spoken screen look reads the blob directly; no task artifact.
+                row.state, row.blob_id, row.fulfilled_at = "ready", blob.id, _now()
+                await session.flush()
+                return {"state": "ready", "context_reference": reference, "sha256": digest}
             roles = [image["role"] for image in (run.configuration_json or {}).get("screen_context", {}).get("images", [])
                 if image["capture_id"] == row.capture_id]
             artifact = TaskArtifact(
@@ -240,6 +247,8 @@ class TaskContextUploadService:
         row.state = "expired" if reason == "expired" else "unavailable"
         row.failure_reason = reason
         row.failed_at = now
+        if row.task_id is None:
+            return
         task = (await session.execute(select(Task).where(Task.id == row.task_id))).scalar_one()
         run = await session.get(TaskExecutionRun, row.execution_run_id)
         if run is not None and run.status in {"waiting_for_input", "pending"}:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import aclosing
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
@@ -312,3 +313,113 @@ async def test_captured_workflow_admission_waits_for_upload_and_targets_event(mo
         assert pending_run.status == "failed"
         assert pending_detail.task.current_run_id != pending_run.id
         assert pending_detail.task.status == "waiting_for_input"
+
+
+async def _paired_live_phone(transport):
+    activation_id = str(uuid4())
+    async with AsyncClient(transport=transport, base_url="http://testserver") as admin:
+        assert (await admin.post("/api/auth/login", json={"password": ""})).status_code == 200
+        code = (await admin.post("/api/jarvis/devices/pairing-code")).json()["code"]
+    device = AsyncClient(transport=transport, base_url="http://testserver")
+    paired = (await device.post("/api/jarvis/devices/pair", json={"code": code, "label": "Pixel"})).json()
+    device.headers["Authorization"] = f"Bearer {paired['credential']}"
+    assert (await device.patch(f"/api/jarvis/devices/{paired['device_id']}", json={"lock_state": "unlocked"})).status_code == 200
+    live = await device.post("/api/jarvis/live/calls", json={
+        "controller_id": paired["device_id"], "provider_adapter": "fake",
+        "activation_context": {"source": "system", "activation_id": activation_id},
+    })
+    assert live.status_code == 200, live.text
+    return device, activation_id, live.json()["session"]
+
+
+async def _phone_captures_fresh(device, activation_id, live_session, identity):
+    """What the phone does after the delegation's capture.fresh_requested event."""
+    fresh = await task_capture_service.request_fresh(
+        session_id=live_session["id"], generation=live_session["generation"], request_identity=identity)
+    now = datetime.now(timezone.utc)
+    report = await device.put(f"/api/jarvis/captures/{fresh.capture_id}/status", json={
+        "activation_id": activation_id, "capture_mode": "fresh", "status": "captured", "revision": 2,
+        "captured_at": now.isoformat(), "expires_at": fresh.expires_at.replace(tzinfo=timezone.utc).isoformat()
+        if fresh.expires_at.tzinfo is None else fresh.expires_at.isoformat(),
+        "session_id": live_session["id"], "generation": live_session["generation"],
+    })
+    assert report.status_code == 200, report.text
+    return fresh.capture_id, now
+
+
+@pytest.mark.asyncio
+async def test_look_at_screen_answers_from_a_fresh_upload_without_a_task(monkeypatch) -> None:
+    import asyncio
+    from app.services import screen_look
+    seen: dict = {}
+
+    async def fake_describe(question, jpeg):
+        seen.update(question=question, jpeg=jpeg)
+        return "Two people: a woman in a red coat and a man with glasses."
+
+    monkeypatch.setattr(screen_look, "describe", fake_describe)
+    device, activation_id, live_session = await _paired_live_phone(ASGITransport(app=app))
+    async with aclosing(device):
+        capture_id, captured_at = await _phone_captures_fresh(device, activation_id, live_session, "delegation-1")
+        looking = asyncio.create_task(restricted_brain_gateway.execute(
+            tool_name="look_at_screen", arguments={"question": "Who are the two people on my screen?"},
+            call_id="call-look-1", conversation_id="conversation-look", origin_turn_id=None,
+            session_id=live_session["id"], generation=live_session["generation"],
+            capture_request_identity="delegation-1"))
+        pending = []
+        for _ in range(50):
+            pending = (await device.get("/api/jarvis/context-requests/pending")).json()["requests"]
+            if pending:
+                break
+            await asyncio.sleep(.02)
+        assert len(pending) == 1 and pending[0]["capture_id"] == capture_id and pending[0]["task_id"] is None
+        replay = (await device.get("/api/jarvis/live/replay")).json()["events"]
+        assert any(e["event_type"] == "context.requested" and e["payload"]["capture_id"] == capture_id for e in replay)
+        image = BytesIO()
+        Image.new("RGB", (32, 16), (200, 40, 40)).save(image, format="JPEG")
+        jpeg = image.getvalue()
+        accepted = await device.put(f"/api/jarvis/context-requests/{pending[0]['request_id']}/content", content=jpeg, headers={
+            "Content-Type": "image/jpeg", "X-Upload-Token": pending[0]["upload_token"],
+            "X-Content-SHA256": sha256(jpeg).hexdigest(), "X-Capture-Id": capture_id,
+            "X-Activation-Id": activation_id, "X-Generation": str(live_session["generation"]),
+            "X-Captured-At": captured_at.isoformat(), "X-Capture-Monotonic-Ms": "5.0"})
+        assert accepted.status_code == 200, accepted.text
+        result = await asyncio.wait_for(looking, 5)
+    assert result.output["answer"].startswith("Two people")
+    assert seen == {"question": "Who are the two people on my screen?", "jpeg": jpeg}
+    assert await task_service.list_tasks() == []
+
+
+@pytest.mark.asyncio
+async def test_look_at_screen_reports_a_phone_that_cannot_share(monkeypatch) -> None:
+    import asyncio
+    from app.services import screen_look
+    monkeypatch.setattr(screen_look, "describe", lambda *_: pytest.fail("no pixels, no vision call"))
+    device, activation_id, live_session = await _paired_live_phone(ASGITransport(app=app))
+    async with aclosing(device):
+        await _phone_captures_fresh(device, activation_id, live_session, "delegation-2")
+        looking = asyncio.create_task(restricted_brain_gateway.execute(
+            tool_name="look_at_screen", arguments={"question": "What app is open?"},
+            call_id="call-look-2", conversation_id="conversation-look", origin_turn_id=None,
+            session_id=live_session["id"], generation=live_session["generation"],
+            capture_request_identity="delegation-2"))
+        pending = []
+        for _ in range(50):
+            pending = (await device.get("/api/jarvis/context-requests/pending")).json()["requests"]
+            if pending:
+                break
+            await asyncio.sleep(.02)
+        failed = await device.post(f"/api/jarvis/context-requests/{pending[0]['request_id']}/unavailable",
+                                   json={"reason": "upload_failed"})
+        assert failed.status_code == 200 and failed.json()["state"] == "unavailable"
+        with pytest.raises(ValueError, match="could not share"):
+            await asyncio.wait_for(looking, 5)
+
+
+def test_voice_catalog_offers_screen_looks_and_session_ending() -> None:
+    tools = {tool["name"]: tool for tool in get_jarvis_tool_definitions("openai_live")}
+    assert tools["look_at_screen"]["parameters"]["required"] == ["question"]
+    assert "wake word" in tools["end_voice_session"]["description"]
+    from app.services.openai_live_adapter import OpenAILiveAdapter
+    router = OpenAILiveAdapter._router_instructions({})
+    assert "look_at_screen" in router and "end_voice_session" in router

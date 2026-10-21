@@ -40,7 +40,7 @@ def _note_committed_change(session, table):
     # Task/session event rows project into JarvisLiveEvent through DB hooks.
     if table in {"jarvis_live_events", "task_events", "live_session_events"}:
         session.info["live_event_changed"] = True
-    if table in {"task_capture_reports", "jarvis_devices", "live_sessions"}:
+    if table in {"task_capture_reports", "task_context_requests", "jarvis_devices", "live_sessions"}:
         session.info["capture_state_changed"] = True
     if table == "result_page_events":
         session.info["result_event_changed"] = True

@@ -28,6 +28,7 @@ ALLOWED_SHELL_TOOLS = frozenset(
     {
         "dispatch_task",
         "start_workflow",
+        "look_at_screen",
         "list_tasks",
         "get_task",
         "answer_task_question",
@@ -290,6 +291,16 @@ class RestrictedBrainGateway:
                 },
                 "internal_fields_are_not_user_facing": True,
             })
+
+        if tool_name == "look_at_screen":
+            if session_id is None or generation is None:
+                raise ValueError("Looking at the screen requires an active Live session")
+            from app.services.screen_look import look
+            return BrainResult(output=await look(
+                session_id=session_id, generation=generation,
+                request_identity=capture_request_identity or call_id,
+                question=str(arguments.get("question") or ""),
+                capture_wait_seconds=capture_wait_seconds))
 
         if tool_name in {"list_tasks", "list_reminders"}:
             tasks = await task_service.list_tasks()

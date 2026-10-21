@@ -767,7 +767,7 @@ class OpenAILiveAdapter:
                 },
             }
         event_id = f"live-tool:{delegation_id}:{response_id}:{call_id}"
-        if name in {"start_workflow", "continue_task", "dispatch_task"}:
+        if name in {"start_workflow", "continue_task", "dispatch_task", "look_at_screen"}:
             # Capture preflight can legitimately wait two seconds. Keep the
             # sideband receive loop free to observe transcript and terminal
             # events while the guarded admission runs.
@@ -1261,7 +1261,12 @@ class OpenAILiveAdapter:
             "The spoken answer must not replace the requested durable task. "
             "Existing completed or cancelled tasks do not satisfy a request to create new tasks. "
             "Acknowledging an update never creates, continues or cancels a task. "
-            "Handled or superseded items are not announced proactively again."
+            "Handled or superseded items are not announced proactively again. "
+            "You cannot see the screen yourself: delegate any question about what is on the phone screen now; "
+            "the backend looks at a fresh screenshot and returns what it shows. "
+            "When the user wants to stop, end or close this session or conversation, says that's all or goodbye, "
+            "delegate it so the backend ends the session; it then goes back to waiting for the wake word. "
+            "Never say the session has ended unless the backend ended it."
         )
         if context.get("activation_source") == "wake_word":
             conversation_prompt += (
@@ -1326,7 +1331,11 @@ class OpenAILiveAdapter:
             "Only fields listed in the tool schema's required array are mandatory. "
             "Keep goal concise and faithful; the worker develops the detailed solution. "
             "Omit optional result, execution_preferences, targets, importance and presentation_policy unless the request or context needs them. "
-            "For a screen task call start_workflow directly: the backend prepares invocation and latest screenshots in parallel. "
+            "For a question about what is on the screen now, call look_at_screen with the question and "
+            "speak its answer; it takes a fresh screenshot. Never say you cannot see the screen without calling it. "
+            "When the user asks to stop, end or close the session or conversation, or says that's all or goodbye, "
+            "call end_voice_session. "
+            "For a screen task with a saved result call start_workflow directly: the backend prepares invocation and latest screenshots in parallel. "
             "The workflow worker inspects those images after admission; you do not need to see or identify their contents to route a defined outcome. "
             "A request to save a recipe from visible ingredients or research the visible topic specifies an outcome; admit it without reconfirmation. "
             "An explicit current-screen request selects screen_context_mode fresh in start_workflow or continue_task; "

@@ -1315,15 +1315,16 @@ class TaskContextBlob(Base):
 
 
 class TaskContextRequest(Base):
-    """One exact capture authorized for one task execution run."""
+    """One exact capture authorized for one task execution run, or for one
+    spoken screen look (no task columns) answered inside the Live session."""
 
     __tablename__ = "task_context_requests"
     __table_args__ = (UniqueConstraint("execution_run_id", "capture_id", name="uq_task_context_requests_run_capture"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
-    execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False)
-    workflow_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
+    execution_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("workflow_runs.id", ondelete="CASCADE"), nullable=True)
     capture_id: Mapped[str] = mapped_column(String(64), ForeignKey("task_capture_reports.capture_id"), nullable=False)
     capture_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     device_id: Mapped[str] = mapped_column(String(36), ForeignKey("jarvis_devices.id"), nullable=False)
