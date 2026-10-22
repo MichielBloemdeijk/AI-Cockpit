@@ -24,6 +24,44 @@ for historical capture feasibility; current completion is recorded in the ledger
 
 The wake models are read directly from `frontend/public/jarvis-wake`, so build the app from this monorepo rather than copying the Android directory in isolation.
 
+## In-app updates
+
+After the first install, Jarvis updates itself from the paired AI Cockpit. Any
+change ships this way: native code, permissions, manifest and bundled models.
+It can't ship a change of signing key, a lower versionCode or a different
+applicationId.
+
+1. **Once per computer:** `cd backend && uv run python ../android/scripts/create-signing-key.py`.
+   This writes `~/.jarvis/jarvis-release.jks` and `android-signing.properties`
+   (override the location with `JARVIS_SIGNING_PROPERTIES`). **Back up both
+   files.** If the key is lost, the phone must uninstall Jarvis and pair again.
+2. **Each release:** `cd backend && uv run python ../android/scripts/publish-update.py`.
+   This builds the signed release APK with a generated versionCode (minutes since
+   2026-01-01) and a `YYYY.MM.DD+commit` name. It stores the APK in
+   `backend/data/android-releases` (`ANDROID_RELEASES_DIR`) and emits
+   `android.update_published` so connected phones check at once.
+3. **First install:** `/api/jarvis/devices/android.apk` always serves the latest
+   published release. Allow **Install unknown apps** for Jarvis when Android asks.
+   An install that came from a debug build or a different key must be uninstalled first.
+
+On the phone, the app checks on startup, when the event stream connects (at most
+every 15 minutes), every 6 hours and when a release is published. **Check for
+updates** always proceeds. Automatic downloads (about 150 MB) wait for an
+unmetered network, and installs wait until no Live conversation or assistant
+overlay is active. **Advanced settings** can turn automatic updates off; the app
+then only notifies. Downloads use the device credential and are verified against
+the manifest's SHA-256. Android additionally rejects any APK whose signature
+doesn't match the installed app.
+
+On Android 12+ a self-update normally installs without a prompt, including the
+first one over an ADB install (verified on API 37). Android shows its
+confirmation instead if it doesn't accept the silent update, for example within
+30 seconds of the previous silent update (`SilentUpdatePolicy`). The app then
+posts **Install Jarvis update**. After installing, the app restarts, keeps its
+pairing and permissions, and `MY_PACKAGE_REPLACED` resumes wake listening.
+`uv run python ../android/scripts/verify-self-update.py` checks all of this on the
+API-37 emulator with a disposable key and backend.
+
 ## Pair and enable
 
 1. Start AI Cockpit on an address reachable by the phone.

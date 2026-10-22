@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Self-updates from the paired AI Cockpit; see update/AppUpdater. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <application
         android:name=".JarvisApplication"
@@ -55,6 +58,8 @@
         <receiver android:name=".notifications.NotificationActionReceiver" android:exported="false" />
         <receiver android:name=".wake.BootReceiver" android:exported="true">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+            <intent-filter><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
         </receiver>
+        <receiver android:name=".update.UpdateInstallReceiver" android:exported="false" />
     </application>
 </manifest>

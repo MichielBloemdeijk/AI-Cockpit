@@ -37,6 +37,9 @@ class CredentialStore(context: Context) {
     var assistStructureOptIn: Boolean
         get() = preferences.getBoolean("assist_structure_opt_in", false)
         set(value) { preferences.edit().putBoolean("assist_structure_opt_in", value).apply() }
+    var automaticUpdates: Boolean
+        get() = preferences.getBoolean("automatic_updates", true)
+        set(value) { preferences.edit().putBoolean("automatic_updates", value).apply() }
     fun savePairing(server: String, result: PairingResult) {
         preferences.edit().putString("server_url", PairingLink.serverOrigin(server))
             .putString("device_id", result.deviceId).putString("credential", encrypt(result.credential))

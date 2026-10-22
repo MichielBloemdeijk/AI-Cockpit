@@ -1,6 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// In-app updates only install over an APK signed with the same key, so the
+// release key lives outside the repo and must never change. See README.
+val releaseSigning = Properties().apply {
+    val path = providers.environmentVariable("JARVIS_SIGNING_PROPERTIES").orNull
+        ?: "${System.getProperty("user.home")}/.jarvis/android-signing.properties"
+    file(path).takeIf { it.isFile }?.inputStream()?.use(::load)
 }
 
 android {
@@ -15,8 +25,21 @@ android {
         targetSdk {
             version = release(37)
         }
-        versionCode = 1
-        versionName = "2.0.0"
+        // The publish script supplies an increasing code; local builds stay at 1.
+        versionCode = providers.gradleProperty("jarvisVersionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("jarvisVersionName").orNull ?: "dev"
+    }
+
+    signingConfigs {
+        if (releaseSigning.isNotEmpty()) create("release") {
+            storeFile = file(releaseSigning.getProperty("storeFile"))
+            storePassword = releaseSigning.getProperty("storePassword")
+            keyAlias = releaseSigning.getProperty("keyAlias")
+            keyPassword = releaseSigning.getProperty("keyPassword")
+        }
+    }
+    buildTypes {
+        release { signingConfig = signingConfigs.findByName("release") }
     }
 
     buildFeatures { compose = true }

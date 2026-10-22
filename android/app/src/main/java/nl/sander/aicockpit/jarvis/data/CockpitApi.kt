@@ -1,6 +1,7 @@
 package nl.sander.aicockpit.jarvis.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -229,6 +230,36 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
     suspend fun assistantStatus(): JarvisAssistantStatus {
         val response = execute(authenticated("/api/jarvis/state").get().build())
         return parseJarvisAssistantStatus(JSONObject(response.body?.string().orEmpty()))
+    }
+
+    suspend fun androidUpdate(): nl.sander.aicockpit.jarvis.update.AppRelease? {
+        val response = execute(authenticated("/api/jarvis/devices/android/update").get().build())
+        return nl.sander.aicockpit.jarvis.update.AppRelease.parse(JSONObject(response.body?.string().orEmpty()))
+    }
+
+    /** Streams to [target] (releases are too large to buffer) and returns the SHA-256 hex digest. */
+    suspend fun downloadRelease(path: String, target: java.io.File, onProgress: (Long) -> Unit): String {
+        val request = authenticated(path).get().build()
+        return withContext(Dispatchers.IO) {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw CockpitRequestException(response.code, "Update download failed (HTTP ${response.code}).")
+                val digest = MessageDigest.getInstance("SHA-256")
+                val buffer = ByteArray(1 shl 16)
+                var written = 0L
+                response.body!!.byteStream().use { input ->
+                    target.outputStream().use { output ->
+                        while (true) {
+                            ensureActive()
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read); digest.update(buffer, 0, read)
+                            written += read; onProgress(written)
+                        }
+                    }
+                }
+                digest.digest().joinToString("") { "%02x".format(it) }
+            }
+        }
     }
 
     suspend fun liveEvents(cursor: Long, listener: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit,

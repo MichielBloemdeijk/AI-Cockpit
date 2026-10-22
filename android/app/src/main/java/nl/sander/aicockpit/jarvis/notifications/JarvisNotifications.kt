@@ -23,8 +23,10 @@ import nl.sander.aicockpit.jarvis.web.JarvisWebViewActivity
 object JarvisNotifications {
     const val CONTROL_NOTIFICATION_ID = 2101
     const val UPDATE_NOTIFICATION_ID = 2102
+    const val APP_UPDATE_NOTIFICATION_ID = 2103
     private const val WAKE_CHANNEL = "jarvis_wake"
     private const val UPDATE_CHANNEL = "jarvis_updates"
+    private const val APP_UPDATE_CHANNEL = "jarvis_app_updates"
 
     fun createChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -34,6 +36,19 @@ object JarvisNotifications {
         manager.createNotificationChannel(NotificationChannel(
             UPDATE_CHANNEL, context.getString(R.string.updates_channel), NotificationManager.IMPORTANCE_HIGH
         ))
+        manager.createNotificationChannel(NotificationChannel(
+            APP_UPDATE_CHANNEL, context.getString(R.string.app_updates_channel), NotificationManager.IMPORTANCE_DEFAULT
+        ))
+    }
+
+    /** App self-update state; opens the setup screen unless [action] says otherwise. */
+    fun appUpdate(context: Context, title: String, text: String, action: PendingIntent = open(context), silent: Boolean = false) {
+        context.getSystemService(NotificationManager::class.java).notify(APP_UPDATE_NOTIFICATION_ID,
+            NotificationCompat.Builder(context, APP_UPDATE_CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle(title).setContentText(text)
+                .setContentIntent(action).setAutoCancel(true).setSilent(silent)
+                .build())
     }
 
     fun audioControls(context: Context, state: AudioControlState): Notification {

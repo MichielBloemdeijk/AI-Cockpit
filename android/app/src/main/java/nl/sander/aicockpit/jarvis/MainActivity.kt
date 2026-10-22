@@ -27,6 +27,8 @@ import nl.sander.aicockpit.jarvis.notifications.JarvisEventStream
 import nl.sander.aicockpit.jarvis.notifications.JarvisNotifications
 import nl.sander.aicockpit.jarvis.audio.JarvisAudioService
 import nl.sander.aicockpit.jarvis.web.JarvisWebViewActivity
+import nl.sander.aicockpit.jarvis.update.AppUpdater
+import nl.sander.aicockpit.jarvis.update.UpdateState
 
 /** Linking starts one guided setup. Only Android's own consent dialogs intervene. */
 class MainActivity : ComponentActivity() {
@@ -43,6 +45,7 @@ class MainActivity : ComponentActivity() {
     private var screenContextAllowed by mutableStateOf(true)
     private var voicePermissionsReady by mutableStateOf(false)
     private var sleeping by mutableStateOf(false)
+    private var automaticUpdates by mutableStateOf(true)
     private var setupPending = false
     private var networkAction: (() -> Unit)? = null
 
@@ -83,6 +86,7 @@ class MainActivity : ComponentActivity() {
         paired = store.credential() != null
         setupComplete = store.setupComplete
         sleeping = store.sleep
+        automaticUpdates = store.automaticUpdates
         paired = store.credential() != null
         setupPending = savedInstanceState?.getBoolean("setup_pending") ?: false
         assistantSelected = isAssistantSelected()
@@ -124,6 +128,10 @@ class MainActivity : ComponentActivity() {
         if (paired) {
             nl.sander.aicockpit.jarvis.audio.JarvisAudioControls.resume(this)
             refreshStatus()
+            AppUpdater.confirmPending(this)
+            // Returning from Android's "Install unknown apps" setting continues the update.
+            if (AppUpdater.state.value.phase == UpdateState.Phase.NEEDS_PERMISSION && packageManager.canRequestPackageInstalls()) AppUpdater.checkNow()
+            else AppUpdater.checkAutomatically()
         }
     }
 
@@ -179,6 +187,7 @@ class MainActivity : ComponentActivity() {
                     Text("Task worker: ${it.workerStatus}")
                     it.componentIssues.forEach { issue -> Text("${issue.name.replace('_', ' ')}: ${issue.detail ?: issue.status}") }
                 }
+                AppUpdate()
             }
             if (message.isNotBlank()) Text(message)
             if (!paired) {
@@ -202,8 +211,42 @@ class MainActivity : ComponentActivity() {
                         android.net.Uri.parse("package:$packageName"))) }) { Text("Android permissions") }
                     OutlinedButton(onClick = { startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS)) }) { Text("Android screen context settings") }
                     OutlinedButton(enabled = !busy, onClick = { refreshStatus() }) { Text("Refresh status") }
+                    OutlinedButton(onClick = { automaticUpdates = !automaticUpdates; store.automaticUpdates = automaticUpdates }) {
+                        Text(if (automaticUpdates) "Turn off automatic app updates" else "Turn on automatic app updates")
+                    }
                     OutlinedButton(enabled = !busy, onClick = { unlink() }) { Text("Unlink this phone") }
                 }
+            }
+        }
+    }
+
+    @Composable private fun AppUpdate() {
+        val update by AppUpdater.state.collectAsState()
+        LaunchedEffect(update.phase) {
+            if (update.phase == UpdateState.Phase.NEEDS_CONFIRMATION &&
+                lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) AppUpdater.confirmPending(this@MainActivity)
+        }
+        val name = update.release?.versionName.orEmpty()
+        Text("App version ${AppUpdater.installedVersionName(this)}", style = MaterialTheme.typography.bodySmall)
+        val status = when (update.phase) {
+            UpdateState.Phase.IDLE -> ""
+            UpdateState.Phase.CHECKING -> "Checking for updates…"
+            UpdateState.Phase.UP_TO_DATE -> "Jarvis is up to date."
+            UpdateState.Phase.AVAILABLE -> "Update $name is available. ${update.detail}"
+            UpdateState.Phase.NEEDS_PERMISSION -> "Update $name is ready. Allow Jarvis to install app updates."
+            UpdateState.Phase.DOWNLOADING -> "Downloading $name · ${update.detail}"
+            UpdateState.Phase.WAITING -> "Update $name downloaded. ${update.detail}"
+            UpdateState.Phase.INSTALLING -> "Installing $name. Jarvis closes and restarts listening by itself."
+            UpdateState.Phase.NEEDS_CONFIRMATION -> "Confirm the update in Android's prompt."
+            UpdateState.Phase.FAILED -> "Update failed: ${update.detail}"
+        }
+        if (status.isNotBlank()) Text(status.trim(), style = MaterialTheme.typography.bodySmall)
+        if (update.phase == UpdateState.Phase.NEEDS_PERMISSION) {
+            OutlinedButton(onClick = { startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                android.net.Uri.parse("package:$packageName"))) }) { Text("Allow app updates") }
+        } else {
+            OutlinedButton(enabled = !update.working, onClick = { AppUpdater.checkNow() }) {
+                Text(if (update.release != null && update.phase in setOf(UpdateState.Phase.AVAILABLE, UpdateState.Phase.FAILED)) "Install update" else "Check for updates")
             }
         }
     }

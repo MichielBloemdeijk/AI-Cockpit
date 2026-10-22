@@ -36,11 +36,15 @@ class JarvisApplication : Application() {
                 if (intent.action == Intent.ACTION_SCREEN_OFF) screenCapture.unavailable("locked")
             }
         }, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
-        eventStream = JarvisEventStream(this) { screenCapture.onStreamConnected() }
+        eventStream = JarvisEventStream(this) {
+            screenCapture.onStreamConnected()
+            nl.sander.aicockpit.jarvis.update.AppUpdater.checkAutomatically()
+        }
         eventStream.addListener { event ->
             phoneCapture.onEvent(event)
             if (event.optString("event_type") == "context.requested") screenCapture.onContextRequested()
         }
+        nl.sander.aicockpit.jarvis.update.AppUpdater.start(this)
         eventStream.start()
     }
 }

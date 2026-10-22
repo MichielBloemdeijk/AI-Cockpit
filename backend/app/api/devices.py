@@ -10,6 +10,7 @@ from app.db.session import session_scope
 from app.db.tables import JarvisDevice, JarvisLiveEvent, LiveSession
 from app.models.jarvis import DevicePairRequest, DevicePairResponse, DeviceStatePatch, PairingCodeView
 from app.services.auth import require_auth, create_device_session, SESSION_COOKIE_NAME, SESSION_MAX_AGE
+from app.services import android_updates
 from app.services.jarvis_devices import jarvis_device_service, require_jarvis_auth, require_paired_device
 
 
@@ -36,13 +37,36 @@ async def list_devices():
         return [{"id": row.id, "label": row.label, "last_seen_at": row.last_seen_at} for row in rows]
 
 
+APK_MEDIA_TYPE = "application/vnd.android.package-archive"
+
+
 @router.get("/android.apk", include_in_schema=False)
 async def android_build():
+    """First install link; later releases arrive through the app's own updater."""
     from fastapi.responses import FileResponse
-    path = settings.backend_root.parent / "android/app/build/outputs/apk/debug/app-debug.apk"
-    if not path.is_file():
-        raise HTTPException(status_code=503, detail="Android build is not prepared yet")
-    return FileResponse(path, media_type="application/vnd.android.package-archive", filename="Jarvis.apk")
+    release = android_updates.latest_release()
+    if release is None:
+        raise HTTPException(status_code=503, detail="No Android release has been published yet")
+    return FileResponse(settings.android_releases_path / release.file_name, media_type=APK_MEDIA_TYPE, filename="Jarvis.apk")
+
+
+@router.get("/android/update")
+async def android_update(device: JarvisDevice = Depends(require_paired_device)) -> dict[str, object]:
+    release = android_updates.latest_release()
+    if release is None:
+        return {"release": None}
+    return {"release": {"version_code": release.version_code, "version_name": release.version_name,
+        "sha256": release.sha256, "size": release.size, "published_at": release.published_at,
+        "download_path": f"/api/jarvis/devices/android/releases/{release.version_code}.apk"}}
+
+
+@router.get("/android/releases/{version_code}.apk", include_in_schema=False)
+async def android_release(version_code: int, device: JarvisDevice = Depends(require_paired_device)):
+    from fastapi.responses import FileResponse
+    path = android_updates.release_file(version_code)
+    if path is None:
+        raise HTTPException(status_code=404, detail="This Android release is no longer offered")
+    return FileResponse(path, media_type=APK_MEDIA_TYPE, filename=path.name)
 
 
 @router.post("/web-session")

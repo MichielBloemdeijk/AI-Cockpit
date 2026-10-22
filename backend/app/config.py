@@ -156,6 +156,7 @@ class Settings(BaseSettings):
     verifier_generated_apps_dir: str = "data/verifier-runs"
     task_workspaces_dir: str = "data/task-workspaces"
     task_context_blobs_dir: str = "data/task-context-blobs"
+    android_releases_dir: str = "data/android-releases"
     worker_heartbeat_interval_seconds: float = 5.0
     worker_stale_after_seconds: float = 20.0
     worker_lease_ttl_seconds: float = 30.0
@@ -258,6 +259,13 @@ class Settings(BaseSettings):
     @property
     def task_workspaces_path(self) -> Path:
         configured_path = Path(self.task_workspaces_dir)
+        if configured_path.is_absolute():
+            return configured_path
+        return self.backend_root / configured_path
+
+    @property
+    def android_releases_path(self) -> Path:
+        configured_path = Path(self.android_releases_dir)
         if configured_path.is_absolute():
             return configured_path
         return self.backend_root / configured_path
