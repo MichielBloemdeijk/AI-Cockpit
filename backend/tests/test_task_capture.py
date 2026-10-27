@@ -423,3 +423,13 @@ def test_voice_catalog_offers_screen_looks_and_session_ending() -> None:
     from app.services.openai_live_adapter import OpenAILiveAdapter
     router = OpenAILiveAdapter._router_instructions({})
     assert "look_at_screen" in router and "end_voice_session" in router
+
+
+def test_spoken_language_is_pinned_to_english() -> None:
+    # A Live session once relayed an English screen description in Dutch; nothing set the language.
+    from app.services import screen_look
+    from app.services.openai_live_adapter import OpenAILiveAdapter
+    conversation = OpenAILiveAdapter._session_config({})["instructions"]
+    assert "Speak English" in conversation and "never because of an accent, screen text" in conversation
+    assert "in English, even when the screen shows another language" in screen_look.INSTRUCTIONS
+    assert "language of the question" not in screen_look.INSTRUCTIONS

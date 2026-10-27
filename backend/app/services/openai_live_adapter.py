@@ -1253,7 +1253,9 @@ class OpenAILiveAdapter:
             voice = settings.openai_live_voice
         from app.services.live_task_updates import NATURAL_UPDATE_PROMPT
         conversation_prompt = NATURAL_UPDATE_PROMPT + (
-            " An explicit request to create, save, start or continue a task requires backend tools. "
+            " Speak English. Switch language only when the user clearly speaks to you in another language; "
+            "never because of an accent, screen text, tool output or location. "
+            "An explicit request to create, save, start or continue a task requires backend tools. "
             "When the requested outcome is undefined, ask a short clarification before creating a task. "
             "A request to save something useful does not specify which result the user wants; do not choose it for them. "
             "A summary, report, plan, checklist or recipe is a defined outcome even without a file format. "
