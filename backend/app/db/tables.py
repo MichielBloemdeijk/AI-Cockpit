@@ -1386,6 +1386,8 @@ class ResultPage(Base):
     title: Mapped[str | None] = mapped_column(String(200), nullable=True)
     summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
     warning: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # When a viewer last loaded the page; tells Jarvis which result "this page" is.
+    last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 

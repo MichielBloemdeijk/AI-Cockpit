@@ -312,3 +312,81 @@ async def test_general_committed_outcome_wins_over_heartbeat_during_runtime_clea
     assert outcome.status == "completed" and completed.is_set() and cleanup.is_set()
     assert (await task_service.get_task(task.task.id)).task.status == "completed"
     assert (await page_for(task.task.id)).revision_number == 1
+
+
+@pytest.mark.asyncio
+async def test_plain_follow_up_revises_the_result_page_in_place_with_its_current_content():
+    import json
+    from app.jarvis_tasks.task_mcp import _call
+    from app.services.jarvis_daily import jarvis_daily_service
+    from app.services.jarvis_situation import jarvis_situation_projector
+    worker = await worker_coordinator.activate(process_identity="implicit-edit-test")
+    created = await task_service.dispatch(goal="Write a pudding recipe", origin_surface="test",
+        idempotency_key="pudding", result_request={"mode": "new"})
+    task_id = created.task.id
+    await finish(worker, task_id, await claim(worker, task_id), "Use 2 tbsp butter.", "first")
+    page = await page_for(task_id)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as http:
+        await http.post("/api/auth/login", json={"password": ""})
+        assert (await http.get(f"/api/results/{page.public_id}")).status_code == 200
+    viewed = await page_for(task_id)
+    assert viewed.last_viewed_at is not None and viewed.updated_at == page.updated_at
+    accepted = await jarvis_daily_service.accept_text_turn("Edit it", idempotency_key="implicit-edit-log")
+    situation = (await jarvis_situation_projector.project(conversation_id=accepted.conversation.id)).payload
+    assert situation["last_opened_result"]["task_id"] == task_id
+    assert situation["last_opened_result"]["revision_number"] == 1
+    listed = next(item for item in situation["recent_terminal_tasks"] if item["task_id"] == task_id)
+    assert listed["results"][0]["kind"] == "document.v1"
+
+    # Jarvis names no result intent: the follow-up still edits the same page.
+    edit = await task_service.continue_task(task_id, content="Use grams instead of tablespoons",
+        origin="test", idempotency_key="metric")
+    assert edit.run.configuration_json["result"] == {"mode": "update", "public_id": page.public_id,
+        "expected_revision": 1, "kind": "document.v1"}
+    replay = await task_service.continue_task(task_id, content="Use grams instead of tablespoons",
+        origin="test", idempotency_key="metric")
+    assert replay.run.id == edit.run.id
+    assert (await page_for(task_id)).status == "updating"
+    fence = await claim(worker, task_id)
+    context = json.loads(await portable_context(task_id, run_id=fence["execution_run_id"],
+        attempt_id=fence["attempt_id"], claim_token=fence["claim_token"]))
+    assert context["maintained_result"]["current_content"]["body"] == "Use 2 tbsp butter."
+    history = await _call("task_history", {}, SimpleNamespace(task_id=task_id, run_id=fence["execution_run_id"],
+        attempt_id=fence["attempt_id"], claim_token=fence["claim_token"]))
+    assert history["maintained_result"]["current_content"]["body"] == "Use 2 tbsp butter."
+    await finish(worker, task_id, fence, "Use 28 g butter.", "metric-done")
+    after = await page_for(task_id)
+    assert after.public_id == page.public_id and after.revision_number == 2 and after.status == "ready"
+
+    # An update may also name the page without IDs; questions stay answer-only.
+    named = await task_service.continue_task(task_id, content="Add a serving scaler", origin="test",
+        idempotency_key="scaler", result_request={"mode": "update"})
+    assert named.run.configuration_json["result"]["expected_revision"] == 2
+    await finish(worker, task_id, await claim(worker, task_id), "Scalable.", "scaler-done")
+    question = await task_service.continue_task(task_id, content="How much butter?", origin="test",
+        idempotency_key="question", result_request={"mode": "answer"})
+    assert question.run.configuration_json["result"] == {"mode": "answer"}
+    await finish(worker, task_id, await claim(worker, task_id), "28 g.", "question-done")
+    assert (await page_for(task_id)).revision_number == 3
+
+    await task_service.continue_task(task_id, content="Also a sauce recipe", origin="test",
+        idempotency_key="sauce", result_request={"mode": "new"})
+    await finish(worker, task_id, await claim(worker, task_id), "Sauce.", "sauce-done")
+    with pytest.raises(ValueError, match="multiple results"):
+        await task_service.continue_task(task_id, content="Change it", origin="test", idempotency_key="ambiguous")
+    with pytest.raises(ValueError, match="multiple results"):
+        await task_service.continue_task(task_id, content="Change it", origin="test", idempotency_key="ambiguous-update",
+            result_request={"mode": "update"})
+
+
+@pytest.mark.asyncio
+async def test_follow_up_without_a_result_page_stays_answer_only():
+    worker = await worker_coordinator.activate(process_identity="no-page-follow-up")
+    created = await task_service.dispatch(goal="Check the weather", origin_surface="test", idempotency_key="weather")
+    await finish(worker, created.task.id, await claim(worker, created.task.id), "Sunny", "weather-done")
+    follow_up = await task_service.continue_task(created.task.id, content="And tomorrow?", origin="test",
+        idempotency_key="tomorrow")
+    assert "result" not in follow_up.run.configuration_json
+    with pytest.raises(ValueError, match="no result page"):
+        await task_service.continue_task(created.task.id, content="Update the page", origin="test",
+            idempotency_key="no-page", result_request={"mode": "update"})

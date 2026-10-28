@@ -23,8 +23,15 @@ async def resolve_result_request(session, request, *, task_id=None, workflow=Non
     except ValidationError as exc:
         raise ValueError(f"Invalid result request: {exc}") from exc
     mode = value["mode"]
-    if mode == "update" and (not value.get("public_id") or "expected_revision" not in value):
-        raise ValueError("Result update requires public_id and expected_revision")
+    if mode == "update" and "public_id" not in value:
+        # "Update the page" names the task's maintained result, not an ID.
+        pages = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id)
+            .limit(2))).scalars().all() if task_id else []
+        if not pages:
+            raise ValueError("This task has no result page to update")
+        if len(pages) > 1:
+            raise ValueError("Task has multiple results; say which one to update")
+        value["public_id"] = pages[0].public_id
     if mode == "new" and ("public_id" in value or "expected_revision" in value):
         raise ValueError("New result cannot target an existing revision")
     if mode == "answer" and ("kind" in value or "expected_revision" in value):
@@ -46,6 +53,10 @@ async def resolve_result_request(session, request, *, task_id=None, workflow=Non
         raise ValueError("Result kind differs from the pinned workflow output")
     if not workflow and kind != "document.v1":
         raise ValueError("General agents publish the document.v1 contract")
+    if page and mode == "update":
+        # Without an explicit base the edit applies to the revision current at
+        # admission; publication still fences it against later revisions.
+        value.setdefault("expected_revision", page.revision_number)
     if page and (page.result_kind != kind or page.revision_number != value["expected_revision"]):
         raise ValueError("Result update kind or expected revision is stale")
     return {**value, "kind": kind}
@@ -82,6 +93,23 @@ async def context_result(session, task_id, run_id):
     else:
         query = query.order_by((ResultPage.active_execution_run_id == run_id).desc(), ResultPage.created_at.desc(), ResultPage.id)
     return (await session.execute(query.limit(1))).scalar_one_or_none()
+
+
+async def maintained_view(session, page, *, content_limit):
+    """What a worker needs to revise a page: its identity and current content."""
+    if page is None:
+        return None
+    import json
+    from app.db.tables import ResultPageRevision
+    view = {"public_id": page.public_id, "revision_number": page.revision_number,
+        "schema": page.result_kind, "current_revision_id": page.current_revision_id}
+    revision = await session.get(ResultPageRevision, page.current_revision_id) if page.current_revision_id else None
+    if revision is not None:
+        if len(json.dumps(revision.content_json, ensure_ascii=False)) <= content_limit:
+            view["current_content"] = revision.content_json
+        else:
+            view["current_content_omitted"] = "Read jarvis_task.task_history for the full current content."
+    return view
 
 
 async def result_links(session, task_id):

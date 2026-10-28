@@ -111,8 +111,9 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
         latest_event = int((await session.execute(
             select(func.max(TaskEvent.sequence)).where(TaskEvent.task_id == task_id)
         )).scalar_one_or_none() or 0)
-        from app.services.task_result_contract import context_result
+        from app.services.task_result_contract import context_result, maintained_view
         page = await context_result(session, task_id, run_id)
+        maintained = await maintained_view(session, page, content_limit=12_000)
         handoff = {
             "schema": "task-context.v1",
             "task_id": task_id,
@@ -122,9 +123,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
             "result_intent": (current_run.configuration_json or {}).get("result"),
             "screen_context": next((run.configuration_json["screen_context"] for run in [current_run, *runs]
                 if (run.configuration_json or {}).get("screen_context")), None),
-            "maintained_result": None if page is None else {"public_id": page.public_id,
-                "revision_number": page.revision_number, "schema": page.result_kind,
-                "current_revision_id": page.current_revision_id},
+            "maintained_result": maintained,
             "semantic_summary": (
                 {"artifact_id": summary_artifact.id,
                  "through_turn_sequence": semantic_summary["through_turn_sequence"],

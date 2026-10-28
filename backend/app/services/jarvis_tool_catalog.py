@@ -28,7 +28,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
     }
     result_request_schema["description"] = (
         "Use answer for ordinary task completion, new for a maintained Document, "
-        "or update for an existing Document with its exact public_id and expected_revision."
+        "or update to revise the task's existing result page; public_id and expected_revision are optional."
     )
     execution_preferences = {"execution_preferences": preferences_schema(),
         "intent_id": {"type": "string", "minLength": 1, "maxLength": 128,
@@ -79,7 +79,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "dispatch_task",
-            "description": "After listening to the complete request, delegate substantial work to a durable background task and briefly confirm admission. Only goal and intent_id are required; omit optional fields unless the request needs them. For a maintained Document, request result mode new; its URL is allocated during admission and the final Markdown is published automatically.",
+            "description": "After listening to the complete request, delegate substantial work to a durable background task and briefly confirm admission. Only goal and intent_id are required; omit optional fields unless the request needs them. For a maintained Document, request result mode new; its URL is allocated during admission and the final Markdown is published automatically. Never use it to change an existing result; continue that result's task instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -155,7 +155,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "continue_task",
-            "description": "Add a follow-up to the same task. For results, explicitly select answer (no revision), update (public_id and expected_revision), or new (additional result). Use get_task to inspect IDs/revisions; never guess them.",
+            "description": "Add a follow-up to the same task. When the task has a result page, omitting result revises that page in place at the same link (the way to edit, extend or correct an existing result). Select result mode answer for a question that changes nothing, or new for a separate additional result.",
             "parameters": {
                 "type": "object",
                 "properties": {

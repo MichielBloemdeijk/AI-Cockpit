@@ -15,9 +15,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response
 from pydantic import Field, StrictInt, BaseModel, ConfigDict
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sse_starlette.sse import EventSourceResponse
 
+from app.db.repositories.conversations import utc_now
 from app.db.session import session_scope, read_session_scope
 from app.db.tables import ResultPage, ResultPageEvent, ResultPageRevision, TaskArtifact
 from app.services.app_catalog import SavedValue, write_data
@@ -66,6 +67,9 @@ async def get_result(public_id: str) -> dict:
     started = time.perf_counter()
     async with session_scope() as session:
         page = await find_result(session, public_id)
+        # Viewing is not an update: keep updated_at, which orders collections.
+        await session.execute(update(ResultPage).where(ResultPage.id == page.id)
+            .values(last_viewed_at=utc_now(), updated_at=ResultPage.updated_at))
         snapshot = await result_snapshot(session, page)
     await result_telemetry.observe(page.id, kind="first_api_snapshot", key=f"api-snapshot:{page.id}",
         run_id=page.active_execution_run_id, revision_number=page.revision_number,

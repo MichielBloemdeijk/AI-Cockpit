@@ -17,6 +17,7 @@ from app.db.tables import (
     JarvisPreference,
     JarvisState,
     LiveSession,
+    ResultPage,
     Task,
     TaskEvent,
     TaskPresentation,
@@ -26,11 +27,20 @@ from app.db.tables import (
 from app.services.jarvis_time import temporal_frame
 from app.services.runtime_health import runtime_health_service
 from app.services.task_error_messages import public_failure_summary
+from app.services.task_result_types import result_type
 from app.services.task_service import ACTIVE_TASK_STATUSES
+
+
+OPEN_RESULT_WINDOW = timedelta(minutes=30)
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def result_value(page: ResultPage) -> dict[str, Any]:
+    return {"title": page.title or result_type(page.result_kind).label, "kind": page.result_kind,
+            "status": page.status, "revision_number": page.revision_number}
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -217,6 +227,19 @@ class JarvisSituationProjector:
             select(func.max(TaskEvent.sequence))
         )).scalar_one_or_none() or 0)
 
+        listed_ids = [task.id for task in [*active_tasks, *terminal_tasks]]
+        results_by_task: dict[str, list[dict[str, Any]]] = {}
+        for page in (await session.execute(
+            select(ResultPage).where(ResultPage.task_id.in_(listed_ids))
+            .order_by(ResultPage.created_at, ResultPage.id)
+        )).scalars():
+            results_by_task.setdefault(page.task_id, []).append(result_value(page))
+        opened = (await session.execute(
+            select(ResultPage)
+            .where(ResultPage.last_viewed_at >= timestamp - OPEN_RESULT_WINDOW)
+            .order_by(ResultPage.last_viewed_at.desc()).limit(1)
+        )).scalar_one_or_none()
+
         def task_value(task: Task) -> dict[str, Any]:
             due = _aware(task.resume_at)
             summary = task.terminal_summary
@@ -236,6 +259,7 @@ class JarvisSituationProjector:
                 "overdue": bool(task.status == "waiting_until" and due is not None and due <= timestamp),
                 "created_at": _aware(task.created_at).isoformat(),
                 "finished_at": None if task.finished_at is None else _aware(task.finished_at).isoformat(),
+                **({"results": results_by_task[task.id]} if task.id in results_by_task else {}),
             }
 
         def presentation_value(item: TaskPresentation) -> dict[str, Any]:
@@ -263,6 +287,13 @@ class JarvisSituationProjector:
             "situation_revision": state.situation_revision,
             "conversation_id": conversation_id,
             "temporal": temporal_frame(time_zone=active_time_zone, now=timestamp),
+            # The result page the user most recently had open: what "this page" or
+            # "the recipe" usually means. Viewing alone does not prove it is still on screen.
+            # Kept first: the router truncates this context.
+            "last_opened_result": None if opened is None else {
+                "task_id": opened.task_id, **result_value(opened),
+                "opened_seconds_ago": max(0, int((timestamp - _aware(opened.last_viewed_at)).total_seconds())),
+            },
             "conversation_summary": state.conversation_summary,
             "dialogue": dialogue,
             "tasks": [task_value(task) for task in active_tasks],

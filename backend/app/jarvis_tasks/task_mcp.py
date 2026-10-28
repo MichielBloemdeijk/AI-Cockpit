@@ -352,11 +352,9 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
         next_cursor = result[-1]["sequence"] if result and (len(events) == 20 or len(result) < len(events)) else latest
         from app.db.tables import ResultPage
         async with session_scope() as session:
-            from app.services.task_result_contract import context_result
+            from app.services.task_result_contract import context_result, maintained_view
             page = await context_result(session, args.task_id, args.run_id)
-            maintained = None if page is None else {"public_id": page.public_id,
-                "revision_number": page.revision_number, "schema": page.result_kind,
-                "current_revision_id": page.current_revision_id}
+            maintained = await maintained_view(session, page, content_limit=128_000)
         return {"events": result, "native_research": native_research, "maintained_result": maintained, "next_cursor": next_cursor,
                 "latest_sequence": latest, "has_more": next_cursor < latest}
     raise ValueError("Tool is not allowlisted")

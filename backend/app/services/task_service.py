@@ -568,6 +568,16 @@ class TaskService:
                     raise ValueError("Workflow execution is not enabled until its constrained runtime is registered")
             execution_config = dict(execution_config or {})
             execution_config.pop("result", None)  # a new run needs fresh explicit intent
+            if result_request is None and existing is None:
+                # A follow-up on a task with a maintained result revises that
+                # result in place; answer-only and additional results are explicit.
+                pages = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id)
+                    .limit(2))).scalars().all()
+                if len(pages) > 1:
+                    raise ValueError("Task has multiple results; select an explicit result intent")
+                if pages and pages[0].current_revision_id is not None and (
+                        kind == "workflow" or pages[0].result_kind == "document.v1"):
+                    result_request = {"mode": "update"}
             if result_request is not None:
                 if existing:
                     # Replay compares the original contract, not today's head.
@@ -582,13 +592,8 @@ class TaskService:
                     execution_config["result"] = await resolve_result_request(session, result_request,
                         task_id=task_id, workflow=execution_config.get("workflow"))
             elif existing and (previous.configuration_json or {}).get("result"):
-                raise ValueError("Idempotency replay omitted the original result request")
-            elif kind == "workflow" and execution_config.get("workflow") and result_type(execution_config["workflow"]["output_schema"]).app_slug:
-                pages = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id).limit(2))).scalars().all()
-                if len(pages) > 1:
-                    raise ValueError("Task has multiple results; select an explicit result intent")
-                if pages and pages[0].result_kind != execution_config["workflow"]["output_schema"]:
-                    raise ValueError("Follow-up result type differs from the existing result")
+                # Replaying an implicit request reuses the intent resolved at admission.
+                execution_config["result"] = previous.configuration_json["result"]
             fingerprint = _fingerprint(
                 {"content": normalized, "execution_kind": kind, "configuration": execution_config or {},
                  **({"screen_context": capture_binding.manifest()} if capture_binding else {})}
