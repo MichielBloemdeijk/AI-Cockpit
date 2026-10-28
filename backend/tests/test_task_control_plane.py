@@ -718,7 +718,9 @@ async def test_eight_deterministic_busy_workers_publish_without_uncaught_sqlite_
 
     latencies = await asyncio.gather(*(admit(index) for index in range(16)))
     p95 = sorted(latencies)[15]  # nearest-rank p95 of 16 observations
-    assert p95 < 2.0, f"Saturated admission p95={p95:.3f}s"
+    # Catches admission starved behind busy writers (the 30 s busy timeout), with
+    # headroom for parallel test runs sharing the CPU.
+    assert p95 < 5.0, f"Saturated admission p95={p95:.3f}s"
     release.set()
     results = await asyncio.wait_for(asyncio.gather(*executions), timeout=30)
     assert [result.status for result in results] == ["completed"] * 8

@@ -31,6 +31,7 @@ from app.services.observation_queue import ObservationQueue
 logger = logging.getLogger(__name__)
 _trace = ContextVar("result_observation", default=None)
 OBSERVATION_QUERY_SECONDS = .25
+OBSERVATION_BUSY_TIMEOUT_MS = 100
 _CURRENT = object()
 
 
@@ -60,7 +61,7 @@ async def observation_session():
             # its log and produce cancelled-connection errors under CPU load.
             async with asyncio.timeout(OBSERVATION_QUERY_SECONDS):
                 if settings.database_url.startswith("sqlite"):
-                    await diagnostic.execute(text("PRAGMA busy_timeout=100"))
+                    await diagnostic.execute(text(f"PRAGMA busy_timeout={int(OBSERVATION_BUSY_TIMEOUT_MS)}"))
                 yield diagnostic
 
 

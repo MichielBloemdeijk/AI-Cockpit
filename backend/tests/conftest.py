@@ -5,6 +5,7 @@ import tempfile
 import asyncio
 import os
 import socket
+import time
 import shutil
 from uuid import uuid4
 
@@ -51,6 +52,24 @@ def offline_conversation_observer(monkeypatch):
     monkeypatch.setattr(conversation_observer, "infer", unavailable)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def sweep_stale_test_folders():
+    parent = Path(tempfile.gettempdir()).resolve() / "jarvis-test-execution"
+    cutoff = time.time() - 3600
+    for leftover in parent.glob("*") if parent.is_dir() else ():
+        if leftover.is_dir() and not leftover.is_symlink() and leftover.stat().st_mtime < cutoff:
+            shutil.rmtree(leftover, ignore_errors=True)
+
+
+@pytest.fixture
+def complete_observations(monkeypatch):
+    # For tests that check which result metrics are recorded: the production
+    # budget lets a SQLite-busy batch drop rather than wait, as parallel runs do.
+    from app.services import result_telemetry
+    monkeypatch.setattr(result_telemetry, "OBSERVATION_BUSY_TIMEOUT_MS", 5_000)
+    monkeypatch.setattr(result_telemetry, "OBSERVATION_QUERY_SECONDS", 10)
+
+
 @pytest.fixture
 def tmp_path():
     # Python's Windows mode=0o700 directory creation removes inherited ACLs.
@@ -71,7 +90,10 @@ def tmp_path():
                 raise error
             resolved.chmod(__import__("stat").S_IWRITE)
             function(target)
-        shutil.rmtree(path, onexc=remove_readonly)
+        try:
+            shutil.rmtree(path, onexc=remove_readonly)
+        except PermissionError:
+            pass  # A leaked SQLite connection can keep test.db open on Windows; swept next session.
 
 
 @pytest.fixture(scope="session")

@@ -133,7 +133,7 @@ async def test_authenticated_bounded_deduplicated_client_metadata_and_restart(mo
 
 
 @pytest.mark.asyncio
-async def test_twenty_actual_admissions_allocation_samples_and_idempotency():
+async def test_twenty_actual_admissions_allocation_samples_and_idempotency(complete_observations):
     timings = []
     for _ in range(20):
         key = str(uuid4())
@@ -154,7 +154,7 @@ async def test_twenty_actual_admissions_allocation_samples_and_idempotency():
 
 
 @pytest.mark.asyncio
-async def test_notification_transport_and_open_receipt_are_correlated_not_device_display(monkeypatch):
+async def test_notification_transport_and_open_receipt_are_correlated_not_device_display(monkeypatch, complete_observations):
     from app.services.task_notifications import _send_outbox_by_id, acknowledge_task_notification
     from app.services.task_presentations import task_presentation_service
     worker = await worker_coordinator.activate(process_identity="observed-notification")

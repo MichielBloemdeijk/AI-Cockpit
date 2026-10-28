@@ -106,6 +106,13 @@ async def test_real_api_process_restart_keeps_result_saved_metrics_and_disabled_
                 assert before["actions"][0]["value"] == {"saved": True}
                 assert before["content"]["body"] == "Durable restart body"
                 task = (await client.get(f"/api/tasks/{task_id}")).json()
+                # The API creates the completion presentation in the background;
+                # compare across the restart only once it exists.
+                for _ in range(100):
+                    if task["presentations"]:
+                        break
+                    await asyncio.sleep(.05)
+                    task = (await client.get(f"/api/tasks/{task_id}")).json()
                 assert len(task["attempts"]) == 1 and task["status"] == "completed"
                 history_response = await client.get(f"/api/tasks/{task_id}/events")
                 assert history_response.status_code == 200

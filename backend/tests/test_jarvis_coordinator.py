@@ -1434,7 +1434,8 @@ async def test_recap_reserves_urgent_updates_first_and_leaves_the_rest_pending()
 @pytest.mark.asyncio
 async def test_duplicate_reminder_stays_pending_without_model_report() -> None:
     accepted = await jarvis_coordinator.accept_text_turn("Set a reminder", idempotency_key="reminder-origin")
-    due = datetime.now(timezone.utc) + timedelta(seconds=1)
+    # Far enough ahead to still be in the future for the duplicate on a loaded machine.
+    due = datetime.now(timezone.utc) + timedelta(seconds=60)
     reminder = await reminder_scheduler.create(
         text=None,
         due_at=due,

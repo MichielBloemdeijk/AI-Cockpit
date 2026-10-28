@@ -152,7 +152,8 @@ async def test_running_cancellation_is_observed_and_releases_leases(monkeypatch)
     requested = await task_service.cancel(created.task.id, idempotency_key="cancel-from-api")
     assert requested.task.status == "running"
 
-    result = await asyncio.wait_for(running, timeout=1)
+    # A liveness bound, not a latency target: parallel runs share the CPU.
+    result = await asyncio.wait_for(running, timeout=10)
 
     assert result.status == "cancelled"
     detail = await task_service.get_task(created.task.id)

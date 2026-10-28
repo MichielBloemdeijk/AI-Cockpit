@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 
 @pytest.mark.asyncio
-async def test_device_capture_report_preflight_and_revision_fence() -> None:
+async def test_device_capture_report_preflight_and_revision_fence(complete_observations) -> None:
     transport = ASGITransport(app=app)
     activation_id, capture_id = str(uuid4()), str(uuid4())
     async with AsyncClient(transport=transport, base_url="http://testserver") as admin:
