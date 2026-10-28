@@ -252,6 +252,20 @@ def _canonical_tools() -> list[dict[str, Any]]:
                 "required": ["question"],
             },
         },
+        {
+            "type": "function",
+            "name": "show_on_phone",
+            "description": (
+                "Switch the phone from whatever app it is in to Jarvis, opened on a task's result page (or the "
+                "task itself when it has no result yet). Call it when the user asks to show, open or see a result "
+                "or task, for example 'show me' or 'open the recipe'. Never open anything unasked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"task_reference": task_reference},
+                "required": ["task_reference"],
+            },
+        },
         {"type": "function", "name": "end_voice_session", "description": (
             "End this voice conversation so Jarvis goes back to waiting for its wake word. Call it whenever the "
             "user asks to stop, end, close or hang up the session or conversation, says that's all or goodbye, "

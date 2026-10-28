@@ -40,8 +40,10 @@ class JarvisApplication : Application() {
             screenCapture.onStreamConnected()
             nl.sander.aicockpit.jarvis.update.AppUpdater.checkAutomatically()
         }
+        val phoneDisplay = nl.sander.aicockpit.jarvis.web.PhoneDisplay(this)
         eventStream.addListener { event ->
             phoneCapture.onEvent(event)
+            phoneDisplay.onEvent(event)
             if (event.optString("event_type") == "context.requested") screenCapture.onContextRequested()
         }
         nl.sander.aicockpit.jarvis.update.AppUpdater.start(this)
