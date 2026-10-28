@@ -74,8 +74,27 @@ def tmp_path():
         shutil.rmtree(path, onexc=remove_readonly)
 
 
+@pytest.fixture(scope="session")
+def migrated_template_database(tmp_path_factory) -> Path:
+    # Replaying every migration per test dominated suite time; migrate once and copy.
+    # env.py reads settings.resolved_database_url, so point settings at the template.
+    template_path = tmp_path_factory.mktemp("template-db") / "template.db"
+    original_database_url = settings.database_url
+    original_alembic_path = settings.alembic_ini_path
+    settings.database_url = f"sqlite+aiosqlite:///{template_path.as_posix()}"
+    settings.alembic_ini_path = str(Path(__file__).resolve().parents[1] / "alembic.ini")
+    try:
+        alembic_config = Config(settings.alembic_config_path)
+        alembic_config.set_main_option("sqlalchemy.url", settings.database_url.replace("+aiosqlite", ""))
+        command.upgrade(alembic_config, "head")
+    finally:
+        settings.database_url = original_database_url
+        settings.alembic_ini_path = original_alembic_path
+    return template_path
+
+
 @pytest_asyncio.fixture(autouse=True)
-async def configured_database(tmp_path: Path):
+async def configured_database(tmp_path: Path, migrated_template_database: Path):
     original_database_url = settings.database_url
     original_alembic_path = settings.alembic_ini_path
     original_conversation_workspaces_dir = settings.conversation_workspaces_dir
@@ -97,12 +116,9 @@ async def configured_database(tmp_path: Path):
     settings.task_context_blobs_dir = str(tmp_path / "task-context-blobs")
 
     await ensure_database_ready()
+    shutil.copyfile(migrated_template_database, database_path)
     initialize_engine(settings.database_url)
     fake_voice_session_adapter.reset()
-
-    alembic_config = Config(settings.alembic_config_path)
-    alembic_config.set_main_option("sqlalchemy.url", settings.database_url.replace("+aiosqlite", ""))
-    command.upgrade(alembic_config, "head")
 
     try:
         yield
