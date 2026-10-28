@@ -8,7 +8,7 @@ import yaml
 FOLDER = Path(__file__).parent
 STEP_TYPES = {"speak", "speak_async", "join", "admit", "settle", "wait", "wait_input", "wait_output",
     "at_caller_offset", "finish", "sync", "question", "eligible", "observation_end", "status_query",
-    "disconnect", "resume", "reconnect", "observer_stop", "observer_restart", "opening", "comparison"}
+    "disconnect", "resume", "reconnect", "observer_stop", "observer_restart", "opening", "comparison", "screen"}
 SPOKEN_STEPS = {"speak", "speak_async", "status_query"}
 EXPECTATIONS = {"required", "forbidden", "optional", "query"}
 

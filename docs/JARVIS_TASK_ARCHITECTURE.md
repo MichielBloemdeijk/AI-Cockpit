@@ -84,7 +84,7 @@ verification and the personal phone setup. The user accepted current task use
 and screenshot-based recipe creation on 2026-10-11. Historical report scope and
 the accepted M8 limits are retained in the completion ledger.
 
-GPT-Live remains the conversation model, not the vision or research executor. GPT-Live supports audio and text but not image input, and delegates reasoning/tool work to a backend. Screen images therefore enter the workflow capability path, never the Live media stream. See the [GPT-Live model reference](https://developers.openai.com/api/docs/models/gpt-live-1) and [delegation guide](https://developers.openai.com/api/docs/guides/live-delegation).
+GPT-Live remains the conversation model, not the vision or research executor. GPT-Live supports audio and text but not image input, and delegates reasoning/tool work to a backend. Screen images never enter the Live media stream. Saved-result screen work uses the workflow capability path. A spoken screen question (`look_at_screen`) attaches the fresh screenshot to the delegated, vision-capable Responses router's context, which answers it and reuses it for follow-ups about the same screen; see [12-screen-in-router-context.md](jarvis-tasks/12-screen-in-router-context.md). See the [GPT-Live model reference](https://developers.openai.com/api/docs/models/gpt-live-1) and [delegation guide](https://developers.openai.com/api/docs/guides/live-delegation).
 
 ## 4. Architecture
 

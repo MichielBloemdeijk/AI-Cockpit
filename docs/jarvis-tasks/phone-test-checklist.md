@@ -52,6 +52,9 @@ is under **Advanced settings**. Retry voice after setup completes.
 - Record phone model/Android version and APK identity from the final report.
 - Ordinary task in your voice, then a screen-based task: correct request,
   screen context and useful result. Try ordinary and fresh-screen same-task follow-ups.
+- Screen questions: ask about the screen, ask a follow-up about the same screen
+  (answered quickly, no new capture), then change the screen and say "look
+  again" (one new capture, new answer). Jarvis must never invent screen text.
 - Tap a completion notification, reopen/save the result and request a change
   on the same task. Cancel active work and confirm actual stopped state.
 - Background and lock/unlock: notifications, selected wake behavior and screen

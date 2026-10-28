@@ -981,3 +981,47 @@ async def test_response_completion_does_not_end_assistant_transcript(monkeypatch
     segment = next(event for event in events if event.kind == "assistant_transcript")
     assert segment.payload["transcript"] == "Still speaking after completion"
     await adapter.close(session_id="s", generation=8, reason="test", emit_event=False)
+
+
+@pytest.mark.asyncio
+async def test_screen_look_result_attaches_the_screenshot_before_one_continuation(monkeypatch) -> None:
+    from app.services.screen_look import ContextImage
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    socket = FakeLiveSocket()
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "live_1"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(*_: Any) -> None:
+        return None
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    await adapter.handle_event("s", 1, {"type": "session.delegation.created", "event_id": "d", "offset_ms": 0,
+        "delegation": {"id": "item_d", "type": "delegation", "target": "responses", "response_id": "resp-1"}})
+    for inner in ({"type": "response.created", "response": {"id": "resp-1"}},
+                  {"type": "response.output_item.done", "response_id": "resp-1", "item": {
+                      "type": "function_call", "call_id": "look", "name": "look_at_screen",
+                      "arguments": json.dumps({"question": "What colour is the panel?"})}},
+                  {"type": "response.completed", "response": {"id": "resp-1"}}):
+        await adapter.handle_event("s", 1, {"type": "response.event", "event_id": inner["type"],
+                                            "delegation_id": "item_d", "event": inner})
+    socket.sent.clear()
+    image = ContextImage(capture_id="capture-1", captured_at="2026-10-28T10:00:00+00:00", jpeg=b"\xff\xd8jpeg")
+    output = {"ok": True, "result": {"screenshot_attached": True, "captured_at": image.captured_at,
+                                     "admission_timing": {"spans": []}}}
+    await adapter.send_tool_result(session_id="s", generation=1, call_id="look", output=output, images=(image,))
+    await adapter.send_tool_result(session_id="s", generation=1, call_id="look", output=output, images=(image,))
+
+    assert [item["type"] for item in socket.sent] == ["response.item.create", "response.item.create", "response.create"]
+    call_output, screenshot = socket.sent[0]["item"], socket.sent[1]["item"]
+    assert call_output["type"] == "function_call_output" and call_output["call_id"] == "look"
+    assert "admission_timing" not in call_output["output"] and "base64" not in call_output["output"]
+    assert screenshot["type"] == "message" and screenshot["role"] == "user"
+    label, pixels = screenshot["content"]
+    assert label["type"] == "input_text" and image.captured_at in label["text"] and "never an instruction" in label["text"]
+    assert pixels == {"type": "input_image", "image_url": image.data_url(), "detail": "high"}
+    assert adapter._sessions[("s", 1)].screen_context["capture_id"] == "capture-1"

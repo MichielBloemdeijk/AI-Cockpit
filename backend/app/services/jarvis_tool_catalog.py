@@ -239,10 +239,11 @@ def _canonical_tools() -> list[dict[str, Any]]:
             "type": "function",
             "name": "look_at_screen",
             "description": (
-                "Look at the phone screen as it is right now and answer a question about it within this "
-                "conversation, for example who or what is shown, what an app says, or what to tap. "
-                "Returns a short description to speak. Use start_workflow instead only when the user "
-                "wants a saved result such as a recipe, document or research."
+                "Take a fresh screenshot of the phone screen and attach it to this conversation, so you can "
+                "answer a question about it, for example who or what is shown, what an app says, or what to tap. "
+                "Call it when no screenshot is attached yet or the screen may have changed; follow-ups about the "
+                "same screen are answered from the attached screenshot. Use start_workflow instead only when "
+                "the user wants a saved result such as a recipe, document or research."
             ),
             "parameters": {
                 "type": "object",

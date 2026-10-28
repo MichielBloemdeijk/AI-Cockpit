@@ -2,7 +2,8 @@
 
 Launched exclusively by app.selftest.harness.run_case. The wrappers below only
 record provider traffic and configuration; they never change behavior. A
-deterministic fixture worker completes tasks at scenario-controlled moments.
+deterministic fixture worker completes tasks at scenario-controlled moments,
+and a fixture screen stands in for the phone's screenshot capture and upload.
 """
 from contextlib import asynccontextmanager, ExitStack
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from app.db.tables import (Task, TaskEvent, TaskAttempt, TaskPresentation, LiveS
     NotificationOutbox, ConversationObservation)
 from app.main import app as production_app, lifespan as production_lifespan
 from app.services.jarvis_coordinator import jarvis_coordinator
+from app.services import screen_look
 from app.services.openai_live_adapter import OpenAILiveAdapter, openai_live_adapter
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
@@ -33,6 +35,57 @@ FIXTURE_RESULTS = {
     "desk": "# Desk checklist\n\n- Keep notebooks together.\n- Leave space for a lamp.\n- Clear a spot for tea.\n",
     "default": "# Hello World\n\nHello, World!\n",
 }
+
+
+def fixture_screen_jpeg(screen: str, subject: str | None) -> bytes:
+    """A phone-sized screenshot like android/screen-fixture's MarkerActivity."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+    image = Image.new("RGB", (1080, 2400), "white")
+    draw = ImageDraw.Draw(image)
+    large, small = ImageFont.load_default(size=72), ImageFont.load_default(size=56)
+    draw.text((60, 200), f"FIXTURE-{screen.upper()}-VISIBLE-MARKER", fill="black", font=large)
+    colour, label = ((220, 30, 0), "RED PANEL") if screen == "b" else ((0, 40, 220), "BLUE PANEL")
+    draw.rectangle((60, 500, 1020, 1300), fill=colour)
+    draw.text((120, 860), label, fill="white", font=large)
+    if subject:
+        draw.multiline_text((60, 1450), subject, fill="black", font=small, spacing=20)
+    out = BytesIO()
+    image.save(out, format="JPEG", quality=90)
+    return out.getvalue()
+
+
+class FixtureScreen:
+    """Stands in for the phone's capture and upload; the router-side flow is unmodified."""
+
+    def __init__(self, recorder):
+        self.recorder, self.screen, self.subject, self.count = recorder, "a", None, 0
+
+    async def look(self, *, session_id, generation, request_identity, question, capture_wait_seconds=None):
+        from hashlib import sha256
+        from uuid import uuid4
+        from app.db.tables import TaskContextBlob
+        jpeg = fixture_screen_jpeg(self.screen, self.subject)
+        digest = sha256(jpeg).hexdigest()
+        folder = (settings.backend_root / settings.task_context_blobs_dir).resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{digest}.jpg"
+        path.write_bytes(jpeg)
+        async with session_scope() as db:
+            blob = (await db.execute(select(TaskContextBlob).where(TaskContextBlob.sha256 == digest))).scalar_one_or_none()
+            if blob is None:
+                blob = TaskContextBlob(sha256=digest, storage_path=str(path), byte_length=len(jpeg),
+                                       mime_type="image/jpeg", width=1080, height=2400)
+                db.add(blob)
+                await db.flush()
+            blob_id = blob.id
+        self.count += 1
+        capture_id = str(uuid4())
+        self.recorder.record("fixture", {"type": "screen.captured", "screen": self.screen, "subject": self.subject,
+            "question": question, "capture_id": capture_id, "count": self.count})
+        return {"screenshot_attached": True, "captured_at": datetime.now(timezone.utc).isoformat(),
+                "speak": "The screenshot follows as the next message. Answer the user's question from it.",
+                "screenshot": {"capture_id": capture_id, "blob_id": blob_id}}
 
 
 def isolated_root(path: Path, database: Path) -> Path:
@@ -116,6 +169,7 @@ async def selftest_lifespan(application):
     if settings.task_pool_enabled and not os.environ.get("JARVIS_EVAL_REAL_WORKER"):
         raise ValueError("Deterministic scenarios require the fixture worker")
     recorder = Recorder(root)
+    recorder.screen = FixtureScreen(recorder)
     application.state.selftest = recorder
     original_send = openai_live_adapter._send
     original_connect = openai_live_adapter.connect
@@ -157,7 +211,8 @@ async def selftest_lifespan(application):
         for target, name, wrapper in [(openai_live_adapter, "_send", send),
                 (openai_live_adapter, "connect", connect), (openai_live_adapter, "_handle_event", handle),
                 (OpenAILiveAdapter, "_session_config", staticmethod(config)),
-                (jarvis_coordinator, "_trace_response_gate", trace)]:
+                (jarvis_coordinator, "_trace_response_gate", trace),
+                (screen_look, "look", recorder.screen.look)]:
             instrumentation.enter_context(patch.object(target, name, wrapper))
         async with production_lifespan(application):
             registration = None if settings.task_pool_enabled else await worker_coordinator.activate(process_identity="selftest")
@@ -231,6 +286,8 @@ async def action(request: Request):
         await conversation_observer.stop()
         if name == "observer_restart":
             await conversation_observer.start()
+    elif name == "screen":
+        recorder.screen.screen, recorder.screen.subject = value.get("screen") or "a", value.get("subject")
     elif name != "marker":
         raise HTTPException(400, "Unknown fixture action")
     recorder.record("fixture", {"type": f"action.{name}", **value})

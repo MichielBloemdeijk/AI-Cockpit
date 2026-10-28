@@ -161,6 +161,7 @@ try {
           evidence.observation_end_ms = await mark("observation.end");
         }
         else if (["observer_stop", "observer_restart"].includes(step.type)) await backend("action", { action: step.type });
+        else if (step.type === "screen") await backend("action", { action: "screen", screen: step.screen, subject: step.subject });
         else if (step.type === "at_caller_offset") {
           const start = evidence.markers.filter(m => m.type === "caller.start").at(-1).epoch_ms;
           const due = start + step.seconds * 1000;

@@ -1923,12 +1923,10 @@ class JarvisCoordinator:
             active = await self.get_session(session_id)
             if active is not None and active.generation == generation:
                 adapter = get_voice_session_adapter(active.provider_adapter)
-                await adapter.send_tool_result(
-                    session_id=session_id,
-                    generation=generation,
+                await self._send_tool_result(
+                    adapter, session_id=session_id, generation=generation,
                     call_id=str(event.payload.get("call_id") or event.event_id),
-                    output={"ok": replay_tool_result[0], "result": replay_tool_result[1]},
-                )
+                    ok=replay_tool_result[0], output=replay_tool_result[1])
             return
 
         if cancel_wake_fallback:
@@ -2414,6 +2412,26 @@ class JarvisCoordinator:
                 session_id=session_id,
             )
 
+    async def _send_tool_result(self, adapter, *, session_id: str, generation: int,
+                                call_id: str, ok: bool, output: dict[str, Any]) -> None:
+        """Return a tool result to the provider, attaching any screenshot it references."""
+        from app.services.screen_look import load_context_image, split_screenshot
+        output, screenshot = split_screenshot(output) if ok else (output, None)
+        images = ()
+        if screenshot is not None:
+            images = (await load_context_image(screenshot, str(output.get("captured_at") or "")),)
+        await adapter.send_tool_result(session_id=session_id, generation=generation, call_id=call_id,
+                                       output={"ok": ok, "result": output}, images=images)
+        if screenshot is not None:
+            async with session_scope() as session:
+                await self._require_current_generation(session, session_id, generation)
+                await JarvisDomainRepository(session).append_session_event(
+                    session_id=session_id, event_type="screen.context_attached",
+                    payload_json={"call_id": call_id, "capture_id": screenshot["capture_id"],
+                                  "blob_id": screenshot["blob_id"], "captured_at": output.get("captured_at"),
+                                  "jpeg_bytes": len(images[0].jpeg), "generation": generation},
+                    idempotency_key=f"screen-context:{session_id}:{generation}:{call_id}")
+
     async def _execute_shell_call(
         self,
         *,
@@ -2572,12 +2590,8 @@ class JarvisCoordinator:
             )
         if control is None:
             adapter = get_voice_session_adapter(realtime.provider_adapter)
-            await adapter.send_tool_result(
-                session_id=session_id,
-                generation=generation,
-                call_id=call_id,
-                output={"ok": ok, "result": output},
-            )
+            await self._send_tool_result(adapter, session_id=session_id, generation=generation,
+                                         call_id=call_id, ok=ok, output=output)
             if adapter.capabilities.supports_manual_response:
                 await self._queue_controlled_response(
                     session_id,

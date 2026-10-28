@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from app.services.screen_look import ContextImage
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,7 @@ class VoiceSessionAdapter(Protocol):
         generation: int,
         call_id: str,
         output: dict[str, Any],
+        images: tuple[ContextImage, ...] = (),
     ) -> None: ...
 
     async def create_response(
@@ -145,6 +149,7 @@ class FakeVoiceSessionAdapter:
         self._pending_text: dict[tuple[str, int], tuple[str, str]] = {}
         self._pending_tool_results: dict[tuple[str, int], dict[str, Any]] = {}
         self.discarded_candidate_items: list[tuple[str, int, tuple[str, ...]]] = []
+        self.context_images: list[tuple[str, int, str, tuple[ContextImage, ...]]] = []
 
     async def connect(
         self,
@@ -328,11 +333,14 @@ class FakeVoiceSessionAdapter:
         generation: int,
         call_id: str,
         output: dict[str, Any],
+        images: tuple[ContextImage, ...] = (),
     ) -> None:
         key = (session_id, generation)
         if key not in self._handlers:
             raise ValueError("Fake provider session is not connected")
         self._pending_tool_results[key] = output
+        if images:
+            self.context_images.append((session_id, generation, call_id, images))
 
     def is_connected(self, *, session_id: str, generation: int) -> bool:
         return (session_id, generation) in self._handlers
