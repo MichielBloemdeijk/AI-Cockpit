@@ -42,6 +42,7 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "history_grep",
         "set_jarvis_voice",
         "start_new_jarvis_log",
+        "show_on_phone",
         "end_voice_session",
     }
 )
@@ -301,6 +302,15 @@ class RestrictedBrainGateway:
                 request_identity=capture_request_identity or call_id,
                 question=str(arguments.get("question") or ""),
                 capture_wait_seconds=capture_wait_seconds))
+
+        if tool_name == "show_on_phone":
+            if session_id is None or generation is None:
+                raise ValueError("Showing something on the phone requires an active Live session")
+            task = await self._resolve_task(arguments, mutation=False)
+            await natural_task_resolver.touch(task.id)
+            from app.services.phone_display import show
+            return BrainResult(output=await show(session_id=session_id, generation=generation,
+                request_identity=call_id, task_id=task.id, title=task_title(task)))
 
         if tool_name in {"list_tasks", "list_reminders"}:
             tasks = await task_service.list_tasks()
