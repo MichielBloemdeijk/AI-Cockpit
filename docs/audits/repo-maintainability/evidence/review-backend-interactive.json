@@ -1,0 +1,426 @@
+[
+  {
+    "path": "backend/app/services/llm.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        580,
+        1126
+      ],
+      [
+        1396,
+        1515
+      ]
+    ],
+    "notes": "Provider routing/overrides, client construction, usage aggregation, payload build and the non-streaming transport loop read in full; stream variants read at their retry/error sites. Three hand-copied retry/error loops (997, 1144, 1419) and five identical build_prompt_metrics blocks per function. _build_client takes the model through a ContextVar rather than a parameter. council_completion has no caller. Model-prefix policy is spread over config.native_tool_model_prefixes and two hard-coded tuples (616, 630). Finding I06."
+  },
+  {
+    "path": "backend/app/services/chat_orchestrator.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        145
+      ],
+      [
+        359,
+        392
+      ],
+      [
+        535,
+        700
+      ]
+    ],
+    "notes": "Outline plus stream/single/council entry points. Stream loop re-lists all run events every 150 ms and filters by sequence. temperature/max_tokens are accepted by stream_single_response and run_single_response but never used. _record_llm_metrics duplicates agent_run_support's copy. api/chat.py calls the private _resolve_session_metadata. Findings I01, I03."
+  },
+  {
+    "path": "backend/app/services/agent_runner.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        45
+      ],
+      [
+        540,
+        625
+      ]
+    ],
+    "notes": "Imports and the claim/preparation/main-loop boundary (B02). Main loop body not re-read in this pass."
+  },
+  {
+    "path": "backend/app/services/agent_prompt_builder.py",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Function outline: every helper is underscore-private yet imported by agent_runner, agent_run_support and agent_model_verifier (I01)."
+  },
+  {
+    "path": "backend/app/services/agent_run_support.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        130
+      ],
+      [
+        322,
+        354
+      ]
+    ],
+    "notes": "Outline plus metrics recorder. 16 private names imported elsewhere; run state is an untyped dict (56 metadata accesses). Findings I01, I02."
+  },
+  {
+    "path": "backend/app/services/agent_runner_helpers.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        117
+      ]
+    ],
+    "notes": "Full source: visible text event+timeline+metadata are separate commits; metadata restoration merges history by completed-tool count, not identities."
+  },
+  {
+    "path": "backend/app/services/agent_metadata.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        188
+      ]
+    ],
+    "notes": "Full source: dual task/agent metadata aliases normalized/serialized repeatedly, plus summaries and app-read-path selection."
+  },
+  {
+    "path": "backend/app/services/conversation_store.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        985,
+        1020
+      ],
+      [
+        1240,
+        1275
+      ],
+      [
+        1485,
+        1504
+      ]
+    ],
+    "notes": "Method inventory (60+ methods spanning conversations, branches, runs, events, messages, artifacts, memory, chat defaults, workspace files) plus run-status writers. Nine run-status mutators; mark_run_completed/mark_run_failed/update_run_status are unguarded, mark_run_interrupted has no production caller. Finding I03."
+  },
+  {
+    "path": "backend/app/services/conversation_compaction.py",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Function outline only."
+  },
+  {
+    "path": "backend/app/services/conversation_read_model.py",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Header/imports only: presents timeline items from events."
+  },
+  {
+    "path": "backend/app/services/conversation_timeline.py",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Function outline: server-side timeline item builders used by the store and runner; the client still keeps a pre-timeline reconstruction (I05)."
+  },
+  {
+    "path": "backend/app/services/conversation_title_service.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        100
+      ]
+    ],
+    "notes": "Full source: async task scheduling, model title normalization and conditional store; pending task lifecycle not composed with API shutdown."
+  },
+  {
+    "path": "backend/app/services/conversation_workspace.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        44
+      ]
+    ],
+    "notes": "Full source: workspace creation/path resolution and recursive listing. Reads create missing workspace; no custom configured root used here."
+  },
+  {
+    "path": "backend/app/services/app_registry.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        86,
+        205
+      ],
+      [
+        275,
+        300
+      ],
+      [
+        336,
+        345
+      ]
+    ],
+    "notes": "Outline plus path constants. LEGACY_GENERATED_APP_FRONTEND_ROOT_BASE is the live served root that isolated apps are copied into; _remap_legacy_frontend_path rewrites old stored contracts. Finding I05."
+  },
+  {
+    "path": "backend/app/services/app_catalog.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        141
+      ]
+    ],
+    "notes": "Full source: generated identity sync, maintained collection lookup, storage scope, bounded JSON/CAS/quota transaction. Explicit SQLite lock before reads."
+  },
+  {
+    "path": "backend/app/services/app_capabilities.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        75
+      ]
+    ],
+    "notes": "Full source: scoped signed storage grant, revision revocation, owner fallback; positive purpose separation and write recheck."
+  },
+  {
+    "path": "backend/app/services/app_verifier.py",
+    "review_depth": "targeted",
+    "lines_read": [],
+    "notes": "Searched for compatibility paths; none found."
+  },
+  {
+    "path": "backend/app/services/knowledge_memory.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        138
+      ]
+    ],
+    "notes": "Full source. New finding: approved-note path derives date/kind/title but not memory identity, allowing distinct records to overwrite one file; preference storage is separate YAML list."
+  },
+  {
+    "path": "backend/app/services/knowledge_extractor.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        154
+      ]
+    ],
+    "notes": "Full source. Heuristic proposals from all roles; unknown selection IDs silently fall back to entire boundary. Titles truncated60 before identity-free note naming; re-extraction not deduplicated here."
+  },
+  {
+    "path": "backend/app/services/memory_review_store.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        29
+      ]
+    ],
+    "notes": "Full source: untyped pass-through facade to conversation_store; no memory ownership independent of conversation store."
+  },
+  {
+    "path": "backend/app/services/brain_retrieval.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        209
+      ]
+    ],
+    "notes": "Full source. Wiki reads filesystem not review rows. Conversation search bounds to200 recent conversations but loads all final user/assistant messages per candidate (N+1/bounded candidate rather than bounded evidence)."
+  },
+  {
+    "path": "backend/app/services/history_retrieval.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        276
+      ]
+    ],
+    "notes": "Full source: argv parser, FTS candidate fallback, SQL rebuild, synchronous regex matching and sort. Ambiguous alternation is not rejected by _safe_regex; bounded reproduction pending."
+  },
+  {
+    "path": "backend/app/services/agent_tools/apps.py",
+    "review_depth": "targeted",
+    "lines_read": [
+      [
+        120,
+        166
+      ]
+    ],
+    "notes": "Tool definitions; app_verify is model-invisible."
+  },
+  {
+    "path": "backend/app/services/agent_tools/base.py",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        16,
+        50
+      ],
+      [
+        170,
+        200
+      ]
+    ],
+    "notes": "Context/tool dataclasses and build_tool_context: read roots are the global search roots, write root is the conversation workspace."
+  },
+  {
+    "path": "backend/app/services/agent_tools/execution.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        460
+      ]
+    ],
+    "notes": "Python guard is monkeypatching inside the child process; shell tool runs any executable without meta tokens. Reproduced escape via _io.open and via shell 'python -c'. Metadata reports sandbox_mode allowed_write_roots_only. Finding I04."
+  },
+  {
+    "path": "backend/app/services/agent_tools/filesystem.py",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Function outline; path checks delegate to base._resolve_*_path."
+  },
+  {
+    "path": "backend/app/services/agent_tools/registry.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        79
+      ]
+    ],
+    "notes": "Static registry; execute_chat_tool limits the conversation tool route to workspace_search and python_execution."
+  },
+  {
+    "path": "backend/app/services/agent_tools/retrieval.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        78
+      ]
+    ],
+    "notes": "Full source. Thin read-only wrappers; clean."
+  },
+  {
+    "path": "backend/app/services/agent_tools/tasks.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        108
+      ]
+    ],
+    "notes": "Full source. Ownership check by origin conversation; list loads all tasks then filters in Python (minor)."
+  },
+  {
+    "path": "backend/app/services/agent_tools/__init__.py",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        36
+      ]
+    ],
+    "notes": "Re-export list."
+  },
+  {
+    "path": "backend/tests/agent_runner_fixtures.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 76 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_agent_runner.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 1503 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_agent_task_tools.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 58 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_app_capabilities.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 99 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_apps_api.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 1012 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_brain_retrieval.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 97 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_chat_tools_api.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 73 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_conversation_api.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 477 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_conversation_compaction.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 185 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_conversation_store.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 295 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_conversation_title_service.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 61 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_knowledge_review_api.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 55 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_llm_prompt_cache.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 703 lines. Test inventory only; not read in this pass."
+  },
+  {
+    "path": "backend/tests/test_llm_providers.py",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "Batch scope, 158 lines. Test inventory only; not read in this pass."
+  }
+]

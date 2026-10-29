@@ -1,0 +1,17 @@
+{
+  "commit": "0ab419d74d1595cfc9f3f803e9c069ae8d077f9a",
+  "branch": "codex/jarvis-voice-poc",
+  "tracked_paths": 757,
+  "counts": {
+    ".cursor": 2,
+    "root": 7,
+    ".vscode": 2,
+    "android": 104,
+    "backend": 348,
+    "docs": 87,
+    "frontend": 194,
+    "knowledge": 2,
+    "scripts": 11
+  },
+  "note": "Clean application working tree at audit start; prior planning WIP has landed. Hashes identify exact on-disk bytes. Inventory-only is not semantic review."
+}

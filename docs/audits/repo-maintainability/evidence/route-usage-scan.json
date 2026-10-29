@@ -1,0 +1,175 @@
+{
+ "routes": 110,
+ "without_client": 21,
+ "without_client_or_test": 16,
+ "unused": [
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/conversations/{conversation_id}/memory-items/{memory_item_id}/approve",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/conversations/{conversation_id}/memory-items/{memory_item_id}/reject",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/jarvis/tasks/resolve",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/jarvis/reminders",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/jarvis/reminders",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/jarvis/reminders/{task_id}/snooze",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "DELETE"
+   ],
+   "path": "/api/jarvis/reminders/{task_id}",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/jarvis/live/observer",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/jarvis/diagnostics",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-catalog/{slug}/storage-capability",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-catalog/{slug}/storage-capability/revoke",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/tasks/{task_id}/events",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/tasks/{task_id}/retry",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "PUT"
+   ],
+   "path": "/api/worker-tools/permissions",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/orchestration/{decision_id}/inspect",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/orchestration/{decision_id}/resume",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "DELETE"
+   ],
+   "path": "/api/notifications/subscriptions/{subscription_id}",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/retrieval/history",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/retrieval/history/rebuild",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/memory/proposals",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "PATCH"
+   ],
+   "path": "/api/memory/proposals",
+   "client": false,
+   "test": false
+  }
+ ]
+}

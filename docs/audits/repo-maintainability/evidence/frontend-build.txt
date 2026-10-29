@@ -1,0 +1,66 @@
+▲ Next.js 16.2.3 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 15.5s
+  Running TypeScript ...
+
+  We detected TypeScript in your project and reconfigured your tsconfig.json file for you.
+  The following suggested values were added to your tsconfig.json. These values can be changed to fit your project's needs:
+
+  	- include was updated to add '.next-audit/types/**/*.ts'
+  	- include was updated to add '.next-audit/dev/types/**/*.ts'
+
+  Finished TypeScript in 17.4s ...
+  Collecting page data using 15 workers ...
+  Generating static pages using 15 workers (0/35) ...
+  Generating static pages using 15 workers (8/35) 
+  Generating static pages using 15 workers (17/35) 
+  Generating static pages using 15 workers (26/35) 
+✓ Generating static pages using 15 workers (35/35) in 1526ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/jarvis/live
+├ ○ /apps
+├ ƒ /apps/[slug]
+├ ○ /apps/adjustable-tic-tac-toe
+├ ○ /apps/chromatic-pop
+├ ○ /apps/chromatic-rush
+├ ○ /apps/chromatic-surprise
+├ ○ /apps/color-rush
+├ ○ /apps/hello-world
+├ ○ /apps/hello-world-2
+├ ○ /apps/leaseable-launch-dashboard
+├ ○ /apps/legion-app
+├ ○ /apps/release-dashboard
+├ ○ /apps/runtime-smoke-test
+├ ○ /apps/runtime-smoke-test/about
+├ ○ /apps/story-viewer
+├ ○ /apps/stream-progress
+├ ○ /apps/tic-tac-toe
+├ ○ /apps/transient-progress-stream
+├ ○ /background
+├ ƒ /background/[runId]
+├ ○ /chat
+├ ○ /collections/documents
+├ ○ /collections/recipes
+├ ○ /jarvis
+├ ○ /knowledge
+├ ○ /link-phone
+├ ○ /login
+├ ƒ /results/[publicId]
+├ ○ /settings
+├ ○ /settings/wake
+├ ○ /tasks
+├ ƒ /tasks/[taskId]
+├ ○ /voice
+├ ○ /wiki
+├ ○ /workspace/apps
+└ ƒ /workspace/apps/[slug]
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

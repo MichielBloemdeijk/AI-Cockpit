@@ -1,0 +1,31 @@
+
+> frontend@0.1.0 build:results
+> next build result-export
+
+▲ Next.js 16.2.3 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 3.5s
+  Running TypeScript ...
+  Finished TypeScript in 6.6s ...
+  Collecting page data using 10 workers ...
+  Generating static pages using 10 workers (0/9) ...
+  Generating static pages using 10 workers (2/9) 
+  Generating static pages using 10 workers (4/9) 
+  Generating static pages using 10 workers (6/9) 
+✓ Generating static pages using 10 workers (9/9) in 1311ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /_not-found
+├ ○ /collections/documents
+├ ○ /collections/recipes
+├ ○ /login
+├ ○ /result-shell
+├ ○ /task-shell
+├ ○ /tasks
+└ ○ /workspace/apps
+
+
+○  (Static)  prerendered as static content
+

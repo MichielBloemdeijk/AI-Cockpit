@@ -1,0 +1,4157 @@
+[
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.api.results",
+    "line": 12
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.db.session",
+    "line": 13
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.db.tables",
+    "line": 14
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.models.apps",
+    "line": 15
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.services.app_catalog",
+    "line": 16
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.services.jarvis_devices",
+    "line": 17
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.services.task_results",
+    "line": 18
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.services.app_capabilities",
+    "line": 19
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.services.auth",
+    "line": 20
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.api.results",
+    "line": 118
+  },
+  {
+    "source": "app.api.app_catalog",
+    "target": "app.services.task_results",
+    "line": 119
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.models.apps",
+    "line": 6
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.presenters.apps",
+    "line": 13
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.services.app_registry",
+    "line": 14
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.services.auth",
+    "line": 15
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.api.results",
+    "line": 16
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.db.session",
+    "line": 75
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.db.tables",
+    "line": 76
+  },
+  {
+    "source": "app.api.apps",
+    "target": "app.services.app_capabilities",
+    "line": 77
+  },
+  {
+    "source": "app.api.auth",
+    "target": "app.config",
+    "line": 7
+  },
+  {
+    "source": "app.api.auth",
+    "target": "app.services.auth",
+    "line": 8
+  },
+  {
+    "source": "app.api.auth",
+    "target": "app.services.jarvis_devices",
+    "line": 17
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.models.chat",
+    "line": 11
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.models.settings",
+    "line": 12
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.services.auth",
+    "line": 13
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.services.chat_settings",
+    "line": 14
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.services.chat_orchestrator",
+    "line": 15
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.services.conversation_store",
+    "line": 16
+  },
+  {
+    "source": "app.api.chat",
+    "target": "app.config",
+    "line": 17
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.config",
+    "line": 11
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.models.chat",
+    "line": 12
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.models.conversations",
+    "line": 13
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.models.settings",
+    "line": 36
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.presenters.conversations",
+    "line": 37
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.auth",
+    "line": 43
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.agent_tools",
+    "line": 44
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.chat_settings",
+    "line": 45
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.chat_orchestrator",
+    "line": 46
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.conversation_read_model",
+    "line": 47
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.conversation_store",
+    "line": 48
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.conversation_workspace",
+    "line": 49
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.knowledge_extractor",
+    "line": 50
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.knowledge_memory",
+    "line": 51
+  },
+  {
+    "source": "app.api.conversations",
+    "target": "app.services.memory_review_store",
+    "line": 52
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.config",
+    "line": 7
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.db.session",
+    "line": 9
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.models.jarvis",
+    "line": 11
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.services.auth",
+    "line": 12
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.services",
+    "line": 13
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.services.jarvis_devices",
+    "line": 14
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.services.jarvis_devices",
+    "line": 120
+  },
+  {
+    "source": "app.api.devices",
+    "target": "app.services.jarvis_coordinator",
+    "line": 133
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.presenters.tasks",
+    "line": 14
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.models.jarvis",
+    "line": 15
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.presenters.conversations",
+    "line": 44
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.presenters.conversations",
+    "line": 45
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_devices",
+    "line": 46
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.auth",
+    "line": 47
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.conversation_read_model",
+    "line": 48
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_coordinator",
+    "line": 49
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_daily",
+    "line": 50
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_live",
+    "line": 51
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_live_telemetry",
+    "line": 52
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_preferences",
+    "line": 53
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.jarvis_situation",
+    "line": 54
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.natural_task_resolver",
+    "line": 55
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.reminder_scheduler",
+    "line": 56
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.openai_live_adapter",
+    "line": 57
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.task_presentations",
+    "line": 58
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.task_service",
+    "line": 59
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.models.tasks",
+    "line": 60
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.jarvis_tasks.acceptance",
+    "line": 69
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.conversation_observer",
+    "line": 491
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.conversation_observer",
+    "line": 506
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.conversation_observer",
+    "line": 514
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.db.session",
+    "line": 515
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.diagnostics",
+    "line": 516
+  },
+  {
+    "source": "app.api.jarvis",
+    "target": "app.services.task_capture",
+    "line": 431
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.models.conversations",
+    "line": 6
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.models.knowledge",
+    "line": 7
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.presenters.conversations",
+    "line": 13
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.presenters.knowledge",
+    "line": 14
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.services.auth",
+    "line": 15
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.services.conversation_store",
+    "line": 16
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.services.knowledge_memory",
+    "line": 17
+  },
+  {
+    "source": "app.api.knowledge",
+    "target": "app.services.memory_review_store",
+    "line": 18
+  },
+  {
+    "source": "app.api.memory",
+    "target": "app.db.session",
+    "line": 7
+  },
+  {
+    "source": "app.api.memory",
+    "target": "app.db.tables",
+    "line": 8
+  },
+  {
+    "source": "app.api.memory",
+    "target": "app.models.conversations",
+    "line": 9
+  },
+  {
+    "source": "app.api.memory",
+    "target": "app.presenters.conversations",
+    "line": 10
+  },
+  {
+    "source": "app.api.memory",
+    "target": "app.services.auth",
+    "line": 11
+  },
+  {
+    "source": "app.api.memory",
+    "target": "app.services.memory_review_store",
+    "line": 12
+  },
+  {
+    "source": "app.api.notifications",
+    "target": "app.config",
+    "line": 7
+  },
+  {
+    "source": "app.api.notifications",
+    "target": "app.services.auth",
+    "line": 8
+  },
+  {
+    "source": "app.api.notifications",
+    "target": "app.services.jarvis_devices",
+    "line": 9
+  },
+  {
+    "source": "app.api.notifications",
+    "target": "app.services.notifications",
+    "line": 10
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.config",
+    "line": 8
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.db.session",
+    "line": 9
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.services.auth",
+    "line": 11
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.services.orchestration_authority",
+    "line": 12
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.services.task_orchestration",
+    "line": 13
+  },
+  {
+    "source": "app.api.orchestration",
+    "target": "app.services.orchestration_telemetry",
+    "line": 14
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.db.repositories.conversations",
+    "line": 21
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.db.session",
+    "line": 22
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.db.tables",
+    "line": 23
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services.app_catalog",
+    "line": 24
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services.jarvis_devices",
+    "line": 25
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services.task_results",
+    "line": 26
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services.task_result_types",
+    "line": 27
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services",
+    "line": 28
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services.commit_signals",
+    "line": 29
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.services.task_results",
+    "line": 133
+  },
+  {
+    "source": "app.api.results",
+    "target": "app.db.tables",
+    "line": 162
+  },
+  {
+    "source": "app.api.retrieval",
+    "target": "app.models.retrieval",
+    "line": 6
+  },
+  {
+    "source": "app.api.retrieval",
+    "target": "app.services.auth",
+    "line": 13
+  },
+  {
+    "source": "app.api.retrieval",
+    "target": "app.services.history_retrieval",
+    "line": 14
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.db.tables",
+    "line": 9
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.db.session",
+    "line": 10
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.models.jarvis",
+    "line": 11
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.services.jarvis_devices",
+    "line": 12
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.services.auth",
+    "line": 13
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.services.task_capture",
+    "line": 14
+  },
+  {
+    "source": "app.api.task_context",
+    "target": "app.services.task_context_upload",
+    "line": 15
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.config",
+    "line": 6
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.presenters.tasks",
+    "line": 7
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.db.tables",
+    "line": 8
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.models.tasks",
+    "line": 21
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.services.jarvis_devices",
+    "line": 49
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.services.task_service",
+    "line": 50
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.services.worker_coordinator",
+    "line": 51
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.services.task_pool_supervisor",
+    "line": 52
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.db.session",
+    "line": 53
+  },
+  {
+    "source": "app.api.tasks",
+    "target": "app.services.task_result_contract",
+    "line": 54
+  },
+  {
+    "source": "app.api.worker_tools",
+    "target": "app.services.auth",
+    "line": 5
+  },
+  {
+    "source": "app.api.worker_tools",
+    "target": "app.config",
+    "line": 6
+  },
+  {
+    "source": "app.api.worker_tools",
+    "target": "app.services.worker_tool_policy",
+    "line": 7
+  },
+  {
+    "source": "app.api.worker_tools",
+    "target": "app.services",
+    "line": 8
+  },
+  {
+    "source": "app.db.__init__",
+    "target": "app.db",
+    "line": 3
+  },
+  {
+    "source": "app.db.repositories.conversations",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.db.repositories.jarvis",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.db.repositories.tasks",
+    "target": "app.db.repositories.conversations",
+    "line": 12
+  },
+  {
+    "source": "app.db.repositories.tasks",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.db.repositories.tasks",
+    "target": "app.services.task_update_policy",
+    "line": 14
+  },
+  {
+    "source": "app.db.repositories.tasks",
+    "target": "app.services.task_results",
+    "line": 107
+  },
+  {
+    "source": "app.db.session",
+    "target": "app.config",
+    "line": 29
+  },
+  {
+    "source": "app.db.session",
+    "target": "app.services.admission_timing",
+    "line": 30
+  },
+  {
+    "source": "app.db.session",
+    "target": "app.services.commit_signals",
+    "line": 31
+  },
+  {
+    "source": "app.db.session",
+    "target": "app.services.result_telemetry",
+    "line": 280
+  },
+  {
+    "source": "app.db.session",
+    "target": "app.services.task_orchestration",
+    "line": 231
+  },
+  {
+    "source": "app.db.tables",
+    "target": "app.db.base",
+    "line": 26
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.jarvis_tasks.codex_probe",
+    "line": 14
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.jarvis_tasks.rollout_check",
+    "line": 213
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.jarvis_tasks.acceptance",
+    "line": 81
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.services.runtime_auth_routes",
+    "line": 98
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.config",
+    "line": 115
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.jarvis_tasks.rollout_check",
+    "line": 116
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.jarvis_tasks.rollout_check",
+    "line": 123
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.config",
+    "line": 130
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.jarvis_tasks.rollout_check",
+    "line": 131
+  },
+  {
+    "source": "app.jarvis_tasks.__main__",
+    "target": "app.services.task_workflows",
+    "line": 171
+  },
+  {
+    "source": "app.jarvis_tasks.acceptance",
+    "target": "app.config",
+    "line": 20
+  },
+  {
+    "source": "app.jarvis_tasks.acceptance",
+    "target": "app.services.worker_tool_policy",
+    "line": 114
+  },
+  {
+    "source": "app.jarvis_tasks.acceptance",
+    "target": "app.services.task_workflows",
+    "line": 170
+  },
+  {
+    "source": "app.jarvis_tasks.acceptance",
+    "target": "app.jarvis_tasks.rollout_check",
+    "line": 603
+  },
+  {
+    "source": "app.jarvis_tasks.acceptance_command_host",
+    "target": "app.services.windows_job",
+    "line": 7
+  },
+  {
+    "source": "app.jarvis_tasks.codex_probe",
+    "target": "app.config",
+    "line": 24
+  },
+  {
+    "source": "app.jarvis_tasks.native_boundary",
+    "target": "app.jarvis_tasks.codex_probe",
+    "line": 11
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_host",
+    "target": "app.config",
+    "line": 10
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_host",
+    "target": "app.services.codex_task_runtime",
+    "line": 11
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_host",
+    "target": "app.services.windows_job",
+    "line": 12
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_host",
+    "target": "app.jarvis_tasks.orchestration_mcp",
+    "line": 39
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_host",
+    "target": "app.jarvis_tasks.codex_probe",
+    "line": 145
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_host",
+    "target": "app.services.runtime_auth_routes",
+    "line": 131
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_mcp",
+    "target": "app.db.session",
+    "line": 12
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_mcp",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_mcp",
+    "target": "app.services.task_orchestration",
+    "line": 14
+  },
+  {
+    "source": "app.jarvis_tasks.orchestration_mcp",
+    "target": "app.services.task_execution_preferences",
+    "line": 18
+  },
+  {
+    "source": "app.jarvis_tasks.personal_host",
+    "target": "app.config",
+    "line": 14
+  },
+  {
+    "source": "app.jarvis_tasks.personal_host",
+    "target": "app.services.auth",
+    "line": 15
+  },
+  {
+    "source": "app.jarvis_tasks.personal_host",
+    "target": "app.services.windows_job",
+    "line": 16
+  },
+  {
+    "source": "app.jarvis_tasks.rehearsal_host",
+    "target": "app.services.windows_job",
+    "line": 7
+  },
+  {
+    "source": "app.jarvis_tasks.rollout_check",
+    "target": "app.config",
+    "line": 20
+  },
+  {
+    "source": "app.jarvis_tasks.rollout_check",
+    "target": "app.services.result_static",
+    "line": 21
+  },
+  {
+    "source": "app.jarvis_tasks.rollout_check",
+    "target": "app.jarvis_tasks.sqlite_backup",
+    "line": 22
+  },
+  {
+    "source": "app.jarvis_tasks.rollout_check",
+    "target": "app.jarvis_tasks.personal_host",
+    "line": 186
+  },
+  {
+    "source": "app.jarvis_tasks.rollout_check",
+    "target": "app.jarvis_tasks.acceptance",
+    "line": 270
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.db.session",
+    "line": 21
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.db.tables",
+    "line": 22
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.config",
+    "line": 23
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_service",
+    "line": 24
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_workflows",
+    "line": 25
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_capabilities",
+    "line": 26
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_result_types",
+    "line": 27
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_project_tools",
+    "line": 126
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_project_tools",
+    "line": 206
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.worker_tool_policy",
+    "line": 207
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.db.tables",
+    "line": 353
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.native_research",
+    "line": 333
+  },
+  {
+    "source": "app.jarvis_tasks.task_mcp",
+    "target": "app.services.task_result_contract",
+    "line": 355
+  },
+  {
+    "source": "app.jarvis_tasks.worker_process_probe",
+    "target": "app.services.codex_task_runtime",
+    "line": 14
+  },
+  {
+    "source": "app.jarvis_tasks.worker_process_probe",
+    "target": "app.services.task_workflows",
+    "line": 15
+  },
+  {
+    "source": "app.jarvis_tasks.worker_process_probe",
+    "target": "app.services.task_service",
+    "line": 49
+  },
+  {
+    "source": "app.jarvis_tasks.worker_process_probe",
+    "target": "app.services.worker_coordinator",
+    "line": 50
+  },
+  {
+    "source": "app.main",
+    "target": "app.config",
+    "line": 15
+  },
+  {
+    "source": "app.main",
+    "target": "app.api",
+    "line": 16
+  },
+  {
+    "source": "app.main",
+    "target": "app.api",
+    "line": 17
+  },
+  {
+    "source": "app.main",
+    "target": "app.db.session",
+    "line": 18
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.conversation_store",
+    "line": 19
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.run_supervisor",
+    "line": 20
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.task_notifications",
+    "line": 21
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.reminder_scheduler",
+    "line": 22
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.jarvis_coordinator",
+    "line": 23
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.jarvis_live_telemetry",
+    "line": 24
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.conversation_observer",
+    "line": 25
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.openai_live_adapter",
+    "line": 26
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.runtime_health",
+    "line": 27
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.task_service",
+    "line": 28
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.task_orchestration",
+    "line": 29
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.task_context_upload",
+    "line": 30
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.task_pool_supervisor",
+    "line": 31
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.worker_coordinator",
+    "line": 32
+  },
+  {
+    "source": "app.main",
+    "target": "app.jarvis_tasks.acceptance",
+    "line": 55
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.result_static",
+    "line": 175
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.result_static",
+    "line": 183
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.result_static",
+    "line": 190
+  },
+  {
+    "source": "app.main",
+    "target": "app.services.result_static",
+    "line": 196
+  },
+  {
+    "source": "app.models.chat",
+    "target": "app.models.settings",
+    "line": 9
+  },
+  {
+    "source": "app.models.conversations",
+    "target": "app.models.settings",
+    "line": 9
+  },
+  {
+    "source": "app.models.jarvis",
+    "target": "app.models.conversations",
+    "line": 10
+  },
+  {
+    "source": "app.models.jarvis",
+    "target": "app.models.conversations",
+    "line": 11
+  },
+  {
+    "source": "app.models.jarvis",
+    "target": "app.models.tasks",
+    "line": 12
+  },
+  {
+    "source": "app.models.knowledge",
+    "target": "app.models.conversations",
+    "line": 8
+  },
+  {
+    "source": "app.models.tasks",
+    "target": "app.services.task_update_policy",
+    "line": 9
+  },
+  {
+    "source": "app.models.tasks",
+    "target": "app.services.task_result_contract",
+    "line": 10
+  },
+  {
+    "source": "app.presenters.apps",
+    "target": "app.models.apps",
+    "line": 3
+  },
+  {
+    "source": "app.presenters.apps",
+    "target": "app.services.app_registry",
+    "line": 4
+  },
+  {
+    "source": "app.presenters.conversations",
+    "target": "app.models.conversations",
+    "line": 3
+  },
+  {
+    "source": "app.presenters.knowledge",
+    "target": "app.models.knowledge",
+    "line": 3
+  },
+  {
+    "source": "app.presenters.knowledge",
+    "target": "app.presenters.conversations",
+    "line": 5
+  },
+  {
+    "source": "app.presenters.tasks",
+    "target": "app.db.tables",
+    "line": 2
+  },
+  {
+    "source": "app.presenters.tasks",
+    "target": "app.models.tasks",
+    "line": 3
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.selftest",
+    "line": 20
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.selftest.review",
+    "line": 21
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.selftest.scenarios",
+    "line": 22
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.selftest.replay",
+    "line": 108
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.selftest.doctor",
+    "line": 131
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.config",
+    "line": 142
+  },
+  {
+    "source": "app.selftest.__main__",
+    "target": "app.selftest.doctor",
+    "line": 96
+  },
+  {
+    "source": "app.selftest.caller",
+    "target": "app.config",
+    "line": 16
+  },
+  {
+    "source": "app.selftest.doctor",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.selftest.doctor",
+    "target": "app.selftest",
+    "line": 13
+  },
+  {
+    "source": "app.selftest.doctor",
+    "target": "app.db.session",
+    "line": 17
+  },
+  {
+    "source": "app.selftest.doctor",
+    "target": "app.services.diagnostics",
+    "line": 18
+  },
+  {
+    "source": "app.selftest.harness",
+    "target": "app.config",
+    "line": 24
+  },
+  {
+    "source": "app.selftest.harness",
+    "target": "app.selftest.review",
+    "line": 341
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.config",
+    "line": 21
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.db.session",
+    "line": 22
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.db.tables",
+    "line": 23
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.main",
+    "line": 25
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.jarvis_coordinator",
+    "line": 26
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services",
+    "line": 27
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.openai_live_adapter",
+    "line": 28
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.task_presentations",
+    "line": 29
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.task_service",
+    "line": 30
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.worker_coordinator",
+    "line": 31
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.db.tables",
+    "line": 67
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.live_model_diagnostics",
+    "line": 120
+  },
+  {
+    "source": "app.selftest.host",
+    "target": "app.services.conversation_observer",
+    "line": 285
+  },
+  {
+    "source": "app.selftest.replay",
+    "target": "app.config",
+    "line": 19
+  },
+  {
+    "source": "app.selftest.replay",
+    "target": "app.selftest",
+    "line": 20
+  },
+  {
+    "source": "app.selftest.replay",
+    "target": "app.db.session",
+    "line": 43
+  },
+  {
+    "source": "app.selftest.replay",
+    "target": "app.services",
+    "line": 44
+  },
+  {
+    "source": "app.selftest.rereview",
+    "target": "app.selftest",
+    "line": 12
+  },
+  {
+    "source": "app.selftest.rereview",
+    "target": "app.selftest.review",
+    "line": 13
+  },
+  {
+    "source": "app.selftest.review",
+    "target": "app.selftest",
+    "line": 22
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.config",
+    "line": 11
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.models.chat",
+    "line": 12
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.services.agent_prompt_builder",
+    "line": 13
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.services.agent_tools",
+    "line": 20
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.services.conversation_store",
+    "line": 25
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.services.llm",
+    "line": 26
+  },
+  {
+    "source": "app.services.agent_execution",
+    "target": "app.services.task_service",
+    "line": 27
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.config",
+    "line": 14
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.models.chat",
+    "line": 15
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.models.settings",
+    "line": 16
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.app_registry",
+    "line": 17
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.app_registry",
+    "line": 18
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.agent_tools",
+    "line": 19
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.agent_runner",
+    "line": 20
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.agent_prompt_builder",
+    "line": 21
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.chat_orchestrator",
+    "line": 22
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.chat_settings",
+    "line": 23
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.conversation_read_model",
+    "line": 24
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.conversation_store",
+    "line": 25
+  },
+  {
+    "source": "app.services.agent_model_verifier",
+    "target": "app.services.llm",
+    "line": 26
+  },
+  {
+    "source": "app.services.agent_prompt_builder",
+    "target": "app.services.agent_tools",
+    "line": 6
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.models.chat",
+    "line": 14
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.agent_metadata",
+    "line": 15
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.agent_prompt_builder",
+    "line": 16
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.agent_tools",
+    "line": 17
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.app_registry",
+    "line": 18
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.conversation_store",
+    "line": 19
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.conversation_timeline",
+    "line": 20
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.llm",
+    "line": 30
+  },
+  {
+    "source": "app.services.agent_run_support",
+    "target": "app.services.run_lifecycle",
+    "line": 830
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.models.chat",
+    "line": 11
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.agent_tools",
+    "line": 12
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.agent_metadata",
+    "line": 17
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.agent_runner_helpers",
+    "line": 20
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.agent_prompt_builder",
+    "line": 24
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.agent_run_support",
+    "line": 39
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.chat_settings",
+    "line": 57
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.conversation_store",
+    "line": 58
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.conversation_compaction",
+    "line": 59
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.conversation_timeline",
+    "line": 60
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.llm",
+    "line": 64
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.task_delegation",
+    "line": 689
+  },
+  {
+    "source": "app.services.agent_runner",
+    "target": "app.services.task_service",
+    "line": 711
+  },
+  {
+    "source": "app.services.agent_runner_helpers",
+    "target": "app.services.agent_run_support",
+    "line": 6
+  },
+  {
+    "source": "app.services.agent_runner_helpers",
+    "target": "app.services.conversation_store",
+    "line": 7
+  },
+  {
+    "source": "app.services.agent_runner_helpers",
+    "target": "app.services.conversation_timeline",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.apps",
+    "line": 2
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.apps",
+    "line": 3
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.apps",
+    "line": 4
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.base",
+    "line": 5
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.base",
+    "line": 6
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.base",
+    "line": 7
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.base",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.execution",
+    "line": 9
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.execution",
+    "line": 10
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.filesystem",
+    "line": 11
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.filesystem",
+    "line": 12
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.filesystem",
+    "line": 13
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.registry",
+    "line": 14
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.registry",
+    "line": 15
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.registry",
+    "line": 16
+  },
+  {
+    "source": "app.services.agent_tools.__init__",
+    "target": "app.services.agent_tools.registry",
+    "line": 17
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.agent_tools.base",
+    "line": 5
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.agent_tools.base",
+    "line": 6
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.agent_tools.base",
+    "line": 7
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.agent_tools.base",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.agent_tools.base",
+    "line": 9
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.agent_tools.base",
+    "line": 10
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.app_builder",
+    "line": 11
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.app_registry",
+    "line": 12
+  },
+  {
+    "source": "app.services.agent_tools.apps",
+    "target": "app.services.app_verifier",
+    "line": 13
+  },
+  {
+    "source": "app.services.agent_tools.base",
+    "target": "app.config",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 14
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 15
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 16
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 17
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 18
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 19
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 20
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 21
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 22
+  },
+  {
+    "source": "app.services.agent_tools.execution",
+    "target": "app.services.agent_tools.base",
+    "line": 23
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 9
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 10
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 11
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 12
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 13
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 14
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 15
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 16
+  },
+  {
+    "source": "app.services.agent_tools.filesystem",
+    "target": "app.services.agent_tools.base",
+    "line": 17
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.apps",
+    "line": 5
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.base",
+    "line": 6
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.base",
+    "line": 7
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.base",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.execution",
+    "line": 9
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.execution",
+    "line": 10
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.filesystem",
+    "line": 11
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.retrieval",
+    "line": 12
+  },
+  {
+    "source": "app.services.agent_tools.registry",
+    "target": "app.services.agent_tools.tasks",
+    "line": 13
+  },
+  {
+    "source": "app.services.agent_tools.retrieval",
+    "target": "app.services.agent_tools.base",
+    "line": 7
+  },
+  {
+    "source": "app.services.agent_tools.retrieval",
+    "target": "app.services.brain_retrieval",
+    "line": 8
+  },
+  {
+    "source": "app.services.agent_tools.tasks",
+    "target": "app.services.agent_tools.base",
+    "line": 7
+  },
+  {
+    "source": "app.services.agent_tools.tasks",
+    "target": "app.services.task_service",
+    "line": 14
+  },
+  {
+    "source": "app.services.android_updates",
+    "target": "app.config",
+    "line": 16
+  },
+  {
+    "source": "app.services.android_updates",
+    "target": "app.db.session",
+    "line": 17
+  },
+  {
+    "source": "app.services.android_updates",
+    "target": "app.db.tables",
+    "line": 18
+  },
+  {
+    "source": "app.services.app_builder",
+    "target": "app.config",
+    "line": 9
+  },
+  {
+    "source": "app.services.app_builder",
+    "target": "app.models.chat",
+    "line": 10
+  },
+  {
+    "source": "app.services.app_builder",
+    "target": "app.services.chat_settings",
+    "line": 11
+  },
+  {
+    "source": "app.services.app_builder",
+    "target": "app.services.app_registry",
+    "line": 12
+  },
+  {
+    "source": "app.services.app_builder",
+    "target": "app.services.llm",
+    "line": 13
+  },
+  {
+    "source": "app.services.app_capabilities",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.services.app_capabilities",
+    "target": "app.db.session",
+    "line": 13
+  },
+  {
+    "source": "app.services.app_capabilities",
+    "target": "app.db.tables",
+    "line": 14
+  },
+  {
+    "source": "app.services.app_capabilities",
+    "target": "app.services.jarvis_devices",
+    "line": 15
+  },
+  {
+    "source": "app.services.app_capabilities",
+    "target": "app.services.auth",
+    "line": 16
+  },
+  {
+    "source": "app.services.app_catalog",
+    "target": "app.db.tables",
+    "line": 11
+  },
+  {
+    "source": "app.services.app_catalog",
+    "target": "app.services.app_capabilities",
+    "line": 12
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.db.session",
+    "line": 14
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.db.tables",
+    "line": 15
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.services.conversation_store",
+    "line": 16
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.services.app_catalog",
+    "line": 458
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.services.app_catalog",
+    "line": 479
+  },
+  {
+    "source": "app.services.app_registry",
+    "target": "app.db.tables",
+    "line": 494
+  },
+  {
+    "source": "app.services.app_verifier",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.services.app_verifier",
+    "target": "app.services.app_registry",
+    "line": 13
+  },
+  {
+    "source": "app.services.assistant_notes",
+    "target": "app.db.tables",
+    "line": 16
+  },
+  {
+    "source": "app.services.assistant_notes",
+    "target": "app.services.live_task_updates",
+    "line": 17
+  },
+  {
+    "source": "app.services.assistant_notes",
+    "target": "app.services.orchestration_visibility",
+    "line": 18
+  },
+  {
+    "source": "app.services.auth",
+    "target": "app.config",
+    "line": 11
+  },
+  {
+    "source": "app.services.brain_retrieval",
+    "target": "app.db.session",
+    "line": 10
+  },
+  {
+    "source": "app.services.brain_retrieval",
+    "target": "app.db.tables",
+    "line": 11
+  },
+  {
+    "source": "app.services.brain_retrieval",
+    "target": "app.services.knowledge_memory",
+    "line": 12
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.config",
+    "line": 10
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.models.chat",
+    "line": 11
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.models.settings",
+    "line": 12
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.agent_tools",
+    "line": 13
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.agent_runner",
+    "line": 14
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.app_registry",
+    "line": 15
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.chat_settings",
+    "line": 16
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.conversation_compaction",
+    "line": 17
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.conversation_read_model",
+    "line": 18
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.conversation_store",
+    "line": 19
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.conversation_timeline",
+    "line": 20
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.conversation_workspace",
+    "line": 21
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.run_supervisor",
+    "line": 22
+  },
+  {
+    "source": "app.services.chat_orchestrator",
+    "target": "app.services.llm",
+    "line": 23
+  },
+  {
+    "source": "app.services.chat_settings",
+    "target": "app.config",
+    "line": 6
+  },
+  {
+    "source": "app.services.chat_settings",
+    "target": "app.models.settings",
+    "line": 7
+  },
+  {
+    "source": "app.services.chat_settings",
+    "target": "app.services.conversation_store",
+    "line": 8
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 5
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 6
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 7
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 8
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 9
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 10
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 11
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 12
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 13
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 14
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 15
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 16
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 17
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 18
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools",
+    "line": 19
+  },
+  {
+    "source": "app.services.chat_tools",
+    "target": "app.services.agent_tools.registry",
+    "line": 20
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.db.repositories.tasks",
+    "line": 14
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.db.session",
+    "line": 15
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.db.tables",
+    "line": 16
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.task_orchestration",
+    "line": 17
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.windows_job",
+    "line": 18
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.orchestration_telemetry",
+    "line": 19
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 56
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 167
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 199
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 187
+  },
+  {
+    "source": "app.services.codex_orchestration_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 88
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.config",
+    "line": 14
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.agent_execution",
+    "line": 15
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_service",
+    "line": 21
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_workflows",
+    "line": 22
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_capabilities",
+    "line": 23
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.worker_tool_policy",
+    "line": 125
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_context",
+    "line": 150
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_semantic_compaction",
+    "line": 151
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 153
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_project_tools",
+    "line": 183
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_project_tools",
+    "line": 140
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.jarvis_tasks.codex_probe",
+    "line": 228
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.native_worker",
+    "line": 261
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.native_worker",
+    "line": 428
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.worker_tool_policy",
+    "line": 429
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 206
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.native_worker",
+    "line": 259
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.native_worker",
+    "line": 472
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.task_service",
+    "line": 577
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.worker_tool_policy",
+    "line": 483
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.orchestration_telemetry",
+    "line": 505
+  },
+  {
+    "source": "app.services.codex_task_runtime",
+    "target": "app.services.runtime_auth_routes",
+    "line": 519
+  },
+  {
+    "source": "app.services.connector_permissions",
+    "target": "app.db.session",
+    "line": 14
+  },
+  {
+    "source": "app.services.connector_permissions",
+    "target": "app.db.tables",
+    "line": 15
+  },
+  {
+    "source": "app.services.connector_permissions",
+    "target": "app.services.task_service",
+    "line": 52
+  },
+  {
+    "source": "app.services.connector_permissions",
+    "target": "app.services.task_service",
+    "line": 98
+  },
+  {
+    "source": "app.services.conversation_compaction",
+    "target": "app.config",
+    "line": 6
+  },
+  {
+    "source": "app.services.conversation_compaction",
+    "target": "app.models.chat",
+    "line": 7
+  },
+  {
+    "source": "app.services.conversation_compaction",
+    "target": "app.services.conversation_read_model",
+    "line": 8
+  },
+  {
+    "source": "app.services.conversation_compaction",
+    "target": "app.services.conversation_store",
+    "line": 9
+  },
+  {
+    "source": "app.services.conversation_compaction",
+    "target": "app.services.llm",
+    "line": 10
+  },
+  {
+    "source": "app.services.conversation_observer",
+    "target": "app.config",
+    "line": 19
+  },
+  {
+    "source": "app.services.conversation_observer",
+    "target": "app.db.session",
+    "line": 20
+  },
+  {
+    "source": "app.services.conversation_observer",
+    "target": "app.db.tables",
+    "line": 21
+  },
+  {
+    "source": "app.services.conversation_observer",
+    "target": "app.db.repositories.jarvis",
+    "line": 22
+  },
+  {
+    "source": "app.services.conversation_observer",
+    "target": "app.services.assistant_notes",
+    "line": 395
+  },
+  {
+    "source": "app.services.conversation_observer",
+    "target": "app.services.task_presentations",
+    "line": 540
+  },
+  {
+    "source": "app.services.conversation_read_model",
+    "target": "app.services.agent_metadata",
+    "line": 3
+  },
+  {
+    "source": "app.services.conversation_read_model",
+    "target": "app.presenters.conversations",
+    "line": 4
+  },
+  {
+    "source": "app.services.conversation_read_model",
+    "target": "app.services.chat_settings",
+    "line": 9
+  },
+  {
+    "source": "app.services.conversation_read_model",
+    "target": "app.services.conversation_store",
+    "line": 10
+  },
+  {
+    "source": "app.services.conversation_read_model",
+    "target": "app.services.conversation_timeline",
+    "line": 11
+  },
+  {
+    "source": "app.services.conversation_read_model",
+    "target": "app.services.conversation_workspace",
+    "line": 16
+  },
+  {
+    "source": "app.services.conversation_store",
+    "target": "app.db.repositories.conversations",
+    "line": 9
+  },
+  {
+    "source": "app.services.conversation_store",
+    "target": "app.db.session",
+    "line": 10
+  },
+  {
+    "source": "app.services.conversation_store",
+    "target": "app.db.tables",
+    "line": 11
+  },
+  {
+    "source": "app.services.conversation_store",
+    "target": "app.services.conversation_title_service",
+    "line": 12
+  },
+  {
+    "source": "app.services.conversation_store",
+    "target": "app.services.conversation_timeline",
+    "line": 13
+  },
+  {
+    "source": "app.services.conversation_store",
+    "target": "app.services.conversation_workspace",
+    "line": 19
+  },
+  {
+    "source": "app.services.conversation_title_service",
+    "target": "app.db.repositories.conversations",
+    "line": 8
+  },
+  {
+    "source": "app.services.conversation_title_service",
+    "target": "app.db.session",
+    "line": 9
+  },
+  {
+    "source": "app.services.conversation_title_service",
+    "target": "app.models.chat",
+    "line": 10
+  },
+  {
+    "source": "app.services.conversation_title_service",
+    "target": "app.services.llm",
+    "line": 11
+  },
+  {
+    "source": "app.services.conversation_title_service",
+    "target": "app.services.chat_settings",
+    "line": 34
+  },
+  {
+    "source": "app.services.conversation_workspace",
+    "target": "app.config",
+    "line": 7
+  },
+  {
+    "source": "app.services.diagnostics",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.services.history_retrieval",
+    "target": "app.db.session",
+    "line": 12
+  },
+  {
+    "source": "app.services.history_retrieval",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.services.jarvis_benchmark",
+    "target": "app.config",
+    "line": 14
+  },
+  {
+    "source": "app.services.jarvis_benchmark",
+    "target": "app.models.chat",
+    "line": 15
+  },
+  {
+    "source": "app.services.jarvis_benchmark",
+    "target": "app.services.agent_model_verifier",
+    "line": 16
+  },
+  {
+    "source": "app.services.jarvis_benchmark",
+    "target": "app.services.agent_prompt_builder",
+    "line": 17
+  },
+  {
+    "source": "app.services.jarvis_benchmark",
+    "target": "app.services.agent_tools",
+    "line": 18
+  },
+  {
+    "source": "app.services.jarvis_benchmark",
+    "target": "app.services.llm",
+    "line": 19
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.db.session",
+    "line": 12
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.config",
+    "line": 14
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.history_retrieval",
+    "line": 15
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.jarvis_preferences",
+    "line": 16
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.natural_task_resolver",
+    "line": 17
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.reminder_scheduler",
+    "line": 18
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_error_messages",
+    "line": 19
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_service",
+    "line": 20
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_capture",
+    "line": 21
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_workflows",
+    "line": 22
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_result_contract",
+    "line": 23
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.admission_timing",
+    "line": 24
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.live_admission_intents",
+    "line": 78
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_capture",
+    "line": 96
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_notification_preferences",
+    "line": 63
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.result_telemetry",
+    "line": 271
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.screen_look",
+    "line": 299
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.phone_display",
+    "line": 311
+  },
+  {
+    "source": "app.services.jarvis_brain",
+    "target": "app.services.task_presentations",
+    "line": 542
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.config",
+    "line": 15
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.db.repositories.conversations",
+    "line": 16
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.db.repositories.jarvis",
+    "line": 17
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.db.session",
+    "line": 18
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.db.tables",
+    "line": 19
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.jarvis_brain",
+    "line": 33
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.jarvis_live_telemetry",
+    "line": 34
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.task_error_messages",
+    "line": 35
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.jarvis_daily",
+    "line": 36
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.jarvis_time",
+    "line": 37
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.jarvis_wake",
+    "line": 38
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.jarvis_situation",
+    "line": 39
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.runtime_health",
+    "line": 40
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.task_presentations",
+    "line": 41
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.task_notifications",
+    "line": 42
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.voice_session_adapter",
+    "line": 43
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.screen_look",
+    "line": 2418
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services",
+    "line": 1390
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.task_capture",
+    "line": 1914
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services.live_request_context",
+    "line": 2499
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services",
+    "line": 550
+  },
+  {
+    "source": "app.services.jarvis_coordinator",
+    "target": "app.services",
+    "line": 888
+  },
+  {
+    "source": "app.services.jarvis_daily",
+    "target": "app.db.repositories.conversations",
+    "line": 13
+  },
+  {
+    "source": "app.services.jarvis_daily",
+    "target": "app.db.session",
+    "line": 14
+  },
+  {
+    "source": "app.services.jarvis_daily",
+    "target": "app.db.tables",
+    "line": 15
+  },
+  {
+    "source": "app.services.jarvis_daily",
+    "target": "app.services.conversation_store",
+    "line": 16
+  },
+  {
+    "source": "app.services.jarvis_daily",
+    "target": "app.services.conversation_workspace",
+    "line": 17
+  },
+  {
+    "source": "app.services.jarvis_devices",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.services.jarvis_devices",
+    "target": "app.db.session",
+    "line": 14
+  },
+  {
+    "source": "app.services.jarvis_devices",
+    "target": "app.db.tables",
+    "line": 15
+  },
+  {
+    "source": "app.services.jarvis_devices",
+    "target": "app.services.auth",
+    "line": 16
+  },
+  {
+    "source": "app.services.jarvis_live",
+    "target": "app.db.session",
+    "line": 14
+  },
+  {
+    "source": "app.services.jarvis_live",
+    "target": "app.db.tables",
+    "line": 15
+  },
+  {
+    "source": "app.services.jarvis_live",
+    "target": "app.services.auth",
+    "line": 16
+  },
+  {
+    "source": "app.services.jarvis_live",
+    "target": "app.services.jarvis_devices",
+    "line": 17
+  },
+  {
+    "source": "app.services.jarvis_live",
+    "target": "app.services.commit_signals",
+    "line": 18
+  },
+  {
+    "source": "app.services.jarvis_live_telemetry",
+    "target": "app.db.session",
+    "line": 11
+  },
+  {
+    "source": "app.services.jarvis_live_telemetry",
+    "target": "app.db.tables",
+    "line": 12
+  },
+  {
+    "source": "app.services.jarvis_preferences",
+    "target": "app.db.session",
+    "line": 7
+  },
+  {
+    "source": "app.services.jarvis_preferences",
+    "target": "app.db.tables",
+    "line": 8
+  },
+  {
+    "source": "app.services.jarvis_preferences",
+    "target": "app.services.jarvis_time",
+    "line": 9
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.config",
+    "line": 10
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.services.orchestration_visibility",
+    "line": 11
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.db.session",
+    "line": 12
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.services.jarvis_time",
+    "line": 27
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.services.runtime_health",
+    "line": 28
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.services.task_error_messages",
+    "line": 29
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.services.task_result_types",
+    "line": 30
+  },
+  {
+    "source": "app.services.jarvis_situation",
+    "target": "app.services.task_service",
+    "line": 31
+  },
+  {
+    "source": "app.services.jarvis_tool_catalog",
+    "target": "app.services.jarvis_brain",
+    "line": 7
+  },
+  {
+    "source": "app.services.jarvis_tool_catalog",
+    "target": "app.services.task_workflows",
+    "line": 8
+  },
+  {
+    "source": "app.services.jarvis_tool_catalog",
+    "target": "app.services.task_execution_preferences",
+    "line": 19
+  },
+  {
+    "source": "app.services.jarvis_tool_catalog",
+    "target": "app.services.task_result_contract",
+    "line": 20
+  },
+  {
+    "source": "app.services.knowledge_extractor",
+    "target": "app.services.conversation_store",
+    "line": 7
+  },
+  {
+    "source": "app.services.knowledge_memory",
+    "target": "app.config",
+    "line": 10
+  },
+  {
+    "source": "app.services.knowledge_memory",
+    "target": "app.services.conversation_store",
+    "line": 11
+  },
+  {
+    "source": "app.services.live_admission_intents",
+    "target": "app.db.session",
+    "line": 9
+  },
+  {
+    "source": "app.services.live_admission_intents",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.services.live_admission_intents",
+    "target": "app.services.admission_timing",
+    "line": 13
+  },
+  {
+    "source": "app.services.live_request_context",
+    "target": "app.db.session",
+    "line": 8
+  },
+  {
+    "source": "app.services.live_request_context",
+    "target": "app.db.tables",
+    "line": 9
+  },
+  {
+    "source": "app.services.llm",
+    "target": "app.config",
+    "line": 19
+  },
+  {
+    "source": "app.services.llm",
+    "target": "app.models.chat",
+    "line": 20
+  },
+  {
+    "source": "app.services.memory_review_store",
+    "target": "app.services.conversation_store",
+    "line": 3
+  },
+  {
+    "source": "app.services.native_research",
+    "target": "app.db.tables",
+    "line": 3
+  },
+  {
+    "source": "app.services.native_worker",
+    "target": "app.jarvis_tasks.codex_probe",
+    "line": 55
+  },
+  {
+    "source": "app.services.native_worker",
+    "target": "app.services.worker_tool_policy",
+    "line": 56
+  },
+  {
+    "source": "app.services.native_worker",
+    "target": "app.services.codex_task_runtime",
+    "line": 94
+  },
+  {
+    "source": "app.services.natural_task_resolver",
+    "target": "app.db.session",
+    "line": 10
+  },
+  {
+    "source": "app.services.natural_task_resolver",
+    "target": "app.db.tables",
+    "line": 11
+  },
+  {
+    "source": "app.services.natural_task_resolver",
+    "target": "app.services.task_statuses",
+    "line": 12
+  },
+  {
+    "source": "app.services.natural_task_resolver",
+    "target": "app.services.admission_timing",
+    "line": 13
+  },
+  {
+    "source": "app.services.notifications",
+    "target": "app.config",
+    "line": 9
+  },
+  {
+    "source": "app.services.notifications",
+    "target": "app.db.session",
+    "line": 10
+  },
+  {
+    "source": "app.services.notifications",
+    "target": "app.db.tables",
+    "line": 11
+  },
+  {
+    "source": "app.services.notifications",
+    "target": "app.services.task_notifications",
+    "line": 12
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.config",
+    "line": 18
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.jarvis_tool_catalog",
+    "line": 19
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.live_model_diagnostics",
+    "line": 20
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.voice_session_adapter",
+    "line": 21
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.screen_look",
+    "line": 29
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.live_task_updates",
+    "line": 438
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.live_task_updates",
+    "line": 1282
+  },
+  {
+    "source": "app.services.openai_live_adapter",
+    "target": "app.services.live_task_updates",
+    "line": 1411
+  },
+  {
+    "source": "app.services.orchestration_attention",
+    "target": "app.db.repositories.tasks",
+    "line": 4
+  },
+  {
+    "source": "app.services.orchestration_attention",
+    "target": "app.db.tables",
+    "line": 5
+  },
+  {
+    "source": "app.services.orchestration_attention",
+    "target": "app.services.task_presentations",
+    "line": 9
+  },
+  {
+    "source": "app.services.orchestration_authority",
+    "target": "app.db.tables",
+    "line": 11
+  },
+  {
+    "source": "app.services.orchestration_authority",
+    "target": "app.services.orchestration_context",
+    "line": 39
+  },
+  {
+    "source": "app.services.orchestration_context",
+    "target": "app.db.tables",
+    "line": 9
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.db.repositories.tasks",
+    "line": 8
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.db.session",
+    "line": 9
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.services.orchestration_authority",
+    "line": 11
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.services.windows_job",
+    "line": 12
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.services.task_orchestration",
+    "line": 26
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.db.tables",
+    "line": 118
+  },
+  {
+    "source": "app.services.orchestration_recovery",
+    "target": "app.services.codex_orchestration_runtime",
+    "line": 79
+  },
+  {
+    "source": "app.services.orchestration_telemetry",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.services.orchestration_visibility",
+    "target": "app.config",
+    "line": 4
+  },
+  {
+    "source": "app.services.orchestration_visibility",
+    "target": "app.db.tables",
+    "line": 5
+  },
+  {
+    "source": "app.services.phone_display",
+    "target": "app.db.session",
+    "line": 13
+  },
+  {
+    "source": "app.services.phone_display",
+    "target": "app.db.tables",
+    "line": 14
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.config",
+    "line": 10
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.db.repositories.tasks",
+    "line": 11
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.db.session",
+    "line": 12
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.db.tables",
+    "line": 13
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.services.task_presentations",
+    "line": 14
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.services.task_service",
+    "line": 15
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.services.jarvis_time",
+    "line": 16
+  },
+  {
+    "source": "app.services.reminder_scheduler",
+    "target": "app.services.runtime_health",
+    "line": 17
+  },
+  {
+    "source": "app.services.result_static",
+    "target": "app.api.results",
+    "line": 63
+  },
+  {
+    "source": "app.services.result_telemetry",
+    "target": "app.db.session",
+    "line": 24
+  },
+  {
+    "source": "app.services.result_telemetry",
+    "target": "app.db.session",
+    "line": 25
+  },
+  {
+    "source": "app.services.result_telemetry",
+    "target": "app.db.tables",
+    "line": 26
+  },
+  {
+    "source": "app.services.result_telemetry",
+    "target": "app.config",
+    "line": 27
+  },
+  {
+    "source": "app.services.result_telemetry",
+    "target": "app.services.admission_timing",
+    "line": 28
+  },
+  {
+    "source": "app.services.result_telemetry",
+    "target": "app.services.observation_queue",
+    "line": 29
+  },
+  {
+    "source": "app.services.run_lifecycle",
+    "target": "app.services.conversation_store",
+    "line": 6
+  },
+  {
+    "source": "app.services.run_supervisor",
+    "target": "app.services.agent_runner",
+    "line": 41
+  },
+  {
+    "source": "app.services.run_supervisor",
+    "target": "app.services.run_lifecycle",
+    "line": 76
+  },
+  {
+    "source": "app.services.runtime_auth_routes",
+    "target": "app.config",
+    "line": 10
+  },
+  {
+    "source": "app.services.runtime_auth_routes",
+    "target": "app.db.session",
+    "line": 11
+  },
+  {
+    "source": "app.services.runtime_auth_routes",
+    "target": "app.db.tables",
+    "line": 12
+  },
+  {
+    "source": "app.services.runtime_auth_routes",
+    "target": "app.services.windows_job",
+    "line": 13
+  },
+  {
+    "source": "app.services.runtime_health",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.services.runtime_health",
+    "target": "app.db.session",
+    "line": 13
+  },
+  {
+    "source": "app.services.runtime_health",
+    "target": "app.db.tables",
+    "line": 14
+  },
+  {
+    "source": "app.services.runtime_health",
+    "target": "app.services.worker_coordinator",
+    "line": 181
+  },
+  {
+    "source": "app.services.screen_look",
+    "target": "app.db.session",
+    "line": 22
+  },
+  {
+    "source": "app.services.screen_look",
+    "target": "app.db.tables",
+    "line": 23
+  },
+  {
+    "source": "app.services.screen_look",
+    "target": "app.services.commit_signals",
+    "line": 24
+  },
+  {
+    "source": "app.services.screen_look",
+    "target": "app.services.task_capture",
+    "line": 25
+  },
+  {
+    "source": "app.services.task_capture",
+    "target": "app.db.session",
+    "line": 11
+  },
+  {
+    "source": "app.services.task_capture",
+    "target": "app.db.tables",
+    "line": 12
+  },
+  {
+    "source": "app.services.task_capture",
+    "target": "app.services.result_telemetry",
+    "line": 13
+  },
+  {
+    "source": "app.services.task_capture",
+    "target": "app.services.admission_timing",
+    "line": 14
+  },
+  {
+    "source": "app.services.task_capture",
+    "target": "app.services.commit_signals",
+    "line": 15
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.config",
+    "line": 15
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.db.session",
+    "line": 16
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.db.tables",
+    "line": 17
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.db.repositories.tasks",
+    "line": 21
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.services.task_service",
+    "line": 22
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.services.task_semantic_compaction",
+    "line": 78
+  },
+  {
+    "source": "app.services.task_context",
+    "target": "app.services.task_result_contract",
+    "line": 114
+  },
+  {
+    "source": "app.services.task_context_upload",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.services.task_context_upload",
+    "target": "app.db.repositories.tasks",
+    "line": 13
+  },
+  {
+    "source": "app.services.task_context_upload",
+    "target": "app.db.session",
+    "line": 14
+  },
+  {
+    "source": "app.services.task_context_upload",
+    "target": "app.db.tables",
+    "line": 15
+  },
+  {
+    "source": "app.services.task_context_upload",
+    "target": "app.services.task_service",
+    "line": 19
+  },
+  {
+    "source": "app.services.task_context_upload",
+    "target": "app.services.task_results",
+    "line": 20
+  },
+  {
+    "source": "app.services.task_delegation",
+    "target": "app.services.conversation_store",
+    "line": 4
+  },
+  {
+    "source": "app.services.task_delegation",
+    "target": "app.services.conversation_timeline",
+    "line": 5
+  },
+  {
+    "source": "app.services.task_delegation",
+    "target": "app.services.task_service",
+    "line": 6
+  },
+  {
+    "source": "app.services.task_delegation",
+    "target": "app.services.task_update_policy",
+    "line": 7
+  },
+  {
+    "source": "app.services.task_execution_preferences",
+    "target": "app.config",
+    "line": 2
+  },
+  {
+    "source": "app.services.task_execution_preferences",
+    "target": "app.services.worker_tool_policy",
+    "line": 37
+  },
+  {
+    "source": "app.services.task_notification_preferences",
+    "target": "app.db.tables",
+    "line": 3
+  },
+  {
+    "source": "app.services.task_notification_preferences",
+    "target": "app.db.repositories.tasks",
+    "line": 4
+  },
+  {
+    "source": "app.services.task_notification_preferences",
+    "target": "app.services.task_update_policy",
+    "line": 5
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.config",
+    "line": 15
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.services.orchestration_visibility",
+    "line": 16
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.db.session",
+    "line": 17
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.db.tables",
+    "line": 18
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.services.task_error_messages",
+    "line": 29
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.services.result_telemetry",
+    "line": 30
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.services.task_presentations",
+    "line": 390
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.services.result_telemetry",
+    "line": 128
+  },
+  {
+    "source": "app.services.task_notifications",
+    "target": "app.services.result_telemetry",
+    "line": 394
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.config",
+    "line": 21
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.db.repositories.tasks",
+    "line": 22
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.db.session",
+    "line": 23
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.db.tables",
+    "line": 24
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_authority",
+    "line": 28
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.runtime_health",
+    "line": 31
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.windows_job",
+    "line": 32
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_telemetry",
+    "line": 83
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.task_service",
+    "line": 117
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.worker_coordinator",
+    "line": 218
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_recovery",
+    "line": 219
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.task_presentations",
+    "line": 236
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_telemetry",
+    "line": 237
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_context",
+    "line": 356
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.task_execution_preferences",
+    "line": 357
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.jarvis_situation",
+    "line": 358
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_recovery",
+    "line": 426
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_context",
+    "line": 131
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_telemetry",
+    "line": 506
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.codex_orchestration_runtime",
+    "line": 577
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_telemetry",
+    "line": 555
+  },
+  {
+    "source": "app.services.task_orchestration",
+    "target": "app.services.orchestration_attention",
+    "line": 190
+  },
+  {
+    "source": "app.services.task_pool_supervisor",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.services.task_pool_supervisor",
+    "target": "app.services.worker_coordinator",
+    "line": 13
+  },
+  {
+    "source": "app.services.task_pool_supervisor",
+    "target": "app.services.windows_job",
+    "line": 14
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.config",
+    "line": 16
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.db.repositories.jarvis",
+    "line": 18
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.db.session",
+    "line": 19
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.db.tables",
+    "line": 20
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.task_notifications",
+    "line": 31
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.task_error_messages",
+    "line": 32
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.runtime_health",
+    "line": 33
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.task_update_policy",
+    "line": 34
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.orchestration_visibility",
+    "line": 35
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.task_notification_preferences",
+    "line": 36
+  },
+  {
+    "source": "app.services.task_presentations",
+    "target": "app.services.task_orchestration",
+    "line": 131
+  },
+  {
+    "source": "app.services.task_project_tools",
+    "target": "app.config",
+    "line": 15
+  },
+  {
+    "source": "app.services.task_project_tools",
+    "target": "app.db.session",
+    "line": 16
+  },
+  {
+    "source": "app.services.task_project_tools",
+    "target": "app.db.tables",
+    "line": 17
+  },
+  {
+    "source": "app.services.task_project_tools",
+    "target": "app.services.task_service",
+    "line": 18
+  },
+  {
+    "source": "app.services.task_project_tools",
+    "target": "app.jarvis_tasks.codex_probe",
+    "line": 89
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.db.tables",
+    "line": 7
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.services.task_result_types",
+    "line": 8
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.services.admission_timing",
+    "line": 9
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.services.task_workflows",
+    "line": 67
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.db.tables",
+    "line": 85
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.db.tables",
+    "line": 103
+  },
+  {
+    "source": "app.services.task_result_contract",
+    "target": "app.db.tables",
+    "line": 125
+  },
+  {
+    "source": "app.services.task_results",
+    "target": "app.db.repositories.conversations",
+    "line": 9
+  },
+  {
+    "source": "app.services.task_results",
+    "target": "app.db.tables",
+    "line": 10
+  },
+  {
+    "source": "app.services.task_results",
+    "target": "app.services.app_catalog",
+    "line": 11
+  },
+  {
+    "source": "app.services.task_results",
+    "target": "app.services.task_result_types",
+    "line": 12
+  },
+  {
+    "source": "app.services.task_results",
+    "target": "app.services.result_telemetry",
+    "line": 38
+  },
+  {
+    "source": "app.services.task_semantic_compaction",
+    "target": "app.db.repositories.tasks",
+    "line": 16
+  },
+  {
+    "source": "app.services.task_semantic_compaction",
+    "target": "app.db.session",
+    "line": 17
+  },
+  {
+    "source": "app.services.task_semantic_compaction",
+    "target": "app.db.tables",
+    "line": 18
+  },
+  {
+    "source": "app.services.task_semantic_compaction",
+    "target": "app.services.task_service",
+    "line": 19
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.config",
+    "line": 17
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.admission_timing",
+    "line": 18
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.db.repositories.tasks",
+    "line": 19
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.db.session",
+    "line": 20
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.db.tables",
+    "line": 21
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_update_policy",
+    "line": 45
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_workflows",
+    "line": 50
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_result_types",
+    "line": 51
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_capture",
+    "line": 52
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.orchestration_authority",
+    "line": 53
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_execution_preferences",
+    "line": 54
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_results",
+    "line": 55
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_result_contract",
+    "line": 56
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.result_telemetry",
+    "line": 57
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_statuses",
+    "line": 58
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_notification_preferences",
+    "line": 339
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_notification_preferences",
+    "line": 1079
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.native_worker",
+    "line": 1268
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_notification_preferences",
+    "line": 1096
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.db.tables",
+    "line": 1113
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.orchestration_attention",
+    "line": 1114
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.native_research",
+    "line": 1755
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_results",
+    "line": 1757
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_result_contract",
+    "line": 585
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.db.tables",
+    "line": 698
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.orchestration_attention",
+    "line": 699
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_notifications",
+    "line": 1862
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_results",
+    "line": 2431
+  },
+  {
+    "source": "app.services.task_service",
+    "target": "app.services.task_results",
+    "line": 1849
+  },
+  {
+    "source": "app.services.task_worker",
+    "target": "app.config",
+    "line": 12
+  },
+  {
+    "source": "app.services.task_worker",
+    "target": "app.services.agent_execution",
+    "line": 13
+  },
+  {
+    "source": "app.services.task_worker",
+    "target": "app.services.task_service",
+    "line": 20
+  },
+  {
+    "source": "app.services.task_worker",
+    "target": "app.services.worker_coordinator",
+    "line": 21
+  },
+  {
+    "source": "app.services.task_worker",
+    "target": "app.services.task_context",
+    "line": 171
+  },
+  {
+    "source": "app.services.task_worker",
+    "target": "app.services.codex_task_runtime",
+    "line": 46
+  },
+  {
+    "source": "app.services.task_workflows",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.services.task_workflows",
+    "target": "app.services.task_capabilities",
+    "line": 14
+  },
+  {
+    "source": "app.services.task_workflows",
+    "target": "app.services.task_result_types",
+    "line": 15
+  },
+  {
+    "source": "app.services.task_workflows",
+    "target": "app.services.worker_tool_policy",
+    "line": 110
+  },
+  {
+    "source": "app.services.task_workflows",
+    "target": "app.services.task_execution_preferences",
+    "line": 166
+  },
+  {
+    "source": "app.services.task_workflows",
+    "target": "app.services.worker_tool_policy",
+    "line": 189
+  },
+  {
+    "source": "app.services.voice_session_adapter",
+    "target": "app.services.screen_look",
+    "line": 10
+  },
+  {
+    "source": "app.services.voice_session_adapter",
+    "target": "app.services.openai_live_adapter",
+    "line": 436
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.config",
+    "line": 15
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.db.repositories.tasks",
+    "line": 16
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.db.session",
+    "line": 17
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.db.tables",
+    "line": 18
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.services.windows_job",
+    "line": 31
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.services.resource_state",
+    "line": 32
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.services.task_operation_recovery",
+    "line": 33
+  },
+  {
+    "source": "app.services.worker_coordinator",
+    "target": "app.services.runtime_auth_routes",
+    "line": 913
+  },
+  {
+    "source": "app.services.worker_tool_policy",
+    "target": "app.db.session",
+    "line": 11
+  },
+  {
+    "source": "app.services.worker_tool_policy",
+    "target": "app.db.tables",
+    "line": 12
+  },
+  {
+    "source": "app.services.worker_tool_policy",
+    "target": "app.config",
+    "line": 13
+  },
+  {
+    "source": "app.services.worker_tool_policy",
+    "target": "app.services.task_service",
+    "line": 92
+  },
+  {
+    "source": "app.worker",
+    "target": "app.config",
+    "line": 8
+  },
+  {
+    "source": "app.worker",
+    "target": "app.db.session",
+    "line": 9
+  },
+  {
+    "source": "app.worker",
+    "target": "app.services.task_pool_supervisor",
+    "line": 10
+  },
+  {
+    "source": "app.worker",
+    "target": "app.services.task_worker",
+    "line": 11
+  },
+  {
+    "source": "app.worker",
+    "target": "app.services.windows_job",
+    "line": 55
+  }
+]

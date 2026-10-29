@@ -1,0 +1,261 @@
+{
+ "importing_modules": 20,
+ "private_names_imported": 67,
+ "top_sources": [
+  [
+   "app.services.agent_tools.base",
+   17
+  ],
+  [
+   "app.services.agent_run_support",
+   16
+  ],
+  [
+   "app.services.agent_prompt_builder",
+   15
+  ],
+  [
+   "app.jarvis_tasks.codex_probe",
+   6
+  ],
+  [
+   "app.services.agent_metadata",
+   5
+  ],
+  [
+   "app.services.codex_task_runtime",
+   4
+  ],
+  [
+   "app.services.conversation_store",
+   2
+  ],
+  [
+   "app.services.task_semantic_compaction",
+   1
+  ],
+  [
+   "app.services.worker_coordinator",
+   1
+  ]
+ ],
+ "edges": [
+  {
+   "importer": "app.jarvis_tasks.native_boundary",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_sandbox_checks"
+   ]
+  },
+  {
+   "importer": "app.jarvis_tasks.orchestration_host",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_probe_api_key"
+   ]
+  },
+  {
+   "importer": "app.jarvis_tasks.orchestration_host",
+   "source": "app.services.codex_task_runtime",
+   "names": [
+    "_json_value",
+    "_message_text",
+    "_walk_items"
+   ]
+  },
+  {
+   "importer": "app.services.agent_execution",
+   "source": "app.services.agent_prompt_builder",
+   "names": [
+    "_native_control_tool_definitions",
+    "_parse_native_tool_arguments"
+   ]
+  },
+  {
+   "importer": "app.services.agent_model_verifier",
+   "source": "app.services.agent_prompt_builder",
+   "names": [
+    "_native_control_tool_definitions"
+   ]
+  },
+  {
+   "importer": "app.services.agent_run_support",
+   "source": "app.services.agent_metadata",
+   "names": [
+    "_build_run_summary",
+    "_infer_app_file_read_path",
+    "_serialize_agent_metadata"
+   ]
+  },
+  {
+   "importer": "app.services.agent_run_support",
+   "source": "app.services.agent_prompt_builder",
+   "names": [
+    "_result_snippet"
+   ]
+  },
+  {
+   "importer": "app.services.agent_runner",
+   "source": "app.services.agent_metadata",
+   "names": [
+    "_normalize_task_metadata"
+   ]
+  },
+  {
+   "importer": "app.services.agent_runner",
+   "source": "app.services.agent_prompt_builder",
+   "names": [
+    "_app_context_block",
+    "_build_delegate_action_payload",
+    "_build_final_action_payload",
+    "_build_question_action_payload",
+    "_build_tool_action_payload",
+    "_conversation_context_block",
+    "_history_block",
+    "_native_control_tool_definitions",
+    "_native_retry_feedback",
+    "_parse_native_tool_arguments"
+   ]
+  },
+  {
+   "importer": "app.services.agent_runner",
+   "source": "app.services.agent_run_support",
+   "names": [
+    "_build_context",
+    "_build_metadata_checkpoint_state",
+    "_cancel_run",
+    "_clear_live_timeline_item",
+    "_complete_run",
+    "_emit_agent_stream_update",
+    "_fail_run",
+    "_handle_tool_action",
+    "_maybe_checkpoint_run_metadata",
+    "_pause_for_question",
+    "_record_llm_metrics",
+    "_record_llm_visible_output",
+    "_set_live_timeline_item",
+    "_timed_agent_phase",
+    "_update_run_metadata"
+   ]
+  },
+  {
+   "importer": "app.services.agent_runner_helpers",
+   "source": "app.services.agent_run_support",
+   "names": [
+    "_clear_live_timeline_item"
+   ]
+  },
+  {
+   "importer": "app.services.agent_tools.apps",
+   "source": "app.services.agent_tools.base",
+   "names": [
+    "_tool_property",
+    "_tool_schema"
+   ]
+  },
+  {
+   "importer": "app.services.agent_tools.execution",
+   "source": "app.services.agent_tools.base",
+   "names": [
+    "_display_path",
+    "_resolve_read_path",
+    "_resolve_write_path",
+    "_tool_property",
+    "_tool_schema",
+    "_truncate_output"
+   ]
+  },
+  {
+   "importer": "app.services.agent_tools.filesystem",
+   "source": "app.services.agent_tools.base",
+   "names": [
+    "_display_path",
+    "_resolve_read_path",
+    "_resolve_write_path",
+    "_tool_property",
+    "_tool_schema",
+    "_truncate_output"
+   ]
+  },
+  {
+   "importer": "app.services.agent_tools.retrieval",
+   "source": "app.services.agent_tools.base",
+   "names": [
+    "_tool_schema"
+   ]
+  },
+  {
+   "importer": "app.services.agent_tools.tasks",
+   "source": "app.services.agent_tools.base",
+   "names": [
+    "_tool_property",
+    "_tool_schema"
+   ]
+  },
+  {
+   "importer": "app.services.codex_task_runtime",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_sandbox_checks"
+   ]
+  },
+  {
+   "importer": "app.services.conversation_read_model",
+   "source": "app.services.agent_metadata",
+   "names": [
+    "_normalize_task_metadata"
+   ]
+  },
+  {
+   "importer": "app.services.jarvis_benchmark",
+   "source": "app.services.agent_prompt_builder",
+   "names": [
+    "_native_control_tool_definitions"
+   ]
+  },
+  {
+   "importer": "app.services.jarvis_daily",
+   "source": "app.services.conversation_store",
+   "names": [
+    "_conversation_record",
+    "_message_record"
+   ]
+  },
+  {
+   "importer": "app.services.native_worker",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_command_exec"
+   ]
+  },
+  {
+   "importer": "app.services.native_worker",
+   "source": "app.services.codex_task_runtime",
+   "names": [
+    "_json_value"
+   ]
+  },
+  {
+   "importer": "app.services.task_context",
+   "source": "app.services.task_semantic_compaction",
+   "names": [
+    "_summary_payload"
+   ]
+  },
+  {
+   "importer": "app.services.task_orchestration",
+   "source": "app.services.worker_coordinator",
+   "names": [
+    "_supervisor_owner_has_exited"
+   ]
+  },
+  {
+   "importer": "app.services.task_project_tools",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_command_exec",
+    "_sandbox_checks"
+   ]
+  }
+ ]
+}

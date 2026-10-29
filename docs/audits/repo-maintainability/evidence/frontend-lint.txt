@@ -1,0 +1,13 @@
+
+> frontend@0.1.0 lint
+> eslint
+
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\server\chunks\ssr\node_modules_06f3fc_._.js as it exceeds the max of 500KB.
+(node:37996) ESLintEnvWarning: /* eslint-env */ comments are no longer recognized when linting with flat config and will be reported as errors as of v10.0.0. Replace them with /* global */ comments or define globals in your config file. See https://eslint.org/docs/latest/use/configure/migration-guide#eslint-env-configuration-comments for details. Found in C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\server\chunks\ssr\node_modules_06f3fc_._.js at line 10667.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\server\chunks\ssr\node_modules_0d8mrg7._.js as it exceeds the max of 500KB.
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\server\chunks\ssr\node_modules_next_dist_esm_00xse_0._.js as it exceeds the max of 500KB.
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\static\chunks\node_modules_0o5yl11._.js as it exceeds the max of 500KB.
+(node:37996) ESLintEnvWarning: /* eslint-env */ comments are no longer recognized when linting with flat config and will be reported as errors as of v10.0.0. Replace them with /* global */ comments or define globals in your config file. See https://eslint.org/docs/latest/use/configure/migration-guide#eslint-env-configuration-comments for details. Found in C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\static\chunks\node_modules_0o5yl11._.js at line 8323.
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\static\chunks\node_modules_03i__67._.js as it exceeds the max of 500KB.
+[BABEL] Note: The code generator has deoptimised the styling of C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\.next-jarvis-agent-test\dev\static\chunks\node_modules_next_dist_compiled_next-devtools_index_0553esy.js as it exceeds the max of 500KB.

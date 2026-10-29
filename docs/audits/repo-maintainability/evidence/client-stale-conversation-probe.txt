@@ -1,0 +1,20 @@
+{
+  "source": "frontend\\lib\\use-conversation-detail.ts",
+  "afterNewer": {
+    "activeConversation": "B",
+    "messages": [
+      {
+        "id": "B"
+      }
+    ]
+  },
+  "afterOlder": {
+    "activeConversation": "A",
+    "messages": [
+      {
+        "id": "A"
+      }
+    ]
+  },
+  "defectReproduced": true
+}

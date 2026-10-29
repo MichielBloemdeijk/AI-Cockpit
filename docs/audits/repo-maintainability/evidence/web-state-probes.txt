@@ -1,0 +1,20 @@
+[
+  {
+    "probe": "wake cleanup supersession",
+    "beforeOldCleanup": "ready",
+    "afterOldCleanup": "failed",
+    "defectReproduced": true
+  },
+  {
+    "probe": "browser Stop audio ordering",
+    "stoppedWhileBackendClosePending": false,
+    "stoppedAfterBackendClose": true,
+    "defectReproduced": true
+  },
+  {
+    "probe": "partial ONNX model initialization",
+    "createdSessions": 3,
+    "releasedSessions": 0,
+    "defectReproduced": true
+  }
+]

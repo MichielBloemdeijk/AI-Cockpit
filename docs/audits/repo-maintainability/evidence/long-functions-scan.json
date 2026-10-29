@@ -1,0 +1,202 @@
+{
+ "threshold": 150,
+ "count": 28,
+ "functions": [
+  {
+   "path": "backend/app/services/jarvis_coordinator.py",
+   "function": "handle_provider_event",
+   "line": 1533,
+   "lines": 542,
+   "branch_nodes": 79
+  },
+  {
+   "path": "backend/app/services/codex_task_runtime.py",
+   "function": "execute",
+   "line": 112,
+   "lines": 481,
+   "branch_nodes": 60
+  },
+  {
+   "path": "backend/app/services/jarvis_brain.py",
+   "function": "_execute",
+   "line": 113,
+   "lines": 480,
+   "branch_nodes": 39
+  },
+  {
+   "path": "backend/app/services/agent_runner.py",
+   "function": "_request_native_turn",
+   "line": 149,
+   "lines": 388,
+   "branch_nodes": 30
+  },
+  {
+   "path": "backend/app/services/jarvis_coordinator.py",
+   "function": "_queue_controlled_response",
+   "line": 709,
+   "lines": 351,
+   "branch_nodes": 21
+  },
+  {
+   "path": "backend/app/services/jarvis_tool_catalog.py",
+   "function": "_canonical_tools",
+   "line": 18,
+   "lines": 296,
+   "branch_nodes": 6
+  },
+  {
+   "path": "backend/app/jarvis_tasks/codex_probe.py",
+   "function": "run_codex_probe",
+   "line": 1087,
+   "lines": 288,
+   "branch_nodes": 8
+  },
+  {
+   "path": "backend/app/services/agent_runner.py",
+   "function": "continue_run",
+   "line": 538,
+   "lines": 282,
+   "branch_nodes": 29
+  },
+  {
+   "path": "backend/app/services/worker_coordinator.py",
+   "function": "worker_exited",
+   "line": 656,
+   "lines": 260,
+   "branch_nodes": 16
+  },
+  {
+   "path": "backend/app/services/jarvis_coordinator.py",
+   "function": "bootstrap_controller",
+   "line": 1215,
+   "lines": 255,
+   "branch_nodes": 17
+  },
+  {
+   "path": "backend/app/services/task_service.py",
+   "function": "complete",
+   "line": 1627,
+   "lines": 255,
+   "branch_nodes": 37
+  },
+  {
+   "path": "backend/app/services/agent_run_support.py",
+   "function": "_handle_tool_action",
+   "line": 507,
+   "lines": 244,
+   "branch_nodes": 7
+  },
+  {
+   "path": "backend/app/services/jarvis_situation.py",
+   "function": "project_in_session",
+   "line": 96,
+   "lines": 244,
+   "branch_nodes": 8
+  },
+  {
+   "path": "backend/app/services/worker_coordinator.py",
+   "function": "_assign_next",
+   "line": 1045,
+   "lines": 242,
+   "branch_nodes": 13
+  },
+  {
+   "path": "backend/app/jarvis_tasks/codex_probe.py",
+   "function": "_live_session_checks",
+   "line": 814,
+   "lines": 221,
+   "branch_nodes": 13
+  },
+  {
+   "path": "backend/app/services/task_service.py",
+   "function": "control",
+   "line": 714,
+   "lines": 217,
+   "branch_nodes": 30
+  },
+  {
+   "path": "backend/app/services/llm.py",
+   "function": "chat_completion_stream_response",
+   "line": 1110,
+   "lines": 210,
+   "branch_nodes": 29
+  },
+  {
+   "path": "backend/app/services/task_presentations.py",
+   "function": "_project_batch",
+   "line": 172,
+   "lines": 202,
+   "branch_nodes": 28
+  },
+  {
+   "path": "backend/app/jarvis_tasks/codex_probe.py",
+   "function": "_workflow_boundary_checks",
+   "line": 616,
+   "lines": 196,
+   "branch_nodes": 7
+  },
+  {
+   "path": "backend/app/services/chat_orchestrator.py",
+   "function": "run_council_response",
+   "line": 691,
+   "lines": 195,
+   "branch_nodes": 2
+  },
+  {
+   "path": "backend/app/services/task_service.py",
+   "function": "continue_task",
+   "line": 519,
+   "lines": 194,
+   "branch_nodes": 25
+  },
+  {
+   "path": "backend/app/services/agent_tools/execution.py",
+   "function": "_python_guard_script",
+   "line": 99,
+   "lines": 190,
+   "branch_nodes": 0
+  },
+  {
+   "path": "backend/app/services/openai_live_adapter.py",
+   "function": "_handle_event",
+   "line": 562,
+   "lines": 182,
+   "branch_nodes": 29
+  },
+  {
+   "path": "backend/app/jarvis_tasks/task_mcp.py",
+   "function": "_call",
+   "line": 180,
+   "lines": 181,
+   "branch_nodes": 36
+  },
+  {
+   "path": "backend/app/services/jarvis_coordinator.py",
+   "function": "_execute_shell_call",
+   "line": 2435,
+   "lines": 170,
+   "branch_nodes": 17
+  },
+  {
+   "path": "backend/app/services/task_context.py",
+   "function": "portable_context",
+   "line": 31,
+   "lines": 165,
+   "branch_nodes": 7
+  },
+  {
+   "path": "backend/app/services/task_presentations.py",
+   "function": "reserve_in_session",
+   "line": 522,
+   "lines": 160,
+   "branch_nodes": 13
+  },
+  {
+   "path": "backend/app/jarvis_tasks/acceptance.py",
+   "function": "run_acceptance",
+   "line": 457,
+   "lines": 159,
+   "branch_nodes": 32
+  }
+ ]
+}

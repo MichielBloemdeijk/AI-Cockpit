@@ -1,0 +1,163 @@
+[
+  {
+    "path": "frontend/lib/use-conversation-detail.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        29,
+        121
+      ]
+    ],
+    "notes": "Loader and selection effect (C01, re-verified); legacy transient-message filter (I05)."
+  },
+  {
+    "path": "frontend/lib/use-conversation-actions.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        223,
+        300
+      ],
+      [
+        285,
+        480
+      ]
+    ],
+    "notes": "sendMessage stream path. Stream callbacks write events/messages/status without checking the conversation is still selected; onMetadata forces selection to the streamed conversation and branch 'main' although the request used activeBranchKey. Two live-content sources (chunk vs agent_stream) arbitrated through refs. C01 addendum."
+  },
+  {
+    "path": "frontend/lib/conversation-feed.ts",
+    "review_depth": "complete",
+    "lines_read": [
+      [
+        1,
+        79
+      ]
+    ],
+    "notes": "Timeline mapping with pre-timeline fallback to chat-history.ts (I05)."
+  },
+  {
+    "path": "frontend/lib/jarvis-wake-runtime.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        94,
+        200
+      ],
+      [
+        340,
+        380
+      ]
+    ],
+    "notes": "fail() publishes 'failed' after awaiting cleanup without re-checking the operation (C10, reproduced)."
+  },
+  {
+    "path": "frontend/lib/jarvis-live.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        403,
+        440
+      ],
+      [
+        650,
+        695
+      ]
+    ],
+    "notes": "stop()/dispose(): backend DELETE is awaited before the data channel, peer connection and microphone tracks are closed (C11, reproduced)."
+  },
+  {
+    "path": "frontend/lib/jarvis-hey-buddy-inference.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        60
+      ]
+    ],
+    "notes": "create() builds four sessions with Promise.all and releases none if one fails (C12, reproduced)."
+  },
+  {
+    "path": "frontend/lib/api.ts",
+    "review_depth": "targeted",
+    "lines_read": [
+      [
+        1095,
+        1103
+      ]
+    ],
+    "notes": "closeJarvisLiveSession: raw fetch, no timeout (feeds C11; C09 covers the general pattern)."
+  },
+  {
+    "path": "frontend/lib/jarvis-wake-engine.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        330
+      ],
+      [
+        560,
+        600
+      ]
+    ],
+    "notes": "Options/state and both push paths. Two engines in one class: 17 split* fields for the production path and a full legacy analyze path whose only caller is jarvis-wake-engine.test.ts (C13). Split path emits every post-wake sample through both onCandidateAudio and onCandidateChunk."
+  },
+  {
+    "path": "frontend/lib/jarvis-activation-audio.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        100
+      ]
+    ],
+    "notes": "Types and ownership class. JarvisCandidateAudio keeps 'compatibility-only' preRoll/endpoint fields read only by jarvis-wake-runtime.test.ts (C13)."
+  },
+  {
+    "path": "frontend/lib/agent-stream-state.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        1,
+        20
+      ]
+    ],
+    "notes": "Status builders; isLowSignalToolIntentSummary differs from the backend's _is_low_signal_tool_intent_summary (I05 addendum)."
+  },
+  {
+    "path": "frontend/lib/agent-event-presenter.ts",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Function outline. Most exports are consumed only by chat-history.ts, the pre-timeline reconstruction (I05)."
+  },
+  {
+    "path": "frontend/lib/chat-history.ts",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Size and caller only; recommended for removal in I05."
+  },
+  {
+    "path": "frontend/components/**, frontend/app/(app)/settings/**",
+    "review_depth": "structural",
+    "lines_read": [],
+    "notes": "Unreferenced-module scan over components/lib: AgentStatusCard.tsx is test-only (C08 list). Settings pages skimmed: independent fetch effects with swallowed errors (24 silent catches across app/lib; many are intentional cleanup)."
+  },
+  {
+    "path": "frontend/**/*.test.ts(x)",
+    "review_depth": "inventory",
+    "lines_read": [],
+    "notes": "43 test files; run results reused from the first pass."
+  },
+  {
+    "path": "frontend/lib/jarvis-wake-worker.ts",
+    "review_depth": "partial",
+    "lines_read": [
+      [
+        75,
+        100
+      ]
+    ],
+    "notes": "Worker posts both 'candidate_audio' and 'candidate_chunk' for the same samples (C13)."
+  }
+]

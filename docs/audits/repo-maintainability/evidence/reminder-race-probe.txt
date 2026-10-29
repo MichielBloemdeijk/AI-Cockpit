@@ -1,0 +1,6 @@
+{
+ "scheduler_reported_resume": true,
+ "concurrently_committed_status": "cancelled",
+ "final_status": "completed",
+ "lost_update": true
+}

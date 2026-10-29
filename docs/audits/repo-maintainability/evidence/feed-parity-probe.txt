@@ -1,0 +1,14 @@
+{
+  "legacy_path": {
+    "council_panel": true,
+    "usage_shown": true,
+    "task_link": true,
+    "user_branchable_flag": true
+  },
+  "timeline_path": {
+    "council_panel": false,
+    "usage_shown": false,
+    "task_link": false
+  },
+  "regression": true
+}

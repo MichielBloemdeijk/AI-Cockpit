@@ -1,0 +1,89 @@
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\app\link-phone\page.tsx
+  14:7  error  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\app\link-phone\page.tsx:14:7
+  12 |     // outside HTTP requests, access logs and referrers.
+  13 |     if (/^\d{6}$/.test(code) && server === window.location.origin) {
+> 14 |       setDeepLink(`jarvis://pair?${new URLSearchParams({ server, code })}`);
+     |       ^^^^^^^^^^^ Avoid calling setState() directly within an effect
+  15 |     }
+  16 |   }, []);
+  17 |   return <main className="mx-auto max-w-md space-y-5 p-8">  react-hooks/set-state-in-effect
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\app\results\ResultScreen.tsx
+  84:6  warning  React Hook useEffect has a missing dependency: 'result'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\components\LinkPhone.tsx
+  40:23  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\components\ResultCollection.tsx
+  36:50  warning  The ref value 'generation.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'generation.current' to a variable inside the effect, and use that variable in the cleanup function  react-hooks/exhaustive-deps
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\e2e\announcement-eval.mjs
+  26:5  warning  'currentState' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\lib\jarvis-phone-voice.ts
+  61:26  warning  '_options' is defined but never used  @typescript-eslint/no-unused-vars
+  89:22  warning  '_event' is defined but never used    @typescript-eslint/no-unused-vars
+  90:25  warning  '_state' is defined but never used    @typescript-eslint/no-unused-vars
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\lib\jarvis-playback-evidence.test.ts
+   9:29  warning  '_id' is defined but never used       @typescript-eslint/no-unused-vars
+   9:42  warning  '_payload' is defined but never used  @typescript-eslint/no-unused-vars
+  27:29  warning  '_id' is defined but never used       @typescript-eslint/no-unused-vars
+  27:42  warning  '_payload' is defined but never used  @typescript-eslint/no-unused-vars
+  41:29  warning  '_id' is defined but never used       @typescript-eslint/no-unused-vars
+  41:42  warning  '_payload' is defined but never used  @typescript-eslint/no-unused-vars
+  61:29  warning  '_id' is defined but never used       @typescript-eslint/no-unused-vars
+  61:42  warning  '_payload' is defined but never used  @typescript-eslint/no-unused-vars
+  92:29  warning  '_id' is defined but never used       @typescript-eslint/no-unused-vars
+  92:42  warning  '_payload' is defined but never used  @typescript-eslint/no-unused-vars
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\lib\result-telemetry.ts
+  10:68  warning  '_revision' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\result-export\app\result-shell\page.tsx
+  10:16  error  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\result-export\app\result-shell\page.tsx:10:16
+   8 |   useEffect(() => {
+   9 |     const match = /^\/results\/([^/]+)\/?$/.exec(window.location.pathname);
+> 10 |     if (match) setPublicId(decodeURIComponent(match[1]));
+     |                ^^^^^^^^^^^ Avoid calling setState() directly within an effect
+  11 |   }, []);
+  12 |   return publicId ? <ResultScreen publicId={publicId} /> : <main className="p-8" role="status">Loading resultâ€¦</main>;
+  13 | }  react-hooks/set-state-in-effect
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\result-export\app\task-shell\page.tsx
+  12:13  error  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+C:\Users\Sander\Documents\Repos\AI-Cockpit\frontend\result-export\app\task-shell\page.tsx:12:13
+  10 |     const match = /^\/tasks\/([^/]+)\/?$/.exec(window.location.pathname);
+  11 |     if (match) {
+> 12 |       try { setParams(Promise.resolve({ taskId: decodeURIComponent(match[1]) })); }
+     |             ^^^^^^^^^ Avoid calling setState() directly within an effect
+  13 |       catch { /* Malformed path: no private data request. */ }
+  14 |     }
+  15 |   }, []);  react-hooks/set-state-in-effect
+
+âœ– 21 problems (3 errors, 18 warnings)
+

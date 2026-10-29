@@ -1,0 +1,121 @@
+{
+  "autogenerate_operation_counts": {
+    "remove_table": 11,
+    "remove_index": 11,
+    "add_constraint": 6,
+    "add_index": 6,
+    "remove_constraint": 3,
+    "remove_fk": 1,
+    "add_fk": 8
+  },
+  "metadata_foreign_keys_missing_or_different": [
+    {
+      "table": "task_attempts",
+      "columns": [
+        "execution_run_id"
+      ],
+      "target": "task_execution_runs",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "CASCADE"
+    },
+    {
+      "table": "task_attempts",
+      "columns": [
+        "parent_attempt_id"
+      ],
+      "target": "task_attempts",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "SET NULL"
+    },
+    {
+      "table": "resource_leases",
+      "columns": [
+        "task_id"
+      ],
+      "target": "tasks",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "CASCADE"
+    },
+    {
+      "table": "resource_leases",
+      "columns": [
+        "execution_run_id"
+      ],
+      "target": "task_execution_runs",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "CASCADE"
+    },
+    {
+      "table": "task_events",
+      "columns": [
+        "execution_run_id"
+      ],
+      "target": "task_execution_runs",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "SET NULL"
+    },
+    {
+      "table": "task_artifacts",
+      "columns": [
+        "execution_run_id"
+      ],
+      "target": "task_execution_runs",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "SET NULL"
+    },
+    {
+      "table": "task_questions",
+      "columns": [
+        "asking_run_id"
+      ],
+      "target": "task_execution_runs",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "SET NULL"
+    },
+    {
+      "table": "notification_outbox",
+      "columns": [
+        "task_event_id"
+      ],
+      "target": "task_events",
+      "target_columns": [
+        "id"
+      ],
+      "ondelete": "CASCADE"
+    }
+  ],
+  "orphan_artifact_run_accepted_with_foreign_keys_on": true,
+  "warnings": [],
+  "foreign_key_check_before_probe": [],
+  "triggers": [
+    "jarvis_live_conversation_insert",
+    "jarvis_live_session_insert",
+    "jarvis_live_task_insert",
+    "recall_documents_ad",
+    "recall_documents_ai",
+    "recall_documents_au",
+    "recall_memory_insert",
+    "recall_memory_update",
+    "recall_message_insert",
+    "recall_question_insert",
+    "recall_question_update",
+    "recall_task_event_insert",
+    "recall_task_insert",
+    "recall_task_update"
+  ],
+  "table_count": 71
+}

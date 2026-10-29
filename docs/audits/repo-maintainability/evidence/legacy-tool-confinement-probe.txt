@@ -1,0 +1,5 @@
+{
+ "python_builtin_open_blocked": true,
+ "python_io_open_escaped": true,
+ "shell_python_escaped": true
+}
