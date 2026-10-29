@@ -78,6 +78,7 @@ interface PreparedLiveTransport {
 
 const IDLE_CLOSE_MS = 60_000;
 const START_TIMEOUT_MS = 15_000;
+const BACKEND_CLOSE_TIMEOUT_MS = 3_000;
 
 export class JarvisLiveController implements JarvisVoiceClient {
   private readonly deps: Required<JarvisLiveDependencies>;
@@ -407,6 +408,9 @@ export class JarvisLiveController implements JarvisVoiceClient {
     this.preparation = null;
     this.preparationStream = null;
     await this.discardPreparedTransport();
+    // Stop means the microphone stops now: mute what is being sent before the
+    // close handshake. Tracks shared with the wake runtime are not ended here.
+    this.pc?.getSenders?.().forEach((sender) => { if (sender.track) sender.track.enabled = false; });
     const channel = this.events;
     if (channel?.readyState === "open") {
       channel.send(JSON.stringify({ type: "session.close" }));
@@ -664,9 +668,7 @@ export class JarvisLiveController implements JarvisVoiceClient {
     this.activeDiagnose = null;
     const session = this.session;
     this.session = null;
-    if (closeBackend && session) {
-      await this.closeBackendSession(session);
-    }
+    // Local media is released before any network cleanup, as on Android.
     this.events?.close();
     this.pc?.close();
     if (this.ownsLocalStream) this.localStream?.getTracks().forEach((track) => track.stop());
@@ -682,13 +684,20 @@ export class JarvisLiveController implements JarvisVoiceClient {
     this.ownsLocalStream = false;
     this.pendingDelegations.clear();
     this.startupAbort = null;
+    if (closeBackend && session) {
+      await this.closeBackendSession(session);
+    }
   }
 
   private async closeBackendSession(session: JarvisSession): Promise<void> {
     const key = `${session.id}:${session.generation}`;
     if (this.closedBackendSessions.has(key)) return;
     this.closedBackendSessions.add(key);
-    await this.deps.closeCall(session.id, session.generation).catch(() => undefined);
+    await withTimeout(
+      Promise.resolve(this.deps.closeCall(session.id, session.generation)),
+      BACKEND_CLOSE_TIMEOUT_MS,
+      this.deps,
+    ).catch(() => undefined);
   }
 
   private publish(snapshot: JarvisVoiceSnapshot): void {

@@ -298,6 +298,34 @@ describe("JarvisLiveController", () => {
     expect(createCall).toHaveBeenCalledWith("c", "controller", "openai_live", "offer", undefined);
   });
 
+  it("releases the microphone and peer on stop before the backend close finishes", async () => {
+    const { pc, channel } = fakePc();
+    const stream = fakeMediaStream();
+    const backendClose = deferred<void>();
+    const closeCall = vi.fn(() => backendClose.promise);
+    const controller = new JarvisLiveController("c", {}, {
+      peerConnection: () => pc as unknown as RTCPeerConnection,
+      getUserMedia: async () => stream,
+      getBackendState: async () => fakeBackendState(),
+      createCall: async () => fakeCall(),
+      closeCall,
+    });
+    const pending = controller.start();
+    await vi.waitFor(() => expect(pc.createOffer).toHaveBeenCalled());
+    channel.onmessage?.({ data: JSON.stringify({ type: "session.started" }) } as MessageEvent);
+    await pending;
+    // Skip the bounded session.close acknowledgement wait; this test is about HTTP ordering.
+    channel.readyState = "closed";
+
+    const stopping = controller.stop();
+    await vi.waitFor(() => expect(closeCall).toHaveBeenCalledWith("session-1", 1));
+    expect(stream.getTracks()[0].stop).toHaveBeenCalled();
+    expect(pc.close).toHaveBeenCalled();
+    backendClose.resolve();
+    await stopping;
+    expect(controller.current().status).toBe("closed");
+  });
+
   it("fails with the missing transport conditions and closes the accepted backend session", async () => {
     const { pc } = fakePc({ autoConnect: false });
     const closeCall = vi.fn(async () => undefined);
