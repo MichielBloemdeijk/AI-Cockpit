@@ -81,6 +81,18 @@ Do not extract every query into a repository, require an interface per class, ge
    - **C11:** stays a phase-0 fix. It is a correctness bug (the microphone stays live after Stop), not only a security item.
    - **Placeholder session secret (P02), LAN-wide CORS, harness `.env` inheritance (A03, kept for its isolation/reproducibility value):** documentation only.
 
+## Implementation status
+
+| Step | Status | Commit |
+|---|---|---|
+| Phase 0: C11 browser Stop ordering | Done, regression test added | `d4438b1` |
+| Phase 0: S01 optional loopback/Tailscale login restriction | Not done (documented only, per decision 5) | — |
+| Phase 2: retire legacy executor and Chat agent (closes I01, I02, I04; supervisor now logs run failures, part of B02) | Done | `bd68c27` |
+| Phase 2: remove unused routes (17) | Done; kept `/api/jarvis/diagnostics` and `/api/jarvis/live/observer` | `354e8cf` |
+| Phase 2: council/picker models; dead LLM helpers (part of I06) | Done | `9d7e692` |
+
+Left in place after Phase 2, for a later decision: the generated-app subsystem (registry, `/api/apps`, storage SDK, `/workspace/apps` pages, `generated_app` task targets). It has no rows in the dev DB and now has only two registry tests, and its capabilities can no longer be revoked over HTTP (they still expire after 15 minutes). Tool-event presenters in `agent-event-presenter.ts`/`conversation_timeline.py` and the `live_item` read path now only render historical events; they go with the C14/I05 work.
+
 ## Phase 0 — Small immediate fixes
 
 - **C11:** in `jarvis-live.ts` `dispose`, stop tracks and close the peer/data channel before the backend close, and bound the close request. Acceptance: the C11 probe shows tracks stopped while the close is pending.
