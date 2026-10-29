@@ -52,7 +52,17 @@ def test_readme_quick_start_is_copyable_and_current() -> None:
 def test_default_models_use_current_openrouter_slugs() -> None:
     default_models = str(Settings.model_fields["council_models"].default)
 
-    assert "openai/gpt-5.6-terra" in default_models
-    assert "google/gemini-3.5-flash" in default_models
-    assert "anthropic/claude-sonnet-5" in default_models
+    assert "openai/gpt-6.1-terra" in default_models
+    assert "google/gemini-3.8-flash" in default_models
+    assert "anthropic/claude-sonnet-5.5" in default_models
     assert Settings.model_fields["task_agent_model"].default == "local/gemma-4-12b"
+
+
+def test_example_environment_models_match_code_defaults() -> None:
+    values = _example_environment()
+    fields = Settings.model_fields
+
+    assert values["COUNCIL_MODELS"] == fields["council_models"].default
+    assert values["SYNTHESIZER_MODEL"] == fields["synthesizer_model"].default
+    # The example lists the local alias first; the rest mirrors the code default.
+    assert values["AVAILABLE_MODELS"] == f"{values['LOCAL_LLM_ALIAS']},{fields['available_models'].default}"

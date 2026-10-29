@@ -15,10 +15,8 @@ from app.services.llm import (
     _build_client,
     _extract_message_reasoning,
     is_local_model,
-    native_decision_max_tokens,
     resolve_prompt_cache_policy,
     resolve_upstream_model,
-    supports_native_tool_calls,
 )
 
 
@@ -31,13 +29,11 @@ def test_llama_cpp_reasoning_content_is_preserved() -> None:
     assert details == []
 
 
-def test_local_alias_resolves_to_native_tool_model_with_short_budget() -> None:
+def test_local_alias_resolves_to_the_configured_local_model() -> None:
     alias = settings.local_llm_alias
 
     assert is_local_model(alias)
     assert resolve_upstream_model(alias) == settings.local_llm_model
-    assert supports_native_tool_calls(alias)
-    assert native_decision_max_tokens(alias) == 1024
 
 
 def test_local_provider_disables_openrouter_prompt_cache_controls() -> None:

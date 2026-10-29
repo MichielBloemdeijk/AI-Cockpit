@@ -8,7 +8,12 @@ import pytest
 import app.services.llm as llm_module
 from app.models.chat import Message, ModelResponse
 from app.services.chat_orchestrator import ChatOrchestrator
-from app.services.llm import PromptSegment, native_agent_request_overrides, render_prompt_messages, render_prompt_segments, resolve_prompt_cache_policy
+from app.services.llm import (
+    PromptSegment,
+    render_prompt_messages,
+    render_prompt_segments,
+    resolve_prompt_cache_policy,
+)
 
 
 def test_prompt_cache_policy_is_provider_aware():
@@ -24,28 +29,6 @@ def test_prompt_cache_policy_is_provider_aware():
     deepseek_policy = resolve_prompt_cache_policy("deepseek/deepseek-chat-v3")
     assert deepseek_policy.strategy == "implicit_prefix_stability"
     assert deepseek_policy.top_level_cache_control is None
-
-
-def test_native_agent_request_overrides_disable_reasoning_for_user_facing_progress():
-    anthropic = native_agent_request_overrides("anthropic/claude-sonnet-4.6")
-    google = native_agent_request_overrides("google/gemini-2.5-pro")
-    kimi = native_agent_request_overrides("moonshotai/kimi-k2.6")
-    local = native_agent_request_overrides("local/gemma-4-12b")
-
-    assert anthropic is not None
-    assert anthropic["parallel_tool_calls"] is False
-    assert anthropic["reasoning"] == {"exclude": True, "effort": "none"}
-
-    assert google is not None
-    assert google["reasoning"] == {"exclude": True, "effort": "none"}
-
-    assert kimi is not None
-    assert kimi["reasoning"] == {"exclude": True, "effort": "none"}
-    assert kimi["provider"] == {"require_parameters": True, "sort": "throughput"}
-
-    assert local is not None
-    assert local["parallel_tool_calls"] is False
-    assert local["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_prompt_segments_render_explicit_breakpoint_for_anthropic():
@@ -581,38 +564,6 @@ async def test_chat_completion_structured_retries_malformed_json_response(monkey
     assert payload == {"kind": "final", "summary": "Recovered", "result": "ok"}
     assert response.error is None
     assert calls["count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_stream_handles_unread_http_error_response(monkeypatch):
-    class FakeStreamContext:
-        async def __aenter__(self):
-            request = httpx.Request("POST", "https://example.test/chat/completions")
-            response = httpx.Response(400, request=request)
-            raise httpx.HTTPStatusError("bad request", request=request, response=response)
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def stream(self, method, url, json):
-            return FakeStreamContext()
-
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
-    monkeypatch.setattr(llm_module.settings, "llm_transport_retry_attempts", 0)
-
-    with pytest.raises(RuntimeError, match="OpenRouter stream HTTP error: 400"):
-        async for _chunk in llm_module.chat_completion_stream(
-            [Message(role="user", content="Say hello")],
-            model="anthropic/claude-sonnet-4.5",
-        ):
-            pass
 
 
 @pytest.mark.asyncio

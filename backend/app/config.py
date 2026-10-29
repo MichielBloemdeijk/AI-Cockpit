@@ -82,20 +82,21 @@ class Settings(BaseSettings):
 
     # LLM Council
     available_models: str = (
-        "openai/gpt-5.6-luna,"
-        "openai/gpt-5.6-terra,"
-        "openai/gpt-5.6-sol,"
-        "google/gemini-3.5-flash,"
-        "anthropic/claude-sonnet-5,"
-        "anthropic/claude-opus-5,"
-        "x-ai/grok-4.5"
+        "openai/gpt-6-luna,"
+        "openai/gpt-6.1-terra,"
+        "openai/gpt-6.1-sol,"
+        "google/gemini-3.8-flash,"
+        "google/gemini-4-argon,"
+        "anthropic/claude-sonnet-5.5,"
+        "anthropic/claude-opus-5.5,"
+        "x-ai/grok-4.7"
     )
     council_models: str = (
-        "openai/gpt-5.6-terra,"
-        "google/gemini-3.5-flash,"
-        "anthropic/claude-sonnet-5"
+        "openai/gpt-6.1-terra,"
+        "google/gemini-3.8-flash,"
+        "anthropic/claude-sonnet-5.5"
     )
-    synthesizer_model: str = "anthropic/claude-sonnet-5"
+    synthesizer_model: str = "anthropic/claude-sonnet-5.5"
     task_agent_model: str = "local/gemma-4-12b"
     task_pool_enabled: bool = False
     task_orchestration_enabled: bool = False
@@ -115,15 +116,6 @@ class Settings(BaseSettings):
     codex_subscription_profile: str = "data/codex-subscription-profile"
     task_command_mode: Literal["native", "trusted"] = "native"
     task_windows_sandbox: Literal["elevated", "unelevated"] = "elevated"
-    native_tool_model_prefixes: str = (
-        "local/,"
-        "moonshotai/kimi-k2.6,"
-        "anthropic/claude,"
-        "openai/gpt-5,"
-        "google/gemini-3.5,"
-        "x-ai/grok-4.5,"
-        "deepseek/"
-    )
 
     # File browser
     allowed_dirs: str = ""
@@ -186,10 +178,6 @@ class Settings(BaseSettings):
         if self.local_llm_enabled and self.local_llm_alias.strip():
             values.insert(0, self.local_llm_alias.strip())
         return list(dict.fromkeys(values))
-
-    @property
-    def native_tool_model_prefix_list(self) -> List[str]:
-        return [m.strip().lower() for m in self.native_tool_model_prefixes.split(",") if m.strip()]
 
     @property
     def backend_root(self) -> Path:

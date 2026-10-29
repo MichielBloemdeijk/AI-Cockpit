@@ -213,9 +213,9 @@ The main settings are:
 |---|---|---|
 | `OPENROUTER_API_KEY` | example value | Required only for configured OpenRouter model requests |
 | `OPENAI_API_KEY` | example value | Backend-only key used to create GPT-Live Jarvis calls |
-| `AVAILABLE_MODELS` | GPT-5.6 Luna/Terra/Sol, Gemini 3.5 Flash, Claude Sonnet/Opus 5, Grok 4.5 | Options shown in the model pickers |
-| `COUNCIL_MODELS` | GPT-5.6 Terra, Gemini 3.5 Flash, Claude Sonnet 5 | Models queried in Council mode |
-| `SYNTHESIZER_MODEL` | Claude Sonnet 5 | Combines Council responses |
+| `AVAILABLE_MODELS` | GPT-6 Luna, GPT-6.1 Terra/Sol, Gemini 3.8 Flash, Gemini 4 Argon, Claude Sonnet/Opus 5.5, Grok 4.7 | Options shown in the model pickers |
+| `COUNCIL_MODELS` | GPT-6.1 Terra, Gemini 3.8 Flash, Claude Sonnet 5.5 | Models queried in Council mode |
+| `SYNTHESIZER_MODEL` | Claude Sonnet 5.5 | Combines Council responses |
 | `LOCAL_LLM_ENABLED` | true | Enable the loopback OpenAI-compatible provider |
 | `LOCAL_LLM_BASE_URL` | http://127.0.0.1:8080/v1 | llama.cpp-compatible local endpoint |
 | `LOCAL_LLM_ALIAS` | local/gemma-4-12b | Public model alias used by AI Cockpit |
