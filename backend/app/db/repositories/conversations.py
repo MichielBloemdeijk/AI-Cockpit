@@ -282,17 +282,6 @@ class ConversationRepository:
         if result.rowcount != 1:
             raise ValueError(f"Open conversation not found: {conversation_id}")
 
-    async def claim_run_for_execution(self, run_id: str) -> bool:
-        """Atomically claim a queued run so cancellation cannot race startup."""
-        stmt = (
-            update(ConversationRun)
-            .where(ConversationRun.id == run_id)
-            .where(ConversationRun.status == RunStatus.queued.value)
-            .values(status=RunStatus.running.value, error=None, finished_at=None)
-        )
-        result = await self.session.execute(stmt)
-        return bool(result.rowcount)
-
     async def transition_run_status(
         self,
         run_id: str,

@@ -125,12 +125,12 @@ cd backend
 uv run python -m app.worker
 ```
 
-The separate worker command is for the default legacy mode. With
-`TASK_POOL_ENABLED=true`, the API lifecycle elects and repairs the supervised
-pool automatically; `app.worker` (and the VS Code `Start All` worker
-task) then just reports that the pool is already supervised and exits. Drain the legacy worker
-before switching modes. Pool repair, worker replacement, and pool restart are
-available from the Tasks page once the pool flag is enabled.
+Tasks run only in the supervised Codex pool (`TASK_POOL_ENABLED=true`). The
+API lifecycle elects and repairs the pool automatically; `app.worker` (and the
+VS Code `Start All` worker task) then reports that the pool is already
+supervised and exits. Without the pool flag, `app.worker` exits with an error
+because there is no other task runtime. Pool repair, worker replacement, and
+pool restart are available from the Tasks page.
 
 ```bash
 # Terminal 3
@@ -220,9 +220,8 @@ The main settings are:
 | `LOCAL_LLM_BASE_URL` | http://127.0.0.1:8080/v1 | llama.cpp-compatible local endpoint |
 | `LOCAL_LLM_ALIAS` | local/gemma-4-12b | Public model alias used by AI Cockpit |
 | `LOCAL_LLM_MODEL` | Gemma 4 Q4 checkpoint ID | Upstream model ID sent to the local server |
-| `TASK_AGENT_MODEL` | local/gemma-4-12b | Default chat and multi-step Agent model; must support native tool calls |
-| `TASK_POOL_ENABLED` | false | Opt-in supervised task pool during M1 rollout |
-| `TASK_EXECUTOR` | legacy | Task runtime; `codex` uses the pinned, brokered profile when the pool is enabled |
+| `TASK_AGENT_MODEL` | local/gemma-4-12b | Default single-chat model for new conversations and the conversation-title model |
+| `TASK_POOL_ENABLED` | false | Supervised Codex task pool; required for any task execution |
 | `CODEX_TASK_ALLOW_UNJOURNALED_NATIVE_TOOLS` | false | Test-only escape hatch; leave disabled because native actions lack the broker journal |
 | `TASK_WORKFLOW_ALLOWLIST` | blank | Comma-separated `id@version:source-digest` entries; keep blank until each workflow is reviewed and enabled |
 | `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` | blank | Browser path to the installed exact-word Jarvis ONNX model; blank keeps local wake disabled and preserves manual Arm |
@@ -248,8 +247,6 @@ Set `OPENAI_API_KEY` in the repository root `.env`, start the backend, separate 
 Before committing Live voice changes, export the browser wake samples from **Settings → Wake calibration**, then run `cd frontend; npm run test:live-smoke -- --audio "C:\\path\\to\\jarvis-calibration-….json"`. The opt-in smoke test selects a positive `normal` sample, feeds it through a real Chromium microphone stream and the installed ONNX wake detector, negotiates GPT-Live over WebRTC, requires combined startup readiness, verifies remote audio plus persisted user and assistant voice segments, and closes the exact session. It runs against temporary backend data and a separate frontend port, so it does not alter the normal Jarvis conversation log. Once an export exists in Downloads, `npm run test:live-smoke` finds the newest export automatically. Use `--headed` to watch the run or `--sample-id <id>` to pin a recording. The test uses the configured OpenAI key and therefore creates a short billable Live session; private recordings and generated test reports remain outside Git.
 
 The browser uses an off-main-thread Hey Buddy/ONNX wake runtime, bounded in-memory pre-roll, a direct-address gate, and one ordered activation audio stream that continues into the conversation. GPT-Live owns conversational turn detection and interruption behavior. The selected exact-word Jarvis model is installed at `/jarvis-wake/models/jarvis.onnx`; setting `NEXT_PUBLIC_JARVIS_WAKE_MODEL_URL` to that path enables foreground auto-arm, while a missing or failed model never removes the existing **Arm** fallback. Wake calibration samples stay in browser-local IndexedDB and can be reviewed, exported for GPU retraining, or deleted from Settings. Reinstall and integrity-record a future candidate with `cd frontend; npm run install:wake-model -- --wake-model /absolute/path/to/jarvis.onnx`.
-
-Run the current local Jarvis acceptance benchmark with `python scripts/benchmark-jarvis.py --performance-trials 5`; use `--output <path>` to save the JSON report.
 
 Voice, concision, wake behavior, developer visibility, and Android privacy preferences are persisted by the server. Marin is the default voice and Cedar is the alternate; a voice change applies to the next Live session.
 

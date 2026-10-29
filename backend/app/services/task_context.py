@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from sqlalchemy import func, or_, select
 
-from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import (
     TaskArtifact, TaskContextBundle, TaskEvent, TaskExecutionRun,
@@ -78,7 +77,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
         from app.services.task_semantic_compaction import _summary_payload
 
         semantic_summary = _summary_payload(summary_artifact)
-        if (settings.task_executor == "codex" and prior_turn_count > len(turns)
+        if (prior_turn_count > len(turns)
                 and (semantic_summary is None or
                      semantic_summary["through_turn_sequence"] < turns[-1].sequence - 1)):
             raise ValueError("Older task turns need semantic compaction before context can be pinned")

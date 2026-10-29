@@ -10,7 +10,6 @@ export const DEFAULT_SESSION_METADATA: ConversationSessionMetadata = {
   single_model: "anthropic/claude-sonnet-4-5",
   council_models: ["anthropic/claude-sonnet-4-5"],
   synthesizer_model: "anthropic/claude-sonnet-4-5",
-  tool_flags: { workspace_search: true, python_execution: true },
 };
 
 export function buildConversationSummary(

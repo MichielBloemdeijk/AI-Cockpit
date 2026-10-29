@@ -8,7 +8,7 @@ import { ChatActionErrorBanner } from "@/components/chat/ChatActionErrorBanner";
 import { ConversationDetailsPanel } from "@/components/chat/ConversationDetailsPanel";
 import { ConversationListPanel } from "@/components/chat/ConversationListPanel";
 import { ChatMessage } from "@/components/ChatMessage";
-import { ChatInput, type ChatComposerMode } from "@/components/ChatInput";
+import { ChatInput } from "@/components/ChatInput";
 import { formatConversationModeLabel } from "@/components/chat/formatters";
 import { useChat } from "@/lib/hooks";
 import { ConversationSessionMetadata, getChatSettings, getConversation } from "@/lib/api";
@@ -42,7 +42,6 @@ export default function ChatPage() {
     canStop,
     loadingConversation,
     sendMessage,
-    runTool,
     archiveActiveConversation,
     clearActionError,
     resendFromMessage,
@@ -101,19 +100,9 @@ export default function ChatPage() {
   const readOnlyJarvisLog = Boolean(activeConversation?.is_read_only);
   const readOnlyConversation = readOnlyJarvisLog || archivedConversation;
 
-  const handleSend = async (payload: { mode: ChatComposerMode; value: string }) => {
+  const handleSend = async (value: string) => {
     if (!activeSessionMetadata || readOnlyConversation) return;
-    if (payload.mode === "chat" || activeSessionMetadata.mode === "council") {
-      await sendMessage(payload.value, activeSessionMetadata);
-      return;
-    }
-    await runTool(
-      {
-        tool: payload.mode,
-        value: payload.value,
-      },
-      activeSessionMetadata,
-    );
+    await sendMessage(value, activeSessionMetadata);
   };
 
   const handleNewConversation = () => {
@@ -478,7 +467,7 @@ export default function ChatPage() {
             loading={loading}
             canStop={canStop}
             disabled={loadingConversation || !settingsLoaded || !activeSessionMetadata}
-            allowAgentTools={activeSessionMetadata?.mode !== "council"}
+            councilMode={activeSessionMetadata?.mode === "council"}
           />
         )}
       </div>

@@ -5,7 +5,6 @@ import json
 
 import pytest
 
-from app.services.agent_tools import build_tool_context, execute_agent_tool, get_agent_tool_definitions
 from app.services.brain_retrieval import search_conversations, search_wiki
 from app.services.conversation_store import conversation_store
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS, restricted_brain_gateway
@@ -64,7 +63,7 @@ async def test_conversation_search_finds_closed_daily_log_and_excludes_current_l
 
 
 @pytest.mark.asyncio
-async def test_retrieval_tools_are_brain_only_and_read_only() -> None:
+async def test_retrieval_is_not_reachable_from_the_restricted_shell_gateway() -> None:
     conversation = await conversation_store.create_conversation(title="Archive tool fixture")
     run = await conversation_store.start_run(conversation.id, kind="assistant")
     await conversation_store.append_user_message(
@@ -72,9 +71,6 @@ async def test_retrieval_tools_are_brain_only_and_read_only() -> None:
         run_id=run.id,
         content="The cobalt launch belongs in durable history.",
     )
-    definitions = {tool.name: tool for tool in get_agent_tool_definitions()}
-    assert definitions["wiki_search"].read_only is True
-    assert definitions["conversation_search"].read_only is True
     assert "wiki_search" not in ALLOWED_SHELL_TOOLS
     assert "conversation_search" not in ALLOWED_SHELL_TOOLS
 
@@ -87,11 +83,5 @@ async def test_retrieval_tools_are_brain_only_and_read_only() -> None:
             origin_turn_id=None,
         )
 
-    context = build_tool_context("brain-test", ".cockpit/conversations/brain-test")
-    result = await execute_agent_tool(
-        context=context,
-        tool="conversation_search",
-        arguments={"query": "cobalt launch"},
-    )
-    assert result.metadata["read_only"] is True
-    assert json.loads(result.output)[0]["conversation_id"] == conversation.id
+    results = await search_conversations("cobalt launch")
+    assert results[0]["conversation_id"] == conversation.id

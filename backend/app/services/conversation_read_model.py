@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.services.agent_metadata import _normalize_task_metadata
 from app.presenters.conversations import (
     present_conversation_detail,
     present_conversation_events,
@@ -191,7 +190,7 @@ class ConversationReadModel:
         for run in runs:
             if self._run_branch_key(run) != normalized_branch_key:
                 continue
-            metadata = _normalize_task_metadata(run.metadata_json)
+            metadata = dict(run.metadata_json or {})
             live_item = normalize_live_item(metadata.get("live_item"))
             if run.status not in {"running", "paused"} and live_item is None:
                 continue

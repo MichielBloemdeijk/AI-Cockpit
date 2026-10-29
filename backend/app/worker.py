@@ -80,12 +80,7 @@ async def worker_main(
                 # The API process normally owns the pool; a second launcher has nothing to do.
                 logger.info("Task pool is already supervised (normally by the API process); exiting")
         else:
-            if settings.task_executor == "codex":
-                raise RuntimeError("Codex task execution requires the supervised process-tree pool")
-            worker = TaskWorker()
-            await wait_for_worker_activation(worker)
-            logger.info("Legacy task worker active: %s", worker.worker_id)
-            await worker.run_forever()
+            raise RuntimeError("Task execution requires TASK_POOL_ENABLED=true (the supervised process-tree pool)")
     finally:
         await close_engine()
 

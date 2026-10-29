@@ -60,17 +60,11 @@ export interface Message {
   content: string;
 }
 
-export interface ChatToolFlags {
-  workspace_search: boolean;
-  python_execution: boolean;
-}
-
 export interface ConversationSessionMetadata {
   mode: "single" | "council";
   single_model: string;
   council_models: string[];
   synthesizer_model: string;
-  tool_flags: ChatToolFlags;
 }
 
 export interface UsageStats {
@@ -274,19 +268,6 @@ export interface ConversationTurnResponse {
   run_id: string;
   message: ConversationMessageView;
   council_data: CouncilResponse | null;
-}
-
-export interface ConversationToolResult {
-  tool: string;
-  output: string;
-  metadata?: Record<string, unknown> | null;
-}
-
-export interface ConversationToolResponse {
-  conversation_id: string;
-  run_id: string;
-  message: ConversationMessageView;
-  result: ConversationToolResult;
 }
 
 export interface ChatSettingsResponse {
@@ -1677,26 +1658,6 @@ export async function deleteKnowledgeItem(memoryItemId: string): Promise<MemoryI
   const res = await fetch(`${BASE}/api/knowledge/memory-items/${memoryItemId}`, {
     method: "DELETE",
     credentials: "include",
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function executeConversationTool(
-  conversationId: string,
-  request: {
-    tool: "workspace_search" | "python_execution";
-    branch_key?: string;
-    query?: string;
-    code?: string;
-    working_directory?: string;
-  },
-): Promise<ConversationToolResponse> {
-  const res = await fetch(`${BASE}/api/conversations/${conversationId}/tools`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(request),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();

@@ -75,7 +75,6 @@ async def profile_offline_admission(monkeypatch, trial, *, paired=False):
     monkeypatch.setattr(settings, "openai_api_key", "")
     monkeypatch.setattr(settings, "task_orchestration_enabled", False)
     definition = load_workflow("screen_document@1")
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"screen_document@1:{definition.digest}")
     async with session_scope() as session:
         conversation = Conversation(title="Offline timing fixture")

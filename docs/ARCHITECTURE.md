@@ -338,11 +338,11 @@ Implemented responsibilities:
 - carries branch metadata and parent event references through resend flows
 - marks runs as completed or failed
 
-This is the main orchestration seam for compatibility chat requests and council execution. Interactive multi-step agent work continues inside the shared `agent_runner` runtime.
+This is the orchestration seam for chat requests: single-model replies are one streamed completion run under `run_supervisor`, and council runs fan out to the configured models before synthesis. There is no interactive tool-using agent in chat; durable work runs as Codex tasks.
 
 #### `backend/app/services/conversation_store.py`
 
-Provides the high-level write-path persistence API used by the orchestrator, agent runner, and conversation endpoints.
+Provides the high-level write-path persistence API used by the orchestrator and conversation endpoints.
 
 Implemented responsibilities:
 
@@ -406,17 +406,6 @@ Implemented responsibilities:
 - normalize stored workspace paths for frontend display
 - resolve safe workspace-relative file listings for the chat UI
 
-#### `backend/app/services/chat_tools.py`
-
-Implements the limited tool layer available during normal chat turns.
-
-Current tools:
-
-- workspace search over allowed roots
-- Python execution with reads from allowed roots and writes constrained to the active conversation workspace
-
-The broader agent tool surface now lives under `backend/app/services/agent_tools/`, including generated-app bootstrap and app-aware execution tools used by the chat-first agent runtime.
-
 #### `backend/app/services/app_registry.py`
 
 Implements the durable generated app registry.
@@ -427,35 +416,6 @@ Current behavior:
 - maps each app to a real runtime route under `/apps/<slug>`
 - treats `lease_conversation_id` as the authoritative active owner for interactive chat editing while keeping `lease_task_run_id` as provenance or active-holder detail
 - exposes explicit write roots for frontend code and public assets
-
-#### `backend/app/services/app_builder.py`
-
-Implements the generated app scaffold and app contract helpers.
-
-Current behavior:
-
-- creates or reuses a generated app record
-- scaffolds `layout.tsx`, `page.tsx`, `loading.tsx`, `error.tsx`, `styles.css`, `cockpit-app.json`, and README contract files
-- prepares generated-app metadata so the chat agent can attach to an app and stay inside explicit write boundaries
-
-#### `backend/app/services/agent_runner.py`
-
-Implements the durable single-agent execution loop used directly by chat turns.
-
-Implemented responsibilities:
-
-- drives a transcript-based native tool loop over the shared agent tool registry
-- preserves the product's plan-first behavior through native plan/finalize/ask-user tool semantics rather than a bespoke decision-envelope hot path
-- pauses for plan feedback by default, with an explicit skip-feedback path at task creation time
-- compacts older task history into durable summary artifacts for later decisions
-- records prompt metrics, raw `llm.response.visible_output` artifacts, streamed assistant text and reasoning, tool events, plan artifacts, and run-summary artifacts into the conversation store
-- batches tool-call durability and only checkpoints active-run metadata on forced lifecycle boundaries, every 10 tool steps, or after 5 seconds of active execution time
-- prefers provider-exposed reasoning for transcript thought rows when available, and falls back to visible assistant text only when no reasoning blocks were returned
-- emits deterministic tool-lifecycle descriptions such as `Reading…` → `Read…`, using a stable activity id so the frontend updates one row instead of appending replacements
-- treats assistant text as optional on tool-call turns, persists model-provided visible text when present, and does not invoke a secondary progress-summary model
-- instructs the model not to narrate routine tool calls; user-facing text before completion is reserved for material findings, corrections, or blockers
-- restores deferred tool-step history and step counters from persisted events before resuming a run, so resume does not depend on every live progress change having been checkpointed
-- enforces workspace boundaries through the shared tool context
 
 #### `backend/app/presenters/`
 
@@ -481,7 +441,7 @@ Current behavior:
 
 This is the current bridge between conversation persistence and the future knowledge layer.
 
-#### `backend/app/services/brain_retrieval.py` and `backend/app/services/agent_tools/retrieval.py`
+#### `backend/app/services/brain_retrieval.py`
 
 Provide the brain-facing durable-memory read boundary.
 

@@ -106,7 +106,7 @@ async def test_constrained_workflow_publishes_typed_result_and_continues() -> No
         pytest.skip("No authorized API credential is configured")
     originals = (
         settings.codex_profiles_dir, settings.task_workspaces_dir,
-        settings.task_executor, settings.task_workflow_allowlist,
+        settings.task_workflow_allowlist,
     )
     root = settings.backend_root / "data"
     root.mkdir(parents=True, exist_ok=True)
@@ -115,7 +115,6 @@ async def test_constrained_workflow_publishes_typed_result_and_continues() -> No
         with _live_directory(root) as live_dir:
             settings.codex_profiles_dir = str(live_dir / "codex-profiles")
             settings.task_workspaces_dir = str(live_dir / "task-workspaces")
-            settings.task_executor = "codex"
             settings.task_workflow_allowlist = f"text_report@1:{definition.digest}"
             task = await task_service.dispatch(
                 goal=("Call jarvis_task.result_publish with title Proof, body READY, "
@@ -160,7 +159,7 @@ async def test_constrained_workflow_publishes_typed_result_and_continues() -> No
     finally:
         (
             settings.codex_profiles_dir, settings.task_workspaces_dir,
-            settings.task_executor, settings.task_workflow_allowlist,
+            settings.task_workflow_allowlist,
         ) = originals
 
 
@@ -171,14 +170,13 @@ async def test_screen_document_uploaded_image_reaches_real_codex_and_result() ->
     if not settings.openai_api_key:
         pytest.skip("No authorized API credential is configured")
     original = (settings.codex_profiles_dir, settings.task_workspaces_dir,
-                settings.task_executor, settings.task_workflow_allowlist)
+                settings.task_workflow_allowlist)
     definition = load_workflow("screen_document@1")
     live_root = settings.backend_root / "data" / f"jarvis-live-{uuid4()}"
     live_root.mkdir(parents=True)
     try:
         settings.codex_profiles_dir = str(live_root / "codex-profiles")
         settings.task_workspaces_dir = str(live_root / "task-workspaces")
-        settings.task_executor = "codex"
         settings.task_workflow_allowlist = f"screen_document@1:{definition.digest}"
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as admin:
             assert (await admin.post("/api/auth/login", json={"password": ""})).status_code == 200
@@ -241,7 +239,7 @@ async def test_screen_document_uploaded_image_reaches_real_codex_and_result() ->
             assert "blue" in result.json()["content"]["body"].lower()
     finally:
         (settings.codex_profiles_dir, settings.task_workspaces_dir,
-         settings.task_executor, settings.task_workflow_allowlist) = original
+         settings.task_workflow_allowlist) = original
         if live_root.parent == settings.backend_root / "data":
             shutil.rmtree(live_root, ignore_errors=True)
 
@@ -255,7 +253,6 @@ async def test_native_task_runs_across_supervised_worker_replacement(monkeypatch
     originals = (
         settings.codex_profiles_dir,
         settings.task_workspaces_dir,
-        settings.task_executor,
         settings.worker_poll_interval_seconds,
     )
     live_root = settings.backend_root / "data"
@@ -263,7 +260,6 @@ async def test_native_task_runs_across_supervised_worker_replacement(monkeypatch
     with _live_directory(live_root) as live_dir:
         settings.codex_profiles_dir = str(live_dir / "codex-profiles")
         settings.task_workspaces_dir = str(live_dir / "task-workspaces")
-        settings.task_executor = "codex"
         settings.worker_poll_interval_seconds = 0.1
         monkeypatch.setenv("DATABASE_URL", settings.database_url)
         monkeypatch.setenv("ALEMBIC_INI_PATH", str(settings.alembic_config_path))
@@ -327,6 +323,5 @@ async def test_native_task_runs_across_supervised_worker_replacement(monkeypatch
             (
                 settings.codex_profiles_dir,
                 settings.task_workspaces_dir,
-                settings.task_executor,
                 settings.worker_poll_interval_seconds,
             ) = originals

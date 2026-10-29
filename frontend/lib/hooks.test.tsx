@@ -18,7 +18,6 @@ const apiMocks = vi.hoisted(() => ({
   createConversation: vi.fn(),
   createConversationMessage: vi.fn(),
   createTask: vi.fn(),
-  executeConversationTool: vi.fn(),
   getConversation: vi.fn(),
   getConversationEvents: vi.fn(),
   getTask: vi.fn(),

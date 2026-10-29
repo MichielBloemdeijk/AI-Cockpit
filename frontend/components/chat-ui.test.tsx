@@ -144,7 +144,7 @@ describe("chat UI components", () => {
     expect(container.textContent).not.toContain("Progress");
   });
 
-  it("parses slash commands and sends the normalized payload", async () => {
+  it("sends the trimmed message text", async () => {
     const onSend = vi.fn();
 
     await act(async () => {
@@ -158,7 +158,7 @@ describe("chat UI components", () => {
     await act(async () => {
       if (textarea) {
         const setValue = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
-        setValue?.call(textarea, "/search agent loop");
+        setValue?.call(textarea, "  hello council  ");
         textarea.dispatchEvent(new Event("input", { bubbles: true }));
       }
       await Promise.resolve();
@@ -170,7 +170,7 @@ describe("chat UI components", () => {
       await Promise.resolve();
     });
 
-    expect(onSend).toHaveBeenCalledWith({ mode: "workspace_search", value: "agent loop" });
+    expect(onSend).toHaveBeenCalledWith("hello council");
   });
 
   it("renders agent status cards with the provided content", async () => {

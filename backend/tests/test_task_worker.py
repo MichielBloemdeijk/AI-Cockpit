@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -10,8 +10,7 @@ from sqlalchemy.exc import OperationalError
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import ResourceLease
-from app.models.chat import ModelResponse, ToolCall, ToolCallFunction
-from app.services import agent_execution as agent_execution_module
+from app.services.agent_execution import AgentExecutionResult
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
@@ -19,18 +18,14 @@ from app.services.worker_coordinator import ClaimResult
 from app.worker import wait_for_worker_activation
 
 
-def control_response(name: str, arguments: dict, *, content: str = "") -> ModelResponse:
-    return ModelResponse(
-        model="fake/task-agent",
-        content=content,
-        tool_calls=[
-            ToolCall(
-                id="control-1",
-                function=ToolCallFunction(name=name, arguments=json.dumps(arguments)),
-            )
-        ],
-        finish_reason="tool_calls",
-    )
+class ScriptedRuntime:
+    """Deterministic TaskRuntime: runs one script against the real sink."""
+
+    def __init__(self, script) -> None:
+        self.script = script
+
+    async def execute(self, context, sink, *, cancellation_requested) -> AgentExecutionResult:
+        return await self.script(context, sink, cancellation_requested)
 
 
 @pytest.mark.asyncio
@@ -54,31 +49,20 @@ async def test_worker_startup_waits_for_an_abrupt_predecessor_lease(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_deterministic_real_agent_task_completes_through_worker(monkeypatch) -> None:
-    calls = 0
+async def test_task_completes_through_worker_with_real_sink() -> None:
+    async def script(context, sink, _cancellation_requested):
+        assert context.goal == "Write the exact result"
+        await sink.progress("Writing the result")
+        (Path(context.workspace_path) / "result.txt").write_text("42\n")
+        await sink.complete("Returned the exact result", "The exact result is 42.")
+        return AgentExecutionResult(status="completed", summary="Returned the exact result")
 
-    async def fake_completion(messages, model, **kwargs):
-        nonlocal calls
-        calls += 1
-        assert "Write the exact result" in messages[-1].content
-        assert kwargs["priority"] == "background"
-        if calls == 1:
-            return control_response(
-                "file_write",
-                {"path": "result.txt", "content": "42\n"},
-            )
-        return control_response(
-            "task_finalize",
-            {"summary": "Returned the exact result", "final_text": "The exact result is 42."},
-        )
-
-    monkeypatch.setattr(agent_execution_module, "chat_completion", fake_completion)
     created = await task_service.dispatch(
         goal="Write the exact result",
         origin_surface="tasks_ui",
         idempotency_key="real-worker-task",
     )
-    worker = TaskWorker()
+    worker = TaskWorker(runtime=ScriptedRuntime(script))
     assert await worker.activate(process_identity="test-real-agent")
 
     result = await worker.run_once()
@@ -103,18 +87,19 @@ async def test_deterministic_real_agent_task_completes_through_worker(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_question_checkpoints_and_releases_all_leases(monkeypatch) -> None:
-    async def fake_completion(*args, **kwargs):
-        return control_response("task_ask_user", {"question": "Which environment?"})
+async def test_question_checkpoints_and_releases_all_leases() -> None:
+    async def script(_context, sink, _cancellation_requested):
+        await sink.checkpoint({"step": 1})
+        await sink.question("Which environment?")
+        return AgentExecutionResult(status="waiting_for_input", summary="Which environment?")
 
-    monkeypatch.setattr(agent_execution_module, "chat_completion", fake_completion)
     created = await task_service.dispatch(
         goal="Deploy safely",
         origin_surface="tasks_ui",
         idempotency_key="worker-question",
         targets=(("repository", "AI-Cockpit", True),),
     )
-    worker = TaskWorker()
+    worker = TaskWorker(runtime=ScriptedRuntime(script))
     assert await worker.activate(process_identity="test-question")
 
     result = await worker.run_once()
@@ -133,11 +118,12 @@ async def test_question_checkpoints_and_releases_all_leases(monkeypatch) -> None
 async def test_running_cancellation_is_observed_and_releases_leases(monkeypatch) -> None:
     entered = asyncio.Event()
 
-    async def slow_completion(*args, **kwargs):
+    async def script(_context, _sink, cancellation_requested):
         entered.set()
-        await asyncio.Event().wait()
+        while not await cancellation_requested():
+            await asyncio.sleep(0.01)
+        return AgentExecutionResult(status="control_requested", summary="Task control requested.")
 
-    monkeypatch.setattr(agent_execution_module, "chat_completion", slow_completion)
     monkeypatch.setattr(settings, "worker_heartbeat_interval_seconds", 0.01)
     created = await task_service.dispatch(
         goal="Wait until cancelled",
@@ -145,7 +131,7 @@ async def test_running_cancellation_is_observed_and_releases_leases(monkeypatch)
         idempotency_key="worker-cancel",
         targets=(("repository", "AI-Cockpit", True),),
     )
-    worker = TaskWorker()
+    worker = TaskWorker(runtime=ScriptedRuntime(script))
     assert await worker.activate(process_identity="test-cancel")
     running = asyncio.create_task(worker.run_once())
     await entered.wait()

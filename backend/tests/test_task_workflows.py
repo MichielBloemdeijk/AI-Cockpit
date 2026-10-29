@@ -40,7 +40,6 @@ def test_workflow_loader_rejects_duplicate_keys_and_escape(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_workflow_admission_publication_followup_and_api_result(monkeypatch) -> None:
     definition = load_workflow("text_report@1")
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_workflow_allowlist", "")
     with pytest.raises(ValueError, match="not enabled"):
         await task_service.dispatch(
@@ -137,7 +136,6 @@ async def test_workflow_admission_publication_followup_and_api_result(monkeypatc
 @pytest.mark.asyncio
 async def test_worker_accepts_durable_publication_before_native_turn_drains(monkeypatch) -> None:
     definition = load_workflow("text_report@1")
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"text_report@1:{definition.digest}")
     monkeypatch.setattr(settings, "worker_heartbeat_interval_seconds", 0.01)
     created = await task_service.dispatch(
@@ -165,7 +163,6 @@ async def test_worker_accepts_durable_publication_before_native_turn_drains(monk
 
 @pytest.mark.asyncio
 async def test_workflow_http_admission_is_disabled_until_exact_digest_is_enabled(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_workflow_allowlist", "")
     body = {
         "goal": "Produce a report", "idempotency_key": "workflow-http-gate",

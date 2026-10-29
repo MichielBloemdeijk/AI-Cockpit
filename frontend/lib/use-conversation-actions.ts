@@ -6,7 +6,6 @@ import {
   archiveConversation,
   createConversation,
   createConversationMessage,
-  executeConversationTool,
   resendConversationBranch,
   streamChat,
   unarchiveConversation,
@@ -30,11 +29,6 @@ import {
 } from "./conversation-feed-state";
 import { humanizeToolName } from "./agent-event-presenter";
 import type { AgentStatus, ChatActionError, ChatMessage } from "./chat-state-types";
-
-export interface ConversationToolPayload {
-  tool: "workspace_search" | "python_execution";
-  value: string;
-}
 
 type LiveAssistantContentSource = "none" | "agent_stream" | "chunk";
 
@@ -477,36 +471,6 @@ export function useConversationActions({
     upsertLocalLiveMessage,
   ]);
 
-  const runTool = useCallback(async (payload: ConversationToolPayload, sessionMetadata: ConversationSessionMetadata) => {
-    if (loading) return;
-    clearActionError();
-    setLoading(true);
-    setCanStop(false);
-    try {
-      let conversationId = activeConversationId;
-      if (!conversationId) {
-        const created = await createConversation(undefined, sessionMetadata.mode, sessionMetadata);
-        conversationId = created.conversation.id;
-        setActiveConversationId(conversationId);
-        setActiveBranchKey("main");
-      }
-
-      await executeConversationTool(conversationId, {
-        tool: payload.tool,
-        branch_key: activeBranchKey,
-        query: payload.tool === "workspace_search" ? payload.value : undefined,
-        code: payload.tool === "python_execution" ? payload.value : undefined,
-      });
-      await refreshConversations(conversationId);
-      await loadConversation(conversationId, activeBranchKey);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      setActionError({ scope: "tool", message: errorMessage });
-    } finally {
-      setLoading(false);
-    }
-  }, [activeConversationId, activeBranchKey, clearActionError, loadConversation, loading, refreshConversations, setActiveBranchKey, setActiveConversationId, setCanStop, setLoading]);
-
   const archiveActiveConversation = useCallback(async () => {
     if (!activeConversationId) return;
     clearActionError();
@@ -589,7 +553,6 @@ export function useConversationActions({
     clearActionError,
     clearMessages,
     resendFromMessage,
-    runTool,
     selectBranch,
     selectConversation,
     sendMessage,

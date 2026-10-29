@@ -252,7 +252,6 @@ def inspect_rollout(config: Settings, *, export_root: Path | None = None, accept
     flags = {name: getattr(config, name) for name in ("task_pool_enabled", "task_orchestration_enabled",
         "task_orchestration_live_enabled", "task_research_enabled",
         "task_windows_sandbox", "task_command_mode")}
-    flags["task_executor"] = config.task_executor
     external = [
         {"id": "custom_wake_live_provider", "status": "blocked", "owner": "agent_test_with_authorized_provider",
          "summary": "Run end-to-end wake/audio/provider acceptance; fixture and system-gesture evidence do not pass this gate."},

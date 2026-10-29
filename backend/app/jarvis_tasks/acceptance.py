@@ -90,7 +90,7 @@ def candidate_identity(root: Path = ROOT) -> dict:
             digest.update(path.relative_to(root).as_posix().encode() + b"\0" + file_digest(source, "sha256").digest())
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
     configuration = {key: getattr(settings, key) for key in (
-        "jarvis_access_mode", "jarvis_public_url", "session_cookie_secure", "task_executor", "task_workflow_allowlist", "codex_task_model", "codex_task_reasoning_effort",
+        "jarvis_access_mode", "jarvis_public_url", "session_cookie_secure", "task_workflow_allowlist", "codex_task_model", "codex_task_reasoning_effort",
         "task_project_roots", "codex_subscription_enabled",
         "task_execution_model_allowlist", "codex_subscription_profile", "openai_live_base_url", "openai_live_model",
         "openai_live_responses_model", "openai_live_reasoning_effort",

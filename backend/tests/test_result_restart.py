@@ -49,7 +49,6 @@ async def test_real_api_process_restart_keeps_result_saved_metrics_and_disabled_
         "CONVERSATION_WORKSPACES_DIR": str(tmp_path / "conversations"),
         "KNOWLEDGE_NOTES_DIR": str(tmp_path / "knowledge"),
         "KNOWLEDGE_PREFERENCES_FILE": str(tmp_path / "preferences.yaml"),
-        "VERIFIER_GENERATED_APPS_DIR": str(tmp_path / "verifier"),
         "TASK_WORKSPACES_DIR": settings.task_workspaces_dir,
         "TASK_CONTEXT_BLOBS_DIR": settings.task_context_blobs_dir,
         "CODEX_PROFILES_DIR": str(tmp_path / "profiles"),

@@ -30,7 +30,6 @@ WORKFLOWS = ["recipe_from_screen@1", "research_screen@1"]
 def test_defined_screen_outcome_routes_before_worker_image_analysis(monkeypatch):
     from app.services.openai_live_adapter import OpenAILiveAdapter
     recipe = load_workflow("recipe_from_screen@1")
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_research_enabled", True)
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"recipe_from_screen@1:{recipe.digest}")
     workflow = next(tool for tool in get_jarvis_tool_definitions("openai_live") if tool["name"] == "start_workflow")
@@ -49,7 +48,6 @@ def test_defined_screen_outcome_routes_before_worker_image_analysis(monkeypatch)
 
 async def admit(monkeypatch, definition, *, image_bytes=None, goal=None, claim_task=True, password=""):
     loaded = load_workflow(definition)
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_research_enabled", True)
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"{definition}:{loaded.digest}")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:

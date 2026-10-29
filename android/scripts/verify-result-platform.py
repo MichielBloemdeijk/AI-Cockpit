@@ -161,7 +161,7 @@ def main():
             "TASK_WORKSPACES_DIR": str(evidence / "workspaces"), "TASK_CONTEXT_BLOBS_DIR": str(evidence / "blobs"),
             "CONVERSATION_WORKSPACES_DIR": str(evidence / "conversations"),
             "KNOWLEDGE_NOTES_DIR": str(evidence / "knowledge"), "KNOWLEDGE_PREFERENCES_FILE": str(evidence / "preferences.yaml"),
-            "VERIFIER_GENERATED_APPS_DIR": str(evidence / "verifier"), "CODEX_PROFILES_DIR": str(evidence / "profiles"),
+            "CODEX_PROFILES_DIR": str(evidence / "profiles"),
             "TASK_ORCHESTRATION_CONTEXT_DIR": str(evidence / "orchestration")}
         app_dir = str(Path(__file__).parent)
         server = screen.start_service(["-m", "uvicorn", "m5_result_fixture:app", "--app-dir", app_dir,

@@ -4,64 +4,23 @@ import { useRef, useState, KeyboardEvent } from "react";
 import { Loader2, Send, Square } from "lucide-react";
 import clsx from "clsx";
 
-export type ChatComposerMode = "chat" | "workspace_search" | "python_execution";
-
-function parseComposerInput(rawValue: string, allowAgentTools: boolean): { mode: ChatComposerMode; value: string; helperText: string | null } {
-  const trimmed = rawValue.trim();
-  const commandMatch = /^\/(search|python|py)\b([\s\S]*)$/i.exec(trimmed);
-
-  if (!commandMatch) {
-    return {
-      mode: "chat",
-      value: trimmed,
-      helperText: trimmed.startsWith("/")
-        ? "Unknown slash command. Use /search <query> or /python <code>."
-        : null,
-    };
-  }
-
-    if (!allowAgentTools) {
-      return {
-        mode: "chat",
-        value: trimmed,
-        helperText: "Council mode is chat-only. Agent slash commands are disabled here.",
-      };
-    }
-
-  const [, command, remainder] = commandMatch;
-  const normalizedValue = remainder.replace(/^\s+/, "").replace(/\s+$/, "");
-  if (command.toLowerCase() === "search") {
-    return {
-      mode: "workspace_search",
-      value: normalizedValue,
-      helperText: "Runs a manual workspace search and records the result in the conversation trace.",
-    };
-  }
-
-  return {
-    mode: "python_execution",
-    value: normalizedValue,
-    helperText: "Runs a guarded Python snippet. Reads are allowed in the repo, writes stay inside the conversation workspace.",
-  };
-}
-
 interface Props {
-  onSend: (payload: { mode: ChatComposerMode; value: string }) => void;
+  onSend: (value: string) => void;
   onStop: () => void;
   loading: boolean;
   canStop?: boolean;
   disabled?: boolean;
-  allowAgentTools?: boolean;
+  councilMode?: boolean;
 }
 
-export function ChatInput({ onSend, onStop, loading, canStop = false, disabled, allowAgentTools = true }: Props) {
+export function ChatInput({ onSend, onStop, loading, canStop = false, disabled, councilMode = false }: Props) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const parsedInput = parseComposerInput(value, allowAgentTools);
+  const trimmed = value.trim();
 
   const handleSend = () => {
-    if (!parsedInput.value || loading) return;
-    onSend({ mode: parsedInput.mode, value: parsedInput.value });
+    if (!trimmed || loading) return;
+    onSend(trimmed);
     setValue("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -81,21 +40,10 @@ export function ChatInput({ onSend, onStop, loading, canStop = false, disabled, 
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   };
-  const placeholder = !allowAgentTools
-    ? "Ask the council..."
-    : parsedInput.mode === "workspace_search"
-    ? "/search find references to conversation workspace"
-    : parsedInput.mode === "python_execution"
-      ? "/python print('hello from the conversation workspace')"
-      : "Message AI Cockpit…";
+  const placeholder = councilMode ? "Ask the council..." : "Message AI Cockpit…";
 
   return (
     <div className="mobile-safe-chat-input border-t border-zinc-700 bg-zinc-900 px-3 pt-3 md:p-4">
-      {parsedInput.helperText && (
-        <div className="mb-3 text-xs text-zinc-500">
-          {parsedInput.helperText}
-        </div>
-      )}
       <div className="flex items-end gap-2">
         <textarea
           ref={textareaRef}
@@ -114,7 +62,7 @@ export function ChatInput({ onSend, onStop, loading, canStop = false, disabled, 
         />
         <button
           onClick={loading && canStop ? onStop : handleSend}
-          disabled={disabled || (loading && !canStop) || (!parsedInput.value && !loading)}
+          disabled={disabled || (loading && !canStop) || (!trimmed && !loading)}
           className={clsx(
             "flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl transition-colors",
             loading

@@ -1,7 +1,7 @@
 import type { CouncilResponse, UsageStats } from "./api";
 
 export interface ChatActionError {
-  scope: "send" | "tool" | "archive" | "branch";
+  scope: "send" | "archive" | "branch";
   message: string;
 }
 

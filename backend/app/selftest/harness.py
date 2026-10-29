@@ -134,7 +134,7 @@ def service_environment(folder: Path, backend_port: int, *, real_worker: bool = 
         "TASK_ORCHESTRATION_LIVE_ENABLED": str(settings.task_orchestration_live_enabled).lower(), "LOCAL_LLM_ENABLED": "false",
         "OPENAI_LIVE_DIAGNOSTICS_DIR": str(folder / "diagnostics"), "OPENAI_LIVE_IDLE_TIMEOUT_SECONDS": "60",
         "CONVERSATION_WORKSPACES_DIR": str(folder / "conversations"), "TASK_WORKSPACES_DIR": str(folder / "tasks"),
-        "TASK_CONTEXT_BLOBS_DIR": str(folder / "context"), "VERIFIER_GENERATED_APPS_DIR": str(folder / "verifier"),
+        "TASK_CONTEXT_BLOBS_DIR": str(folder / "context"),
         "CODEX_PROFILES_DIR": str(folder / "profiles"),
         "TASK_ORCHESTRATION_CONTEXT_DIR": str(folder / "background-context"),
         "TASK_ORCHESTRATION_PROFILE": str(folder / "background-profile"),

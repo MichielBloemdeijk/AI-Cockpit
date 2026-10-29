@@ -186,7 +186,7 @@ async def test_workflow_kind_uses_same_turn_run_and_control_contract(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_workflow_fixture_execution_pins_same_portable_run_context(monkeypatch) -> None:
+async def test_workflow_fixture_executes_through_the_worker(monkeypatch) -> None:
     monkeypatch.setattr(task_service, "workflow_fixture_enabled", True)
 
     class FixtureRuntime:
@@ -203,15 +203,13 @@ async def test_workflow_fixture_execution_pins_same_portable_run_context(monkeyp
     assert await worker.activate(process_identity="workflow-pinned-context-worker")
     assert (await worker.run_once()).status == "completed"
     detail = await task_service.get_task(created.task.id)
-    assert detail is not None
-    assert detail.runs[0].context_reference is not None
-    assert any(event.event_type == "task.context.pinned" for event in detail.events)
+    assert detail is not None and detail.task.status == "completed"
 
 
 @pytest.mark.asyncio
-async def test_workflow_admission_fails_closed_without_registered_runtime() -> None:
+async def test_workflow_admission_fails_closed_without_a_pinned_definition() -> None:
     assert task_service.workflow_fixture_enabled is False
-    with pytest.raises(ValueError, match="constrained runtime"):
+    with pytest.raises(ValueError, match="Workflow definition is required"):
         await task_service.dispatch(
             goal="Do a workflow", origin_surface="test", idempotency_key="workflow-disabled",
             execution_kind="workflow",

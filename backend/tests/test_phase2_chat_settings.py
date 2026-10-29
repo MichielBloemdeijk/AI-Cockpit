@@ -6,10 +6,21 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-import app.services.agent_runner as agent_runner_module
 import app.services.chat_orchestrator as orchestrator_module
-from app.models.chat import ChatResponse, ModelResponse, ToolCall, ToolCallFunction
+from app.models.chat import ChatResponse, ModelResponse
 from app.services.conversation_store import conversation_store
+
+
+def _streamed_reply(text: str):
+    async def _fake_stream(messages, model, **kwargs):
+        on_delta = kwargs.get("on_content_delta")
+        if on_delta is not None:
+            midpoint = len(text) // 2
+            await on_delta(text[:midpoint])
+            await on_delta(text[midpoint:])
+        return ModelResponse(model=model, content=text, usage=None)
+    return _fake_stream
+
 
 
 async def _fake_completion(messages, model, temperature=0.7, max_tokens=4096, session_id=None, prompt_segments=None):
@@ -51,7 +62,6 @@ async def test_chat_settings_apply_to_future_sessions_only(monkeypatch):
                 "single_model": "openai/gpt-4o",
                 "council_models": ["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
                 "synthesizer_model": "anthropic/claude-sonnet-4-5",
-                "tool_flags": {"workspace_search": True, "python_execution": True},
             },
             "task_agent_model": "moonshotai/kimi-k2.6",
         }
@@ -72,7 +82,6 @@ async def test_chat_settings_apply_to_future_sessions_only(monkeypatch):
                     "single_model": "google/gemini-pro-1.5",
                     "council_models": ["google/gemini-pro-1.5"],
                     "synthesizer_model": "anthropic/claude-sonnet-4-5",
-                    "tool_flags": {"workspace_search": True, "python_execution": True},
                 },
             },
         )
@@ -95,41 +104,14 @@ async def test_chat_settings_apply_to_future_sessions_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkeypatch):
+async def test_single_chat_uses_the_conversation_single_model(monkeypatch):
     seen_models: list[str] = []
 
-    async def _fake_chat_completion(
-        messages,
-        model,
-        temperature=0.7,
-        max_tokens=4096,
-        response_format=None,
-        tools=None,
-        tool_choice=None,
-        session_id=None,
-        prompt_segments=None,
-        request_overrides=None,
-        **kwargs,
-    ):
+    async def _fake_chat_completion(messages, model, **kwargs):
         seen_models.append(model)
-        return ModelResponse(
-            model=model,
-            content="Used the configured task model.",
-            usage=None,
-            tool_calls=[
-                ToolCall(
-                    id="call_task_finalize",
-                    function=ToolCallFunction(
-                        name="task_finalize",
-                        arguments=json.dumps({"summary": "Finished"}),
-                    ),
-                )
-            ],
-            finish_reason="tool_calls",
-        )
+        return ModelResponse(model=model, content="Used the selected chat model.", usage=None)
 
-    monkeypatch.setattr(agent_runner_module, "chat_completion", _fake_chat_completion)
-    monkeypatch.setattr(agent_runner_module, "chat_completion_stream_response", _fake_chat_completion)
+    monkeypatch.setattr(orchestrator_module, "chat_completion_stream_response", _fake_chat_completion)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -142,7 +124,6 @@ async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkey
                     "single_model": "openai/gpt-4o",
                     "council_models": ["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
                     "synthesizer_model": "anthropic/claude-sonnet-4-5",
-                    "tool_flags": {"workspace_search": True, "python_execution": True},
                 },
                 "task_agent_model": "moonshotai/kimi-k2.6",
             },
@@ -158,11 +139,9 @@ async def test_task_agent_model_setting_applies_to_future_chat_agent_runs(monkey
                     "single_model": "openai/gpt-4o",
                     "council_models": ["openai/gpt-4o"],
                     "synthesizer_model": "openai/gpt-4o",
-                    "tool_flags": {"workspace_search": True, "python_execution": True},
                 },
             },
         )
         assert created.status_code == 201
 
-    assert seen_models
-    assert all(model == "moonshotai/kimi-k2.6" for model in seen_models)
+    assert seen_models == ["openai/gpt-4o"]

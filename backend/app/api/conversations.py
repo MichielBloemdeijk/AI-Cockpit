@@ -23,12 +23,8 @@ from app.models.conversations import (
     ConversationMessageCreateRequest,
     ConversationMessageView,
     ConversationSummary,
-    ConversationToolRequest,
-    ConversationToolResponse,
     ConversationTurnResponse,
-    ConversationToolResult,
     ConversationWorkspaceView,
-    MemoryApprovalResponse,
     MemoryExtractionRequest,
     MemoryItemView,
     WorkspaceFileView,
@@ -41,14 +37,12 @@ from app.presenters.conversations import (
     present_memory_item,
 )
 from app.services.auth import require_auth
-from app.services.agent_tools import build_tool_context, execute_chat_tool
 from app.services.chat_settings import chat_settings_service
 from app.services.chat_orchestrator import chat_orchestrator
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import conversation_store
 from app.services.conversation_workspace import MAIN_BRANCH_KEY
 from app.services.knowledge_extractor import extract_memory_proposals
-from app.services.knowledge_memory import write_approved_memory
 from app.services.memory_review_store import memory_review_store
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"], dependencies=[Depends(require_auth)])
@@ -281,112 +275,6 @@ async def create_conversation_message(conversation_id: str, req: ConversationMes
     )
 
 
-def _tool_user_message(req: ConversationToolRequest) -> str:
-    if req.tool == "workspace_search":
-        return f"Search workspace for: {req.query or ''}".strip()
-    if req.tool == "python_execution":
-        return "Run Python code:\n```python\n" + (req.code or "") + "\n```"
-    return f"Run tool: {req.tool}"
-
-
-@router.post("/{conversation_id}/tools", response_model=ConversationToolResponse)
-async def execute_conversation_tool(conversation_id: str, req: ConversationToolRequest):
-    conversation = await conversation_store.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    if conversation.conversation_kind != "standard":
-        raise HTTPException(
-            status_code=409,
-            detail="Jarvis daily logs do not support inline conversation tools",
-        )
-
-    defaults = await chat_settings_service.get_defaults()
-    session_metadata = chat_settings_service.resolve_conversation_metadata(conversation, defaults)
-    run = await conversation_store.start_run(
-        conversation_id,
-        kind="tool",
-        metadata_json={
-            "tool": req.tool,
-            "session_metadata": session_metadata.model_dump(),
-        },
-    )
-    await conversation_store.append_user_message(
-        conversation_id,
-        run_id=run.id,
-        content=_tool_user_message(req),
-        branch_key=req.branch_key,
-    )
-    started_event = await conversation_store.append_event(
-        conversation_id,
-        run_id=run.id,
-        actor_kind="system",
-        event_type=f"tool.{req.tool}.started",
-        payload_json={
-            "tool": req.tool,
-            "query": req.query,
-            "working_directory": req.working_directory,
-            "goal": req.goal,
-            "title": req.title,
-            "app_slug": req.app_slug,
-        },
-        branch_key=req.branch_key,
-    )
-
-    try:
-        result = await execute_chat_tool(
-            context=build_tool_context(conversation_id, conversation.workspace_path or ".cockpit/conversations"),
-            tool=req.tool,
-            query=req.query,
-            code=req.code,
-            working_directory=req.working_directory,
-        )
-    except Exception as exc:
-        error_detail = str(exc) or repr(exc)
-        await conversation_store.mark_run_failed(run.id, error_detail)
-        raise HTTPException(status_code=400, detail=error_detail) from exc
-
-    completed_event, message = await conversation_store.complete_message(
-        conversation_id,
-        run_id=run.id,
-        role="assistant",
-        content=result.output,
-        actor_kind="assistant",
-        event_type=f"tool.{req.tool}.completed",
-        author_label=req.tool,
-        payload_json={
-            "tool": req.tool,
-            "metadata": result.metadata,
-            "output": result.output,
-        },
-        branch_key=req.branch_key,
-    )
-    await conversation_store.attach_artifact(
-        conversation_id,
-        run_id=run.id,
-        source_event_id=completed_event.id,
-        artifact_type=f"tool.{req.tool}.result",
-        mime_type="application/json",
-        content_json={
-            "tool": req.tool,
-            "metadata": result.metadata,
-            "output": result.output,
-            "started_event_id": started_event.id,
-        },
-    )
-    await conversation_store.mark_run_completed(run.id)
-
-    return ConversationToolResponse(
-        conversation_id=conversation_id,
-        run_id=run.id,
-        message=present_conversation_message(message),
-        result=result if isinstance(result, ConversationToolResult) else ConversationToolResult(
-            tool=result.tool,
-            output=result.output,
-            metadata=result.metadata,
-        ),
-    )
-
-
 @router.get("/{conversation_id}/memory-items", response_model=list[MemoryItemView])
 async def list_memory_items(conversation_id: str):
     conversation = await conversation_store.get_conversation(conversation_id)
@@ -444,42 +332,6 @@ async def extract_memory_items(conversation_id: str, req: MemoryExtractionReques
         memory_items.append(present_memory_item(memory_item))
 
     return memory_items
-
-
-@router.post("/{conversation_id}/memory-items/{memory_item_id}/approve", response_model=MemoryApprovalResponse)
-async def approve_memory_item(conversation_id: str, memory_item_id: str):
-    conversation = await conversation_store.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    memory_item = await memory_review_store.get_memory_item(memory_item_id)
-    if memory_item is None or memory_item.source_conversation_id != conversation_id:
-        raise HTTPException(status_code=404, detail="Memory item not found")
-
-    if memory_item.status != "approved":
-        knowledge_path = write_approved_memory(memory_item)
-        memory_item = await memory_review_store.approve_memory_item(memory_item_id, knowledge_path=str(knowledge_path))
-    else:
-        knowledge_path = write_approved_memory(memory_item)
-
-    return MemoryApprovalResponse(
-        memory_item=present_memory_item(memory_item),
-        knowledge_path=str(knowledge_path),
-    )
-
-
-@router.post("/{conversation_id}/memory-items/{memory_item_id}/reject", response_model=MemoryItemView)
-async def reject_memory_item(conversation_id: str, memory_item_id: str):
-    conversation = await conversation_store.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    memory_item = await memory_review_store.get_memory_item(memory_item_id)
-    if memory_item is None or memory_item.source_conversation_id != conversation_id:
-        raise HTTPException(status_code=404, detail="Memory item not found")
-
-    rejected = await memory_review_store.reject_memory_item(memory_item_id)
-    return present_memory_item(rejected)
 
 
 @router.post("/{conversation_id}/branches/resend", response_model=ConversationBranchResendResponse)

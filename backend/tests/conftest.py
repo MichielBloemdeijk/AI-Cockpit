@@ -123,7 +123,6 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     original_conversation_workspaces_dir = settings.conversation_workspaces_dir
     original_knowledge_notes_dir = settings.knowledge_notes_dir
     original_knowledge_preferences_file = settings.knowledge_preferences_file
-    original_verifier_generated_apps_dir = settings.verifier_generated_apps_dir
     original_task_workspaces_dir = settings.task_workspaces_dir
     original_task_context_blobs_dir = settings.task_context_blobs_dir
     database_path = tmp_path / "test.db"
@@ -134,7 +133,6 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     settings.conversation_workspaces_dir = str(tmp_path / ".cockpit" / "conversations")
     settings.knowledge_notes_dir = str(tmp_path / "knowledge" / "notes")
     settings.knowledge_preferences_file = str(tmp_path / "knowledge" / "preferences.yaml")
-    settings.verifier_generated_apps_dir = str(tmp_path / "verifier-runs")
     settings.task_workspaces_dir = str(tmp_path / "task-workspaces")
     settings.task_context_blobs_dir = str(tmp_path / "task-context-blobs")
 
@@ -165,6 +163,5 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
         settings.conversation_workspaces_dir = original_conversation_workspaces_dir
         settings.knowledge_notes_dir = original_knowledge_notes_dir
         settings.knowledge_preferences_file = original_knowledge_preferences_file
-        settings.verifier_generated_apps_dir = original_verifier_generated_apps_dir
         settings.task_workspaces_dir = original_task_workspaces_dir
         settings.task_context_blobs_dir = original_task_context_blobs_dir

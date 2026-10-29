@@ -34,7 +34,6 @@ async def claimed(key):
 
 @pytest.mark.asyncio
 async def test_policy_compare_and_swap_and_run_freeze(monkeypatch):
-    monkeypatch.setattr(settings, "task_executor", "codex")
     context, worker = await claimed("policy-freeze")
     frozen = await freeze_tools(context)
     revision, policy = await read_policy()
@@ -46,7 +45,6 @@ async def test_policy_compare_and_swap_and_run_freeze(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_connector_read_allow_send_exact_human_approval_and_revocation(monkeypatch):
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(permissions, "REGISTERED_TOOLS", {})
     permissions.register_tools("mail", {"read": "Read messages", "send": "Send a message"})
     context, worker = await claimed("permissions")
@@ -92,7 +90,6 @@ async def test_unregistered_connector_cannot_gain_access(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_connector_uncertain_effect_cannot_be_bypassed_with_a_new_key(monkeypatch):
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(permissions, "REGISTERED_TOOLS", {})
     permissions.register_tools("mail", {"send": "Send a message"})
     await permissions.configure("mail", "primary", "send", "allow", expected_revision=0)
@@ -112,7 +109,6 @@ async def test_connector_uncertain_effect_cannot_be_bypassed_with_a_new_key(monk
 
 @pytest.mark.asyncio
 async def test_changed_connector_arguments_require_a_new_human_decision(monkeypatch):
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(permissions, "REGISTERED_TOOLS", {})
     permissions.register_tools("mail", {"send": "Send a message"})
     await permissions.configure("mail", "primary", "send", "ask_first", expected_revision=0)

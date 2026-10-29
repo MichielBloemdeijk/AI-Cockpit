@@ -173,31 +173,6 @@ class ConversationTurnResponse(BaseModel):
     council_data: dict[str, Any] | None = None
 
 
-class ConversationToolRequest(BaseModel):
-    tool: str
-    branch_key: str = "main"
-    query: str | None = None
-    code: str | None = None
-    working_directory: str | None = None
-    goal: str | None = None
-    title: str | None = None
-    app_slug: str | None = None
-    description: str | None = None
-
-
-class ConversationToolResult(BaseModel):
-    tool: str
-    output: str
-    metadata: dict[str, Any] | None = None
-
-
-class ConversationToolResponse(BaseModel):
-    conversation_id: str
-    run_id: str
-    message: ConversationMessageView
-    result: ConversationToolResult
-
-
 class MemoryProposalInput(BaseModel):
     scope: str
     kind: str

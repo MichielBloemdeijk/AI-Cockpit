@@ -418,7 +418,7 @@ describe("chat settings api", () => {
       ok: true,
       json: async () => ({
         available_models: ["anthropic/claude-sonnet-4-5", "moonshotai/kimi-k2.6"],
-        defaults: { mode: "single", single_model: "anthropic/claude-sonnet-4-5", council_models: ["anthropic/claude-sonnet-4-5"], synthesizer_model: "anthropic/claude-sonnet-4-5", tool_flags: { workspace_search: true, python_execution: true } },
+        defaults: { mode: "single", single_model: "anthropic/claude-sonnet-4-5", council_models: ["anthropic/claude-sonnet-4-5"], synthesizer_model: "anthropic/claude-sonnet-4-5" },
         task_agent_model: "moonshotai/kimi-k2.6",
       }),
     } satisfies Partial<Response>);
@@ -430,7 +430,6 @@ describe("chat settings api", () => {
         single_model: "anthropic/claude-sonnet-4-5",
         council_models: ["anthropic/claude-sonnet-4-5"],
         synthesizer_model: "anthropic/claude-sonnet-4-5",
-        tool_flags: { workspace_search: true, python_execution: true },
       },
       task_agent_model: "moonshotai/kimi-k2.6",
     });
@@ -445,7 +444,6 @@ describe("chat settings api", () => {
           single_model: "anthropic/claude-sonnet-4-5",
           council_models: ["anthropic/claude-sonnet-4-5"],
           synthesizer_model: "anthropic/claude-sonnet-4-5",
-          tool_flags: { workspace_search: true, python_execution: true },
         },
         task_agent_model: "moonshotai/kimi-k2.6",
       }),

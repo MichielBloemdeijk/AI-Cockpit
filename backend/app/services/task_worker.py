@@ -13,9 +13,8 @@ from app.config import settings
 from app.services.agent_execution import (
     AgentExecutionContext,
     TargetExpansionRequested,
-    TaskAgentRuntime,
     TaskExecutionSink,
-    task_agent_runtime,
+    TaskRuntime,
 )
 from app.services.task_service import task_service, execution_attempt_outcome
 from app.services.worker_coordinator import ClaimedTask, WorkerCoordinator, worker_coordinator
@@ -36,18 +35,15 @@ class TaskWorker:
         self,
         *,
         coordinator: WorkerCoordinator = worker_coordinator,
-        runtime: TaskAgentRuntime | None = None,
+        runtime: TaskRuntime | None = None,
         externally_supervised: bool = False,
     ) -> None:
         self.coordinator = coordinator
-        if runtime is not None:
-            self.runtime = runtime
-        elif settings.task_executor == "codex":
+        if runtime is None:
             from app.services.codex_task_runtime import codex_task_runtime
 
-            self.runtime = codex_task_runtime  # type: ignore[assignment]
-        else:
-            self.runtime = task_agent_runtime
+            runtime = codex_task_runtime
+        self.runtime: TaskRuntime = runtime
         self.worker_id: str | None = None
         self.externally_supervised = externally_supervised
         self._release_writers_stopped = True
@@ -167,23 +163,11 @@ class TaskWorker:
         )
         sink = TaskExecutionSink(context)
 
-        async def execute_with_context():
-            from app.services.task_context import portable_context
-
-            if not getattr(self.runtime, "manages_context", False):
-                await portable_context(
-                    claim.task_id, run_id=claim.execution_run_id,
-                    attempt_id=claim.attempt_id, claim_token=claim.claim_token,
-                )
-            return await self.runtime.execute(
-                context,
-                sink,
-                cancellation_requested=lambda: task_service.cancellation_requested(claim.task_id),
-            )
-
-        execution = asyncio.create_task(
-            execute_with_context()
-        )
+        execution = asyncio.create_task(self.runtime.execute(
+            context,
+            sink,
+            cancellation_requested=lambda: task_service.cancellation_requested(claim.task_id),
+        ))
         try:
             while not execution.done():
                 done, _ = await asyncio.wait(

@@ -24,7 +24,6 @@ from app.jarvis_tasks.task_mcp import _image_result
 @pytest.mark.parametrize("case", ["distinct", "identical", "partial_failure", "missing_latest", "explicit_current_missing", "missing_invocation", "overlapping", "mismatched_current", "concurrent"])
 async def test_frozen_screen_collection(monkeypatch, case):
     definition = load_workflow("screen_document@1")
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"screen_document@1:{definition.digest}")
     activation = str(uuid4())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:

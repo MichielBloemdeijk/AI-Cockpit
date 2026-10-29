@@ -34,7 +34,6 @@
     },
     "coding_provider": {
       "overrides": {
-        "task_executor": "codex",
         "codex_subscription_enabled": false,
         "task_pool_enabled": false,
         "task_orchestration_enabled": false,
@@ -54,7 +53,6 @@
     },
     "subscription_provider": {
       "overrides": {
-        "task_executor": "codex",
         "codex_subscription_enabled": true,
         "task_pool_enabled": false,
         "task_orchestration_enabled": false,
@@ -73,7 +71,6 @@
     },
     "emulator": {
       "overrides": {
-        "task_executor": "codex",
         "task_pool_enabled": false,
         "task_orchestration_enabled": false,
         "task_orchestration_live_enabled": false,
@@ -102,7 +99,6 @@
     },
     "mobile_emulator": {
       "overrides": {
-        "task_executor": "codex",
         "task_pool_enabled": true,
         "task_orchestration_enabled": false,
         "task_orchestration_live_enabled": false,
@@ -129,7 +125,6 @@
     },
     "capture_privacy": {
       "overrides": {
-        "task_executor": "codex",
         "task_pool_enabled": false,
         "task_orchestration_enabled": false,
         "task_orchestration_live_enabled": false,

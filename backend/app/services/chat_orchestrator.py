@@ -3,64 +3,34 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import inspect
-import re
-from typing import AsyncIterator
+import logging
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.config import settings
 from app.models.chat import ChatResponse, Message, ModelResponse, PromptMetrics
 from app.models.settings import ConversationSessionMetadata
-from app.services.agent_tools import build_tool_context
-from app.services.agent_runner import agent_runner
-from app.services.app_registry import app_registry_service, resolve_generated_app_contract
 from app.services.chat_settings import chat_settings_service
 from app.services.conversation_compaction import build_conversation_prompt_context
 from app.services.conversation_read_model import conversation_read_model
-from app.services.conversation_store import EventRecord, MessageRecord, RunRecord, conversation_store
+from app.db.repositories.conversations import utc_now
+from app.services.conversation_store import EventRecord, RunRecord, conversation_store
 from app.services.conversation_timeline import TIMELINE_ITEM_EVENT_TYPE
 from app.services.conversation_workspace import MAIN_BRANCH_KEY
 from app.services.run_supervisor import run_supervisor
-from app.services.llm import PromptSegment, aggregate_usage, chat_completion, chat_completion_stream, ensure_prompt_metrics
-
-
-_APP_CONTEXT_HINT_RE = re.compile(r"(?:/apps/|started app task|app root:|entry page:|allowed write roots:|app has been updated)", re.IGNORECASE)
-_APP_WORK_REQUEST_RE = re.compile(
-    r"(?:/apps/|\b(?:build|create|edit|fix|update|change|test|verify|open|show|inspect|review|deploy)\b"
-    r".{0,80}\b(?:app|application|website|webpage|page|frontend|ui|component|route|layout)\b|"
-    r"\b(?:app|application|website|webpage|frontend|ui|component|route|layout)\b"
-    r".{0,80}\b(?:code|file|button|screen|status|error|bug|design)\b)",
-    re.IGNORECASE,
+from app.services.llm import (
+    PromptSegment,
+    aggregate_usage,
+    chat_completion,
+    chat_completion_stream_response,
+    ensure_prompt_metrics,
 )
-def goal_targets_app_context(goal: str, *, app_title: str = "", app_slug: str = "") -> bool:
-    normalized_goal = " ".join(str(goal or "").split()).lower()
-    app_identifiers = {
-        identifier
-        for identifier in (
-            " ".join(str(app_title or "").split()).lower(),
-            " ".join(str(app_slug or "").split()).lower(),
-        )
-        if identifier
-    }
-    return bool(
-        _APP_WORK_REQUEST_RE.search(normalized_goal)
-        or any(identifier in normalized_goal for identifier in app_identifiers)
-    )
-STREAMED_AGENT_EVENT_TYPES = {
-    "conversation.task.started",
-    "conversation.task.start_failed",
-    "agent.run.started",
-    "agent.text.output",
-    "agent.thought.summary",
-    "agent.progress.summary",
-    "agent.tool.called",
-    "agent.tool.completed",
-    "agent.question.asked",
-    "agent.question.answered",
-    "agent.run.resumed",
-    "agent.run.completed",
-    "agent.run.failed",
-    TIMELINE_ITEM_EVENT_TYPE,
-}
+
+
+logger = logging.getLogger(__name__)
+
+# Durable events forwarded on a single-chat stream; content deltas travel as chunk frames.
+STREAMED_CHAT_EVENT_TYPES = {TIMELINE_ITEM_EVENT_TYPE}
+StreamCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _latest_user_message(messages: list[Message]) -> Message:
@@ -158,9 +128,6 @@ class ChatOrchestrator:
             model=model,
         )
         resolved_model = resolved_session_metadata.single_model
-        user_message = _latest_user_message(messages)
-        goal = user_message.content.strip() or "Continue"
-
         existing_conversation = await conversation_store.get_conversation(conversation_id) if conversation_id else None
         effective_conversation_id = existing_conversation.id if existing_conversation is not None else None
         if effective_conversation_id is None:
@@ -170,18 +137,12 @@ class ChatOrchestrator:
             )
             effective_conversation_id = created.id
 
-        agent_metadata = await self._build_agent_metadata(
-            conversation_id=effective_conversation_id,
-            goal=goal,
-            session_metadata=resolved_session_metadata,
-        )
-
         prepared = await self.prepare_turn(
             messages=messages,
             conversation_id=effective_conversation_id,
             run_kind="assistant",
             session_metadata=resolved_session_metadata,
-            metadata_json=agent_metadata,
+            metadata_json={"model": resolved_model, "session_metadata": resolved_session_metadata.model_dump()},
             branch_key=branch_key,
             parent_event_id=parent_event_id,
         )
@@ -203,7 +164,7 @@ class ChatOrchestrator:
                 content=error_text,
                 actor_kind="assistant",
                 event_type="conversation.assistant.message.completed",
-                author_label="agent",
+                author_label=resolved_model,
                 payload_json={"model": resolved_model, "content": error_text},
                 branch_key=branch_key,
             )
@@ -229,27 +190,10 @@ class ChatOrchestrator:
             None,
         )
         run = await conversation_store.get_run(prepared.run.id)
-        run_metadata = dict(run.metadata_json or {}) if run is not None else {}
-        pending_question = run_metadata.get("pending_question") if isinstance(run_metadata.get("pending_question"), dict) else None
-        if assistant_message is None and pending_question:
-            question_text = str(pending_question.get("question") or "Please clarify how to proceed.").strip()
-            _, created_message = await conversation_store.complete_message(
-                prepared.conversation_id,
-                run_id=prepared.run.id,
-                role="assistant",
-                content=question_text,
-                actor_kind="assistant",
-                event_type="conversation.assistant.message.completed",
-                author_label="agent",
-                payload_json={"model": resolved_model, "content": question_text},
-                branch_key=branch_key,
-            )
-            assistant_message = created_message
-
         if assistant_message is None:
-            fallback = "Agent run completed with no final message."
+            fallback = "The model returned no reply."
             if run is not None and str(run.status or "").lower() == "failed":
-                fallback = str(run.error or "Agent run failed.")
+                fallback = str(run.error or "The chat reply failed.")
             _, created_message = await conversation_store.complete_message(
                 prepared.conversation_id,
                 run_id=prepared.run.id,
@@ -257,7 +201,7 @@ class ChatOrchestrator:
                 content=fallback,
                 actor_kind="assistant",
                 event_type="conversation.assistant.message.completed",
-                author_label="agent",
+                author_label=resolved_model,
                 payload_json={"model": resolved_model, "content": fallback},
                 branch_key=branch_key,
             )
@@ -269,88 +213,6 @@ class ChatOrchestrator:
             model=resolved_model,
             content=assistant_message.content,
         )
-
-    async def _conversation_has_recent_app_context(self, conversation_id: str, branch_key: str) -> bool:
-        records = await conversation_read_model.list_messages_for_branch(
-            conversation_id,
-            branch_key=branch_key,
-            final_only=True,
-        )
-        for record in reversed(records[-8:]):
-            if _APP_CONTEXT_HINT_RE.search(record.content or ""):
-                return True
-        return False
-
-    async def _build_agent_metadata(
-        self,
-        *,
-        conversation_id: str,
-        goal: str,
-        session_metadata: ConversationSessionMetadata,
-        model_override: str | None = None,
-    ) -> dict[str, object]:
-        task_agent_model = model_override or await chat_settings_service.get_task_agent_model()
-        conversation = await conversation_store.get_conversation(conversation_id)
-        workspace_path = conversation.workspace_path if conversation and conversation.workspace_path else ".cockpit/conversations"
-        context = build_tool_context(conversation_id, workspace_path)
-        allowed_roots = [root.as_posix() for root in context.read_roots]
-        default_write_roots = [root.as_posix() for root in context.write_roots]
-
-        payload: dict[str, object] = {}
-        app_context: dict[str, object] | None = None
-        write_roots = list(default_write_roots)
-        recent_app = await app_registry_service.get_recent_app_for_conversation(conversation_id)
-        goal_targets_recent_app = bool(
-            recent_app is not None
-            and goal_targets_app_context(
-                goal,
-                app_title=str(recent_app.title or ""),
-                app_slug=str(recent_app.slug or ""),
-            )
-        )
-        if recent_app is not None and goal_targets_recent_app:
-            contract = resolve_generated_app_contract(recent_app.slug, recent_app.manifest_json)
-            app_payload = {
-                "app_id": recent_app.id,
-                "slug": recent_app.slug,
-                "title": recent_app.title,
-                "description": recent_app.description,
-                "route_path": recent_app.route_path,
-                "frontend_root": contract.frontend_root,
-                "frontend_entry_path": contract.frontend_entry_path,
-                "frontend_layout_path": contract.frontend_layout_path,
-                "manifest_path": contract.manifest_path,
-                "asset_root": contract.asset_root,
-                "allowed_write_roots": contract.allowed_write_roots,
-                "lease_conversation_id": recent_app.lease_conversation_id,
-            }
-            payload["app"] = app_payload
-            app_context = {
-                "mode": "app_builder",
-                "app": app_payload,
-            }
-            write_roots = list(contract.allowed_write_roots)
-
-        return {
-            "run_kind": "agent",
-            "title": "Agent chat run",
-            "goal": goal,
-            "payload": payload,
-            "app_context": app_context,
-            "allowed_roots": allowed_roots,
-            "write_roots": write_roots,
-            "active_step": "Queued",
-            "active_step_index": 0,
-            "agent_status": "pending",
-            "history": [],
-            "summary": None,
-            "pending_question": None,
-            "final_summary": None,
-            "result": None,
-            "error": None,
-            "model": task_agent_model,
-            "session_metadata": session_metadata.model_dump(),
-        }
 
     def _message_to_segment(self, message: Message, *, cache_candidate: bool = False, stable: bool = False) -> PromptSegment:
         role = message.role.value if hasattr(message.role, "value") else str(message.role)
@@ -508,6 +370,74 @@ class ChatOrchestrator:
             session_metadata=session_metadata,
         )
 
+    async def continue_run(self, run_id: str, *, cancel_event: asyncio.Event | None = None,
+                           stream_callback: StreamCallback | None = None) -> None:
+        """Produce the assistant reply for a prepared single-model run (run_supervisor entry)."""
+        run = await conversation_store.get_run(run_id)
+        if run is None or run.status != "running":
+            return
+        metadata = dict(run.metadata_json or {})
+        branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
+        model = str(metadata.get("model") or settings.task_agent_model)
+        try:
+            prompt = await self._build_model_prompt(
+                conversation_id=run.conversation_id,
+                branch_key=branch_key,
+                transient_messages=[],
+                model=model,
+                run_id=run_id,
+            )
+
+            async def on_delta(text: str) -> None:
+                if stream_callback is not None and text:
+                    await stream_callback({"type": "chunk", "content": text})
+
+            response = await chat_completion_stream_response(
+                prompt.messages,
+                model,
+                session_id=_message_session_id(run.conversation_id, branch_key),
+                prompt_segments=prompt.prompt_segments,
+                on_content_delta=on_delta,
+            )
+            await self._record_llm_metrics(
+                conversation_id=run.conversation_id,
+                run_id=run_id,
+                branch_key=branch_key,
+                model=model,
+                metrics=response.prompt_metrics,
+                request_kind="chat.single",
+            )
+            if response.error:
+                raise RuntimeError(response.error)
+            if not response.content.strip():
+                raise RuntimeError("The model returned no reply.")
+            await conversation_store.complete_message(
+                run.conversation_id,
+                run_id=run_id,
+                role="assistant",
+                content=response.content,
+                actor_kind="assistant",
+                event_type="conversation.assistant.message.completed",
+                author_label=model,
+                payload_json={"model": model, "content": response.content, "usage": response.usage},
+                branch_key=branch_key,
+            )
+            await conversation_store.transition_run_status(
+                run_id, expected_statuses={"running"}, status="completed", error=None, finished_at=utc_now(),
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(conversation_store.transition_run_status(
+                run_id, expected_statuses={"running"}, status="cancelled", error=None, finished_at=utc_now(),
+            ))
+            raise
+        except Exception as exc:
+            logger.exception("Single chat run %s failed", run_id)
+            await conversation_store.transition_run_status(
+                run_id, expected_statuses={"running"}, status="failed",
+                error=str(exc) or "The chat reply failed.", finished_at=utc_now(),
+            )
+            raise
+
     async def _resolve_session_metadata(
         self,
         *,
@@ -559,10 +489,7 @@ class ChatOrchestrator:
             async def _emit_stream_update(payload: dict) -> None:
                 await stream_updates.put(payload)
 
-            continue_run_kwargs = {}
-            if "stream_callback" in inspect.signature(agent_runner.continue_run).parameters:
-                continue_run_kwargs["stream_callback"] = _emit_stream_update
-            run_task = run_supervisor.start(prepared.run.id, runner=agent_runner, **continue_run_kwargs)
+            run_task = run_supervisor.start(prepared.run.id, runner=self, stream_callback=_emit_stream_update)
             last_event_sequence = 0
 
             async def _drain_run_events() -> AsyncIterator[dict]:
@@ -572,7 +499,7 @@ class ChatOrchestrator:
                     if event.sequence <= last_event_sequence:
                         continue
                     last_event_sequence = event.sequence
-                    if event.event_type not in STREAMED_AGENT_EVENT_TYPES:
+                    if event.event_type not in STREAMED_CHAT_EVENT_TYPES:
                         continue
                     yield {
                         "type": "event",
@@ -585,10 +512,7 @@ class ChatOrchestrator:
                         update = stream_updates.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                    yield {
-                        "type": "agent_stream",
-                        "stream": update,
-                    }
+                    yield update
 
             yield {
                 "type": "metadata",
@@ -608,7 +532,7 @@ class ChatOrchestrator:
                     try:
                         await run_task
                     except Exception as exc:
-                        error_text = str(exc) or "Agent run failed."
+                        error_text = str(exc) or "The chat reply failed."
                     break
 
                 try:
@@ -616,7 +540,7 @@ class ChatOrchestrator:
                 except asyncio.TimeoutError:
                     continue
                 except Exception as exc:
-                    error_text = str(exc) or "Agent run failed."
+                    error_text = str(exc) or "The chat reply failed."
                     break
 
             async for stream_frame in _drain_stream_updates():
@@ -677,9 +601,9 @@ class ChatOrchestrator:
         )
         error_text: str | None = None
         try:
-            await asyncio.shield(run_supervisor.start(prepared.run.id, runner=agent_runner))
+            await asyncio.shield(run_supervisor.start(prepared.run.id, runner=self))
         except Exception as exc:
-            error_text = str(exc) or "Agent run failed."
+            error_text = str(exc) or "The chat reply failed."
 
         return await self._finalize_single_run_response(
             prepared=prepared,

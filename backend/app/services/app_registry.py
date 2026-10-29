@@ -13,7 +13,6 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import GeneratedApp, GeneratedAppStatus
-from app.services.conversation_store import conversation_store
 
 
 def _utc_now() -> datetime:
@@ -23,16 +22,6 @@ def _utc_now() -> datetime:
 def _slugify(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
     return normalized or "app"
-
-
-def _metadata_app_payload(metadata: dict[str, object]) -> dict[str, object] | None:
-    app_context = metadata.get("app_context") if isinstance(metadata.get("app_context"), dict) else {}
-    app = app_context.get("app") if isinstance(app_context, dict) else None
-    if isinstance(app, dict):
-        return app
-    payload = metadata.get("payload") if isinstance(metadata.get("payload"), dict) else {}
-    app = payload.get("app") if isinstance(payload, dict) else None
-    return app if isinstance(app, dict) else None
 
 
 @dataclass(slots=True)
@@ -57,23 +46,6 @@ class GeneratedAppRecord:
     last_error: str | None
     created_at: datetime
     updated_at: datetime
-
-
-class AppLeaseError(ValueError):
-    pass
-
-
-class AppLeaseConflictError(AppLeaseError):
-    def __init__(self, *, title: str, slug: str, lease_task_run_id: str, lease_conversation_id: str | None) -> None:
-        self.slug = slug
-        self.lease_task_run_id = lease_task_run_id
-        self.lease_conversation_id = lease_conversation_id
-        detail = (
-            f"App '{title}' ({slug}) is currently leased by task {lease_task_run_id}"
-            + (f" in conversation {lease_conversation_id}" if lease_conversation_id else "")
-            + "."
-        )
-        super().__init__(detail)
 
 
 @dataclass(slots=True)
@@ -357,36 +329,6 @@ class AppRegistryService:
         shutil.copytree(source_root, live_root)
         return True
 
-    async def _lease_holder_is_active(
-        self,
-        *,
-        conversation_id: str,
-        app_id: str,
-        holder_run_id: str | None = None,
-    ) -> bool:
-        runs = await conversation_store.list_runs(conversation_id)
-        if holder_run_id:
-            runs = [run for run in runs if run.id == holder_run_id]
-
-        for run in runs:
-            run_status = str(run.status or "").strip().lower()
-            metadata = dict(run.metadata_json or {})
-            if run_status in {"completed", "failed", "cancelled", "interrupted", "paused"}:
-                continue
-            if run_status:
-                is_active = run_status in {"pending", "running"}
-            else:
-                active_status = str(metadata.get("agent_status") or metadata.get("task_status") or "").strip().lower()
-                is_active = active_status in {"pending", "running"}
-            if not is_active:
-                continue
-            app = _metadata_app_payload(metadata)
-            if not isinstance(app, dict):
-                continue
-            if str(app.get("app_id") or "").strip() == app_id:
-                return True
-        return False
-
     async def list_apps(self) -> list[GeneratedAppRecord]:
         async with session_scope() as session:
             result = await session.execute(
@@ -499,105 +441,6 @@ class AppRegistryService:
         if slug:
             shutil.rmtree(_live_generated_app_root(slug), ignore_errors=True)
         return True
-
-    async def acquire_lease(
-        self,
-        *,
-        app_id: str,
-        conversation_id: str,
-        holder_run_id: str | None = None,
-        task_run_id: str | None = None,
-    ) -> GeneratedAppRecord:
-        resolved_holder_run_id = holder_run_id or task_run_id
-        record = await self.get_app(app_id)
-        if record is None:
-            raise AppLeaseError("App not found")
-
-        active_holder_conversation = str(record.lease_conversation_id or "").strip()
-        active_holder_run = str(record.lease_task_run_id or "").strip()
-        active_holder_is_running = (
-            active_holder_conversation
-            and await self._lease_holder_is_active(
-                conversation_id=active_holder_conversation,
-                app_id=app_id,
-            )
-        )
-        holder_mismatch = active_holder_conversation and active_holder_conversation != conversation_id
-        if active_holder_is_running and holder_mismatch:
-            raise AppLeaseConflictError(
-                title=record.title,
-                slug=record.slug,
-                lease_task_run_id=str(record.lease_task_run_id or active_holder_conversation),
-                lease_conversation_id=record.lease_conversation_id,
-            )
-
-        now = _utc_now()
-        async with session_scope() as session:
-            await session.execute(
-                update(GeneratedApp)
-                .where(GeneratedApp.id == app_id)
-                .values(
-                    lease_task_run_id=resolved_holder_run_id,
-                    lease_conversation_id=conversation_id,
-                    lease_acquired_at=now,
-                    updated_at=now,
-                )
-            )
-            item = await session.get(GeneratedApp, app_id)
-            if item is None:
-                raise AppLeaseError("App not found")
-            return _record(item)
-
-    async def release_lease(
-        self,
-        *,
-        app_id: str,
-        conversation_id: str | None = None,
-        holder_run_id: str | None = None,
-        task_run_id: str | None = None,
-    ) -> GeneratedAppRecord | None:
-        resolved_holder_run_id = holder_run_id or task_run_id
-        record = await self.get_app(app_id)
-        if record is None:
-            return None
-        if conversation_id and record.lease_conversation_id and record.lease_conversation_id != conversation_id:
-            return record
-        if not conversation_id and resolved_holder_run_id and record.lease_task_run_id and record.lease_task_run_id != resolved_holder_run_id:
-            return record
-
-        now = _utc_now()
-        async with session_scope() as session:
-            await session.execute(
-                update(GeneratedApp)
-                .where(GeneratedApp.id == app_id)
-                .values(
-                    lease_task_run_id=None,
-                    lease_conversation_id=None,
-                    lease_acquired_at=None,
-                    updated_at=now,
-                )
-            )
-            item = await session.get(GeneratedApp, app_id)
-            return None if item is None else _record(item)
-
-    async def get_recent_app_for_conversation(self, conversation_id: str) -> GeneratedAppRecord | None:
-        runs = await conversation_store.list_runs(conversation_id)
-        for run in runs:
-            metadata = dict(run.metadata_json or {})
-            app = _metadata_app_payload(metadata)
-            if not isinstance(app, dict):
-                continue
-            app_id = str(app.get("app_id") or "").strip()
-            slug = str(app.get("slug") or "").strip()
-            if app_id:
-                record = await self.get_app(app_id)
-                if record is not None:
-                    return record
-            if slug:
-                record = await self.get_app_by_slug(slug)
-                if record is not None:
-                    return record
-        return None
 
     def get_allowed_write_roots(self, record: GeneratedAppRecord) -> list[str]:
         return resolve_generated_app_contract(record.slug, record.manifest_json).allowed_write_roots

@@ -36,8 +36,6 @@ def normalize_agent_preferences(config: dict | None, *, inherited: dict | None =
     ExecutionPreferences.model_validate(request)
     from app.services.worker_tool_policy import normalize_overrides
     tools = normalize_overrides(request.get("tools", (inherited or {}).get("tools")))
-    if settings.task_executor != "codex":
-        raise ValueError("Explicit execution preferences require the Codex task route")
     defaults = {"model": settings.codex_task_model, "reasoning_effort": settings.codex_task_reasoning_effort}
     baseline = defaults | (inherited or {})
     model = request.get("model", baseline["model"])

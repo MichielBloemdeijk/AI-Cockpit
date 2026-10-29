@@ -107,7 +107,6 @@ def task_mcp_arguments(context: AgentExecutionContext, *, workflow: dict | None 
 
 
 class CodexTaskRuntime:
-    manages_context = True
 
     async def execute(
         self,

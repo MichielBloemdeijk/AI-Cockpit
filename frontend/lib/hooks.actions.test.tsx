@@ -15,7 +15,6 @@ const apiMocks = vi.hoisted(() => ({
   checkAuth: vi.fn(async () => true),
   createConversation: vi.fn(),
   createConversationMessage: vi.fn(),
-  executeConversationTool: vi.fn(),
   getConversation: vi.fn(),
   getConversationEvents: vi.fn(),
   listConversations: vi.fn(),
@@ -73,30 +72,6 @@ describe("useChat actions", () => {
       await Promise.resolve();
     });
     container.remove();
-  });
-
-  it("creates a conversation before running a tool when none is active", async () => {
-    const sessionMetadata = buildConversationDetail("draft").session_metadata!;
-    apiMocks.createConversation.mockResolvedValue({ conversation: { id: "conv-2" } });
-    apiMocks.listConversations
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        buildConversationSummary("conv-2", { session_metadata: sessionMetadata }),
-      ]);
-
-    await act(async () => {
-      await latestHook!.runTool({ tool: "workspace_search", value: "agent loop" }, sessionMetadata);
-    });
-
-    expect(apiMocks.createConversation).toHaveBeenCalledWith(undefined, "single", sessionMetadata);
-    expect(apiMocks.executeConversationTool).toHaveBeenCalledWith("conv-2", {
-      tool: "workspace_search",
-      branch_key: "main",
-      query: "agent loop",
-      code: undefined,
-    });
-    expect(apiMocks.getConversation).toHaveBeenCalledWith("conv-2", "main");
-    expect(latestHook!.activeConversationId).toBe("conv-2");
   });
 
   it("archives the active conversation and clears the selection", async () => {
@@ -187,20 +162,5 @@ describe("useChat actions", () => {
     });
     expect(apiMocks.getConversation).toHaveBeenCalledWith("conv-1", "branch-2");
     expect(latestHook!.activeBranchKey).toBe("branch-2");
-  });
-
-  it("surfaces tool errors through actionError state", async () => {
-    const sessionMetadata = buildConversationDetail("draft").session_metadata!;
-    apiMocks.createConversation.mockResolvedValue({ conversation: { id: "conv-3" } });
-    apiMocks.executeConversationTool.mockRejectedValue(new Error("Tool sandbox rejected the command"));
-
-    await act(async () => {
-      await latestHook!.runTool({ tool: "workspace_search", value: "agent loop" }, sessionMetadata);
-    });
-
-    expect(latestHook!.actionError).toMatchObject({
-      scope: "tool",
-      message: "Tool sandbox rejected the command",
-    });
   });
 });

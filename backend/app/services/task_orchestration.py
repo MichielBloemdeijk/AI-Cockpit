@@ -371,7 +371,7 @@ class TaskOrchestrationService:
             "execution_preferences": {
                 "current_run": {key: value for key, value in (current_run.configuration_json or {}).items()
                                 if key in {"model", "reasoning_effort"}} if current_run else {},
-                "preferences_supported": settings.task_executor == "codex",
+                "preferences_supported": True,
                 "permitted_models": list(permitted_models()), "permitted_efforts": ["low", "medium", "high"],
                 "scope": "New agent runs only; does not change existing run, permissions or authentication",
             },

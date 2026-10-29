@@ -106,7 +106,6 @@ async def test_device_capture_report_preflight_and_revision_fence(complete_obser
 @pytest.mark.asyncio
 async def test_captured_workflow_admission_waits_for_upload_and_targets_event(monkeypatch) -> None:
     screen_definition = load_workflow("screen_document@1")
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"screen_document@1:{screen_definition.digest}")
     transport = ASGITransport(app=app)
     activation_id, capture_id = str(uuid4()), str(uuid4())

@@ -34,7 +34,6 @@ async def test_long_history_requires_and_retains_model_summary(monkeypatch) -> N
                 origin="test",
             ) for sequence in range(2, 32)
         ])
-    monkeypatch.setattr(settings, "task_executor", "codex")
     with pytest.raises(ValueError, match="semantic compaction"):
         await portable_context(
             created.task.id, run_id=claim.task.execution_run_id,

@@ -11,7 +11,7 @@ from app.services.conversation_store import MessageRecord
 
 from dataclasses import dataclass
 
-from app.services.conversation_compaction import build_agent_history_context, build_conversation_prompt_context, microcompact_entries, truncate_compacted_text
+from app.services.conversation_compaction import build_conversation_prompt_context, microcompact_entries, truncate_compacted_text
 
 
 @dataclass(slots=True)
@@ -131,55 +131,3 @@ async def test_build_conversation_prompt_context_summarizes_prefix(monkeypatch):
     assert context.messages[1].content == "Latest answer"
 
 
-@pytest.mark.asyncio
-async def test_build_agent_history_context_generates_summary_and_tail(monkeypatch):
-    metadata = {
-        "goal": "Inspect the history handling.",
-        "history": [
-            {"kind": "tool", "tool": "workspace_search", "arguments": {"query": "foo"}, "ok": True, "output": "x" * 40},
-            {"kind": "tool", "tool": "file_read", "arguments": {"path": "a.txt"}, "ok": True, "output": "y" * 40},
-            {"kind": "tool", "tool": "file_write", "arguments": {"path": "b.txt"}, "ok": True, "output": "Latest"},
-        ],
-    }
-    updates: list[dict[str, object]] = []
-
-    monkeypatch.setattr(conversation_compaction.settings, "conversation_compaction_enabled", True)
-    monkeypatch.setattr(conversation_compaction.settings, "conversation_compaction_trigger_messages", 2)
-    monkeypatch.setattr(conversation_compaction.settings, "conversation_compaction_keep_tail_messages", 1)
-    monkeypatch.setattr(conversation_compaction, "get_session_prompt_cache_status", lambda session_id, model: SimpleNamespace(cache_cold=False))
-
-    async def _fake_chat_completion(messages, model, **kwargs):
-        return ModelResponse(model=model, content="Earlier work summary")
-
-    async def _update_run_metadata(run_id, next_metadata):
-        updates.append(dict(next_metadata))
-
-    async def _record_metrics(**kwargs):
-        return "metrics-event"
-
-    async def _record_visible(**kwargs):
-        return None
-
-    async def _append_event(*args, **kwargs):
-        return SimpleNamespace(id="event-1")
-
-    async def _attach_artifact(*args, **kwargs):
-        return SimpleNamespace(id="artifact-1")
-
-    monkeypatch.setattr(conversation_compaction, "chat_completion", _fake_chat_completion)
-    monkeypatch.setattr(conversation_compaction.conversation_store, "append_event", _append_event)
-    monkeypatch.setattr(conversation_compaction.conversation_store, "attach_artifact", _attach_artifact)
-
-    context = await build_agent_history_context(
-        conversation_id="c1",
-        run_id="r1",
-        metadata=metadata,
-        model="anthropic/claude-sonnet-4-5",
-        update_run_metadata=_update_run_metadata,
-        record_llm_metrics=_record_metrics,
-        record_llm_visible_output=_record_visible,
-    )
-
-    assert context.history_summary == "Earlier work summary"
-    assert context.rendered_history == [metadata["history"][-1]]
-    assert updates[-1]["history_compaction"]["summary"] == "Earlier work summary"

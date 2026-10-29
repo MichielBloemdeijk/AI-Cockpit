@@ -97,7 +97,6 @@ class Settings(BaseSettings):
     )
     synthesizer_model: str = "anthropic/claude-sonnet-5"
     task_agent_model: str = "local/gemma-4-12b"
-    task_executor: Literal["legacy", "codex"] = "legacy"
     task_pool_enabled: bool = False
     task_orchestration_enabled: bool = False
     task_orchestration_live_enabled: bool = False
@@ -153,7 +152,6 @@ class Settings(BaseSettings):
     conversation_workspaces_dir: str = "../.cockpit/conversations"
     knowledge_notes_dir: str = "../knowledge/notes"
     knowledge_preferences_file: str = "../knowledge/preferences.yaml"
-    verifier_generated_apps_dir: str = "data/verifier-runs"
     task_workspaces_dir: str = "data/task-workspaces"
     task_context_blobs_dir: str = "data/task-context-blobs"
     android_releases_dir: str = "data/android-releases"
@@ -245,13 +243,6 @@ class Settings(BaseSettings):
     @property
     def knowledge_preferences_path(self) -> Path:
         configured_path = Path(self.knowledge_preferences_file)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
-
-    @property
-    def verifier_generated_apps_path(self) -> Path:
-        configured_path = Path(self.verifier_generated_apps_dir)
         if configured_path.is_absolute():
             return configured_path
         return self.backend_root / configured_path

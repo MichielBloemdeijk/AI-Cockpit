@@ -123,8 +123,8 @@ def serve():
             raise RuntimeError("Set a persistent private SESSION_SECRET_KEY before linking a phone.")
         if settings.jarvis_access_mode == "password" and not settings.auth_password.get_secret_value():
             raise RuntimeError("Password mode requires AUTH_PASSWORD in private configuration.")
-        if not settings.task_pool_enabled or settings.task_executor != "codex":
-            raise RuntimeError("Personal host requires TASK_EXECUTOR=codex and TASK_POOL_ENABLED=true.")
+        if not settings.task_pool_enabled:
+            raise RuntimeError("Personal host requires TASK_POOL_ENABLED=true.")
         for port in (8000, 3000):
             with socket.socket() as probe:
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)

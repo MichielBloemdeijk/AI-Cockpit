@@ -13,7 +13,6 @@ const ERROR_LABELS: Record<ChatActionError["scope"], string> = {
   archive: "Archive failed",
   branch: "Branch action failed",
   send: "Send failed",
-  tool: "Tool action failed",
 };
 
 export function ChatActionErrorBanner({ error, onDismiss }: Props) {

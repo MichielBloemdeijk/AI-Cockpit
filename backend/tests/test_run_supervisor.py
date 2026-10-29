@@ -5,7 +5,6 @@ import asyncio
 import pytest
 
 from app.services.run_supervisor import RunSupervisor
-from app.services.conversation_store import conversation_store
 
 
 @pytest.mark.asyncio
@@ -14,7 +13,7 @@ async def test_supervisor_deduplicates_runs_and_keeps_task_owner_independent() -
     calls: list[str] = []
 
     class FakeRunner:
-        async def continue_run(self, run_id: str) -> None:
+        async def continue_run(self, run_id: str, **_kwargs) -> None:
             calls.append(run_id)
             await release.wait()
 
@@ -37,7 +36,7 @@ async def test_supervisor_stop_cancels_owned_tasks() -> None:
     started = asyncio.Event()
 
     class FakeRunner:
-        async def continue_run(self, run_id: str) -> None:
+        async def continue_run(self, run_id: str, **_kwargs) -> None:
             started.set()
             await asyncio.Event().wait()
 
@@ -49,15 +48,18 @@ async def test_supervisor_stop_cancels_owned_tasks() -> None:
     assert supervisor.get("run-2") is None
 
 
+
+
 @pytest.mark.asyncio
-async def test_queued_run_claim_is_single_use_and_terminal_runs_cannot_restart() -> None:
-    conversation = await conversation_store.create_conversation(mode_hint="voice")
-    run = await conversation_store.start_run(conversation.id, kind="assistant", status="queued", metadata_json={})
+async def test_supervisor_logs_a_failed_run(caplog) -> None:
+    class FailingRunner:
+        async def continue_run(self, run_id: str, **_kwargs) -> None:
+            raise RuntimeError("runner exploded")
 
-    claimed = await conversation_store.claim_run_for_execution(run.id)
-    assert claimed is not None
-    assert claimed.status == "running"
-    assert await conversation_store.claim_run_for_execution(run.id) is None
+    supervisor = RunSupervisor()
+    task = supervisor.start("run-3", runner=FailingRunner())
+    with pytest.raises(RuntimeError):
+        await task
+    await asyncio.sleep(0)
 
-    await conversation_store.update_run_status(run.id, status="cancelled", error="cancelled")
-    assert await conversation_store.claim_run_for_execution(run.id) is None
+    assert any("run-3" in record.getMessage() and record.exc_info for record in caplog.records)

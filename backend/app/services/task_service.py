@@ -325,10 +325,8 @@ class TaskService:
         if normalized_kind not in {"agent", "workflow"}:
             raise ValueError("Task execution kind must be agent or workflow")
         if normalized_kind == "workflow":
-            if settings.task_executor == "codex":
+            if not self.workflow_fixture_enabled:
                 execution_config = resolve_workflow_config(execution_config)
-            elif not self.workflow_fixture_enabled:
-                raise ValueError("Workflow execution is not enabled until its constrained runtime is registered")
             pinned = (execution_config or {}).get("workflow") or {}
             if pinned.get("schema") == "workflow-pinned.v2" and pinned.get("required_initial_context") and capture_binding is None:
                 raise ValueError("Workflow admission requires its declared initial context")
@@ -553,7 +551,7 @@ class TaskService:
                 inherited.pop("resolved_tools", None)
                 execution_config = normalize_agent_preferences(execution_config, inherited=inherited)
             if kind == "workflow":
-                if settings.task_executor == "codex":
+                if not self.workflow_fixture_enabled:
                     if execution_config:
                         execution_config = resolve_workflow_config({"definition": previous.configuration_json["definition"], **execution_config}, inherited=previous.configuration_json)
                     else:
@@ -564,8 +562,6 @@ class TaskService:
                             raise ValueError("Workflow version and digest are not enabled")
                         execution_config = previous_config
                         execution_config.pop("resolved_tools", None)
-                elif not self.workflow_fixture_enabled:
-                    raise ValueError("Workflow execution is not enabled until its constrained runtime is registered")
             execution_config = dict(execution_config or {})
             execution_config.pop("result", None)  # a new run needs fresh explicit intent
             if result_request is None and existing is None:

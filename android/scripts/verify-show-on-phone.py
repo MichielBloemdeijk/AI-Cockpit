@@ -66,7 +66,7 @@ def main() -> None:
             "SESSION_SECRET_KEY": uuid4().hex, "OPENAI_API_KEY": "", "CODEX_API_KEY": "", "OPENROUTER_API_KEY": "",
             "LOCAL_LLM_ENABLED": "false", "WEB_PUSH_ENABLED": "false",
             **{key: str(evidence / key.lower()) for key in ("TASK_WORKSPACES_DIR", "TASK_CONTEXT_BLOBS_DIR",
-                "CONVERSATION_WORKSPACES_DIR", "VERIFIER_GENERATED_APPS_DIR", "CODEX_PROFILES_DIR", "KNOWLEDGE_NOTES_DIR",
+                "CONVERSATION_WORKSPACES_DIR", "CODEX_PROFILES_DIR", "KNOWLEDGE_NOTES_DIR",
                 "TASK_ORCHESTRATION_CONTEXT_DIR", "ANDROID_RELEASES_DIR")},
             "KNOWLEDGE_PREFERENCES_FILE": str(evidence / "preferences.yaml")}
         backend = screen.start_service(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],

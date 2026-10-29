@@ -13,7 +13,6 @@ from app.services.task_service import task_service
 
 @pytest.fixture(autouse=True)
 def configured(monkeypatch):
-    monkeypatch.setattr(settings, "task_executor", "codex")
     monkeypatch.setattr(settings, "task_orchestration_enabled", True)
     monkeypatch.setattr(settings, "task_execution_model_allowlist", "gpt-5.6-luna,fixture-model")
 
@@ -79,12 +78,6 @@ async def test_background_pending_continuation_retains_question_and_pins_only_ne
 def test_invalid_preferences_never_expand_permissions(options):
     with pytest.raises(ValueError):
         normalize_agent_preferences(options)
-
-
-def test_legacy_route_does_not_silently_ignore_requested_preferences(monkeypatch):
-    monkeypatch.setattr(settings, "task_executor", "legacy")
-    with pytest.raises(ValueError, match="Codex"):
-        normalize_agent_preferences({"reasoning_effort": "medium"})
 
 
 def test_voice_and_background_schema_share_permitted_options():
