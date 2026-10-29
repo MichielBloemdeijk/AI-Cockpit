@@ -24,7 +24,7 @@ async def admitted():
 
 
 @pytest.mark.asyncio
-async def test_publication_commit_replay_conflict_validation_rollback_and_no_content(monkeypatch, caplog):
+async def test_publication_commit_replay_conflict_validation_rollback_and_no_content(monkeypatch, caplog, complete_observations):
     caplog.set_level("INFO", logger=result_telemetry.__name__)
     worker = await worker_coordinator.activate(process_identity="result-observability")
     task_id, page = await admitted()
@@ -100,7 +100,7 @@ async def test_observation_failure_cannot_fail_committed_publication(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_authenticated_bounded_deduplicated_client_metadata_and_restart(monkeypatch):
+async def test_authenticated_bounded_deduplicated_client_metadata_and_restart(monkeypatch, complete_observations):
     task_id, page = await admitted()
     endpoint = f"/api/results/{page.public_id}"
     payload = {"view_id": str(uuid4()), "sequence": 0, "kind": "first_snapshot", "duration_ms": 25.0, "revision_number": 0}

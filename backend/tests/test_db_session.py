@@ -205,3 +205,41 @@ async def test_read_cancelled_during_sql_releases_connection(caplog):
         assert not checked_out
     assert not any("Exception terminating connection" in r.message or
                    "non-checked-in connection" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_failed_connection_setup_closes_the_database_file():
+    # A connect hook failing on SQLITE_BUSY once left its aiosqlite connection
+    # (file handle and worker thread) open, held only by the exception.
+    import asyncio
+    import gc
+    import sqlite3
+    import threading
+    from sqlalchemy.exc import OperationalError
+    from app.config import settings
+    from app.db.session import observation_session_scope
+
+    def workers():
+        return {t for t in threading.enumerate() if "_connection_worker_thread" in t.name and t.is_alive()}
+    before = workers()
+    holder = sqlite3.connect(settings.database_path)
+    try:
+        holder.execute("PRAGMA locking_mode=EXCLUSIVE")
+        holder.execute("BEGIN EXCLUSIVE")
+        holder.execute("CREATE TABLE lock_holder (id INTEGER)")
+        error = None
+        try:
+            async with observation_session_scope():
+                pass
+        except OperationalError as caught:
+            error = caught  # Keep the traceback alive, as a caller logging it would.
+        assert error is not None and "locked" in str(error)
+        for _ in range(100):
+            if not workers() - before:
+                break
+            await asyncio.sleep(.02)
+        assert not workers() - before
+    finally:
+        holder.rollback()
+        holder.close()
+        gc.collect()

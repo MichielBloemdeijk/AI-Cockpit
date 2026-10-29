@@ -133,14 +133,25 @@ def _create_engine(resolved_url: str, *, observation: bool = False) -> AsyncEngi
         @event.listens_for(engine.sync_engine, "connect")
         def _configure_sqlite(dbapi_connection, connection_record):
             with span("db_connection_setup"):
-                cursor = dbapi_connection.cursor()
                 try:
-                    cursor.execute("PRAGMA foreign_keys=ON")
-                    # Brokered actions retain crash-durable commits.
-                    cursor.execute("PRAGMA synchronous=FULL")
-                    cursor.execute(f"PRAGMA busy_timeout={100 if observation else 30000}")
-                finally:
-                    cursor.close()
+                    cursor = dbapi_connection.cursor()
+                    try:
+                        cursor.execute("PRAGMA foreign_keys=ON")
+                        # Brokered actions retain crash-durable commits.
+                        cursor.execute("PRAGMA synchronous=FULL")
+                        cursor.execute(f"PRAGMA busy_timeout={100 if observation else 30000}")
+                    finally:
+                        cursor.close()
+                except BaseException:
+                    # The pool never closes a connection whose connect event
+                    # failed (e.g. SQLITE_BUSY under contention, cancellation):
+                    # the exception's traceback would keep the file and its
+                    # aiosqlite worker thread open. Close it before re-raising.
+                    try:
+                        dbapi_connection.terminate()
+                    except Exception:
+                        pass
+                    raise
             if started := connection_record.info.pop("connect_started_ns", None):
                 record_interval("db_connection_open", started)
 

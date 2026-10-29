@@ -57,7 +57,11 @@ def sweep_stale_test_folders():
     parent = Path(tempfile.gettempdir()).resolve() / "jarvis-test-execution"
     cutoff = time.time() - 3600
     for leftover in parent.glob("*") if parent.is_dir() else ():
-        if leftover.is_dir() and not leftover.is_symlink() and leftover.stat().st_mtime < cutoff:
+        try:
+            stale = leftover.is_dir() and not leftover.is_symlink() and leftover.stat().st_mtime < cutoff
+        except FileNotFoundError:
+            continue  # Every xdist worker sweeps; another one removed it first.
+        if stale:
             shutil.rmtree(leftover, ignore_errors=True)
 
 
@@ -90,10 +94,7 @@ def tmp_path():
                 raise error
             resolved.chmod(__import__("stat").S_IWRITE)
             function(target)
-        try:
-            shutil.rmtree(path, onexc=remove_readonly)
-        except PermissionError:
-            pass  # A leaked SQLite connection can keep test.db open on Windows; swept next session.
+        shutil.rmtree(path, onexc=remove_readonly)
 
 
 @pytest.fixture(scope="session")

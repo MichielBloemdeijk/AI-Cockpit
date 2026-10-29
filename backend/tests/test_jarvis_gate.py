@@ -115,9 +115,15 @@ async def test_wake_gate_timeout_rejects_and_discards_candidate(
             payload={"item_id": "timeout-item"},
         ),
     )
-    await asyncio.sleep(0.2)
-    _, events = await jarvis_coordinator.replay_session_events(session.id)
-    assert any(event.event_type == "wake.gate.timed_out" for event in events)
+    # The timeout fires in the background; under parallel CPU load it can take
+    # well over the 0.2 s this test once slept.
+    async with asyncio.timeout(10):
+        while True:
+            _, events = await jarvis_coordinator.replay_session_events(session.id)
+            if any(event.event_type == "wake.gate.timed_out" for event in events) and \
+                    fake_voice_session_adapter.discarded_candidate_items:
+                break
+            await asyncio.sleep(0.05)
     assert not any(event.event_type == "response.arbiter.started" for event in events)
     assert any(
         item_ids == ("timeout-item",)

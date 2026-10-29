@@ -16,7 +16,7 @@ def load(name, filename):
 
 
 @pytest.mark.asyncio
-async def test_emulator_fixture_controls_require_auth_and_use_real_publication(monkeypatch):
+async def test_emulator_fixture_controls_require_auth_and_use_real_publication(monkeypatch, complete_observations):
     fixture = load("m5_fixture_test", "m5_result_fixture.py")
     monkeypatch.setenv("M5_EXTERNAL_URL", "http://10.0.2.2:12345/source")
     assert not any(getattr(route, "path", "").startswith("/_fixture") for route in fixture.cockpit.routes)
