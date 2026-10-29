@@ -336,40 +336,6 @@ ReminderTiming = Annotated[
 ]
 
 
-class ReminderCreateRequest(BaseModel):
-    text: str | None = Field(default=None, max_length=2000)
-    timing: ReminderTiming | None = None
-    due_at: datetime | None = None
-    idempotency_key: str = Field(min_length=1, max_length=255)
-    allow_duplicate: bool = False
-
-    @model_validator(mode="after")
-    def require_one_timing(self) -> "ReminderCreateRequest":
-        if (self.timing is None) == (self.due_at is None):
-            raise ValueError("Provide exactly one of timing or the deprecated due_at")
-        return self
-
-
-class TaskReferenceRequest(BaseModel):
-    reference: str = Field(min_length=1, max_length=500)
-    active_only: bool = False
-
-
-class TaskReferenceCandidate(BaseModel):
-    title: str
-    status: str
-    created_at: datetime
-
-
-class TaskResolutionView(BaseModel):
-    resolved: bool
-    ambiguous: bool = False
-    internal_task_id: str | None = None
-    task: TaskReferenceCandidate | None = None
-    candidates: list[TaskReferenceCandidate] = Field(default_factory=list)
-    clarification: str | None = None
-
-
 class PairingCodeView(BaseModel):
     code: str
     expires_at: datetime

@@ -378,24 +378,6 @@ async def get_task(task_id: str) -> TaskDetailView:
     return view
 
 
-@router.get("/{task_id}/events", response_model=TaskEventReplayResponse)
-async def replay_one_task_events(
-    task_id: str,
-    after: int = Query(default=0, ge=0),
-    limit: int = Query(default=250, ge=1, le=1000),
-) -> TaskEventReplayResponse:
-    replay = await task_service.replay_task_events(
-        task_id, after_sequence=after, limit=limit,
-    )
-    if replay is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    latest_sequence, events = replay
-    return TaskEventReplayResponse(
-        latest_sequence=latest_sequence,
-        events=[_event(item) for item in events],
-    )
-
-
 @router.post("/{task_id}/turns", response_model=TaskTurnAdmissionView, status_code=201)
 async def continue_task(task_id: str, request: TaskTurnCreateRequest) -> TaskTurnAdmissionView:
     try:
@@ -448,15 +430,6 @@ async def control_task(task_id: str, request: TaskControlRequest) -> TaskControl
 async def cancel_task(task_id: str, request: TaskActionRequest) -> TaskSummaryView:
     try:
         snapshot = await task_service.cancel(task_id, idempotency_key=request.idempotency_key)
-    except ValueError as exc:
-        raise _bad_request(exc) from exc
-    return present_task_summary(snapshot.task, snapshot.queue_position)
-
-
-@router.post("/{task_id}/retry", response_model=TaskSummaryView)
-async def retry_task(task_id: str, request: TaskActionRequest) -> TaskSummaryView:
-    try:
-        snapshot = await task_service.retry(task_id, idempotency_key=request.idempotency_key)
     except ValueError as exc:
         raise _bad_request(exc) from exc
     return present_task_summary(snapshot.task, snapshot.queue_position)

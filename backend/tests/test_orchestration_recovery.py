@@ -159,26 +159,6 @@ async def test_committed_receipt_wins_even_if_native_history_is_unavailable():
     assert (await task_service.get_task(task.id)).questions[0].answer == "staging"
 
 
-@pytest.mark.asyncio
-async def test_recovery_endpoint_auth_enabled_gate_and_strict_schema(monkeypatch):
-    from httpx import ASGITransport, AsyncClient
-    from app.main import app
-    import app.api.orchestration as api
-    service, _, _, claim = await fixture(Inspector())
-    monkeypatch.setattr(api, "task_orchestration_service", service)
-    path = f"/api/orchestration/{claim.id}/resume"
-    body = {"operation_key": "restore", "reason": "Provider availability restored"}
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.post(path, json=body)).status_code == 401
-        await client.post("/api/auth/login", json={"password": ""})
-        assert (await client.post(path, json={**body, "generation": 100})).status_code == 422
-        monkeypatch.setattr(settings, "task_orchestration_enabled", False)
-        assert (await client.post(path, json=body)).status_code == 409
-        monkeypatch.setattr(settings, "task_orchestration_enabled", True)
-        result = await client.post(path, json=body)
-        assert result.status_code == 200 and result.json()["status"] == "pending"
-
-
 @pytest.mark.parametrize("statuses,turn_id,expected", [(["completed"], "turn", "terminal"),
     (["failed"], "turn", "terminal"), (["interrupted"], "turn", "terminal"),
     (["inProgress"], "turn", "uncertain"), (["unknown"], "turn", "uncertain"),

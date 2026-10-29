@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.api import app_catalog, apps, auth, chat, devices, jarvis, memory, notifications, orchestration, results, retrieval, task_context, tasks
+from app.api import app_catalog, apps, auth, chat, devices, jarvis, notifications, orchestration, results, task_context, tasks
 from app.api import conversations, knowledge, worker_tools
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
 from app.services.conversation_store import conversation_store
@@ -127,8 +127,6 @@ app.include_router(orchestration.router)
 app.include_router(knowledge.router)
 app.include_router(apps.router)
 app.include_router(notifications.router)
-app.include_router(retrieval.router)
-app.include_router(memory.router)
 app.include_router(devices.router)
 
 

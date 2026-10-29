@@ -19,11 +19,12 @@ from app.services.auth import verify_session_token
 @pytest.mark.asyncio
 async def test_scoped_namespace_methods_cookie_override_tampering_and_revocation(monkeypatch):
     results._write_windows.clear()
-    await app_registry_service.create_app(title="Scoped", slug="scoped")
+    scoped_app = await app_registry_service.create_app(title="Scoped", slug="scoped")
     await app_registry_service.create_app(title="Other", slug="other")
+    mint = f"/api/apps/{scoped_app.id}/storage-capability"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as owner:
         await owner.post("/api/auth/login", json={"password": ""})
-        credential = (await owner.post("/api/app-catalog/scoped/storage-capability", json={})).json()
+        credential = (await owner.post(mint, json={})).json()
         assert credential["methods"] == ["GET", "PUT"] and credential["namespace"] == "state"
         assert not verify_session_token(credential["credential"])
         headers = {"Authorization": f"AppCapability {credential['credential']}"}
@@ -43,23 +44,24 @@ async def test_scoped_namespace_methods_cookie_override_tampering_and_revocation
             # Capabilities never unlock unrelated APIs, even with a valid cookie.
             for forbidden in ["/api/tasks", "/api/app-catalog", "/api/results/unknown", "/api/auth/status"]:
                 assert (await owner.get(forbidden, headers=headers)).status_code == 401
-            assert (await owner.post("/api/app-catalog/scoped/storage-capability", json={}, headers=headers)).status_code == 401
-            assert (await owner.post("/api/app-catalog/scoped/storage-capability/revoke", headers=headers)).status_code == 401
+            assert (await owner.post(mint, json={}, headers=headers)).status_code == 401
             assert (await owner.get(path, headers={"Authorization": "AppCapability"})).status_code == 401
             for variant in [" AppCapability invalid", "AppCapability\tinvalid", "appcapability   invalid"]:
                 assert (await owner.get("/api/tasks", headers={"Authorization": variant})).status_code == 401
                 assert (await owner.get(path, headers={"Authorization": variant})).status_code == 401
             assert (await scoped.get(path, headers={"Authorization": headers["Authorization"] + "tamper"})).status_code == 401
-            readonly = (await owner.post("/api/app-catalog/scoped/storage-capability", json={"read_only": True})).json()
+            readonly = (await owner.post(mint, json={"read_only": True})).json()
             ro_headers = {"Authorization": f"AppCapability {readonly['credential']}"}
             assert (await scoped.get(path, headers=ro_headers)).status_code == 200
             assert (await scoped.put(path, headers=ro_headers, json={"value": {}, "expected_revision": 1})).status_code == 403
-            assert (await owner.post("/api/app-catalog/documents/storage-capability", json={})).status_code == 404
-            assert (await owner.post("/api/app-catalog/scoped/storage-capability/revoke")).json() == {"generation": 1}
+            # Bumping the capability revision revokes every outstanding grant.
+            async with session_scope() as session:
+                await session.execute(update(CockpitApp).where(CockpitApp.slug == "scoped")
+                    .values(capability_revision=CockpitApp.capability_revision + 1))
             assert (await scoped.get(path)).status_code == 403
             # Revocation does not delete committed state or affect owner sessions.
             assert (await owner.get(path)).json()["value"] == {"theme": "dark"}
-            fresh = (await owner.post("/api/app-catalog/scoped/storage-capability", json={})).json()
+            fresh = (await owner.post(mint, json={})).json()
             assert (await scoped.get(path, headers={"Authorization": f"AppCapability {fresh['credential']}"})).status_code == 200
 
 

@@ -7,38 +7,18 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select
 
 from app.api.results import protect_state_write
 from app.db.session import session_scope
 from app.db.tables import CockpitApp, ResultPage
-from app.models.apps import AppStorageCapabilityRequest
 from app.services.app_catalog import get_app, present_app, read_data, write_data
 from app.services.jarvis_devices import require_jarvis_auth
 from app.services.task_results import result_snapshot
-from app.services.app_capabilities import authorize_storage, issue_capability, StorageGrant, assert_grant
-from app.services.auth import require_auth
+from app.services.app_capabilities import authorize_storage, StorageGrant, assert_grant
 
 router = APIRouter(prefix="/api/app-catalog", tags=["app-catalog"], dependencies=[Depends(require_jarvis_auth)])
 data_router = APIRouter(prefix="/api/app-catalog", tags=["app-data"], dependencies=[Depends(authorize_storage)])
-
-
-@router.post("/{slug}/storage-capability", dependencies=[Depends(require_auth), Depends(protect_state_write)])
-async def create_storage_capability(slug: str, body: AppStorageCapabilityRequest):
-    async with session_scope() as session:
-        return issue_capability(await get_app(session, slug), read_only=body.read_only)
-
-
-@router.post("/{slug}/storage-capability/revoke", dependencies=[Depends(require_auth), Depends(protect_state_write)])
-async def revoke_storage_capabilities(slug: str):
-    async with session_scope() as session:
-        generation = (await session.execute(update(CockpitApp).where(CockpitApp.slug == slug,
-            CockpitApp.kind == "generated", CockpitApp.enabled.is_(True))
-            .values(capability_revision=CockpitApp.capability_revision + 1)
-            .returning(CockpitApp.capability_revision))).scalar_one_or_none()
-        if generation is None:
-            raise HTTPException(404, "Generated app not available")
-        return {"generation": generation}
 
 
 @router.get("")

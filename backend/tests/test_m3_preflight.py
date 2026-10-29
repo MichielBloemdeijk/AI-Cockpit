@@ -68,9 +68,9 @@ async def exercise_code_only_services(occupied):
         await task_presentation_service.sync_candidates()
         assert any(item.task_id == occupied[0].task.id
                    for item in await task_presentation_service.list_pending())
-        history = await client.get(f"/api/tasks/{occupied[0].task.id}/events")
-        assert history.status_code == 200
-        assert any(event["event_type"] == "task.completed" for event in history.json()["events"])
+        history = await task_service.replay_task_events(occupied[0].task.id, after_sequence=0, limit=500)
+        assert history is not None
+        assert any(event.event_type == "task.completed" for event in history[1])
     return round((monotonic() - started) * 1000, 1)
 
 

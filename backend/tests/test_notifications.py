@@ -6,19 +6,16 @@ from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.services.notifications import (
     acknowledge_delivery,
-    delete_subscription,
     upsert_subscription,
 )
 
 
 @pytest.mark.asyncio
-async def test_subscription_upsert_is_idempotent_and_deletable() -> None:
+async def test_subscription_upsert_is_idempotent() -> None:
     first = await upsert_subscription("https://push.test/device", "key-1", "auth-1", "browser-1")
     second = await upsert_subscription("https://push.test/device", "key-2", "auth-2", "browser-2")
 
     assert second == first
-    assert await delete_subscription(first["id"]) is True
-    assert await delete_subscription(first["id"]) is False
 
 
 @pytest.mark.asyncio
@@ -70,7 +67,6 @@ async def test_paired_device_can_ack_open_but_cannot_manage_push_and_revocation_
         assert (await device.post("/api/notifications/deliveries/missing/ack", json={"state": "opened"})).status_code == 404
         assert (await device.get("/api/notifications/vapid-public-key")).status_code == 401
         assert (await device.post("/api/notifications/subscriptions", json={"endpoint": "https://push.test/device", "keys": {"p256dh": "key", "auth": "auth"}})).status_code == 401
-        assert (await device.delete("/api/notifications/subscriptions/missing")).status_code == 401
         # Scoped app capabilities must fail even alongside a valid owner cookie.
         assert (await admin.post(endpoint, json={"state": "opened"}, headers={"Authorization": "AppCapability invalid"})).status_code == 401
         assert (await admin.post(endpoint, json={"state": "opened"})).status_code == 200

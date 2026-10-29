@@ -113,9 +113,9 @@ async def test_real_api_process_restart_keeps_result_saved_metrics_and_disabled_
                     await asyncio.sleep(.05)
                     task = (await client.get(f"/api/tasks/{task_id}")).json()
                 assert len(task["attempts"]) == 1 and task["status"] == "completed"
-                history_response = await client.get(f"/api/tasks/{task_id}/events")
+                history_response = await client.get("/api/tasks/events", params={"after": 0, "limit": 1000})
                 assert history_response.status_code == 200
-                history = history_response.json()
+                history = [event for event in history_response.json()["events"] if event["task_id"] == task_id]
                 if generation == 0:
                     task_before, history_before = task, history
                 else:

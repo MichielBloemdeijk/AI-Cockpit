@@ -10,7 +10,6 @@ from app.services.jarvis_devices import require_jarvis_auth
 from app.services.notifications import (
     LegacyNotificationStateError,
     acknowledge_delivery,
-    delete_subscription,
     get_public_key,
     upsert_subscription,
 )
@@ -44,11 +43,6 @@ async def create_subscription(request: PushSubscriptionRequest) -> dict[str, str
         return await upsert_subscription(request.endpoint, request.keys.p256dh, request.keys.auth, request.user_agent)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-
-@router.delete("/subscriptions/{subscription_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_auth)])
-async def remove_subscription(subscription_id: str) -> None:
-    await delete_subscription(subscription_id)
 
 
 @router.post("/deliveries/{delivery_id}/ack", dependencies=[Depends(require_jarvis_auth)])

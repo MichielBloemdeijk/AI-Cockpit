@@ -60,15 +60,6 @@ async def upsert_subscription(
     return saved
 
 
-async def delete_subscription(subscription_id: str) -> bool:
-    async with session_scope() as session:
-        subscription = await session.get(PushSubscription, subscription_id)
-        if subscription is None:
-            return False
-        await session.delete(subscription)
-        return True
-
-
 async def acknowledge_delivery(delivery_id: str, state: str) -> bool:
     normalized = str(state or "").lower()
     if normalized in {"spoken", "snoozed"}:
@@ -83,7 +74,6 @@ async def acknowledge_delivery(delivery_id: str, state: str) -> bool:
 __all__ = [
     "acknowledge_delivery",
     "LegacyNotificationStateError",
-    "delete_subscription",
     "get_public_key",
     "upsert_subscription",
 ]

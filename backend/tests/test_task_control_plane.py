@@ -810,18 +810,6 @@ async def test_turn_control_and_pool_http_contracts() -> None:
         )
         assert turn.status_code == 201
         assert turn.json()["task_id"] == task_id
-        history = await client.get(f"/api/tasks/{task_id}/events", params={"after": 0, "limit": 1})
-        assert history.status_code == 200
-        first_event = history.json()["events"][0]
-        reconnected = await client.get(
-            f"/api/tasks/{task_id}/events", params={"after": first_event["sequence"]}
-        )
-        assert reconnected.status_code == 200
-        assert all(item["task_id"] == task_id for item in reconnected.json()["events"])
-        assert all(
-            item["sequence"] > first_event["sequence"]
-            for item in reconnected.json()["events"]
-        )
         pool = await client.get("/api/tasks/pool")
         assert pool.status_code == 200
         assert pool.json()["max_busy"] == settings.worker_max_busy

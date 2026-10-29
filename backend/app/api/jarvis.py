@@ -30,16 +30,12 @@ from app.models.jarvis import (
     JarvisPlaybackBatch,
     JarvisLiveEventReplayResponse,
     JarvisLiveEventView,
-    ReminderCreateRequest,
     JarvisSessionEventReplayResponse,
     JarvisSessionEventView,
     JarvisSessionView,
     JarvisStateResponse,
     JarvisTextTurnRequest,
     JarvisTurnAcceptedResponse,
-    TaskReferenceCandidate,
-    TaskReferenceRequest,
-    TaskResolutionView,
 )
 from app.presenters.conversations import present_conversation_message
 from app.presenters.conversations import present_conversation_event
@@ -52,12 +48,10 @@ from app.services.jarvis_live import jarvis_live_service
 from app.services.jarvis_live_telemetry import jarvis_live_telemetry
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.jarvis_situation import jarvis_situation_projector
-from app.services.natural_task_resolver import natural_task_resolver, task_title
-from app.services.reminder_scheduler import reminder_scheduler
 from app.services.openai_live_adapter import OpenAILiveConfigurationError
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import ACTIVE_TASK_STATUSES, task_service
-from app.models.tasks import TaskSummaryView, WorkerHealthView
+from app.models.tasks import WorkerHealthView
 
 
 router = APIRouter(prefix="/api/jarvis", tags=["jarvis"], dependencies=[Depends(require_jarvis_auth)])
@@ -237,76 +231,6 @@ async def replay_jarvis_live_events(
             if row.target_device_id is None or browser_owner or row.target_device_id == viewer_device_id
         ],
     )
-
-
-@router.post("/tasks/resolve", response_model=TaskResolutionView)
-async def resolve_task_reference(request: TaskReferenceRequest) -> TaskResolutionView:
-    result = await natural_task_resolver.resolve(request.reference, active_only=request.active_only)
-    if result.task is not None:
-        await natural_task_resolver.touch(result.task.id)
-    return TaskResolutionView(
-        resolved=result.task is not None,
-        ambiguous=result.ambiguous,
-        internal_task_id=None if result.task is None else result.task.id,
-        task=None if result.task is None else TaskReferenceCandidate(
-            title=task_title(result.task),
-            status=result.task.status,
-            created_at=result.task.created_at,
-        ),
-        candidates=[
-            TaskReferenceCandidate(title=task_title(item), status=item.status, created_at=item.created_at)
-            for item in result.candidates
-        ],
-        clarification=result.clarification,
-    )
-
-
-@router.get("/reminders", response_model=list[TaskSummaryView])
-async def list_reminders() -> list[TaskSummaryView]:
-    snapshots = await task_service.list_tasks()
-    return [
-        present_task_summary(item.task, item.queue_position)
-        for item in snapshots
-        if (item.task.scheduled_delivery_json or {}).get("kind") == "reminder"
-    ]
-
-
-@router.post("/reminders", response_model=TaskSummaryView, status_code=status.HTTP_201_CREATED)
-async def create_reminder(request: ReminderCreateRequest) -> TaskSummaryView:
-    state = await jarvis_daily_service.get_state()
-    preferences = await jarvis_preferences_service.get()
-    try:
-        snapshot = await reminder_scheduler.create(
-            text=request.text,
-            due_at=request.due_at,
-            timing=request.timing,
-            active_time_zone=preferences.time_zone,
-            idempotency_key=request.idempotency_key,
-            origin_conversation_id=None if state.current_log is None else state.current_log.id,
-            allow_duplicate=request.allow_duplicate,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    await natural_task_resolver.touch(snapshot.task.id)
-    return present_task_summary(snapshot.task, snapshot.queue_position)
-
-
-@router.post("/reminders/{task_id}/snooze")
-async def snooze_reminder(task_id: str) -> None:
-    """Compatibility tombstone for the removed reminder snooze action."""
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="Reminder snooze has been removed")
-
-
-@router.delete("/reminders/{task_id}", response_model=TaskSummaryView)
-async def cancel_reminder(task_id: str) -> TaskSummaryView:
-    detail = await task_service.get_task(task_id)
-    if detail is None or (detail.task.scheduled_delivery_json or {}).get("kind") != "reminder":
-        raise HTTPException(status_code=404, detail="Reminder not found")
-    try:
-        snapshot = await task_service.cancel(task_id, idempotency_key=f"reminder-api:{uuid4()}")
-    except ValueError as exc:
-        raise _http_error(exc) from exc
-    return present_task_summary(snapshot.task, snapshot.queue_position)
 
 
 @router.post(

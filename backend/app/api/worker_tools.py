@@ -16,15 +16,6 @@ class PolicyUpdate(BaseModel):
     policy: WorkerPolicy
 
 
-class PermissionUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    connector: str
-    account: str
-    tool: str
-    mode: str
-    expected_revision: int
-
-
 @router.get("")
 async def get_policy():
     revision, policy = await read_policy()
@@ -43,9 +34,3 @@ async def put_policy(request: PolicyUpdate):
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.put("/permissions")
-async def put_permission(request: PermissionUpdate):
-    try:
-        return await connector_permissions.configure(**request.model_dump())
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc

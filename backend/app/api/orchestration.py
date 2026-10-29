@@ -31,17 +31,6 @@ async def _recover(decision_id: str, **kwargs) -> dict:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/{decision_id}/inspect")
-async def inspect_decision(decision_id: str) -> dict:
-    return await _recover(decision_id)
-
-
-@router.post("/{decision_id}/resume")
-async def resume_decision(decision_id: str, request: ResumptionRequest) -> dict:
-    # Does not fund an account, enable live execution, or alter auth/model settings.
-    return await _recover(decision_id, resume=True, **request.model_dump())
-
-
 @router.get("")
 async def status(limit: int = Query(default=50, ge=1, le=100)) -> dict:
     async with session_scope() as session:
