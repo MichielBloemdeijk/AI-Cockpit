@@ -91,7 +91,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 2: remove unused routes (17) | Done; kept `/api/jarvis/diagnostics` and `/api/jarvis/live/observer` | `354e8cf` |
 | Phase 2: council/picker models; dead LLM helpers (part of I06) | Done | `9d7e692` |
 
-Left in place after Phase 2, for a later decision: the generated-app subsystem (registry, `/api/apps`, storage SDK, `/workspace/apps` pages, `generated_app` task targets). It has no rows in the dev DB and now has only two registry tests, and its capabilities can no longer be revoked over HTTP (they still expire after 15 minutes). Tool-event presenters in `agent-event-presenter.ts`/`conversation_timeline.py` and the `live_item` read path now only render historical events; they go with the C14/I05 work.
+Generated apps (owner decision, 2026-10-30): app creation stays part of Jarvis, rebuilt as an installable app platform; see [13-app-platform.md](../../jarvis-tasks/13-app-platform.md). The old generated-app subsystem (registry, `/api/apps`, storage SDK, `/workspace/apps` generated entries, `generated_app` task targets) stays until that platform replaces it; its 15 old app folders were deleted. Its capabilities can no longer be revoked over HTTP (they still expire after 15 minutes). Recipes and Documents move onto the platform as its first packages, which also covers C05 (result renderer registry) and much of C07. Tool-event presenters in `agent-event-presenter.ts`/`conversation_timeline.py` and the `live_item` read path now only render historical events; they go with the C14/I05 work.
 
 ## Phase 0 — Small immediate fixes
 

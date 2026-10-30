@@ -54,6 +54,14 @@ into it.
   higher costs; major ones do. If a better model or service brings Jarvis
   significantly closer to the North Star, it is worth paying for. Otherwise,
   keep costs low. Weigh this case by case.
+- **Modular add-ons that Jarvis builds and maintains.** As much as possible,
+  capabilities are add-ons on a shared platform that Jarvis itself can design,
+  build, test, run, fix and reset, rather than hand-built parts of the core.
+  Built-in features should use the same add-on path where they can, so the core
+  stays small and the system can keep extending itself.
+- **Simple first, migrate when needed.** Prefer the simplest design that meets
+  the need with low friction. A more complex, higher-performance design is
+  adopted when a real need appears, not in advance.
 - **Coherent current architecture over compatibility.** Development data is
   disposable (see the root `AGENTS.md`).
 - **Security is secondary for a personal project** reached only over the owner's
