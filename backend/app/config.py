@@ -147,6 +147,10 @@ class Settings(BaseSettings):
     task_workspaces_dir: str = "data/task-workspaces"
     task_context_blobs_dir: str = "data/task-context-blobs"
     android_releases_dir: str = "data/android-releases"
+    # App platform: installed packages, their data store, and the folder builds install from.
+    apps_database_url: str = "sqlite+aiosqlite:///./data/apps.db"
+    apps_dir: str = "data/apps"
+    app_builds_dir: str = "data/app-builds"
     worker_heartbeat_interval_seconds: float = 5.0
     worker_stale_after_seconds: float = 20.0
     worker_lease_ttl_seconds: float = 30.0
@@ -248,6 +252,20 @@ class Settings(BaseSettings):
         if configured_path.is_absolute():
             return configured_path
         return self.backend_root / configured_path
+
+    @property
+    def apps_path(self) -> Path:
+        configured_path = Path(self.apps_dir)
+        return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+
+    @property
+    def app_builds_path(self) -> Path:
+        configured_path = Path(self.app_builds_dir)
+        return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+
+    @property
+    def resolved_apps_database_url(self) -> str:
+        return self.resolve_database_url(self.apps_database_url)
 
     @property
     def codex_profiles_path(self) -> Path:

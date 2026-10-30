@@ -15,6 +15,9 @@ object ResultNavigation {
         else Destination.EXTERNAL
     } catch (_: Exception) { Destination.BLOCKED }
 
-    fun actionLabel(path: String?): String =
-        if (path?.matches(Regex("^/results/[^/?#]+(?:[?#].*)?$")) == true) "Open result" else "Open task"
+    fun actionLabel(path: String?): String = when {
+        path?.matches(Regex("^/results/[^/?#]+(?:[?#].*)?$")) == true -> "Open result"
+        path?.matches(Regex("^/apps/[^/?#]+(?:[?#].*)?$")) == true -> "Open app"
+        else -> "Open task"
+    }
 }

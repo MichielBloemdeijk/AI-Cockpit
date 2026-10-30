@@ -6,6 +6,7 @@ import org.junit.Test
 class ResultNavigationTest {
     @Test fun notificationActionUsesResultOnlyForResultPath() {
         assertEquals("Open result", ResultNavigation.actionLabel("/results/opaque?delivery=one"))
+        assertEquals("Open app", ResultNavigation.actionLabel("/apps/notes"))
         for (path in listOf(null, "/tasks/one", "https://evil/results/one", "//results/one", "/results/"))
             assertEquals("Open task", ResultNavigation.actionLabel(path))
     }

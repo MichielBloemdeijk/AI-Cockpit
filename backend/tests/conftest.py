@@ -24,6 +24,7 @@ os.environ.setdefault("TASK_WINDOWS_SANDBOX", "unelevated")
 os.environ.setdefault("TASK_COMMAND_MODE", "trusted")
 
 from app.config import settings
+from app.app_platform import close_apps_engine, ensure_apps_database
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
 from app.services.voice_session_adapter import fake_voice_session_adapter
 
@@ -125,6 +126,7 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     original_knowledge_preferences_file = settings.knowledge_preferences_file
     original_task_workspaces_dir = settings.task_workspaces_dir
     original_task_context_blobs_dir = settings.task_context_blobs_dir
+    original_app_platform = (settings.apps_database_url, settings.apps_dir, settings.app_builds_dir)
     database_path = tmp_path / "test.db"
 
     await close_engine()
@@ -135,10 +137,14 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     settings.knowledge_preferences_file = str(tmp_path / "knowledge" / "preferences.yaml")
     settings.task_workspaces_dir = str(tmp_path / "task-workspaces")
     settings.task_context_blobs_dir = str(tmp_path / "task-context-blobs")
+    settings.apps_database_url = f"sqlite+aiosqlite:///{(tmp_path / 'apps.db').as_posix()}"
+    settings.apps_dir = str(tmp_path / "apps")
+    settings.app_builds_dir = str(tmp_path / "app-builds")
 
     await ensure_database_ready()
     shutil.copyfile(migrated_template_database, database_path)
     initialize_engine(settings.database_url)
+    await ensure_apps_database()
     fake_voice_session_adapter.reset()
 
     try:
@@ -157,8 +163,10 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         fake_voice_session_adapter.reset()
+        await close_apps_engine()
         await close_engine()
         settings.database_url = original_database_url
+        settings.apps_database_url, settings.apps_dir, settings.app_builds_dir = original_app_platform
         settings.alembic_ini_path = original_alembic_path
         settings.conversation_workspaces_dir = original_conversation_workspaces_dir
         settings.knowledge_notes_dir = original_knowledge_notes_dir

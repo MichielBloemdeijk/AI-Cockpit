@@ -10,7 +10,10 @@ const apiMocks = vi.hoisted(() => ({
   listAppCatalog: vi.fn(),
 }));
 
+const platformMocks = vi.hoisted(() => ({ listPlatformApps: vi.fn() }));
+
 vi.mock("@/lib/api", () => apiMocks);
+vi.mock("@/lib/app-platform", () => platformMocks);
 
 import AppsPage from "./page";
 
@@ -23,6 +26,8 @@ describe("AppsPage refresh behavior", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     apiMocks.listGeneratedApps.mockResolvedValue([]);
+    platformMocks.listPlatformApps.mockResolvedValue([{ slug: "notes", title: "Notes", version: 2,
+      description: "Short notes", collections: ["note"], jarvis_summary: "", url: "/apps/notes" }]);
     apiMocks.listAppCatalog.mockResolvedValue([{ id: "documents", slug: "documents", title: "Documents", kind: "collection", route_path: "/collections/documents" },
       { id: "recipes", slug: "recipes", title: "Recipes", kind: "collection", route_path: "/collections/recipes" }]);
     container = document.createElement("div");
@@ -45,6 +50,8 @@ describe("AppsPage refresh behavior", () => {
     expect(apiMocks.listGeneratedApps).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Maintained collections");
     expect(container.querySelector('a[href="/collections/recipes"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/apps/notes"]')?.textContent).toBe("Open app");
+    expect(container.textContent).toContain("v2");
 
     const normalPageShow = new Event("pageshow");
     Object.defineProperty(normalPageShow, "persisted", { value: false });

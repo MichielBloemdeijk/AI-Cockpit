@@ -44,6 +44,9 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "start_new_jarvis_log",
         "show_on_phone",
         "end_voice_session",
+        "list_apps",
+        "open_app",
+        "query_app_data",
     }
 )
 
@@ -109,6 +112,42 @@ class RestrictedBrainGateway:
             raise
         await finish_intent(receipt.id, output=result.output)
         return result
+
+    async def _app_tool(self, tool_name: str, arguments: dict[str, Any], *, call_id: str,
+                        session_id: str | None, generation: int | None) -> dict[str, Any]:
+        """Installed apps (docs/jarvis-tasks/13-app-platform.md): list, open and read their data."""
+        from app import app_platform
+
+        if tool_name == "list_apps":
+            apps = [app.summary() for app in await app_platform.list_apps()]
+            return {"apps": [{key: app[key] for key in ("slug", "title", "description", "jarvis_summary", "collections")}
+                             for app in apps]}
+        try:
+            app = await app_platform.find_app(str(arguments.get("app") or ""))
+        except app_platform.AppNotFound:
+            return {"found": False, "speak": "No installed app matches that name; say so briefly."}
+        if tool_name == "open_app":
+            if session_id is None or generation is None:
+                return {"found": True, "opened": False, "url": app.summary()["url"], "title": app.title}
+            from app.services.phone_display import open_path
+            try:
+                return {"found": True, "opened": True, **await open_path(
+                    session_id=session_id, generation=generation, request_identity=call_id,
+                    path=f"/apps/{app.slug}", title=app.title)}
+            except ValueError:
+                return {"found": True, "opened": False, "url": app.summary()["url"], "title": app.title}
+        collection = str(arguments.get("collection") or "")
+        if not collection and len(app.collections) == 1:
+            collection = next(iter(app.collections))
+        where = arguments.get("where") if isinstance(arguments.get("where"), dict) else None
+        try:
+            records = await app_platform.query_records(app.slug, collection, where=where,
+                                                       order=arguments.get("order") or None,
+                                                       limit=min(int(arguments.get("limit") or 20), 50))
+        except app_platform.RecordError as exc:
+            return {"found": True, "error": str(exc), "collections": sorted(app.collections)}
+        return {"found": True, "app": app.title, "collection": collection,
+                "records": [{"key": record["key"], "value": record["value"]} for record in records]}
 
     async def _execute(
         self,
@@ -302,6 +341,10 @@ class RestrictedBrainGateway:
                 request_identity=capture_request_identity or call_id,
                 question=str(arguments.get("question") or ""),
                 capture_wait_seconds=capture_wait_seconds))
+
+        if tool_name in {"list_apps", "open_app", "query_app_data"}:
+            return BrainResult(output=await self._app_tool(tool_name, arguments, call_id=call_id,
+                                                           session_id=session_id, generation=generation))
 
         if tool_name == "show_on_phone":
             if session_id is None or generation is None:

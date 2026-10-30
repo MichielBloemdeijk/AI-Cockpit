@@ -271,6 +271,25 @@ def _canonical_tools() -> list[dict[str, Any]]:
             "user asks to stop, end, close or hang up the session or conversation, says that's all or goodbye, "
             "or asks Jarvis to sleep or disconnect. Only this call ends it; never claim it ended without it."),
             "parameters": object_schema},
+        {"type": "function", "name": "list_apps", "description": (
+            "List the apps installed in Cockpit, with what each one holds. Use it when the user asks which apps "
+            "exist, or before opening or reading one whose name you are unsure of."),
+            "parameters": object_schema},
+        {"type": "function", "name": "open_app", "description": (
+            "Open an installed app on the phone, for example 'open my notes'. Never open anything unasked."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug as the user said it."},
+            }, "required": ["app"], "additionalProperties": False}},
+        {"type": "function", "name": "query_app_data", "description": (
+            "Read records from an installed app's data to answer a question about it, for example 'what's on my "
+            "notes' or 'which notes are pinned'. Filters compare top-level fields for equality."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug."},
+                "collection": {"type": "string", "description": "Collection name; may be omitted when the app has one."},
+                "where": {"type": "object", "description": "Optional field equality filters, for example {\"pinned\": true}."},
+                "order": {"type": "string", "description": "Optional field to sort by; prefix '-' for descending."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            }, "required": ["app"], "additionalProperties": False}},
     ]
     if screen_definitions:
         tools.append({

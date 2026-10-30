@@ -5,7 +5,7 @@ import { createUuid } from "./uuid";
  * All requests go to /api/* (proxied in dev, same-origin in prod).
  */
 
-function resolveApiBase(): string {
+export function resolveApiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/$/, "") ?? "";
 }
 

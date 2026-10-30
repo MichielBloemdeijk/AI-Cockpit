@@ -13,8 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.api import app_catalog, apps, auth, chat, devices, jarvis, notifications, orchestration, results, task_context, tasks
+from app.api import app_catalog, app_platform, apps, auth, chat, devices, jarvis, notifications, orchestration, results, task_context, tasks
 from app.api import conversations, knowledge, worker_tools
+from app.app_platform import close_apps_engine, ensure_apps_database
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
 from app.services.conversation_store import conversation_store
 from app.services.run_supervisor import run_supervisor
@@ -65,6 +66,7 @@ async def lifespan(application: FastAPI):
     await task_service.repair_invalid_reminder_tasks()
     await worker_coordinator.reconcile_availability()
     await recover_pending_task_notifications()
+    await ensure_apps_database()
     await jarvis_live_telemetry.start()
     await reminder_scheduler.start()
     await jarvis_coordinator.start()
@@ -93,6 +95,7 @@ async def lifespan(application: FastAPI):
         await jarvis_live_telemetry.stop()
         await reminder_scheduler.stop()
         await run_supervisor.stop()
+        await close_apps_engine()
         await close_engine()
 
 app = FastAPI(
@@ -126,6 +129,8 @@ app.include_router(worker_tools.router)
 app.include_router(orchestration.router)
 app.include_router(knowledge.router)
 app.include_router(apps.router)
+app.include_router(app_platform.router)
+app.include_router(app_platform.host_router)
 app.include_router(notifications.router)
 app.include_router(devices.router)
 

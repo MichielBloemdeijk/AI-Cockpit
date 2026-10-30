@@ -1,0 +1,12 @@
+{
+  "schema": "cockpit-app.v1",
+  "slug": "notes",
+  "title": "Notes",
+  "version": 1,
+  "description": "Short pinned notes. The reference package for the app platform.",
+  "ui": {"entry": "ui/index.html"},
+  "collections": {
+    "note": {"schema": "schemas/note.json", "indexes": ["pinned"]}
+  },
+  "jarvis": {"summary": "Short notes the owner keeps; each has a text and can be pinned."}
+}

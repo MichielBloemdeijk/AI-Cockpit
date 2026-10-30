@@ -1,6 +1,7 @@
 # App platform: apps Jarvis builds, runs and maintains
 
-Status: **proposed** (owner review pending), 2026-10-30. Follows the
+Status: **approved** 2026-10-30; build step 1 implemented (see
+[Implementation notes](#implementation-notes)). Follows the
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
 
@@ -218,3 +219,51 @@ Steps 4 and 5 can swap if the first real app needs sharing before functions.
   `show_on_phone` like results?
 - **Data backup:** is `apps.db` included in the existing SQLite backup and
   rehearsal tooling from day one?
+
+## Implementation notes
+
+### Step 1 (2026-10-30)
+
+Code lives in the `backend/app/app_platform/` feature package; callers import
+only from `app.app_platform`.
+
+- **Packages:** `cockpit-app.v1` manifests are validated completely by
+  `manifest.py`. The sections reserved for later steps (`functions`,
+  `workflows`, `files`, `triggers`) are rejected rather than ignored. The
+  reference package is `app_platform/samples/notes/`.
+- **`apps.db`:** `store.py` owns its own engine and models; the schema is created
+  from them on start (`ensure_apps_database`), so there is no migration chain to
+  drift. Declared indexes become partial expression indexes on
+  `json_extract(value_json, '$.<field>')`.
+- **Records:** JSON Schema (2020-12) validation on write, revisions with
+  `expected_revision` (0 means "must not exist"), equality filters and ordering
+  on top-level fields, 256 KiB per record.
+- **Lifecycle:** install from a folder under `app_builds_dir`, through
+  `POST /api/app-platform/apps/install` (owner only). Versions must increase and
+  stay compatible with the active version's schemas. Every version is kept;
+  `POST /apps/{slug}/rollback` moves the active pointer back.
+- **UI hosting:** `/api/app-host/<slug>/<version>/<path>` serves `ui/` with
+  `CSP: sandbox allow-scripts …; connect-src 'none'; frame-ancestors 'self'`, so
+  an app's frame has an opaque origin and no network access. The Cockpit page
+  `/apps/<slug>` frames it and serves the SDK
+  (`/api/app-host/_sdk/cockpit-app.js`) through a `postMessage` bridge
+  (`frontend/lib/app-platform.ts`).
+- **Scoping:** the bridge calls the data API with an `AppPlatform <token>`
+  minted per app (15 minutes, renewed on 401) and without cookies. The server
+  restricts that token to its own app's data; it reaches no other Cockpit API.
+  Owner and paired-device sessions can read any app's data, which is how Jarvis's
+  tools and future builders work.
+- **Jarvis tools:** `list_apps`, `open_app` (opens `/apps/<slug>` on the phone
+  through the same display event as `show_on_phone`; the Android app now
+  accepts `/apps/...` paths), and `query_app_data`.
+
+Deliberate simplifications to revisit:
+
+- UI bundles are served without authentication. They hold code, not data, and an
+  opaque-origin frame can't send the owner's cookies on its sub-resource
+  requests. If a bundle ever needs to be private, put a short-lived token in its
+  path.
+- There is no uninstall or reset tool yet; both come with step 2, which needs
+  them for repair.
+- The old generated-apps host page at `/apps/[slug]` was replaced by this one in
+  step 1 rather than in step 6. The old system had no installed apps left.

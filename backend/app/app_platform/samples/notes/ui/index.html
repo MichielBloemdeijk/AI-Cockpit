@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 16px; background: #18181b; color: #f4f4f5; }
+    form { display: flex; gap: 8px; margin-bottom: 16px; }
+    input[type=text] { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid #3f3f46; background: #27272a; color: inherit; }
+    button { padding: 8px 12px; border-radius: 8px; border: 0; background: #2563eb; color: white; cursor: pointer; }
+    ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    li { display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 8px; background: #27272a; }
+    li span { flex: 1; white-space: pre-wrap; }
+    li.pinned { outline: 1px solid #eab308; }
+    .quiet { background: transparent; color: #a1a1aa; padding: 4px 8px; }
+    #status { color: #f87171; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <form id="add">
+    <input id="text" type="text" placeholder="New note" maxlength="2000" required>
+    <button type="submit">Add</button>
+  </form>
+  <p id="status"></p>
+  <ul id="notes"></ul>
+  <script src="/api/app-host/_sdk/cockpit-app.js"></script>
+  <script>
+    const list = document.getElementById("notes");
+    const status = document.getElementById("status");
+
+    async function render() {
+      const records = await cockpit.data.query("note", { order: "-updated_at", limit: 200 });
+      records.sort((a, b) => Number(Boolean(b.value.pinned)) - Number(Boolean(a.value.pinned)));
+      list.replaceChildren(...records.map((record) => {
+        const item = document.createElement("li");
+        item.className = record.value.pinned ? "pinned" : "";
+        const text = document.createElement("span");
+        text.textContent = record.value.text;
+        const pin = document.createElement("button");
+        pin.className = "quiet";
+        pin.textContent = record.value.pinned ? "Unpin" : "Pin";
+        pin.onclick = () => change(() => cockpit.data.put("note", record.key,
+          { ...record.value, pinned: !record.value.pinned }, { expectedRevision: record.revision }));
+        const remove = document.createElement("button");
+        remove.className = "quiet";
+        remove.textContent = "Delete";
+        remove.onclick = () => change(() => cockpit.data.delete("note", record.key, { expectedRevision: record.revision }));
+        item.append(text, pin, remove);
+        return item;
+      }));
+    }
+
+    async function change(action) {
+      status.textContent = "";
+      try {
+        await action();
+      } catch (error) {
+        status.textContent = error.status === 409 ? "That note changed elsewhere; showing the latest." : error.message;
+      }
+      await render();
+    }
+
+    document.getElementById("add").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = document.getElementById("text");
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      change(() => cockpit.data.put("note", `note-${Date.now()}`, { text, pinned: false }, { expectedRevision: 0 }));
+    });
+
+    cockpit.ready.then(render).catch((error) => { status.textContent = error.message; });
+  </script>
+</body>
+</html>

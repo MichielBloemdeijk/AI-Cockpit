@@ -11,6 +11,7 @@ import {
   listAppCatalog,
   type CockpitApp,
 } from "@/lib/api";
+import { listPlatformApps, type PlatformApp } from "@/lib/app-platform";
 
 
 function statusClasses(status: string): string {
@@ -39,6 +40,7 @@ function formatTimestamp(value: string): string {
 export default function AppsPage() {
   const [apps, setApps] = useState<GeneratedAppSummary[]>([]);
   const [collections, setCollections] = useState<CockpitApp[]>([]);
+  const [installed, setInstalled] = useState<PlatformApp[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -50,9 +52,14 @@ export default function AppsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [catalog, generated] = await Promise.all([listAppCatalog(), staticShell ? Promise.resolve([]) : listGeneratedApps()]);
+      const [catalog, generated, platform] = await Promise.all([
+        listAppCatalog(),
+        staticShell ? Promise.resolve([]) : listGeneratedApps(),
+        staticShell ? Promise.resolve([]) : listPlatformApps(),
+      ]);
       setCollections(catalog.filter(app => app.kind === "collection"));
       setApps(generated);
+      setInstalled(platform);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load apps.");
     } finally {
@@ -102,7 +109,7 @@ export default function AppsPage() {
         <div className="flex items-center gap-2">
           <Blocks size={18} className="text-zinc-400" />
           <span className="text-sm font-medium text-zinc-100">Apps</span>
-          <span className="text-xs text-zinc-500">({apps.length + collections.length})</span>
+          <span className="text-xs text-zinc-500">({installed.length + apps.length + collections.length})</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -159,6 +166,17 @@ export default function AppsPage() {
 
       <div className="flex-1 overflow-y-auto p-4">
         {error ? <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+        {installed.length > 0 && <section className="mb-6">
+          <h2 className="mb-3 text-sm font-medium text-zinc-400">Apps</h2>
+          <div className="grid gap-4 md:grid-cols-2">{installed.map(app => <article key={app.slug} className="rounded-2xl border border-zinc-700 bg-zinc-900 p-4">
+            <div className="flex items-baseline justify-between gap-3">
+              <h3 className="truncate text-lg font-semibold text-zinc-100">{app.title}</h3>
+              <span className="text-xs text-zinc-500">v{app.version}</span>
+            </div>
+            <p className="my-3 text-sm text-zinc-400">{app.description}</p>
+            <Link href={app.url} className="text-sky-400">Open app</Link>
+          </article>)}</div>
+        </section>}
         {collections.length > 0 && <section className="mb-6">
           <h2 className="mb-3 text-sm font-medium text-zinc-400">Maintained collections</h2>
           <div className="grid gap-4 md:grid-cols-2">{collections.map(collection => <article key={collection.id} className="rounded-2xl border border-zinc-700 bg-zinc-900 p-4">

@@ -12,7 +12,7 @@ import org.json.JSONObject
 
 internal data class OpenRequest(val eventId: String, val path: String, val title: String, val expiresAt: Instant) {
     companion object {
-        private val PATH = Regex("^/(results|tasks)/[A-Za-z0-9_-]{1,64}$")
+        private val PATH = Regex("^/(results|tasks|apps)/[A-Za-z0-9_-]{1,64}$")
 
         fun from(event: JSONObject): OpenRequest? = runCatching {
             require(event.optString("event_type") == "display.open_requested")
