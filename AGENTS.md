@@ -1,5 +1,15 @@
 # Project-wide agent instructions
 
+## Product vision
+
+Read [docs/VISION.md](docs/VISION.md) before any significant architectural,
+design or subjective product decision, such as removing or replacing a
+capability or changing how Jarvis behaves. Align the decision with it. If an
+instruction contradicts the vision, point out the difference and ask whether to
+proceed and whether to update the vision; never act against it or change it
+silently. Before calling a feature unused, check usage in every data source and
+its history, not just the current database.
+
 ## Development-stage priorities
 
 AI Cockpit / Jarvis is in active development, not a production deployment.

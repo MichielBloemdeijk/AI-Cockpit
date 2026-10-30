@@ -1,0 +1,12 @@
+---
+description: Owner's product vision; align significant and subjective decisions with it
+alwaysApply: true
+---
+
+# Product vision
+
+Follow the "Product vision" section of the repository-root `AGENTS.md`. Read
+@docs/VISION.md before any significant architectural, design or subjective
+product decision and align with it. If an instruction contradicts the vision,
+point out the difference and ask whether to proceed and whether to update the
+vision; never act against it or change it silently.
