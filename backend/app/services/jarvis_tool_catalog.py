@@ -19,16 +19,11 @@ def _canonical_tools() -> list[dict[str, Any]]:
     from app.services.task_execution_preferences import preferences_schema
     from app.services.task_result_contract import ResultRequest
     result_request_schema = ResultRequest.model_json_schema()
-    # Generic agents publish Documents. Workflow-specific kinds are selected
-    # from their pinned definition by start_workflow, never invented here.
-    result_request_schema["properties"]["kind"] = {
-        "anyOf": [{"type": "string", "enum": ["document.v1"]}, {"type": "null"}],
-        "default": None,
-        "description": "Only document.v1 for maintained generic results. Omit for answer mode.",
-    }
+    # General agents publish Documents (into the Documents app); a workflow's
+    # result kind comes from its pinned definition, never from here.
     result_request_schema["description"] = (
-        "Use answer for ordinary task completion, new for a maintained Document, "
-        "or update to revise the task's existing result page; public_id and expected_revision are optional."
+        "Use answer for ordinary task completion, new for a Document kept in the Documents app, "
+        "or update to revise the task's existing result; result_id and expected_revision are optional."
     )
     execution_preferences = {"execution_preferences": preferences_schema(),
         "intent_id": {"type": "string", "minLength": 1, "maxLength": 128,
@@ -155,7 +150,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "continue_task",
-            "description": "Add a follow-up to the same task. When the task has a result page, omitting result revises that page in place at the same link (the way to edit, extend or correct an existing result). Select result mode answer for a question that changes nothing, or new for a separate additional result.",
+            "description": "Add a follow-up to the same task. When the task has a result (a recipe, document or other record in one of the user's apps), omitting result revises that record in place (the way to edit, extend or correct an existing result). Select result mode answer for a question that changes nothing, or new for a separate additional result.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -256,8 +251,8 @@ def _canonical_tools() -> list[dict[str, Any]]:
             "type": "function",
             "name": "show_on_phone",
             "description": (
-                "Switch the phone from whatever app it is in to Jarvis, opened on a task's result page (or the "
-                "task itself when it has no result yet). Call it when the user asks to show, open or see a result "
+                "Switch the phone from whatever app it is in to Jarvis, opened on a task's result in its app (or "
+                "the task itself when it has no result yet). Call it when the user asks to show, open or see a result "
                 "or task, for example 'show me' or 'open the recipe'. Never open anything unasked."
             ),
             "parameters": {

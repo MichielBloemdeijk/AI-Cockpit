@@ -1,4 +1,9 @@
-"""Source-controlled, explicitly enabled workflow definitions for task runs."""
+"""Workflow definitions for task runs.
+
+Core workflows live in `backend/workflows/<id>/<version>/` and are enabled by
+TASK_WORKFLOW_ALLOWLIST. Apps provide workflows in their packages
+(`workflows/<id>/`); an installed app's workflows are enabled by its install.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,13 +17,12 @@ import yaml
 
 from app.config import settings
 from app.services.task_capabilities import INPUT_CONTEXTS, validate_capabilities
-from app.services.task_result_types import RESULT_TYPES, result_type
+from app.services.task_result_types import COLLECTION_PREFIX, is_output_schema, RESULT_TYPES
 
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_CAPABILITIES = {"task.context.read@1", "task.result.publish@1"}
-_SCREEN_CAPABILITIES = _CAPABILITIES | {"task.context.images@2"}
-_OUTPUT_SCHEMAS = set(RESULT_TYPES)
+# Capabilities only core workflows may hold.
+CORE_ONLY_CAPABILITIES = {"app.package@1"}
 
 
 class _UniqueSafeLoader(yaml.SafeLoader):
@@ -69,9 +73,15 @@ class WorkflowDefinition:
     routing_examples: tuple[str, ...] = ()
     manifest_schema: str = "workflow-definition.v2"
     tools: dict | None = None
+    # The app that provides this workflow; None for a core workflow.
+    app: str | None = None
+
+    @property
+    def identity(self) -> str:
+        return f"{self.id}@{self.version}:{self.digest}"
 
     def pinned(self) -> dict[str, Any]:
-        return {"schema": "workflow-pinned.v2", "id": self.id,
+        return {"schema": "workflow-pinned.v2", "id": self.id, "app": self.app,
             "version": self.version, "digest": self.digest, "instructions": self.instructions,
             "output_schema": self.output_schema, "capabilities": list(self.capabilities),
             "input_schema": self.input_schema, "required_initial_context": list(self.required_initial_context),
@@ -80,11 +90,37 @@ class WorkflowDefinition:
 
 
 def load_workflow(definition: str) -> WorkflowDefinition:
+    """Load a core workflow, or the workflow an installed app provides under that id."""
     match = re.fullmatch(r"([a-z][a-z0-9_]{0,63})@([1-9][0-9]*)", definition)
     if match is None:
         raise ValueError("Workflow definition must be id@positive_version")
     workflow_id, version_text = match.groups()
-    folder = settings.backend_root / "workflows" / workflow_id / version_text
+    core = settings.backend_root / "workflows" / workflow_id
+    if core.is_dir():
+        return _load_folder(core / version_text, workflow_id, int(version_text))
+    from app.app_platform.workflows import installed_workflows
+    provided = installed_workflows().get(workflow_id)
+    if provided is None:
+        raise ValueError("Workflow definition is not installed")
+    return _load_folder(provided.folder, workflow_id, int(version_text),
+                        app=provided.slug, result_collections=provided.result_collections)
+
+
+def load_package_workflow(folder: Path, workflow_id: str, *, app: str,
+                          result_collections: tuple[str, ...]) -> WorkflowDefinition:
+    """Validate a workflow inside an app package; its output must be one of the app's result collections."""
+    if not _IDENTIFIER.fullmatch(workflow_id):
+        raise ValueError("Workflow ids are lowercase identifiers")
+    return _load_folder(folder, workflow_id, None, app=app, result_collections=result_collections)
+
+
+def core_workflow_ids() -> set[str]:
+    root = settings.backend_root / "workflows"
+    return {path.name for path in root.iterdir() if path.is_dir()} if root.is_dir() else set()
+
+
+def _load_folder(folder: Path, workflow_id: str, version: int | None, *, app: str | None = None,
+                 result_collections: tuple[str, ...] = ()) -> WorkflowDefinition:
     manifest_path = _safe_definition_file(folder, "workflow.yaml")
     manifest_bytes = manifest_path.read_bytes()
     if len(manifest_bytes) > 32_000:
@@ -97,20 +133,28 @@ def load_workflow(definition: str) -> WorkflowDefinition:
     if not isinstance(manifest, dict) or set(manifest) - {"tools"} != required_fields:
         raise ValueError("Workflow manifest has missing or unsupported fields")
     if (manifest["schema"] != "workflow-definition.v2" or manifest["id"] != workflow_id
-            or type(manifest["version"]) is not int or manifest["version"] != int(version_text)):
+            or type(manifest["version"]) is not int or manifest["version"] < 1
+            or (version is not None and manifest["version"] != version)):
         raise ValueError("Workflow manifest identity does not match its directory")
-    profile = (manifest["input_schema"], manifest["output_schema"])
-    if profile[0] not in INPUT_CONTEXTS or profile[1] not in RESULT_TYPES:
+    output = manifest["output_schema"]
+    if app is not None:
+        # An app workflow publishes into one of its own result collections.
+        collection = output.removeprefix(COLLECTION_PREFIX) if isinstance(output, str) else None
+        if not isinstance(output, str) or not output.startswith(COLLECTION_PREFIX) or collection not in result_collections:
+            raise ValueError("An app workflow's output_schema must be collection:<one of the app's result collections>")
+        output = f"{COLLECTION_PREFIX}{app}.{collection}"
+    profile = (manifest["input_schema"], output)
+    if profile[0] not in INPUT_CONTEXTS or (app is None and profile[1] not in RESULT_TYPES):
         raise ValueError("Workflow input or output schema is not registered")
     required_context = list(INPUT_CONTEXTS[profile[0]])
     if manifest["required_initial_context"] != required_context or manifest["defaults"] != {"execution_profile": "fast"}:
         raise ValueError("Workflow context or execution profile is not supported")
     capabilities = manifest["capabilities"]
     validate_capabilities(capabilities, tuple(required_context))
+    if app is not None and CORE_ONLY_CAPABILITIES & set(capabilities):
+        raise ValueError("App workflows cannot hold core-only capabilities")
     from app.services.worker_tool_policy import normalize_overrides
     tools = normalize_overrides(manifest.get("tools"))
-    if result_type(profile[1]).requires_sources and "research.native@1" not in capabilities:
-        raise ValueError("Source-backed output requires the research capability")
     purpose = manifest.get("purpose", workflow_id.replace("_", " "))
     examples = manifest.get("routing_examples", [])
     if (not isinstance(purpose, str) or not purpose.strip() or len(purpose) > 300
@@ -141,9 +185,9 @@ def load_workflow(definition: str) -> WorkflowDefinition:
         "instructions": instructions_bytes.decode("utf-8"),
         "fixtures": fixture_bytes.decode("utf-8"),
     }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-    return WorkflowDefinition(workflow_id, int(version_text), digest, instructions,
-                              manifest["output_schema"], tuple(capabilities), profile[0],
-                              tuple(required_context), purpose, tuple(examples), manifest["schema"], tools)
+    return WorkflowDefinition(workflow_id, manifest["version"], digest, instructions,
+                              profile[1], tuple(capabilities), profile[0],
+                              tuple(required_context), purpose, tuple(examples), manifest["schema"], tools, app)
 
 
 def resolve_workflow_config(config: dict[str, Any] | None, *, inherited: dict | None = None) -> dict[str, Any]:
@@ -154,8 +198,7 @@ def resolve_workflow_config(config: dict[str, Any] | None, *, inherited: dict | 
     if not isinstance(definition, str):
         raise ValueError("Workflow definition is required")
     loaded = load_workflow(definition)
-    allowed = {item.strip() for item in settings.task_workflow_allowlist.split(",") if item.strip()}
-    if f"{definition}:{loaded.digest}" not in allowed:
+    if loaded.app is None and loaded.identity not in _allowlist():
         raise ValueError("Workflow version and digest are not enabled")
     if "research.native@1" in loaded.capabilities and not settings.task_research_enabled:
         raise ValueError("Workflow research capability is not enabled")
@@ -181,32 +224,53 @@ def validate_pinned_workflow(config: dict[str, Any]) -> dict[str, Any]:
             or type(pinned.get("version")) is not int or pinned["version"] < 1
             or not isinstance(pinned.get("digest"), str) or not re.fullmatch(r"[a-f0-9]{64}", pinned["digest"])
             or not isinstance(pinned.get("instructions"), str) or not pinned["instructions"].strip()
-            or pinned.get("output_schema") not in _OUTPUT_SCHEMAS):
+            or not is_output_schema(pinned.get("output_schema"))):
         raise ValueError("Pinned workflow definition is invalid")
     if (pinned.get("input_schema") not in INPUT_CONTEXTS
                        or pinned.get("required_initial_context") != list(contexts)):
         raise ValueError("Pinned workflow context is invalid")
     from app.services.worker_tool_policy import normalize_overrides
     normalize_overrides(pinned.get("tools"))
-    if result_type(pinned["output_schema"]).requires_sources and "research.native@1" not in pinned["capabilities"]:
-        raise ValueError("Source-backed output requires the research capability")
     return pinned
 
 
-def validate_workflow_result(schema: str, content: Any) -> dict[str, Any]:
-    return result_type(schema).validate(content)
+def _allowlist() -> set[str]:
+    return {item.strip() for item in settings.task_workflow_allowlist.split(",") if item.strip()}
 
 
 def enabled_workflows() -> list[WorkflowDefinition]:
+    """Allowlisted core workflows plus every workflow of the installed apps."""
+    candidates: list[tuple[str, str | None]] = []
+    for entry in _allowlist():
+        identity, separator, digest = entry.partition(":")
+        if separator:
+            candidates.append((identity, digest))
+    from app.app_platform.workflows import installed_workflows
+    for workflow_id, provided in installed_workflows().items():
+        candidates.append((f"{workflow_id}@{provided.version}", None))
     definitions: list[WorkflowDefinition] = []
-    for entry in settings.task_workflow_allowlist.split(","):
-        identity, separator, digest = entry.strip().partition(":")
-        if not separator:
-            continue
+    for identity, digest in sorted(candidates, key=lambda item: item[0]):
         try:
             definition = load_workflow(identity)
         except (ValueError, OSError, yaml.YAMLError):
             continue
-        if definition.digest == digest and ("research.native@1" not in definition.capabilities or settings.task_research_enabled):
+        if ((digest is None) == (definition.app is not None) and digest in (None, definition.digest)
+                and ("research.native@1" not in definition.capabilities or settings.task_research_enabled)):
             definitions.append(definition)
     return definitions
+
+
+def workflow_enabled(pinned: dict[str, Any]) -> bool:
+    """Whether a run's pinned workflow is still the enabled version (installed, or allowlisted)."""
+    identity = f"{pinned['id']}@{pinned['version']}:{pinned['digest']}"
+    return any(definition.identity == identity for definition in enabled_workflows())
+
+
+def current_definition(workflow_id: str) -> str | None:
+    """The enabled `id@version` for a workflow id, for example after its app was updated."""
+    return next((f"{item.id}@{item.version}" for item in enabled_workflows() if item.id == workflow_id), None)
+
+
+def workflow_catalog_revision() -> str:
+    """Changes whenever the set of enabled workflows changes."""
+    return sha256(",".join(item.identity for item in enabled_workflows()).encode("utf-8")).hexdigest()

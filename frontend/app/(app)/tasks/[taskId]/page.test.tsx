@@ -159,15 +159,15 @@ it("links an app build result to the installed app", async () => {
 
 it.each(["answer", "update", "new"] as const)("submits explicit %s association without guessing a result identity", async (mode) => {
   api.getTask.mockResolvedValue({ ...retainedTask, results: [
-    { public_id: "result-1", url: "/results/result-1", title: "First", revision_number: 1, status: "ready" },
-    { public_id: "result-2", url: "/results/result-2", title: "Second", revision_number: 7, status: "ready" },
+    { result_id: "result-1", url: "/apps/documents?collection=document&key=a", title: "First" },
+    { result_id: "result-2", url: "/apps/documents?collection=document&key=b", title: "Second" },
   ] });
   api.continueTask.mockResolvedValue({});
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => { root.render(<Suspense fallback={null}><TaskDetailPage params={Promise.resolve({ taskId: "task-1" })} /></Suspense>); });
-  expect(container.querySelector('a[href="/results/result-2"]')).not.toBeNull();
+  expect(container.querySelector('a[href="/apps/documents?collection=document&key=b"]')).not.toBeNull();
   const result = container.querySelector<HTMLSelectElement>('select[aria-label="Selected result"]')!;
   await act(async () => { result.value = "result-2"; result.dispatchEvent(new Event("change", { bubbles: true })); });
   const intent = container.querySelector<HTMLSelectElement>('select[aria-label="Follow-up result intent"]')!;
@@ -180,8 +180,8 @@ it.each(["answer", "update", "new"] as const)("submits explicit %s association w
   const send = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Send")!;
   await act(async () => { send.click(); });
   expect(api.continueTask).toHaveBeenCalledWith("task-1", "Follow-up", mode === "new" ? { mode: "new" }
-    : mode === "answer" ? { mode: "answer", public_id: "result-2" }
-      : { mode: "update", public_id: "result-2", expected_revision: 7 });
+    : mode === "answer" ? { mode: "answer", result_id: "result-2" }
+      : { mode: "update", result_id: "result-2" });
   await act(async () => { root.unmount(); });
   container.remove();
 });
@@ -189,7 +189,7 @@ it.each(["answer", "update", "new"] as const)("submits explicit %s association w
 it("does not offer answer-only completion for a legacy publishing-only workflow", async () => {
   api.getTask.mockResolvedValue({ ...retainedTask,
     runs: [{ id: "run-1", execution_kind: "workflow", configuration: { workflow: { capabilities: ["task.result.publish@1"] } } }],
-    results: [{ public_id: "result-1", title: "First", url: "/results/result-1", revision_number: 1, status: "ready" }],
+    results: [{ result_id: "result-1", title: "First", url: "/apps/documents?collection=document&key=a" }],
   });
   const container = document.createElement("div");
   document.body.appendChild(container);

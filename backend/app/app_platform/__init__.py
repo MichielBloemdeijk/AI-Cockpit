@@ -3,6 +3,7 @@
 Design: docs/jarvis-tasks/13-app-platform.md. Callers use these names; the
 modules behind them are internal to the package.
 """
+from app.app_platform.builtin import install_builtin_apps
 from app.app_platform.check import check_package
 from app.app_platform.errors import record_error, recent_errors
 from app.app_platform.hosting import HOST_CSP, SDK_FILE
@@ -31,6 +32,8 @@ from app.app_platform.records import (
 )
 from app.app_platform.store import close_apps_engine, ensure_apps_database
 from app.app_platform.tokens import SCHEME as TOKEN_SCHEME, issue_token, verify_token
+from app.app_platform.views import last_view, record_view
+from app.app_platform.workflows import installed_workflows
 
 __all__ = [
     "ActiveApp",
@@ -49,14 +52,18 @@ __all__ = [
     "find_app",
     "get_active",
     "get_record",
+    "install_builtin_apps",
     "install_package",
+    "installed_workflows",
     "issue_token",
+    "last_view",
     "list_apps",
     "package_file",
     "put_record",
     "query_records",
     "recent_errors",
     "record_error",
+    "record_view",
     "reset",
     "rollback",
     "status",

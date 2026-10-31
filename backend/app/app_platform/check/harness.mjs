@@ -25,13 +25,18 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
   ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
   ".woff": "font/woff", ".woff2": "font/woff2", ".txt": "text/plain" };
 
-function hostPage(seed) {
+// Data placed inside the host page's inline script travels as base64, so a record
+// containing "</script>" cannot end the script.
+const scriptJson = (value) => `JSON.parse(new TextDecoder().decode(Uint8Array.from(atob("${
+  Buffer.from(JSON.stringify(value), "utf8").toString("base64")}"), (c) => c.charCodeAt(0))))`;
+
+function hostPage(seed, target) {
   return `<!doctype html><html><body style="margin:0">
 <iframe id="app" src="/app/${job.entry}" sandbox="allow-scripts allow-forms allow-popups allow-modals"
   style="border:0;width:100vw;height:100vh"></iframe>
 <script>
   const store = new Map();
-  for (const [collection, records] of Object.entries(${JSON.stringify(seed)})) {
+  for (const [collection, records] of Object.entries(${scriptJson(seed)})) {
     for (const record of records) store.set(collection + "/" + record.key,
       { key: record.key, value: record.value, revision: 1, updated_at: new Date().toISOString() });
   }
@@ -81,7 +86,8 @@ function hostPage(seed) {
     const reply = (data) => frame.contentWindow.postMessage(data, "*");
     if (message.cockpit === "ready") {
       window.__ready = true;
-      reply({ cockpit: "hello", slug: ${JSON.stringify(job.slug)}, title: ${JSON.stringify(job.title)}, version: ${job.version} });
+      reply({ cockpit: "hello", slug: ${scriptJson(job.slug)}, title: ${scriptJson(job.title)}, version: ${job.version},
+        target: ${scriptJson(target || null)} });
     } else if (message.cockpit === "error") {
       window.__appErrors.push(String(message.message || "") + (message.detail ? "\\n" + message.detail : ""));
     } else if (message.cockpit === "request") {
@@ -150,13 +156,15 @@ async function runTest(browser, test, index) {
   const problems = [];
   page.on("console", (message) => { if (message.type() === "error") problems.push(`console: ${message.text()}`); });
   page.on("pageerror", (error) => problems.push(`uncaught: ${error.message}`));
+  // Tests act as a user who confirms: confirm() and alert() dialogs are accepted.
+  page.on("dialog", (dialog) => dialog.accept().catch(() => undefined));
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) {
       problems.push(`blocked request to ${url.origin}: apps cannot use the network`);
       return route.abort();
     }
-    if (url.pathname === "/host.html") return route.fulfill({ status: 200, contentType: "text/html", body: hostPage(test.records || {}) });
+    if (url.pathname === "/host.html") return route.fulfill({ status: 200, contentType: "text/html", body: hostPage(test.records || {}, test.open) });
     if (url.pathname === "/api/app-host/_sdk/cockpit-app.js") return serveFile(route, job.sdkFile);
     if (url.pathname.startsWith("/app/")) {
       const relative = decodeURIComponent(url.pathname.slice("/app/".length)) || "index.html";

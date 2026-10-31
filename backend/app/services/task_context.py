@@ -15,7 +15,7 @@ from sqlalchemy import func, or_, select
 from app.db.session import session_scope
 from app.db.tables import (
     TaskArtifact, TaskContextBundle, TaskEvent, TaskExecutionRun,
-    TaskOperation, TaskQuestion, TaskTurn, ResultPage,
+    TaskOperation, TaskQuestion, TaskTurn,
 )
 from app.db.repositories.tasks import TaskRepository
 from app.services.task_service import task_service
@@ -111,8 +111,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
             select(func.max(TaskEvent.sequence)).where(TaskEvent.task_id == task_id)
         )).scalar_one_or_none() or 0)
         from app.services.task_result_contract import context_result, maintained_view
-        page = await context_result(session, task_id, run_id)
-        maintained = await maintained_view(session, page, content_limit=12_000)
+        maintained = await maintained_view(await context_result(session, task_id, run_id), content_limit=12_000)
         handoff = {
             "schema": "task-context.v1",
             "task_id": task_id,

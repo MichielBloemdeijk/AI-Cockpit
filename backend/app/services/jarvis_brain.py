@@ -3,15 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 import re
 from time import perf_counter as monotonic
 from typing import Any
 from sqlalchemy import select
 
 from app.db.session import read_session_scope
-from app.db.tables import ConversationMessage, LiveSession, ResultPage, Task, TaskContextRequest, TaskExecutionRun, TaskTurn
-from app.config import settings
+from app.db.tables import ConversationMessage, LiveSession, Task, TaskContextRequest, TaskExecutionRun, TaskTurn
 from app.services.history_retrieval import history_retrieval_service
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.natural_task_resolver import natural_task_resolver, task_title
@@ -19,7 +17,7 @@ from app.services.reminder_scheduler import reminder_scheduler
 from app.services.task_error_messages import public_failure_summary
 from app.services.task_service import task_service
 from app.services.task_capture import task_capture_service
-from app.services.task_workflows import resolve_workflow_config
+from app.services.task_workflows import resolve_workflow_config, workflow_catalog_revision
 from app.services.task_result_contract import result_links, admission_result_url
 from app.services.admission_timing import observe_admission, timestamp, timed
 
@@ -311,7 +309,7 @@ class RestrictedBrainGateway:
                 raise ValueError("A screen workflow requires an active Live session")
             async with read_session_scope() as session:
                 live = await session.get(LiveSession, session_id)
-                expected_catalog = hashlib.sha256(settings.task_workflow_allowlist.encode("utf-8")).hexdigest()
+                expected_catalog = workflow_catalog_revision()
                 if (live is None or live.generation != generation or live.controller_id is None
                         or live.activation_id is None or live.lifecycle_state not in {"connecting", "ready"}
                         or live.workflow_catalog_revision != expected_catalog):
@@ -326,13 +324,9 @@ class RestrictedBrainGateway:
                         TaskContextRequest.task_id == existing.id,
                         TaskContextRequest.execution_run_id == run.id if run else False,
                     ).order_by(TaskContextRequest.capture_mode).limit(1))).scalar_one_or_none()
-                    page = (await session.execute(select(ResultPage).where(
-                        ResultPage.task_id == existing.id,
-                        ResultPage.initial_execution_run_id == run.id if run else False,
-                    ))).scalar_one_or_none()
                     if (turn is None or turn.content != goal or run is None or run.execution_kind != "workflow"
                             or (run.configuration_json or {}).get("workflow", {}).get("digest") != config["workflow"]["digest"]
-                            or request is None or page is None or request.activation_id != activation_id
+                            or request is None or request.activation_id != activation_id
                             or request.device_id != device_id or request.capture_mode != capture_mode
                             or (capture_id is not None and request.capture_id != capture_id)):
                         raise ValueError("Workflow call identity was already used for different input")
@@ -340,7 +334,6 @@ class RestrictedBrainGateway:
                         "accepted": True, "status": existing.status, "internal_task_id": existing.id,
                         "task_id": existing.id, "turn_id": turn.id, "execution_run_id": run.id,
                         "context_request_id": request.id, "replayed": True,
-                        "result_url": f"/results/{page.public_id}",
                         "internal_fields_are_not_user_facing": True,
                     })
             binding = await task_capture_service.preflight_collection(
@@ -365,25 +358,13 @@ class RestrictedBrainGateway:
                     TaskContextRequest.task_id == snapshot.task.id,
                     TaskContextRequest.execution_run_id == snapshot.task.current_run_id,
                 ).order_by(TaskContextRequest.capture_mode).limit(1))).scalar_one()
-                page = (await session.execute(select(ResultPage).where(
-                    ResultPage.task_id == snapshot.task.id,
-                    ResultPage.initial_execution_run_id == snapshot.task.current_run_id,
-                ))).scalar_one()
                 turn = (await session.execute(select(TaskTurn).where(TaskTurn.task_id == snapshot.task.id,
                     TaskTurn.request_identity == key))).scalar_one()
-            from app.services.result_telemetry import observe
-            await observe(page.id, kind="screen_admission", key=f"screen-admission:{page.id}",
-                run_id=page.active_execution_run_id, revision_number=page.revision_number,
-                duration_ms=(admission_finished - admission_started) * 1000,
-                values={"preflight_ms": (preflight_finished - admission_started) * 1000,
-                    "durable_admission_ms": (admission_finished - preflight_finished) * 1000,
-                    "includes_capture_preflight": True, "clock": "server_monotonic"})
             return BrainResult(output={
                 "accepted": True, "status": snapshot.task.status,
                 "internal_task_id": snapshot.task.id,
                 "task_id": snapshot.task.id, "turn_id": turn.id, "execution_run_id": turn.execution_run_id,
                 "context_request_id": request.id,
-                "result_url": f"/results/{page.public_id}",
                 "admission_timing": {"clock": "server_monotonic",
                     "capture_ready_ns": int(preflight_finished * 1_000_000_000),
                     "admission_commit_ns": int(admission_finished * 1_000_000_000)},

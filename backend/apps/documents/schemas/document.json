@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "summary": {"type": "string", "maxLength": 500},
+    "body": {"type": "string", "minLength": 1, "maxLength": 32000,
+      "description": "Markdown: headings, paragraphs, lists, emphasis, code, quotes, tables and http(s) links."},
+    "sources": {
+      "type": "array", "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "label": {"type": "string", "minLength": 1, "maxLength": 200},
+          "source_event_sequence": {"type": "integer", "minimum": 1,
+            "description": "The task_history event of the research that found this source."}
+        },
+        "required": ["url", "label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["title", "body"],
+  "additionalProperties": false
+}

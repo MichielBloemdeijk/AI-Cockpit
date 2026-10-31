@@ -98,7 +98,9 @@ uses UTF-8 on Windows. `recipe_from_screen@1` and `research_screen@1` are thin
 reference packages, not custom integrations. Actual provider and API37 acceptance
 is recorded in [M4 evidence](jarvis-tasks/reports/m4-acceptance.md).
 `TASK_RESEARCH_ENABLED` and exact workflow/digest allowlisting remain default-off;
-M5 is in progress: unified catalog/current collections, shared saved state,
+Results are now records in installed apps (see the
+[app platform](jarvis-tasks/13-app-platform.md)); the M5 notes below describe the
+result pages that preceded them. M5 is in progress: unified catalog/current collections, shared saved state,
 bounded optimistic JSON storage with revocable HTTP capabilities, document
 references/retained text attachments, durable result SSE and a production static
 result shell have autonomous coverage. Browser copy/print and offline cursor

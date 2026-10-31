@@ -80,14 +80,14 @@ describe("global task api", () => {
 
   it("sends explicit result intent independently of execution preferences", async () => {
     vi.stubGlobal("crypto", { randomUUID: () => "followup-key" });
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ result_url: "/results/result-1" }) });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ result_url: "/apps/documents?collection=document&key=run-1" }) });
     vi.stubGlobal("fetch", fetchMock);
     await dispatchTask({ idempotency_key: "test-dispatch", goal: "Report", result: { mode: "new" } });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).result).toEqual({ mode: "new" });
-    await continueTask("task/1", "Edit", { mode: "update", public_id: "result-1", expected_revision: 2 });
+    await continueTask("task/1", "Edit", { mode: "update", result_id: "result-1", expected_revision: 2 });
     expect(fetchMock.mock.calls[1][0]).toBe("/api/tasks/task%2F1/turns");
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ content: "Edit", idempotency_key: "followup-key",
-      result: { mode: "update", public_id: "result-1", expected_revision: 2 } });
+      result: { mode: "update", result_id: "result-1", expected_revision: 2 } });
   });
 
   it("sends audited pool replacement with an idempotency key", async () => {

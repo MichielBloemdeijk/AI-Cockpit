@@ -16,7 +16,7 @@ def load(name, filename):
 
 
 @pytest.mark.asyncio
-async def test_emulator_fixture_controls_require_auth_and_use_real_publication(monkeypatch, complete_observations):
+async def test_emulator_fixture_controls_require_auth_and_use_real_publication(monkeypatch):
     fixture = load("m5_fixture_test", "m5_result_fixture.py")
     monkeypatch.setenv("M5_EXTERNAL_URL", "http://10.0.2.2:12345/source")
     assert not any(getattr(route, "path", "").startswith("/_fixture") for route in fixture.cockpit.routes)
@@ -25,15 +25,15 @@ async def test_emulator_fixture_controls_require_auth_and_use_real_publication(m
         assert (await client.post("/api/auth/login", json={"password": ""})).status_code == 200
         created = await client.post("/api/tasks", json={"goal": "Emulator fixture", "idempotency_key": "m5-android-test", "result": {"mode": "new"}})
         assert created.status_code == 201
-        task_id, url = created.json()["id"], created.json()["result_url"]
-        assert (await client.post(f"/_fixture/publish/{task_id}")).json() == {"url": url, "revision": 1}
-        result = (await client.get("/api" + url)).json()
-        assert result["status"] == "ready" and result["revision_number"] == 1
-        assert "M5-NATIVE-DOCUMENT-READY" in result["content"]["body"]
-        assert "http://10.0.2.2:12345/source" in result["content"]["body"]
+        task_id = created.json()["id"]
+        published = (await client.post(f"/_fixture/publish/{task_id}")).json()
+        assert published["revision"] == 1 and published["url"].startswith("/apps/documents?collection=document&key=")
+        key = published["url"].rsplit("=", 1)[1]
+        record = (await client.get(f"/api/app-platform/data/documents/document/{key}")).json()
+        assert "M5-NATIVE-DOCUMENT-READY" in record["value"]["body"]
+        assert "http://10.0.2.2:12345/source" in record["value"]["body"]
         task = (await client.get(f"/api/tasks/{task_id}")).json()
         assert task["status"] == "completed" and len(task["attempts"]) == 1
-        assert (await client.get("/api" + url + "/observability")).json()["publication_outcomes"] == {"committed": 1}
 
 
 def test_native_foreground_proof_requires_browser_and_url(monkeypatch):

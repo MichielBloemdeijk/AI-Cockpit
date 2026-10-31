@@ -4,16 +4,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from sqlalchemy import select
 
-from app.db.tables import ResultPage
-from app.services.task_result_types import result_type
+from app.db.tables import TaskResult
+from app.services.task_result_types import DOCUMENT_OUTPUT, collection_output
+from app.services.task_results import current_record, present, task_results
 from app.services.admission_timing import timed
 
 
 class ResultRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     mode: Literal["new", "update", "answer"]
-    kind: str | None = Field(default=None, min_length=1, max_length=80)
-    public_id: str | None = Field(default=None, min_length=1, max_length=36)
+    result_id: str | None = Field(default=None, min_length=1, max_length=36)
     expected_revision: StrictInt | None = Field(default=None, ge=0)
 
 
@@ -23,42 +23,47 @@ async def resolve_result_request(session, request, *, task_id=None, workflow=Non
     except ValidationError as exc:
         raise ValueError(f"Invalid result request: {exc}") from exc
     mode = value["mode"]
-    if mode == "update" and "public_id" not in value:
-        # "Update the page" names the task's maintained result, not an ID.
-        pages = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id)
-            .limit(2))).scalars().all() if task_id else []
-        if not pages:
-            raise ValueError("This task has no result page to update")
-        if len(pages) > 1:
-            raise ValueError("Task has multiple results; say which one to update")
-        value["public_id"] = pages[0].public_id
-    if mode == "new" and ("public_id" in value or "expected_revision" in value):
-        raise ValueError("New result cannot target an existing revision")
-    if mode == "answer" and ("kind" in value or "expected_revision" in value):
-        raise ValueError("Answer-only runs cannot declare publication fields")
-    page = None
-    if "public_id" in value:
-        page = (await session.execute(select(ResultPage).where(ResultPage.public_id == value["public_id"],
-            ResultPage.task_id == task_id))).scalar_one_or_none()
-        if page is None:
-            raise ValueError("Result does not belong to this task")
     if mode == "answer":
+        if "expected_revision" in value:
+            raise ValueError("Answer-only runs cannot declare publication fields")
         if workflow and "task.finish@1" not in workflow["capabilities"]:
             raise ValueError("Workflow does not support answer-only completion")
+        # An answer may name the result it is about, without revising it.
+        if "result_id" in value and (await session.get(TaskResult, value["result_id"]) or TaskResult()).task_id != task_id:
+            raise ValueError("Result does not belong to this task")
         return value
-    kind = value.get("kind") or (page.result_kind if page else workflow["output_schema"] if workflow else "document.v1")
-    if result_type(kind).app_slug is None:
-        raise ValueError("Result kind has no maintained page")
-    if workflow and workflow["output_schema"] != kind:
-        raise ValueError("Result kind differs from the pinned workflow output")
-    if not workflow and kind != "document.v1":
-        raise ValueError("General agents publish the document.v1 contract")
-    if page and mode == "update":
-        # Without an explicit base the edit applies to the revision current at
-        # admission; publication still fences it against later revisions.
-        value.setdefault("expected_revision", page.revision_number)
-    if page and (page.result_kind != kind or page.revision_number != value["expected_revision"]):
-        raise ValueError("Result update kind or expected revision is stale")
+    if mode == "new" and ("result_id" in value or "expected_revision" in value):
+        raise ValueError("New result cannot target an existing revision")
+    # General agents publish Documents; a workflow publishes its pinned output.
+    kind = workflow["output_schema"] if workflow else DOCUMENT_OUTPUT
+    output = collection_output(kind)
+    if output is None:
+        raise ValueError("This workflow's result is not kept as an app record")
+    if mode == "update":
+        if "result_id" in value:
+            result = (await session.execute(select(TaskResult).where(TaskResult.id == value["result_id"],
+                TaskResult.task_id == task_id))).scalar_one_or_none()
+            if result is None:
+                raise ValueError("Result does not belong to this task")
+        else:
+            # "Update the recipe" names the task's result, not an ID.
+            results = await task_results(session, task_id) if task_id else []
+            if not results:
+                raise ValueError("This task has no result to update")
+            if len(results) > 1:
+                raise ValueError("Task has multiple results; say which one to update")
+            result = results[0]
+        if (result.app_slug, result.collection) != output:
+            raise ValueError("Result kind differs from the existing result")
+        record = await current_record(result)
+        if record is None:
+            raise ValueError("The result was deleted from its app; ask for a new one")
+        # Without an explicit base the edit applies to the record as it is at
+        # admission; publication still fences it against later changes.
+        value.setdefault("expected_revision", record["revision"])
+        if value["expected_revision"] != record["revision"]:
+            raise ValueError("Result update expected revision is stale")
+        value["result_id"] = result.id
     return {**value, "kind": kind}
 
 
@@ -80,48 +85,47 @@ def publication_profile(run):
     return profile
 
 
-async def context_result(session, task_id, run_id):
+async def context_result(session, task_id, run_id) -> TaskResult | None:
     """Prefer the run's selected result; answer requests may refer without rebinding."""
     from app.db.tables import TaskExecutionRun
     run = await session.get(TaskExecutionRun, run_id)
     request = (run.configuration_json or {}).get("result") if run else None
-    query = select(ResultPage).where(ResultPage.task_id == task_id)
-    if request and request.get("public_id"):
-        query = query.where(ResultPage.public_id == request["public_id"])
+    query = select(TaskResult).where(TaskResult.task_id == task_id)
+    if request and request.get("result_id"):
+        query = query.where(TaskResult.id == request["result_id"])
     elif request and request["mode"] == "new":
-        query = query.where(ResultPage.initial_execution_run_id == run_id)
+        # A new result's record is keyed by the run that created it.
+        query = query.where(TaskResult.record_key == run_id)
     else:
-        query = query.order_by((ResultPage.active_execution_run_id == run_id).desc(), ResultPage.created_at.desc(), ResultPage.id)
+        query = query.order_by((TaskResult.execution_run_id == run_id).desc(), TaskResult.updated_at.desc(), TaskResult.id)
     return (await session.execute(query.limit(1))).scalar_one_or_none()
 
 
-async def maintained_view(session, page, *, content_limit):
-    """What a worker needs to revise a page: its identity and current content."""
-    if page is None:
+async def maintained_view(result: TaskResult | None, *, content_limit: int):
+    """What a worker needs to revise a result: its identity, revision and current content."""
+    if result is None:
         return None
     import json
-    from app.db.tables import ResultPageRevision
-    view = {"public_id": page.public_id, "revision_number": page.revision_number,
-        "schema": page.result_kind, "current_revision_id": page.current_revision_id}
-    revision = await session.get(ResultPageRevision, page.current_revision_id) if page.current_revision_id else None
-    if revision is not None:
-        if len(json.dumps(revision.content_json, ensure_ascii=False)) <= content_limit:
-            view["current_content"] = revision.content_json
-        else:
-            view["current_content_omitted"] = "Read jarvis_task.task_history for the full current content."
+    view = {key: value for key, value in present(result).items() if key != "url"}
+    record = await current_record(result)
+    if record is None:
+        view["deleted"] = "The user deleted this record; publish a new result if one is still wanted."
+        return view
+    view["revision"] = record["revision"]
+    if len(json.dumps(record["value"], ensure_ascii=False)) <= content_limit:
+        view["current_content"] = record["value"]
+    else:
+        view["current_content_omitted"] = "Read jarvis_task.task_history for the full current content."
     return view
 
 
 async def result_links(session, task_id):
-    pages = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id)
-        .order_by(ResultPage.created_at, ResultPage.id))).scalars().all()
-    return [{"public_id": page.public_id, "url": f"/results/{page.public_id}",
-        "result_kind": page.result_kind, "revision_number": page.revision_number,
-        "title": page.title or result_type(page.result_kind).label, "status": page.status} for page in pages]
+    return [present(result) for result in await task_results(session, task_id)]
 
 
 @timed("result_lookup")
 async def admission_result_url(session, task_id, identity, *, turn=None):
+    """The page of the result this turn revises; a new result has no page until it is published."""
     from app.db.tables import TaskTurn, TaskExecutionRun
     if turn is None:
         turn = (await session.execute(select(TaskTurn).where(TaskTurn.task_id == task_id,
@@ -132,12 +136,8 @@ async def admission_result_url(session, task_id, identity, *, turn=None):
         raise ValueError("Admission result lookup requires its originating turn")
     run = await session.get(TaskExecutionRun, turn.execution_run_id)
     request = (run.configuration_json or {}).get("result") if run else None
-    if request:
-        page = await context_result(session, task_id, turn.execution_run_id)
-    else:
-        # An old admission must not start returning some later run's result.
-        query = select(ResultPage).where(ResultPage.task_id == task_id,
-            (ResultPage.initial_execution_run_id == turn.execution_run_id)
-            | (ResultPage.active_execution_run_id == turn.execution_run_id))
-        page = (await session.execute(query)).scalar_one_or_none()
-    return f"/results/{page.public_id}" if page else None
+    result = await session.get(TaskResult, request["result_id"]) if request and request.get("result_id") else None
+    if result is None and run is not None:
+        result = (await session.execute(select(TaskResult).where(TaskResult.task_id == task_id,
+            TaskResult.record_key == run.id))).scalar_one_or_none()
+    return present(result)["url"] if result is not None and result.task_id == task_id else None

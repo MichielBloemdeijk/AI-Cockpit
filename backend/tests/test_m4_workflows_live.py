@@ -12,15 +12,12 @@ from PIL import Image, ImageDraw
 import pytest
 
 pytestmark = pytest.mark.provider
-from sqlalchemy import select
 
 from app.config import settings
-from app.db.session import session_scope
-from app.db.tables import ResultPage, ResultPageRevision
+from test_m4_workflows import result_snapshot
 from app.services.codex_task_runtime import codex_task_runtime
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
-from app.services.worker_coordinator import worker_coordinator
 from test_m4_workflows import admit
 
 
@@ -62,11 +59,8 @@ async def test_m4_actual_native_research_publication(monkeypatch, tmp_path, defi
         finished = await worker.run_once()
         elapsed += monotonic() - started
         detail = await task_service.get_task(args.task_id)
-    async with session_scope() as session:
-        page = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-        revision = await session.get(ResultPageRevision, page.current_revision_id) if page.current_revision_id else None
-        content = revision.content_json if revision else None
-        first_public_id = page.public_id
+    first = await result_snapshot(args.task_id) if finished.status == "completed" else None
+    content = first["content"] if first else None
     report = {"definition": definition, "sample": sample, "subject": subject,
               "definition_digest": detail.runs[0].configuration_json["workflow"]["digest"],
               "model": detail.runs[0].configuration_json["model"],
@@ -75,7 +69,7 @@ async def test_m4_actual_native_research_publication(monkeypatch, tmp_path, defi
               "status": "passed" if finished.status == "completed" and content else "failed", "outcome": finished.status,
               "initial_outcome": initial_outcome, "fixture_answered": initial_outcome == "waiting_for_input",
               "terminal_summary": detail.task.terminal_summary, "native": True, "real_research": True,
-              "task_id": args.task_id, "result_kind": page.result_kind, "result_id": page.public_id,
+              "task_id": args.task_id, "result_kind": args.workflow_schema, "result_id": first and first["result_id"],
               "cold_execution_seconds": round(elapsed, 3), "content": content,
               "native_usage": [attempt.usage_summary_json for attempt in detail.attempts],
               "native_research": [{"sequence": event.sequence, "payload": event.payload_json}
@@ -93,15 +87,13 @@ async def test_m4_actual_native_research_publication(monkeypatch, tmp_path, defi
         report["followup_outcome"] = followup.status
         detail = await task_service.get_task(args.task_id)
         report["followup_terminal_summary"] = detail.task.terminal_summary
-        async with session_scope() as session:
-            page = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-            revision = await session.get(ResultPageRevision, page.current_revision_id)
-            report["followup_content"] = revision.content_json
-            report["same_url_revision"] = page.public_id == first_public_id and page.revision_number == 2
+        revised = await result_snapshot(args.task_id)
+        report["followup_content"] = revised["content"]
+        report["same_record_revision"] = revised["result_id"] == first["result_id"] and revised["revision"] == 2
         report["native_usage"] = [attempt.usage_summary_json for attempt in detail.attempts]
         searches = [event for event in detail.events if event.event_type == "agent.native.item" and event.payload_json.get("item", {}).get("type") == "webSearch"]
         report["reused_without_new_search"] = len(searches) == len(report["native_research"])
-        if followup.status != "completed" or not report["same_url_revision"] or not report["reused_without_new_search"]:
+        if followup.status != "completed" or not report["same_record_revision"] or not report["reused_without_new_search"]:
             report["status"] = "failed"
     if os.environ.get("JARVIS_M4_REPORT_DIR"):
         evidence_path = live_root / "private-evidence.json"

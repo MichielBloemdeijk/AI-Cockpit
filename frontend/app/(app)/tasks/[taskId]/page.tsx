@@ -115,10 +115,11 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
     setBusy(true);
     setError(null);
     try {
-      const selected = task?.results?.find(result => result.public_id === selectedResultId) || task?.results?.[0];
+      const selected = task?.results?.find(result => result.result_id === selectedResultId) || task?.results?.[0];
+        // An update applies to the record as it is when the follow-up is admitted.
         const result: TaskResultIntent | undefined = selected ? (effectiveResultMode === "new" ? { mode: "new" } : effectiveResultMode === "answer" ?
-            { mode: "answer", public_id: selected.public_id } :
-            { mode: "update", public_id: selected.public_id, expected_revision: selected.revision_number }) : undefined;
+            { mode: "answer", result_id: selected.result_id } :
+            { mode: "update", result_id: selected.result_id }) : undefined;
         if (toolOverrides) await continueTask(taskId, content, result, { tools: toolOverrides });
         else if (result) await continueTask(taskId, content, result);
         else await continueTask(taskId, content);
@@ -185,8 +186,8 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                   <option value="update">Edit selected result</option>
                   <option value="new">Create additional result</option>
                 </select>
-                {effectiveResultMode !== "new" && <select aria-label="Selected result" value={selectedResultId || task?.results?.[0]?.public_id} onChange={event => setSelectedResultId(event.target.value)} className="min-w-0 rounded-lg border border-zinc-700 bg-zinc-950 p-2">
-                  {task?.results?.map(result => <option key={result.public_id} value={result.public_id}>{result.title}</option>)}
+                {effectiveResultMode !== "new" && <select aria-label="Selected result" value={selectedResultId || task?.results?.[0]?.result_id} onChange={event => setSelectedResultId(event.target.value)} className="min-w-0 rounded-lg border border-zinc-700 bg-zinc-950 p-2">
+                  {task?.results?.map(result => <option key={result.result_id} value={result.result_id}>{result.title}</option>)}
                 </select>}
               </div>}
               <div className="mt-3 flex gap-2">
@@ -196,8 +197,8 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
               <TaskToolOverrides value={toolOverrides} onChange={setToolOverrides} />
             </section>
             {Boolean(task?.results?.length) && <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
-              <h2 className="text-sm font-medium">Maintained results</h2>
-              {task?.results?.map(result => <Link key={result.public_id} href={result.url} className="mt-2 block text-sm text-sky-400">{result.title} · {result.status}</Link>)}
+              <h2 className="text-sm font-medium">Results</h2>
+              {task?.results?.map(result => <Link key={result.result_id} href={result.url} className="mt-2 flex items-center gap-1 text-sm text-sky-400"><ExternalLink size={14} /> {result.title}</Link>)}
             </section>}
             <h2 className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">Agent trace</h2>
             {trace.map((message) => <ChatMessage key={message.id} message={message} />)}

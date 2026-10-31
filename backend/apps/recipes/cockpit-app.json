@@ -1,0 +1,13 @@
+{
+  "schema": "cockpit-app.v1",
+  "slug": "recipes",
+  "title": "Recipes",
+  "version": 1,
+  "description": "Source-backed recipes Jarvis finds, for example for a dish on the phone's screen.",
+  "ui": {"entry": "ui/index.html"},
+  "collections": {
+    "recipe": {"schema": "schemas/recipe.json", "result_type": true}
+  },
+  "workflows": ["recipe_from_screen"],
+  "jarvis": {"summary": "The owner's saved recipes: title, ingredients, ordered steps, sources, and optional servings, timing and caveats."}
+}

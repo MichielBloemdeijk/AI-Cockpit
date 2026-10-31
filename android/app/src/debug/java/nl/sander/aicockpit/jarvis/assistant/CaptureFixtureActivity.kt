@@ -191,7 +191,7 @@ class CaptureFixtureActivity : Activity() {
 
     private fun openResult(intent: Intent): Boolean {
         val path = intent.getStringExtra("open_result_path") ?: return false
-        check(path.startsWith("/results/") || Regex("^/tasks/[0-9a-fA-F-]{36}$").matches(path))
+        check(Regex("^/apps/[a-z][a-z0-9-]{1,47}[?]collection=[a-z][a-z0-9_]{0,47}&key=[A-Za-z0-9_.%-]{1,128}$").matches(path) || Regex("^/tasks/[0-9a-fA-F-]{36}$").matches(path))
         JarvisVoiceInteractionSession.stopActive()
         startActivity(Intent(this, JarvisWebViewActivity::class.java)
             .putExtra(JarvisWebViewActivity.EXTRA_PATH, path))

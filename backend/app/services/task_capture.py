@@ -10,7 +10,6 @@ from sqlalchemy import select, update
 
 from app.db.session import session_scope
 from app.db.tables import JarvisDevice, LiveSession, TaskCaptureReport, JarvisLiveEvent
-from app.services.result_telemetry import observe_preflight
 from app.services.admission_timing import timed
 from app.services.commit_signals import capture_state_committed
 
@@ -255,7 +254,6 @@ class TaskCaptureService:
                 TaskCaptureReport.capture_mode == capture_mode,
             ).order_by(TaskCaptureReport.created_at.desc(), TaskCaptureReport.capture_id.desc()).limit(1))).scalar_one_or_none()
 
-    @observe_preflight
     async def preflight(
         self, *, device_id: str, session_id: str, generation: int,
         activation_id: str, capture_mode: str = "activation", capture_id: str | None = None,

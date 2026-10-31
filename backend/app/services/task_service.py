@@ -8,7 +8,6 @@ import json
 import re
 from typing import Any
 from uuid import uuid4
-from time import perf_counter
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -20,7 +19,6 @@ from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import (
     ResourceLease,
-    ResultPage,
     Task,
     TaskArtifact,
     TaskAttempt,
@@ -33,6 +31,7 @@ from app.db.tables import (
     TaskOperation,
     TaskPresentation,
     TaskQuestion,
+    TaskResult,
     TaskTarget,
     TaskSupervisorLease,
     TaskTurn,
@@ -47,14 +46,13 @@ from app.services.task_update_policy import (
     SILENT,
     normalize_task_update_policy,
 )
-from app.services.task_workflows import resolve_workflow_config, validate_pinned_workflow, validate_workflow_result
-from app.services.task_result_types import result_type
+from app.services.task_workflows import current_definition, resolve_workflow_config, validate_pinned_workflow, workflow_enabled
+from app.services.task_result_types import DOCUMENT_OUTPUT, collection_output, validate_result
 from app.services.task_capture import CaptureCollection
 from app.services.orchestration_authority import DecisionAuthority, begin_action
 from app.services.task_execution_preferences import normalize_agent_preferences
-from app.services.task_results import allocate_document_result, fail_document_result, publish_document_result
+from app.services.task_results import current_record, write_result
 from app.services.task_result_contract import resolve_result_request, publication_profile
-from app.services.result_telemetry import observe_lifecycle, phase, completed, validated as observe_validation
 from app.services.task_statuses import ACTIVE_TASK_STATUSES
 
 
@@ -297,7 +295,6 @@ class TaskService:
             return TaskSnapshot(task=task, queue_position=None)
 
     @timed("task_dispatch")
-    @observe_lifecycle("admission")
     async def dispatch(
         self,
         *,
@@ -471,16 +468,6 @@ class TaskService:
         )
         session.add(workflow_run)
         await session.flush()
-        if (result_type(pinned["output_schema"]).app_slug is not None
-                and (run.configuration_json or {}).get("result", {}).get("mode") != "answer"):
-            page = await allocate_document_result(session, task_id=task.id, run_id=run.id,
-                                                  schema=pinned["output_schema"])
-            await repo.append_event(
-                task_id=task.id, attempt_id=attempt.id if attempt else None, execution_run_id=run.id,
-                event_type="task.result.allocated",
-                payload_json={"result_url": f"/results/{page.public_id}"},
-                idempotency_key=f"task.result.allocated:{run.id}",
-            )
         run.configuration_json = {**dict(run.configuration_json or {}), "screen_context": collection.manifest()}
         unique = {item.capture_id: item for _, item in collection.captures}
         for capture_binding in unique.values():
@@ -513,7 +500,6 @@ class TaskService:
             ))
 
     @timed("task_continuation")
-    @observe_lifecycle("continuation")
     async def continue_task(
         self,
         task_id: str,
@@ -557,22 +543,27 @@ class TaskService:
                     else:
                         previous_config = dict(previous.configuration_json or {}) if previous else {}
                         pinned = validate_pinned_workflow(previous_config)
-                        identity = f"{pinned['id']}@{pinned['version']}:{pinned['digest']}"
-                        if identity not in {item.strip() for item in settings.task_workflow_allowlist.split(",")}:
-                            raise ValueError("Workflow version and digest are not enabled")
-                        execution_config = previous_config
-                        execution_config.pop("resolved_tools", None)
+                        if workflow_enabled(pinned):
+                            execution_config = previous_config
+                            execution_config.pop("resolved_tools", None)
+                        else:
+                            # Its app was updated since: continue with the workflow's current version.
+                            definition = current_definition(pinned["id"])
+                            if definition is None:
+                                raise ValueError("Workflow version and digest are not enabled")
+                            execution_config = resolve_workflow_config({"definition": definition},
+                                                                       inherited=previous_config)
             execution_config = dict(execution_config or {})
             execution_config.pop("result", None)  # a new run needs fresh explicit intent
             if result_request is None and existing is None:
-                # A follow-up on a task with a maintained result revises that
-                # result in place; answer-only and additional results are explicit.
-                pages = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id)
+                # A follow-up on a task with a published result revises that
+                # record in place; answer-only and additional results are explicit.
+                results = (await session.execute(select(TaskResult).where(TaskResult.task_id == task_id)
                     .limit(2))).scalars().all()
-                if len(pages) > 1:
+                if len(results) > 1:
                     raise ValueError("Task has multiple results; select an explicit result intent")
-                if pages and pages[0].current_revision_id is not None and (
-                        kind == "workflow" or pages[0].result_kind == "document.v1"):
+                if results and await current_record(results[0]) is not None and (
+                        kind == "workflow" or f"collection:{results[0].app_slug}.{results[0].collection}" == DOCUMENT_OUTPUT):
                     result_request = {"mode": "update"}
             if result_request is not None:
                 if existing:
@@ -640,12 +631,6 @@ class TaskService:
             session.add(run)
             await session.flush()
             turn.execution_run_id = run.id
-            if not activate and execution_config.get("result", {}).get("mode") == "new":
-                page = await allocate_document_result(session, task_id=task.id, run_id=run.id,
-                    schema=execution_config["result"]["kind"])
-                await TaskRepository(session).append_event(task_id=task.id, execution_run_id=run.id,
-                    event_type="task.result.allocated", payload_json={"result_url": f"/results/{page.public_id}"},
-                    idempotency_key=f"task.result.allocated:{run.id}")
             if activate:
                 now = utc_now()
                 task.current_run_id = run.id
@@ -866,8 +851,6 @@ class TaskService:
                     run.status = "cancelled"
                     run.finished_at = now
                     run.terminal_summary = task.terminal_summary
-                    await fail_document_result(session, task_id=task.id, run_id=run.id,
-                        reason=task.terminal_summary, cancelled=True)
                 command.state = "confirmed"
                 command.confirmed_at = now
                 await self._end_current_attempt(session, task, reason="cancelled")
@@ -1022,8 +1005,6 @@ class TaskService:
                 run.status = "cancelled"
                 run.finished_at = now
                 run.terminal_summary = task.terminal_summary
-                await fail_document_result(session, task_id=task.id, run_id=run.id,
-                    reason=task.terminal_summary, cancelled=True)
             elif command.action in {"restart_execution", "restart_from_beginning"}:
                 if command.action == "restart_from_beginning":
                     task.workspace_generation += 1
@@ -1619,7 +1600,6 @@ class TaskService:
             snapshot = TaskSnapshot(task=task, queue_position=None)
         return snapshot
 
-    @observe_lifecycle("publication")
     async def complete(
         self,
         task_id: str,
@@ -1652,8 +1632,9 @@ class TaskService:
                     and final_text is not None and publication_profile(producing_run) is not None):
                 # General runtimes return Markdown; this adapter supplies the
                 # generic Document shape, not a separate publication lifecycle.
-                workflow_result = {"title": normalized[:200] or "Document", "body": final_text,
-                    "source_event_sequences": []}
+                # The summary is often the Markdown heading; the title is plain text.
+                title = normalized.lstrip("#").strip()[:200]
+                workflow_result = {"title": title or "Document", "body": final_text}
                 workflow_operation_key = f"final:{sha256(idempotency_key.encode()).hexdigest()}"
                 workflow_base_revision = (producing_run.configuration_json or {}).get("result", {}).get("expected_revision")
                 final_text = None
@@ -1692,14 +1673,11 @@ class TaskService:
                     pinned = publication_profile(prior_run)
                     if pinned is None:
                         raise ValueError("This run has no publication authority")
-                    phase("validation")
-                    validated = validate_workflow_result(pinned["output_schema"], workflow_result)
+                    validated = await validate_result(pinned["output_schema"], workflow_result)
                     publication_input = validated if workflow_base_revision is None else {
                         "content": validated, "base_revision": workflow_base_revision}
                     if prior.input_digest != _fingerprint(publication_input):
-                        phase("validation", outcome="conflict")
                         raise ValueError("Workflow publication operation key conflicts with an earlier result")
-                    phase("replay", outcome="replayed")
                     return TaskSnapshot(task=task, queue_position=None)
             await self._assert_fence(
                 session, task, attempt_id=attempt_id,
@@ -1708,6 +1686,7 @@ class TaskService:
             run = await self._current_run(session, task)
             pinned = publication_profile(run) if run is not None else None
             validated_result: dict[str, Any] | None = None
+            result_target: TaskResult | None = None
             if status == "completed" and run is not None and run.execution_kind == "agent" and pinned is not None and workflow_result is None:
                 raise ValueError("Publishing agent run must supply a Document result")
             if (status == "completed" and task.execution_kind == "workflow" and run is not None
@@ -1718,29 +1697,25 @@ class TaskService:
                         and "task.finish@1" in validate_pinned_workflow(dict(run.configuration_json or {}))["capabilities"])):
                 raise ValueError("A production workflow must publish its typed result")
             if workflow_result is not None:
-                phase("validation")
-                validation_started = perf_counter()
                 if status != "completed" or final_text is not None or run is None or pinned is None:
                     raise ValueError("Typed publication requires an authorized publishing run")
-                validated_result = validate_workflow_result(pinned["output_schema"], workflow_result)
+                validated_result = await validate_result(pinned["output_schema"], workflow_result)
                 if not isinstance(workflow_operation_key, str) or not (1 <= len(workflow_operation_key) <= 180):
                     raise ValueError("Workflow publication requires a stable operation key")
                 if workflow_base_revision is not None and (type(workflow_base_revision) is not int or workflow_base_revision < 0):
                     raise ValueError("Expected base revision must be a nonnegative integer")
-                if result_type(pinned["output_schema"]).app_slug is not None:
-                    page = (await session.execute(select(ResultPage).where(
-                        ResultPage.task_id == task_id, ResultPage.active_execution_run_id == run.id,
-                    ))).scalar_one_or_none()
-                    if page is None:
-                        raise ValueError("Result page is not bound to this run")
-                    if pinned["schema"] == "workflow-pinned.v2" and page.revision_number and workflow_base_revision is None:
-                        raise ValueError("Updating a result requires an expected base revision")
-                    if workflow_base_revision is not None and workflow_base_revision != page.revision_number:
-                        phase("validation", outcome="conflict")
-                        raise ValueError("Expected base revision is stale; inspect the current result")
-                    request = (run.configuration_json or {}).get("result")
-                    if request and request["mode"] == "update" and workflow_base_revision != request["expected_revision"]:
-                        raise ValueError("Publication must use the admitted expected base revision")
+                if collection_output(pinned["output_schema"]) is not None:
+                    request = (run.configuration_json or {}).get("result") or {}
+                    if request.get("result_id"):
+                        result_target = await session.get(TaskResult, request["result_id"])
+                        if result_target is None or result_target.task_id != task_id:
+                            raise ValueError("The result this run revises no longer exists")
+                        if pinned["schema"] == "workflow-pinned.v2" and workflow_base_revision is None:
+                            raise ValueError("Updating a result requires an expected base revision")
+                        if workflow_base_revision != request["expected_revision"]:
+                            raise ValueError("Publication must use the admitted expected base revision")
+                    elif workflow_base_revision:
+                        raise ValueError("This run publishes a new result; omit base_revision")
                 sources = validated_result["source_event_sequences"]
                 if sources:
                     found = set((await session.execute(select(TaskEvent.sequence).where(
@@ -1750,15 +1725,11 @@ class TaskService:
                         raise ValueError("Workflow result cites an event outside this task")
                 from app.services.native_research import validate_research_evidence
                 await validate_research_evidence(session, task_id, pinned, validated_result)
-                from app.services.task_results import validate_attachments
-                await validate_attachments(session, task_id, validated_result)
-                observe_validation(validation_started)
             event_key = f"task.terminal:{task_id}:{idempotency_key}"
             if await self._event_by_key(session, event_key) is None:
                 if task.status not in ACTIVE_TASK_STATUSES:
                     raise ValueError(f"Task in {task.status} cannot complete")
                 now = utc_now()
-                completed()
                 task.status = status
                 task.terminal_summary = normalized or None
                 task.finished_at = now
@@ -1798,14 +1769,10 @@ class TaskService:
                     artifact.source_task_event_id = created_event.id
                     if run is not None:
                         run.result_reference = f"task-artifact:{artifact.id}"
-                    if (validated_result is not None and result_type(pinned["output_schema"]).app_slug is not None
+                    if (validated_result is not None and collection_output(pinned["output_schema"]) is not None
                             and run is not None):
-                        await publish_document_result(
-                            session, task_id=task.id, run_id=run.id,
-                            attempt_id=task.current_attempt_id,
-                            artifact=artifact, content=validated_result, schema=pinned["output_schema"],
-                            publication_key=workflow_operation_key,
-                        )
+                        await write_result(session, task_id=task.id, run_id=run.id, schema=pinned["output_schema"],
+                            content=validated_result, target=result_target, expected_revision=workflow_base_revision)
                     if validated_result is not None and run is not None:
                         operation = TaskOperation(
                             id=str(uuid4()), task_id=task.id, execution_run_id=run.id,
@@ -1830,20 +1797,6 @@ class TaskService:
                                           "result_reference": run.result_reference},
                             idempotency_key=f"task.operation:{operation.id}:succeeded",
                         )
-                if status != "completed" and run is not None:
-                    await fail_document_result(
-                        session, task_id=task.id, run_id=run.id,
-                        reason=normalized or status,
-                    )
-                elif workflow_answer and validated_result is None and run is not None:
-                    page = (await session.execute(select(ResultPage).where(
-                        ResultPage.task_id == task.id, ResultPage.active_execution_run_id == run.id,
-                    ))).scalar_one_or_none()
-                    if page is not None:
-                        page.status = "ready" if page.current_revision_id else "failed"
-                        page.warning = None if page.current_revision_id else normalized
-                        from app.services.task_results import append_result_event
-                        await append_result_event(session, page, "answer_completed", event_key=f"answer:{run.id}")
                 terminal_event = await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
@@ -2398,34 +2351,6 @@ class TaskService:
         checkpoint: dict | None = None,
     ) -> TaskAttempt:
         run = execution_run or await self._current_run(session, task)
-        page = None
-        if run is not None:
-            pinned = publication_profile(run) if (run.configuration_json or {}).get("workflow") or (run.configuration_json or {}).get("result") else None
-        else:
-            pinned = None
-        if pinned is not None:
-            if result_type(pinned["output_schema"]).app_slug is not None:
-                request = (run.configuration_json or {}).get("result")
-                if request and request["mode"] == "new":
-                    page = await allocate_document_result(session, task_id=task.id, run_id=run.id, schema=pinned["output_schema"])
-                else:
-                    query = select(ResultPage).where(ResultPage.task_id == task.id)
-                    if request:
-                        query = query.where(ResultPage.public_id == request["public_id"])
-                    else:
-                        # Retry the run's own allocation before considering the
-                        # legacy implicit single-result association.
-                        page = (await session.execute(query.where(ResultPage.active_execution_run_id == run.id))).scalar_one_or_none()
-                        if page is not None:
-                            query = query.where(ResultPage.id == page.id)
-                    page = (await session.execute(query)).scalar_one_or_none()
-                if page is None:
-                    page = await allocate_document_result(session, task_id=task.id, run_id=run.id, schema=pinned["output_schema"])
-                elif page.active_execution_run_id != run.id:
-                    if page.result_kind != pinned["output_schema"]:
-                        raise ValueError("Follow-up result type differs from the existing result")
-                    from app.services.task_results import begin_result_update
-                    await begin_result_update(session, page, run.id)
         if run is None:
             run = await self._ensure_initial_run(
                 session,
@@ -2450,11 +2375,6 @@ class TaskService:
         await session.flush()
         task.current_attempt_id = attempt.id
         run.current_attempt_id = attempt.id
-        if page is not None and page.initial_execution_run_id == run.id:
-            await TaskRepository(session).append_event(task_id=task.id, attempt_id=attempt.id,
-                execution_run_id=run.id, event_type="task.result.allocated",
-                payload_json={"result_url": f"/results/{page.public_id}"},
-                idempotency_key=f"task.result.allocated:{run.id}")
         return attempt
 
     async def _current_attempt(self, session: AsyncSession, task: Task) -> TaskAttempt | None:

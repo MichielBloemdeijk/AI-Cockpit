@@ -1,0 +1,42 @@
+{
+  "tests": [
+    {
+      "name": "lists and searches recipes",
+      "records": {"recipe": [
+        {"key": "pasta", "value": {"title": "Tomato pasta", "ingredients": ["200 g pasta", "4 tomatoes"],
+          "instructions": ["Cook the pasta.", "Add the tomatoes."], "servings": "2 servings",
+          "sources": [{"url": "https://example.com/pasta", "title": "Example pasta"}]}},
+        {"key": "soup", "value": {"title": "Leek soup", "ingredients": ["2 leeks", "1 l stock"],
+          "instructions": ["Slice the leeks.", "Simmer in the stock."],
+          "sources": [{"url": "https://example.com/soup", "title": "Example soup"}]}}
+      ]},
+      "steps": [
+        {"expect_count": "#recipes li", "count": 2},
+        {"expect_text": "2 servings"},
+        {"fill": "#search", "value": "leek"},
+        {"expect_count": "#recipes li", "count": 1},
+        {"expect_text": "Leek soup", "selector": "#recipes"},
+        {"click": "#recipes button"},
+        {"expect_text": "Simmer in the stock.", "selector": "#steps"}
+      ]
+    },
+    {
+      "name": "opens on a recipe and deletes it",
+      "open": {"collection": "recipe", "key": "pasta"},
+      "records": {"recipe": [
+        {"key": "pasta", "value": {"title": "Tomato pasta", "ingredients": ["200 g pasta", "4 tomatoes"],
+          "instructions": ["Cook the pasta.", "Add the tomatoes."], "uncertainty": "Assumed a plain tomato sauce.",
+          "sources": [{"url": "https://example.com/pasta", "title": "Example pasta"}]}}
+      ]},
+      "steps": [
+        {"expect_text": "Tomato pasta", "selector": "#title"},
+        {"expect_text": "Assumed a plain tomato sauce."},
+        {"expect_count": "#ingredients li", "count": 2},
+        {"expect_text": "Example pasta", "selector": "#sources"},
+        {"click": "#delete"},
+        {"expect_records": {"collection": "recipe", "count": 0}},
+        {"expect_text": "No recipes yet"}
+      ]
+    }
+  ]
+}

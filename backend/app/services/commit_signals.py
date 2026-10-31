@@ -44,4 +44,3 @@ class CommitSignal:
 
 live_event_committed = CommitSignal()
 capture_state_committed = CommitSignal()
-result_event_committed = CommitSignal()

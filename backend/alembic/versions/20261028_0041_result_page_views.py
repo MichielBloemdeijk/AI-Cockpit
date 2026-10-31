@@ -9,7 +9,11 @@ depends_on = None
 
 
 def upgrade():
-    if "last_viewed_at" in {column["name"] for column in sa.inspect(op.get_bind()).get_columns("result_pages")}:
+    inspector = sa.inspect(op.get_bind())
+    # Replayed after 0042 replaced result pages: nothing to add.
+    if not inspector.has_table("result_pages"):
+        return
+    if "last_viewed_at" in {column["name"] for column in inspector.get_columns("result_pages")}:
         return
     with op.batch_alter_table("result_pages") as batch:
         batch.add_column(sa.Column("last_viewed_at", sa.DateTime(timezone=True), nullable=True))

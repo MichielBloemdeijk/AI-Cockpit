@@ -24,7 +24,7 @@ from app.config import settings  # noqa: E402
 from app.services.task_service import task_service  # noqa: E402
 from app.services.task_workflows import validate_pinned_workflow  # noqa: E402
 from app.services.task_capabilities import workflow_tools  # noqa: E402
-from app.services.task_result_types import INSTALL_FIELDS, RESULT_TYPES, result_type  # noqa: E402
+from app.services.task_result_types import publish_schema  # noqa: E402
 
 # A build_app run keeps the package it builds here, inside its workspace.
 APP_PACKAGE_DIR = "app"
@@ -39,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--claim-token", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--workflow-schema", choices=list(RESULT_TYPES))
+    parser.add_argument("--workflow-schema")
     parser.add_argument("--workflow-capabilities", default="")
     parser.add_argument("--answer-only", action="store_true")
     parser.add_argument("--workflow-allowlist", default="")
@@ -87,7 +87,7 @@ def _app_package_tools() -> list[dict[str, Any]]:
     ]
 
 
-def _tool_catalog(workflow_schema: str | None = None, capabilities: list[str] | None = None, answer_only: bool = False, local_broker: bool = False) -> list[dict[str, Any]]:
+async def _tool_catalog(workflow_schema: str | None = None, capabilities: list[str] | None = None, answer_only: bool = False, local_broker: bool = False) -> list[dict[str, Any]]:
     common = [
         {
             "name": "task_history",
@@ -114,7 +114,7 @@ def _tool_catalog(workflow_schema: str | None = None, capabilities: list[str] | 
     ]
     if workflow_schema:
         selected = set(workflow_tools({"capabilities": capabilities})) if capabilities is not None else {
-            "task_history", "result_publish", *(["task_context_images"] if workflow_schema == "document.v1" else [])}
+            "task_history", "result_publish"}
         if "task_context_images" in selected:
             common.append({
                 "name": "task_context_images",
@@ -127,10 +127,7 @@ def _tool_catalog(workflow_schema: str | None = None, capabilities: list[str] | 
                 ),
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             })
-        schema = result_type(workflow_schema).model.model_json_schema()
-        if workflow_schema == "app-build.v1":
-            schema["properties"] = {key: value for key, value in schema["properties"].items() if key not in INSTALL_FIELDS}
-            schema["required"] = [key for key in schema["required"] if key not in INSTALL_FIELDS]
+        schema = await publish_schema(workflow_schema)
         properties = schema["properties"] | {"operation_key": {"type": "string"},
             "base_revision": {"type": "integer", "minimum": 0, "description": "Expected current revision from task_history; required when updating an existing result."}}
         tools = common + _app_package_tools() + [{
@@ -138,11 +135,13 @@ def _tool_catalog(workflow_schema: str | None = None, capabilities: list[str] | 
             "description": ("Check and install ./app, then publish what you built and complete this run. If the "
                             "check fails nothing is installed and the problems are returned."
                             if workflow_schema == "app-build.v1" else
-                            "Atomically publish a typed workflow result and complete this run."),
+                            "Atomically publish a typed workflow result and complete this run. A result kept "
+                            "in an app is saved as that app's record; when revising it, publish the complete "
+                            "new content with base_revision from task_history's maintained_result."),
             "inputSchema": {
                 "type": "object",
                 "properties": properties,
-                "required": schema["required"] + ["operation_key"],
+                "required": (schema.get("required") or []) + ["operation_key"],
                 "$defs": schema.get("$defs", {}),
                 "additionalProperties": False,
             },
@@ -396,11 +395,10 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
             })
             used += min(size, 128_000)
         next_cursor = result[-1]["sequence"] if result and (len(events) == 20 or len(result) < len(events)) else latest
-        from app.db.tables import ResultPage
+        from app.services.task_result_contract import context_result, maintained_view
         async with session_scope() as session:
-            from app.services.task_result_contract import context_result, maintained_view
-            page = await context_result(session, args.task_id, args.run_id)
-            maintained = await maintained_view(session, page, content_limit=128_000)
+            maintained_result = await context_result(session, args.task_id, args.run_id)
+        maintained = await maintained_view(maintained_result, content_limit=128_000)
         return {"events": result, "native_research": native_research, "maintained_result": maintained, "next_cursor": next_cursor,
                 "latest_sequence": latest, "has_more": next_cursor < latest}
     raise ValueError("Tool is not allowlisted")
@@ -463,7 +461,7 @@ async def _handle(request: dict[str, Any], args: argparse.Namespace) -> dict[str
         }
     elif method == "tools/list":
         capabilities = json.loads(args.workflow_capabilities) if getattr(args, "workflow_capabilities", "") else None
-        result = {"tools": _tool_catalog(getattr(args, "workflow_schema", None), capabilities, getattr(args, "answer_only", False), getattr(args, "local_broker", False))}
+        result = {"tools": await _tool_catalog(getattr(args, "workflow_schema", None), capabilities, getattr(args, "answer_only", False), getattr(args, "local_broker", False))}
     elif method == "tools/call":
         params = request.get("params") or {}
         name = str(params.get("name") or "")

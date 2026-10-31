@@ -12,7 +12,8 @@ import org.json.JSONObject
 
 internal data class OpenRequest(val eventId: String, val path: String, val title: String, val expiresAt: Instant) {
     companion object {
-        private val PATH = Regex("^/(results|tasks|apps)/[A-Za-z0-9_-]{1,64}$")
+        // A task, an app, or an app opened on one record (a task's result).
+        private val PATH = Regex("^/(?:tasks/[A-Za-z0-9_-]{1,64}|apps/[a-z][a-z0-9-]{1,47}(?:\\?collection=[a-z][a-z0-9_]{0,47}&key=[A-Za-z0-9_.%-]{1,128})?)$")
 
         fun from(event: JSONObject): OpenRequest? = runCatching {
             require(event.optString("event_type") == "display.open_requested")
@@ -25,7 +26,7 @@ internal data class OpenRequest(val eventId: String, val path: String, val title
     }
 }
 
-/** Brings Jarvis to the front on a result page when the user asks Jarvis to show it.
+/** Brings Jarvis to the front on a result (an app record) when the user asks Jarvis to show it.
  * Android lets the default assistant start its own activity over other apps; a
  * locked phone gets the result notification instead of a hidden launch. */
 class PhoneDisplay(private val context: Context) {

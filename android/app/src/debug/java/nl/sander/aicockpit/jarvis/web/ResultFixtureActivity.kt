@@ -24,7 +24,7 @@ class ResultFixtureActivity : Activity() {
         scope.launch {
             try {
                 val path = intent.getStringExtra("path") ?: error("Missing result path")
-                check(Regex("^/results/[0-9a-fA-F-]{36}$").matches(path))
+                check(Regex("^/apps/[a-z][a-z0-9-]{1,47}[?]collection=[a-z][a-z0-9_]{0,47}&key=[A-Za-z0-9_.%-]{1,128}$").matches(path))
                 val store = CredentialStore(this@ResultFixtureActivity)
                 intent.getStringExtra("pairing_code")?.let { code ->
                     val server = intent.getStringExtra("server_url") ?: error("Missing fixture server")

@@ -37,6 +37,11 @@ class ErrorReport(BaseModel):
     detail: str = Field(default="", max_length=4000)
 
 
+class ViewReport(BaseModel):
+    collection: str = Field(min_length=1, max_length=48)
+    key: str = Field(min_length=1, max_length=128)
+
+
 class PutRecordRequest(BaseModel):
     value: Any
     expected_revision: int | None = Field(default=None, ge=0)
@@ -119,6 +124,17 @@ async def report_app_error(slug: str, body: ErrorReport) -> None:
         await app_platform.record_error(slug, body.message, body.detail)
     except app_platform.AppNotFound as exc:
         raise _not_found(exc) from exc
+
+
+@router.post("/apps/{slug}/views", dependencies=[Depends(app_data_access)], status_code=204)
+async def report_app_view(slug: str, body: ViewReport) -> None:
+    """The app is showing this record; Jarvis resolves "this one" to the latest view."""
+    try:
+        await app_platform.record_view(slug, body.collection, body.key)
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except app_platform.RecordError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/apps/{slug}/session", dependencies=[Depends(require_jarvis_auth)])

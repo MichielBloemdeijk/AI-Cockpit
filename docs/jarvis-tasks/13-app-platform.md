@@ -1,6 +1,6 @@
 # App platform: apps Jarvis builds, runs and maintains
 
-Status: **approved** 2026-10-30; build steps 1 and 2 implemented (see
+Status: **approved** 2026-10-30; build steps 1 to 3 implemented (see
 [Implementation notes](#implementation-notes)). Follows the
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
@@ -161,6 +161,13 @@ Recipes and Documents move onto the platform as the first packages:
 - `recipe.v1` and `document.v1` become JSON Schemas of collections that are
   marked `result_type`. Workflow results publish into them, replacing the
   Python result classes in `task_result_types.py`.
+- **Results are app records** (decided by the owner on 2026-10-31). A published
+  recipe is a record in the Recipes app, and the app shows it. The separate
+  result page with its live progress stream, revisions table and "Saved" toggle
+  goes: while a task runs, its progress is on the task page, and the
+  notification opens the app on the record. A follow-up ("use grams instead")
+  revises the same record. Everything published stays; the owner deletes what
+  they don't want in the app.
 - Their renderers move into each app's `ui/` bundle, replacing
   `result-renderers.tsx` and the per-collection Next pages and static exports.
 - Their workflows move into the packages: `recipe_from_screen` into Recipes, and
@@ -215,8 +222,8 @@ Steps 4 and 5 can swap if the first real app needs sharing before functions.
   validated lazily on read?
 - **Function language:** Python only (matches the backend and the sandbox), or
   Node as well?
-- **Where app UIs open on the phone:** inside the WebView shell, or through
-  `show_on_phone` like results?
+- ~~Where app UIs open on the phone~~: in the WebView shell, through the same
+  phone-display path as `show_on_phone` (settled in step 1).
 - **Data backup:** is `apps.db` included in the existing SQLite backup and
   rehearsal tooling from day one?
 
@@ -325,3 +332,74 @@ Deliberate simplifications to revisit:
   revise one maintained result.
 - `build_app@1` must be enabled with its digest in `TASK_WORKFLOW_ALLOWLIST`,
   like every workflow.
+
+### Step 3 (2026-10-31)
+
+- **Results are app records.** A workflow whose output is a result collection
+  names it `collection:<name>` in its `workflow.yaml`; it is pinned as
+  `collection:<app>.<name>`. Publishing validates the content against the
+  collection's JSON Schema (plus the core checks: a title, task event
+  citations, research evidence and safe source URLs) and writes it as a record.
+  A new result's record key is the id of the run that created it. A general
+  agent asked for a maintained result publishes `collection:documents.document`.
+- **The core keeps only a link** (`task_results`: task, app, collection,
+  record key, title, last publishing run). Migration `0042` drops the result
+  pages, revisions, events and metrics, the seeded collection rows and the
+  saved flags.
+- **Revisions are record revisions.** An update is fenced by the record's
+  revision as admitted. An edit the owner makes in the app meanwhile makes
+  Jarvis's update fail instead of overwriting it, and a deleted record is not
+  revised (a plain follow-up then becomes an ordinary answer). Workers see
+  `maintained_result` with the live record and its `revision`.
+- **Two databases, one order.** The record is written to `apps.db` before the
+  task transaction commits. If that commit fails, the retry finds the identical
+  record and links it. A record whose task never completes is possible but
+  harmless.
+- **Links and "this one".** A result opens at
+  `/apps/<app>?collection=<c>&key=<k>`. The host page passes that `target` to
+  the app (`cockpit.ready`, `cockpit.onTarget`) and records the view; apps call
+  `cockpit.viewing(collection, key)` when the owner opens a record. The latest
+  view (`app_views`) is what Jarvis's situation reports as
+  `last_opened_result`, with the task that made it if any. Notifications, the
+  task page, `show_on_phone` and the phone's open policy use these links. The
+  phone needs a new APK for the record links.
+- **Workflows in packages.** `workflows: [ids]` in the manifest, each in
+  `workflows/<id>/` with the usual `workflow.yaml`, instructions and fixtures.
+  They are validated when a package is checked or installed. An app workflow
+  may not use `app.package@1`, and its id must not collide with a core or other
+  app's workflow. Installing an app enables its workflows; the allowlist stays
+  for core workflows only. A follow-up on a task whose app workflow changed
+  since continues with the workflow's current version.
+- **Built-in apps** live in `backend/apps/` (Recipes, Documents) and are
+  installed on start when their version is newer than every installed one, so
+  a version Jarvis built is never overwritten. Each has a list with search, a
+  record view (Documents renders Markdown itself, without network or a build
+  step), delete, and UI tests. `recipe_from_screen` moved into Recipes;
+  `research_screen` and `screen_document` into Documents.
+- **Check harness:** a test may open the app on a record (`"open"`), and
+  confirmation dialogs are accepted. Seed records no longer break the stand-in
+  host page when they contain `</script>`.
+- **Removed:** the result API and its SSE stream, result telemetry and the
+  observation queue, the result and collection pages and static shells, the
+  saved flag, document attachments (never used), and the frontend result
+  renderers and collections.
+
+- **Live pilot:** one Codex task through Jarvis's `dispatch_task` wrote a
+  Document. It became a record in the Documents app, and its notification
+  opened the app on it in the real host. That pilot led to two fixes: a title
+  made from a Markdown heading summary is now plain text, and Documents
+  (version 2, installed on start) no longer repeats the title when the body
+  opens with it.
+- **Not yet verified:** a screen workflow (recipe or research) end to end on
+  the phone, which needs the phone and a new APK.
+
+Deliberate simplifications to revisit:
+
+- A record keeps only its content. The task provenance (event citations) stays
+  in the task's artifact, and the revision history is in the task's artifacts,
+  not in the app.
+- An app can't yet ask Jarvis to revise a record the owner created in the app;
+  Jarvis can only change records a task made.
+- The old Android emulator acceptance scripts under `android/scripts/`
+  (`verify-*.py`) still use `/results/` links and need updating before the next
+  emulator acceptance run.

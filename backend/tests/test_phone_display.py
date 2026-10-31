@@ -9,10 +9,12 @@ from sqlalchemy import select
 
 from app.main import app
 from app.db.session import session_scope
-from app.db.tables import JarvisLiveEvent, ResultPage
+from app.db.tables import JarvisLiveEvent, TaskResult
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
 from app.services.task_service import task_service
+from app.services.worker_coordinator import worker_coordinator
+from test_task_result_contract import claim, finish
 
 
 async def _paired_live_phone(transport, lock_state="unlocked"):
@@ -45,18 +47,20 @@ async def _open_requests(device):
 
 
 @pytest.mark.asyncio
-async def test_show_on_phone_switches_the_controller_to_the_result_page() -> None:
+async def test_show_on_phone_opens_the_result_in_its_app() -> None:
     device, _, live_session = await _paired_live_phone(ASGITransport(app=app))
     async with aclosing(device):
         created = await task_service.dispatch(goal="Write a short packing list", origin_surface="test",
                                               idempotency_key="show-result-1", result_request={"mode": "new"})
+        worker = await worker_coordinator.activate(process_identity="show-result")
+        await finish(worker, created.task.id, await claim(worker, created.task.id), "Socks, charger.")
         async with session_scope() as session:
-            page = (await session.execute(select(ResultPage).where(
-                ResultPage.task_id == created.task.id))).scalar_one()
+            published = (await session.execute(select(TaskResult).where(
+                TaskResult.task_id == created.task.id))).scalar_one()
         result = await _show(live_session, created.task.id)
         assert result.output["shown"] == "result" and result.output["delivered_as"] == "screen"
         [event] = await _open_requests(device)
-        assert event["payload"]["path"] == f"/results/{page.public_id}"
+        assert event["payload"]["path"] == f"/apps/documents?collection=document&key={published.record_key}"
         assert event["payload"]["session_id"] == live_session["id"] and event["payload"]["expires_at"]
         # A replayed call reuses the same request instead of switching twice.
         await _show(live_session, created.task.id)

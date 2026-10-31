@@ -1,15 +1,34 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
-import { createAppBridge, openAppSession, type AppSession } from "@/lib/app-platform";
+import { acknowledgePushDelivery } from "@/lib/api";
+import { appTarget, createAppBridge, openAppSession, type AppBridge, type AppSession } from "@/lib/app-platform";
 
 /** Hosts an installed app in a sandboxed frame and serves its SDK requests. */
 export default function AppHostPage({ params }: { params: Promise<{ slug: string }> }) {
+  return <Suspense fallback={<div className="p-6 text-sm text-zinc-500">Opening app…</div>}>
+    <AppHost params={params} />
+  </Suspense>;
+}
+
+function AppHost({ params }: { params: Promise<{ slug: string }> }) {
   const [session, setSession] = useState<AppSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const bridgeRef = useRef<AppBridge | null>(null);
+  // A link may open the app on one record (`?collection=recipe&key=…`).
+  const search = useSearchParams();
+  const collection = search.get("collection");
+  const key = search.get("key");
+  const delivery = search.get("delivery");
+
+  useEffect(() => {
+    // Opened from a result notification.
+    if (delivery) void acknowledgePushDelivery(delivery, "opened").catch(() => undefined);
+  }, [delivery]);
 
   useEffect(() => {
     let active = true;
@@ -22,14 +41,24 @@ export default function AppHostPage({ params }: { params: Promise<{ slug: string
 
   useEffect(() => {
     if (!session) return;
-    const handler = createAppBridge({
+    const bridge = createAppBridge({
       session,
       frame: () => frameRef.current?.contentWindow ?? null,
       renewSession: () => openAppSession(session.slug),
+      target: appTarget(new URLSearchParams(window.location.search)),
     });
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
+    bridgeRef.current = bridge;
+    window.addEventListener("message", bridge.onMessage);
+    return () => {
+      window.removeEventListener("message", bridge.onMessage);
+      bridgeRef.current = null;
+    };
   }, [session]);
+
+  useEffect(() => {
+    // Opening another record while the app runs (for example from a notification).
+    bridgeRef.current?.showTarget(collection && key ? { collection, key } : null);
+  }, [collection, key]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-zinc-950">

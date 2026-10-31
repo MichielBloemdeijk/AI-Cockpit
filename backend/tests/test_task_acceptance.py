@@ -161,7 +161,7 @@ def test_m8_requires_real_mobile_result_and_native_privacy_not_only_admission():
     valid = {"adapter": "openai_live", "workflow": "research_screen@1", "custom_wake": True,
         "real_notification_delivered": True, "notification_action_tapped": True, "reopened_result": True,
         "no_extra_run_on_reopen": True, "ui_followup": True, "same_task_continuation": True, "both_screen_roles": True,
-        "source_count": 1, "task_id": "task", "initial_run_id": "first", "followup_run_id": "second", "public_id": "page"}
+        "source_count": 1, "task_id": "task", "initial_run_id": "first", "followup_run_id": "second", "result_id": "result"}
     assert validate_observation("mobile_result", valid) is None
     for key, value in (("ui_followup", False), ("followup_run_id", "first"), ("source_count", 0), ("both_screen_roles", False)):
         assert validate_observation("mobile_result", {**valid, key: value})

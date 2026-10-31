@@ -334,7 +334,7 @@ def validate_observation(identifier: str, evidence: dict) -> str | None:
             "no_extra_run_on_reopen", "ui_followup", "same_task_continuation", "both_screen_roles")
         if (evidence.get("adapter") != "openai_live" or evidence.get("workflow") != "research_screen@1"
             or not all(evidence.get(key) is True for key in required) or not evidence.get("source_count")
-            or not all(evidence.get(key) for key in ("task_id", "initial_run_id", "followup_run_id", "public_id"))
+            or not all(evidence.get(key) for key in ("task_id", "initial_run_id", "followup_run_id", "result_id"))
             or evidence.get("initial_run_id") == evidence.get("followup_run_id")):
             return "Real custom-wake result/notification/reopen/UI follow-up proof incomplete"
     elif identifier == "capture_performance":

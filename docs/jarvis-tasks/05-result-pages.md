@@ -1,5 +1,8 @@
 # Phase 5 — Result Pages, App Collections, and Delivery
 
+> **Superseded on 2026-10-31:** results are now records in installed apps (Recipes,
+> Documents), not result pages. See [app platform step 3](13-app-platform.md#step-3-2026-10-31).
+
 Status: completed for the accepted personal-use scope on 2026-10-11. The
 [completion ledger](00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.

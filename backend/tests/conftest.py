@@ -24,7 +24,7 @@ os.environ.setdefault("TASK_WINDOWS_SANDBOX", "unelevated")
 os.environ.setdefault("TASK_COMMAND_MODE", "trusted")
 
 from app.config import settings
-from app.app_platform import close_apps_engine, ensure_apps_database
+from app.app_platform import close_apps_engine, ensure_apps_database, install_builtin_apps
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
 from app.services.voice_session_adapter import fake_voice_session_adapter
 
@@ -64,15 +64,6 @@ def sweep_stale_test_folders():
             continue  # Every xdist worker sweeps; another one removed it first.
         if stale:
             shutil.rmtree(leftover, ignore_errors=True)
-
-
-@pytest.fixture
-def complete_observations(monkeypatch):
-    # For tests that check which result metrics are recorded: the production
-    # budget lets a SQLite-busy batch drop rather than wait, as parallel runs do.
-    from app.services import result_telemetry
-    monkeypatch.setattr(result_telemetry, "OBSERVATION_BUSY_TIMEOUT_MS", 5_000)
-    monkeypatch.setattr(result_telemetry, "OBSERVATION_QUERY_SECONDS", 10)
 
 
 @pytest.fixture
@@ -145,6 +136,8 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     shutil.copyfile(migrated_template_database, database_path)
     initialize_engine(settings.database_url)
     await ensure_apps_database()
+    # Documents and Recipes are installed in every Cockpit, as on start.
+    await install_builtin_apps()
     fake_voice_session_adapter.reset()
 
     try:

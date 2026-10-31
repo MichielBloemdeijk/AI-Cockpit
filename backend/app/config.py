@@ -150,6 +150,8 @@ class Settings(BaseSettings):
     # App platform: installed packages, their data store, and the folder builds install from.
     apps_database_url: str = "sqlite+aiosqlite:///./data/apps.db"
     apps_dir: str = "data/apps"
+    # Install the packages in backend/apps (Recipes, Documents) on start.
+    app_builtin_install: bool = True
     app_builds_dir: str = "data/app-builds"
     # Folder whose node_modules provide Playwright for the app package UI check.
     app_check_playwright_dir: str = "../frontend"

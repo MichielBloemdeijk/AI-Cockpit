@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recipes</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+    body { margin: 0; padding: 16px; background: #09090b; color: #e4e4e7; }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 8px; color: #fafafa; }
+    h2 { font-size: 1.1rem; margin: 24px 0 8px; color: #fafafa; }
+    input[type=search] { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid #3f3f46; background: #18181b; color: inherit; font: inherit; }
+    ul.cards { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; }
+    ul.cards button { width: 100%; text-align: left; padding: 12px 14px; border-radius: 12px; border: 1px solid #27272a;
+      background: #18181b; color: inherit; font: inherit; cursor: pointer; }
+    ul.cards button:hover { border-color: #52525b; }
+    .card-title { display: block; font-weight: 600; color: #fafafa; }
+    .meta { color: #a1a1aa; font-size: .9rem; }
+    .uncertainty { color: #fcd34d; }
+    .bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .quiet { background: transparent; border: 0; color: #a1a1aa; font: inherit; padding: 6px 0; cursor: pointer; }
+    .quiet:hover { color: #e4e4e7; }
+    .danger:hover { color: #f87171; }
+    ul.ingredients { padding-left: 22px; }
+    ol.steps { padding-left: 22px; }
+    ol.steps li, ul.ingredients li { margin: 6px 0; }
+    a { color: #38bdf8; }
+    #status { color: #f87171; margin: 0 0 12px; }
+    #status:empty { display: none; }
+    #sources { padding-left: 22px; }
+    .empty { color: #71717a; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <main>
+    <p id="status" role="status"></p>
+    <section id="list-view">
+      <input id="search" type="search" placeholder="Search recipes" aria-label="Search recipes">
+      <ul id="recipes" class="cards"></ul>
+      <p id="empty" class="empty" hidden>No recipes yet. Ask Jarvis to find one, for example for a dish on your screen.</p>
+    </section>
+    <article id="recipe-view" hidden>
+      <div class="bar">
+        <button id="back" class="quiet" type="button">&larr; All recipes</button>
+        <button id="delete" class="quiet danger" type="button">Delete</button>
+      </div>
+      <h1 id="title"></h1>
+      <p id="uncertainty" class="uncertainty" hidden></p>
+      <p id="meta" class="meta" hidden></p>
+      <h2>Ingredients</h2>
+      <ul id="ingredients" class="ingredients"></ul>
+      <h2>Instructions</h2>
+      <ol id="steps" class="steps"></ol>
+      <h2>Sources</h2>
+      <ul id="sources"></ul>
+    </article>
+  </main>
+  <script src="/api/app-host/_sdk/cockpit-app.js"></script>
+  <script>
+    const COLLECTION = "recipe";
+    const $ = (id) => document.getElementById(id);
+    let recipes = [];
+    let current = null;
+
+    function element(tag, text, className) {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    }
+
+    function safeUrl(value) {
+      try {
+        const url = new URL(value);
+        return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password ? url.href : null;
+      } catch { return null; }
+    }
+
+    function details(recipe) {
+      return [recipe.servings, recipe.timing].filter(Boolean).join(" · ");
+    }
+
+    function renderList() {
+      const term = $("search").value.trim().toLowerCase();
+      const shown = recipes.filter(({ value }) => !term || value.title.toLowerCase().includes(term)
+        || value.ingredients.some((item) => item.toLowerCase().includes(term)));
+      $("recipes").replaceChildren(...shown.map((record) => {
+        const button = element("button");
+        button.type = "button";
+        button.dataset.key = record.key;
+        button.append(element("span", record.value.title, "card-title"));
+        const meta = details(record.value);
+        if (meta) button.append(element("span", meta, "meta"));
+        button.onclick = () => open(record.key);
+        const item = element("li");
+        item.append(button);
+        return item;
+      }));
+      $("empty").hidden = recipes.length > 0;
+    }
+
+    function renderRecipe(record) {
+      const recipe = record.value;
+      $("title").textContent = recipe.title;
+      $("uncertainty").hidden = !recipe.uncertainty;
+      $("uncertainty").textContent = recipe.uncertainty || "";
+      const meta = details(recipe);
+      $("meta").hidden = !meta;
+      $("meta").textContent = meta;
+      $("ingredients").replaceChildren(...recipe.ingredients.map((item) => element("li", item)));
+      $("steps").replaceChildren(...recipe.instructions.map((step) => element("li", step)));
+      $("sources").replaceChildren(...recipe.sources.map((source) => {
+        const item = element("li");
+        const href = safeUrl(source.url);
+        if (href) {
+          const link = element("a", source.title);
+          link.href = href;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          item.append(link);
+        } else {
+          item.textContent = source.title;
+        }
+        return item;
+      }));
+    }
+
+    function show(view) {
+      $("list-view").hidden = view !== "list";
+      $("recipe-view").hidden = view !== "recipe";
+      window.scrollTo(0, 0);
+    }
+
+    async function loadList() {
+      recipes = await cockpit.data.query(COLLECTION, { order: "-updated_at", limit: 200 });
+      renderList();
+    }
+
+    async function open(key) {
+      $("status").textContent = "";
+      const record = await cockpit.data.get(COLLECTION, key);
+      if (!record) {
+        $("status").textContent = "That recipe was deleted.";
+        await showList();
+        return;
+      }
+      current = record;
+      renderRecipe(record);
+      show("recipe");
+      cockpit.viewing(COLLECTION, key);
+    }
+
+    async function showList() {
+      current = null;
+      await loadList();
+      show("list");
+    }
+
+    async function openTarget(target) {
+      if (target && target.collection === COLLECTION && target.key) await open(target.key);
+      else await showList();
+    }
+
+    $("search").addEventListener("input", renderList);
+    $("back").onclick = () => showList();
+    $("delete").onclick = async () => {
+      if (!current || !confirm(`Delete "${current.value.title}"?`)) return;
+      try {
+        await cockpit.data.delete(COLLECTION, current.key, { expectedRevision: current.revision });
+      } catch (error) {
+        $("status").textContent = error.status === 409 ? "That recipe changed meanwhile; showing the latest." : error.message;
+        await open(current.key);
+        return;
+      }
+      await showList();
+    };
+    cockpit.onTarget((target) => openTarget(target));
+    cockpit.ready.then(({ target }) => openTarget(target));
+  </script>
+</body>
+</html>

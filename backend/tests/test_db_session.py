@@ -208,7 +208,7 @@ async def test_read_cancelled_during_sql_releases_connection(caplog):
 
 
 @pytest.mark.asyncio
-async def test_failed_connection_setup_closes_the_database_file():
+async def test_failed_connection_setup_closes_the_database_file(monkeypatch):
     # A connect hook failing on SQLITE_BUSY once left its aiosqlite connection
     # (file handle and worker thread) open, held only by the exception.
     import asyncio
@@ -217,7 +217,8 @@ async def test_failed_connection_setup_closes_the_database_file():
     import threading
     from sqlalchemy.exc import OperationalError
     from app.config import settings
-    from app.db.session import observation_session_scope
+    from sqlalchemy.pool import NullPool
+    from app.db import session as db_session
 
     def workers():
         return {t for t in threading.enumerate() if "_connection_worker_thread" in t.name and t.is_alive()}
@@ -228,8 +229,12 @@ async def test_failed_connection_setup_closes_the_database_file():
         holder.execute("BEGIN EXCLUSIVE")
         holder.execute("CREATE TABLE lock_holder (id INTEGER)")
         error = None
+        # A short lock budget from connection birth makes the connect hook fail fast.
+        monkeypatch.setattr(db_session, "_engine_kwargs_for_url",
+                            lambda url: {"poolclass": NullPool, "connect_args": {"timeout": .1}})
+        engine = db_session._create_engine(settings.database_url)
         try:
-            async with observation_session_scope():
+            async with engine.connect():
                 pass
         except OperationalError as caught:
             error = caught  # Keep the traceback alive, as a caller logging it would.
@@ -239,6 +244,7 @@ async def test_failed_connection_setup_closes_the_database_file():
                 break
             await asyncio.sleep(.02)
         assert not workers() - before
+        await engine.dispose()
     finally:
         holder.rollback()
         holder.close()

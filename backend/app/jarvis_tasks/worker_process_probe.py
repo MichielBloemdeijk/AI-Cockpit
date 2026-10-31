@@ -65,7 +65,7 @@ async def probe_recipe_task(task_id: str, *, expected_images: int) -> dict:
     assert image_count == expected_images, image_count
     roles = {role["role"] for image in reads[0]["structuredContent"]["images"] for role in image["roles"]}
     assert reads[1]["structuredContent"]["native_research"][0]["source_event_sequence"] == source.sequence
-    public_id = reads[1]["structuredContent"]["maintained_result"]["public_id"]
+    assert reads[1]["structuredContent"]["maintained_result"] is None
     payload = {"title": "Tomato sandwich", "source_event_sequences": [source.sequence],
         "ingredients": ["Two slices of bread", "One tomato", "Cheese"],
         "instructions": ["Slice the tomato.", "Layer tomato and cheese between the bread."],
@@ -76,8 +76,12 @@ async def probe_recipe_task(task_id: str, *, expected_images: int) -> dict:
     assert all(not result.get("isError") for result in publications), publications
     assert publications[0] == publications[1]
     assert (await task_service.get_task(task_id)).task.status == "completed"
+    from app.db.session import session_scope
+    from app.services.task_results import task_results
+    async with session_scope() as session:
+        result_id = (await task_results(session, task_id))[0].id
     await worker_coordinator.release_claim(worker.worker_id, context.attempt_id,
         claim_token=context.claim_token, writers_stopped=True)
-    return {"status": "completed", "public_id": public_id, "images_read": image_count,
+    return {"status": "completed", "result_id": result_id, "images_read": image_count,
             "roles_read": sorted(roles), "worker_process_starts": 2, "publication_replay": True,
             "models_called": 0, "research": "provider protocol fixture"}

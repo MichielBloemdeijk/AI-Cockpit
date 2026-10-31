@@ -28,8 +28,7 @@ from app.services.task_pool_supervisor import TaskPoolSupervisor
 from app.services.worker_coordinator import worker_coordinator
 from app.services.task_workflows import load_workflow
 from app.services.task_capture import CaptureCollection, task_capture_service
-from app.db.tables import ResultPage
-from sqlalchemy import select
+from test_m4_workflows import result_snapshot
 
 
 @contextmanager
@@ -171,13 +170,11 @@ async def test_screen_document_uploaded_image_reaches_real_codex_and_result() ->
         pytest.skip("No authorized API credential is configured")
     original = (settings.codex_profiles_dir, settings.task_workspaces_dir,
                 settings.task_workflow_allowlist)
-    definition = load_workflow("screen_document@1")
     live_root = settings.backend_root / "data" / f"jarvis-live-{uuid4()}"
     live_root.mkdir(parents=True)
     try:
         settings.codex_profiles_dir = str(live_root / "codex-profiles")
         settings.task_workspaces_dir = str(live_root / "task-workspaces")
-        settings.task_workflow_allowlist = f"screen_document@1:{definition.digest}"
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as admin:
             assert (await admin.post("/api/auth/login", json={"password": ""})).status_code == 200
             code = (await admin.post("/api/jarvis/devices/pairing-code")).json()["code"]
@@ -229,14 +226,7 @@ async def test_screen_document_uploaded_image_reaches_real_codex_and_result() ->
             assert await worker.activate(process_identity="live-screen-document")
             finished = await worker.run_once()
             assert finished.status == "completed", (await task_service.get_task(task.task.id)).task.terminal_summary
-            async with session_scope() as session:
-                page = (await session.execute(select(ResultPage).where(
-                    ResultPage.task_id == task.task.id))).scalar_one()
-                assert page.status == "ready"
-                result_url = f"/results/{page.public_id}"
-            result = await device.get(f"/api{result_url}")
-            assert result.status_code == 200, result.text
-            assert "blue" in result.json()["content"]["body"].lower()
+            assert "blue" in (await result_snapshot(task.task.id))["content"]["body"].lower()
     finally:
         (settings.codex_profiles_dir, settings.task_workspaces_dir,
          settings.task_workflow_allowlist) = original

@@ -1,0 +1,13 @@
+{
+  "schema": "cockpit-app.v1",
+  "slug": "documents",
+  "title": "Documents",
+  "version": 2,
+  "description": "Documents Jarvis writes: explanations of the phone's screen, sourced research and other written results.",
+  "ui": {"entry": "ui/index.html"},
+  "collections": {
+    "document": {"schema": "schemas/document.json", "result_type": true}
+  },
+  "workflows": ["research_screen", "screen_document"],
+  "jarvis": {"summary": "Documents Jarvis wrote for the owner: a title, an optional summary, a Markdown body and optional sources."}
+}

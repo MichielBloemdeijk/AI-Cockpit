@@ -9,15 +9,6 @@ export function resolveApiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/$/, "") ?? "";
 }
 
-export async function postResultObservation(publicId: string, observation: {
-  view_id: string; sequence: number; kind: string; duration_ms: number; revision_number: number;
-}): Promise<void> {
-  await fetchWithTimeout(`${BASE}/api/results/${encodeURIComponent(publicId)}/observations`, {
-    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(observation),
-  }, 2000);
-}
-
 const BASE = resolveApiBase();
 const REQUEST_TIMEOUT_MESSAGE = "Request timed out. Please try again.";
 const DEFAULT_PAGE_LOAD_TIMEOUT_MS = 10000;
@@ -674,78 +665,14 @@ export interface TaskDetail extends TaskSummary {
   worker_health: { status: string; worker_id: string | null; heartbeat_at: string | null };
 }
 
+/** A task's result: a record in one of the user's apps, opened at `url`. */
 export interface TaskResultLink {
-  public_id: string; url: string; result_kind: string; revision_number: number;
-  title: string; status: string;
+  result_id: string; url: string; app: string; collection: string; key: string; kind: string; title: string;
 }
 
-export type TaskResultIntent = { mode: "new"; kind?: string } |
-  { mode: "update"; public_id: string; expected_revision: number; kind?: string } |
-  { mode: "answer"; public_id?: string };
-
-export interface DocumentResult {
-  public_id: string;
-  url: string;
-  app_slug: "documents";
-  result_kind: "document.v1";
-  status: "building" | "updating" | "ready" | "failed" | "cancelled";
-  task_status: string;
-  task_status_reason: string | null;
-  task_id: string;
-  active_execution_run_id: string | null;
-  revision_number: number;
-  title: string;
-  summary: string | null;
-  warning: string | null;
-  content: { title: string; summary?: string; body: string; source_event_sequences: number[];
-    attachments?: { artifact_id: string; label: string }[];
-    sources?: { url: string; label: string; source_event_sequence?: number }[];
-  } | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface RecipeContent {
-  title: string;
-  ingredients: string[];
-  instructions: string[];
-  sources: { source_event_sequence: number; url: string; title: string }[];
-  source_event_sequences: number[];
-  uncertainty?: string;
-  servings?: string;
-  timing?: string;
-}
-
-export type MaintainedResult = Omit<DocumentResult, "app_slug" | "result_kind" | "content"> & {
-  app_slug: string;
-  result_kind: string;
-  content: DocumentResult["content"] | RecipeContent;
-  app?: { id: string; slug: string; title: string; route_path: string };
-  state_revision?: number;
-  display_state?: string;
-  progress_label?: string;
-  actions?: ResultAction[];
-};
-
-export interface ResultAction {
-  id: string;
-  value: { saved: boolean };
-  revision: number;
-}
-
-export interface CockpitApp {
-  id: string;
-  slug: string;
-  title: string;
-  description: string | null;
-  kind: "collection" | "generated";
-  route_path: string;
-  runtime: string;
-  status: string;
-  generated_app_id: string | null;
-}
-
-export type ResultCard = Pick<MaintainedResult, "public_id" | "url" | "title" | "summary" | "status" | "display_state" | "progress_label" | "warning" | "actions" | "updated_at">;
+export type TaskResultIntent = { mode: "new" } |
+  { mode: "update"; result_id: string; expected_revision?: number } |
+  { mode: "answer"; result_id?: string };
 
 export interface TaskTurn {
   id: string;
@@ -1099,40 +1026,6 @@ export async function getTask(taskId: string): Promise<TaskDetail> {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
-}
-
-export async function getResult(publicId: string): Promise<MaintainedResult> {
-  const res = await fetchWithTimeout(`${BASE}/api/results/${encodeURIComponent(publicId)}`, {
-    credentials: "include", cache: "no-store",
-  }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function listAppCatalog(): Promise<CockpitApp[]> {
-  const res = await fetchWithTimeout(`${BASE}/api/app-catalog`, { credentials: "include", cache: "no-store" }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function listCollectionResults(slug: string, options: { search?: string; order?: string; cursor?: string } = {}): Promise<{ items: ResultCard[]; next_cursor: string | null }> {
-  const params = new URLSearchParams(options);
-  const res = await fetchWithTimeout(`${BASE}/api/app-catalog/${encodeURIComponent(slug)}/results?${params}`, { credentials: "include", cache: "no-store" }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function setResultSaved(publicId: string, saved: boolean, expectedRevision: number): Promise<{ value: { saved: boolean }; revision: number }> {
-  const res = await fetchWithTimeout(`${BASE}/api/results/${encodeURIComponent(publicId)}/actions/set_saved`, {
-    method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ saved, expected_revision: expectedRevision }),
-  }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export function resultEventsUrl(publicId: string, cursor?: string): string {
-  return `${BASE}/api/results/${encodeURIComponent(publicId)}/events${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
 }
 
 export async function getTaskWorkerHealth(): Promise<{ status: string; worker_id: string | null; heartbeat_at: string | null }> {

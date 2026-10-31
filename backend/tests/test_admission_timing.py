@@ -1,6 +1,5 @@
 """No-provider admission profiling and trace correctness on real durable SQLite."""
 import asyncio
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -18,11 +17,8 @@ import pytest
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import Conversation, JarvisDevice, LiveSession
-from app.services.admission_timing import observe_admission, span, timed
-from app.services.jarvis_brain import RestrictedBrainGateway
+from app.services.admission_timing import observe_admission, span
 from app.services.task_capture import task_capture_service
-from app.services.task_workflows import load_workflow
-from app.services.result_telemetry import observation_queue
 
 
 def summary(values):
@@ -47,251 +43,6 @@ async def test_spans_isolate_overlapping_turns_and_do_not_suppress_failure():
     with pytest.raises(ValueError, match="failure"):
         with span("failure"):
             raise ValueError("failure")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("trial", range(3))
-@pytest.mark.diagnostic
-async def test_profile_offline_admission(tmp_path, monkeypatch, trial):
-    await profile_offline_admission(monkeypatch, trial)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("trial", range(2))
-@pytest.mark.diagnostic
-async def test_profile_interleaved_observation_delivery(monkeypatch, trial):
-    await profile_offline_admission(monkeypatch, trial, paired=True)
-
-
-async def profile_offline_admission(monkeypatch, trial, *, paired=False):
-    # This is an opt-in benchmark, not a wall-clock pass/fail threshold in CI.
-    destination = os.environ.get("JARVIS_OFFLINE_TIMING_REPORT")
-    if not destination:
-        pytest.skip("Set JARVIS_OFFLINE_TIMING_REPORT to run the offline benchmark")
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Offline profiling attempted network access")
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
-    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
-    monkeypatch.setattr(settings, "openai_api_key", "")
-    monkeypatch.setattr(settings, "task_orchestration_enabled", False)
-    definition = load_workflow("screen_document@1")
-    monkeypatch.setattr(settings, "task_workflow_allowlist", f"screen_document@1:{definition.digest}")
-    async with session_scope() as session:
-        conversation = Conversation(title="Offline timing fixture")
-        device = JarvisDevice(label="Offline timing", credential_hash=sha256(str(uuid4()).encode()).hexdigest(), lock_state="unlocked")
-        session.add_all([conversation, device])
-        await session.flush()
-        live = LiveSession(conversation_id=conversation.id, provider_adapter="fake", lifecycle_state="ready",
-            controller_id=device.id, activation_id=str(uuid4()),
-            workflow_catalog_revision=sha256(settings.task_workflow_allowlist.encode()).hexdigest())
-        session.add(live)
-        await session.flush()
-    capture_options = dict(device_id=device.id, session_id=live.id, generation=live.generation, activation_id=live.activation_id)
-    now = datetime.now(timezone.utc)
-    await task_capture_service.report(**capture_options, capture_id=str(uuid4()), capture_mode="activation",
-        status="captured", revision=2, captured_at=now, expires_at=now+timedelta(seconds=90))
-    gateway = RestrictedBrainGateway()
-    from app.services import result_telemetry
-    queued_observe = result_telemetry.observe
-    @timed("result_observation_write")
-    async def awaited_observe(page_id=None, **kwargs):
-        # Controlled test comparator: current SQL/validation, one awaited
-        # transaction per observation. No legacy production implementation.
-        await result_telemetry._write_batch([dict(type="metric", page_id=page_id, metric=kwargs)])
-    rows = []
-    initial = None
-    pulses = []
-    stop_monitor = asyncio.Event()
-    async def monitor_loop():
-        while not stop_monitor.is_set():
-            started = monotonic_ns()
-            try:
-                # Above Windows' 15.625ms event-loop clock resolution; short
-                # deadlines can fire early and distort the probe's cadence.
-                await asyncio.wait_for(stop_monitor.wait(), .05)
-            except TimeoutError:
-                pass
-            ended = monotonic_ns()
-            pulses.append(dict(start_ns=started, end_ns=ended,
-                lateness_ms=max(0., (ended-started)/1e6-50.)))
-    monitor = asyncio.create_task(monitor_loop())
-    try:
-        for index in range(23):
-            # Interleave cases. First three of each case are warm-up; retain them
-            # separately. Each trial gets a newly migrated, independent database.
-            modes = ("queued", "awaited") if index % 2 == 0 else ("awaited", "queued")
-            cases = [(case, mode) for case in ("plain", "document", "screen_ready", "continuation", "replay")
-                for mode in (modes if paired else ("queued",))]
-            for case, delivery in cases:
-                if paired:
-                    assert await observation_queue.drain()
-                    monkeypatch.setattr(result_telemetry, "observe", queued_observe if delivery == "queued" else awaited_observe)
-                turn = f"turn-{case}-{index}-{delivery}"
-                common = dict(session_id=live.id, generation=live.generation, conversation_id=conversation.id,
-                    origin_turn_id=None, turn_scope=turn, call_id=turn)
-                arguments = {"goal": f"Draft a checklist {case} {index}", "intent_id": turn}
-                tool = "dispatch_task"
-                if case == "document":
-                    arguments["result"] = {"mode": "new", "kind": "document.v1"}
-                elif case == "screen_ready":
-                    tool = "start_workflow"
-                    arguments["definition"] = "screen_document@1"
-                    fresh = await task_capture_service.request_fresh(session_id=live.id, generation=live.generation, request_identity=turn)
-                    await task_capture_service.report(**capture_options, capture_id=fresh.capture_id, capture_mode="fresh",
-                        status="captured", revision=2, captured_at=datetime.now(timezone.utc),
-                        expires_at=fresh.expires_at.replace(tzinfo=timezone.utc))
-                    common["capture_request_identity"] = turn
-                elif case == "continuation":
-                    tool = "continue_task"
-                    arguments = {"task_id": initial.output["task_id"], "content": f"Expand checklist {index}", "intent_id": turn}
-                elif case == "replay":
-                    common = initial_call.copy()
-                    common["call_id"] = f"delivery-{index}"
-                    arguments = initial_arguments.copy()
-                start = monotonic_ns()
-                result = await gateway.execute(**common, tool_name=tool, arguments=arguments)
-                elapsed = (monotonic_ns()-start)/1_000_000
-                assert result.output["accepted"]
-                timing = result.output["admission_timing"]
-                assert timing["gateway_duration_ms"] <= elapsed
-                if case == "plain" and initial is None:
-                    initial, initial_call, initial_arguments = result, common.copy(), arguments.copy()
-                if case == "replay":
-                    assert result.output["task_id"] == initial.output["task_id"]
-                    assert timing["commit_is_original"]
-                    assert timing["admission_commit_ns"] == initial.output["admission_timing"]["admission_commit_ns"]
-                else:
-                    assert timing["gateway_started_ns"] <= timing["admission_commit_ns"] <= timing["gateway_finished_ns"]
-                rows.append({"case": case, "observation_delivery": delivery, "warmup": index < 3,
-                    "elapsed_ms": elapsed, "timing": timing})
-                if paired:
-                    assert await observation_queue.drain()
-    finally:
-        stop_monitor.set()
-        await monitor
-    assert await observation_queue.drain()
-    background = observation_queue.status()
-    assert background["failed"] == background["dropped"] == background["pending"] == 0, background
-    groups = {}
-    for case in {row["case"] for row in rows}:
-        selected = [row for row in rows if row["case"] == case and not row["warmup"]]
-        stages = defaultdict(list)
-        for row in selected:
-            per_call = defaultdict(float)
-            for item in row["timing"]["spans"]:
-                per_call[item["stage"]] += item["duration_ms"]
-            for stage, value in per_call.items():
-                stages[stage].append(value)
-        groups[case] = {"total": summary([row["elapsed_ms"] for row in selected]),
-            "stages": {stage: summary(values) for stage, values in stages.items()}}
-    target = Path(destination).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    label = "paired-trial" if paired else "trial"
-    target.with_name(f"{target.stem}-{label}-{trial}.json").write_text(json.dumps({
-        "schema": "offline-admission-timing.v1", "trial": trial, "network_blocked": True,
-        "database": "independent migrated SQLite WAL synchronous=FULL, runtime NullPool",
-        "clock": "server_monotonic", "failures": 0, "samples_per_case_per_delivery": 20,
-        "comparison": "interleaved awaited versus queued observations using current SQL" if paired else None,
-        "observation_queue": background, "event_loop_target_ms": 50,
-        "event_loop_observations": pulses,
-        "summary": groups, "samples": rows}, indent=2), encoding="utf-8")
-
-
-@pytest.mark.asyncio
-@pytest.mark.diagnostic
-async def test_profile_sse_delivery(monkeypatch):
-    destination = os.environ.get("JARVIS_OFFLINE_TIMING_REPORT")
-    if not destination:
-        pytest.skip("Set JARVIS_OFFLINE_TIMING_REPORT to run the offline benchmark")
-    from app.db.tables import JarvisLiveEvent
-    from app.services.auth import SESSION_COOKIE_NAME, create_session_token
-    from app.services.jarvis_live import jarvis_live_service
-    class Request:
-        cookies = {SESSION_COOKIE_NAME: create_session_token()}
-        async def is_disconnected(self):
-            return False
-    # Controlled offsets across the full polling period. This measures real
-    # generator/DB delay; HTTP framing, network and Android are excluded.
-    rows = []
-    for index in range(20):
-        cursor = await jarvis_live_service.latest_cursor()
-        stream = jarvis_live_service.stream(Request(), cursor=cursor)
-        pending = asyncio.create_task(anext(stream))
-        await asyncio.sleep(.025 + index*.025)
-        started = monotonic_ns()
-        async with session_scope() as session:
-            session.add(JarvisLiveEvent(event_type="brain.tool.result", source_domain="session", source_id="offline",
-                idempotency_key=str(uuid4()), payload_json={"server_monotonic_ns": started, "output": {"accepted": True}}))
-        committed = monotonic_ns()
-        frame = await asyncio.wait_for(pending, 2)
-        received = monotonic_ns()
-        data = json.loads(frame["data"])
-        assert data["delivery_timing"]["result_record_started_ns"] == started
-        assert committed <= data["delivery_timing"]["sse_emitted_ns"] <= received
-        rows.append({"offset_ms": 25+index*25, "commit_to_generator_receipt_ms": (received-committed)/1e6,
-            "record_to_generator_receipt_ms": (received-started)/1e6})
-        await stream.aclose()
-    target = Path(destination).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.with_name(f"{target.stem}-sse.json").write_text(json.dumps({"schema": "offline-sse-timing.v1",
-        "clock_source": "python.perf_counter_ns", "failures": 0,
-        "summary": summary([row["commit_to_generator_receipt_ms"] for row in rows]), "samples": rows}, indent=2), encoding="utf-8")
-
-
-@pytest.mark.asyncio
-@pytest.mark.diagnostic
-async def test_profile_result_stream_polling_vs_commit_trigger(monkeypatch):
-    destination = os.environ.get("JARVIS_OFFLINE_TIMING_REPORT")
-    if not destination:
-        pytest.skip("Set JARVIS_OFFLINE_TIMING_REPORT for result delivery profiling")
-    from app.api import results
-    from app.services.commit_signals import result_event_committed
-    from app.db.tables import ResultPage
-    from app.services.task_results import append_result_event
-    from test_result_platform import page_fixture
-    from test_commit_signals import Request
-    page = await page_fixture()
-    actual_wait = result_event_committed.wait
-    rows = []
-    for index in range(20):
-        for mode in (("polling", "triggered") if index % 2 == 0 else ("triggered", "polling")):
-            waiting = asyncio.Event()
-            async def wait(observed, *, timeout):
-                waiting.set()
-                if mode == "polling":
-                    await asyncio.sleep(timeout)
-                else:
-                    await actual_wait(observed, timeout=timeout)
-            monkeypatch.setattr(result_event_committed, "wait", wait)
-            stream = results.result_events(page.public_id, Request(), None)
-            await anext(stream)
-            pending = asyncio.create_task(anext(stream))
-            try:
-                await asyncio.wait_for(waiting.wait(), 1)
-                await asyncio.sleep(.025+index*.025)
-                async with session_scope() as session:
-                    await append_result_event(session, await session.get(ResultPage, page.id), "action_state",
-                        event_key=f"diagnostic:{index}:{mode}")
-                committed = monotonic_ns()
-                frame = await asyncio.wait_for(pending, 2)
-                received = monotonic_ns()
-                assert frame["event"] == "result"
-                rows.append(dict(mode=mode, offset_ms=25+index*25,
-                    commit_to_receipt_ms=(received-committed)/1e6))
-            finally:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
-                await stream.aclose()
-    assert await observation_queue.drain()
-    health = observation_queue.status()
-    assert health["failed"] == health["dropped"] == health["pending"] == 0, health
-    target = Path(destination).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.with_name(f"{target.stem}-result-delivery.json").write_text(json.dumps(dict(
-        schema="offline-result-delivery-comparison.v1", failures=0, observation_queue=health,
-        comparison="interleaved 500ms wait versus commit signal; same current reads",
-        summary={mode: summary([row["commit_to_receipt_ms"] for row in rows if row["mode"] == mode])
-            for mode in ("polling", "triggered")}, samples=rows), indent=2), encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -483,12 +234,8 @@ async def test_profile_pending_capture(monkeypatch):
             await pending
         rows.append({"case": case, "fixture_capture_delay_ms": None if delay is None else delay*1000,
             "elapsed_ms": elapsed, "outcome": outcome})
-    assert await observation_queue.drain()
-    background = observation_queue.status()
-    assert background["failed"] == background["dropped"] == background["pending"] == 0, background
     target = Path(destination).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.with_name(f"{target.stem}-pending-capture.json").write_text(json.dumps({
         "schema": "offline-pending-capture-timing.v1", "network_blocked": True,
-        "observation_queue": background,
         "diagnostic_samples": 5, "expected_required_timeouts": 1, "unexpected_failures": 0, "samples": rows}, indent=2), encoding="utf-8")

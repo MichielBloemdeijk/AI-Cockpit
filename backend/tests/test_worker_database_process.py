@@ -66,11 +66,12 @@ async def test_recipe_worker_reads_and_publishes_across_process_restarts(monkeyp
     await close_engine()  # Reopen backend connections after the child's durable publication.
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as http:
         await http.post("/api/auth/login", json={"password": ""})
-        response = await http.get(f"/api/results/{report['public_id']}")
+        detail = (await http.get(f"/api/tasks/{args.task_id}")).json()
+        [result] = detail["results"]
+        assert result["result_id"] == report["result_id"] and result["app"] == "recipes"
+        response = await http.get(f"/api/app-platform/data/recipes/recipe/{result['key']}")
         assert response.status_code == 200, response.text
-        page = response.json()
-        assert page["revision_number"] == 1 and page["status"] == "ready"
-        assert page["content"]["title"] == "Tomato sandwich"
+        assert response.json()["revision"] == 1 and response.json()["value"]["title"] == "Tomato sandwich"
 
 
 @pytest.mark.asyncio

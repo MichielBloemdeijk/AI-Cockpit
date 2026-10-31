@@ -23,10 +23,9 @@ from app.jarvis_tasks.sqlite_backup import snapshot_database
 
 
 TABLES = ("tasks", "task_turns", "task_execution_runs", "task_attempts", "task_events",
-          "result_pages", "result_page_revisions", "result_page_events", "app_data_records",
-          "result_metrics", "notification_outbox", "cockpit_apps")
+          "task_results", "app_data_records", "notification_outbox", "cockpit_apps")
 
-REHEARSAL_TESTS = ("tests/test_rollout_check.py", "tests/test_result_restart.py",
+REHEARSAL_TESTS = ("tests/test_rollout_check.py",
                    "tests/test_migration_recovery.py", "tests/test_orchestration_rollout.py", "tests/test_windows_job.py")
 
 RETAINED_COLUMNS = {
@@ -37,8 +36,7 @@ RETAINED_COLUMNS = {
     "task_questions": ("id", "task_id", "question", "answer", "state"),
     "task_turns": ("id", "task_id", "sequence", "role", "content", "request_identity"),
     "task_execution_runs": ("id", "task_id", "ordinal", "status", "current_attempt_id"),
-    "result_pages": ("id", "public_id", "task_id", "current_revision_id", "revision_number"),
-    "result_page_revisions": ("id", "result_page_id", "content_json"),
+    "task_results": ("id", "task_id", "app_slug", "collection", "record_key"),
     "app_data_records": ("id", "cockpit_app_id", "scope_key", "namespace", "record_key", "value_json", "revision"),
 }
 

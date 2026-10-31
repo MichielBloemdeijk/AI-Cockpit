@@ -35,7 +35,7 @@ async def test_real_login_cookie_private_data_and_logout(monkeypatch):
         assert (await http.get("/api/auth/status")).status_code == 200
         assert (await http.post("/api/auth/logout")).status_code == 200
         assert (await http.get("/api/auth/status")).status_code == 401
-        assert (await http.get("/api/results/future-id")).status_code == 401
+        assert (await http.get("/api/app-platform/apps")).status_code == 401
 
 
 @pytest.mark.asyncio

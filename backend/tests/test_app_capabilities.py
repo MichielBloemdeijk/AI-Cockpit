@@ -6,7 +6,7 @@ from itsdangerous import SignatureExpired
 import pytest
 from sqlalchemy import select, update
 
-from app.api import results
+from app.api import private
 from app.db.session import session_scope
 from app.db.tables import CockpitApp
 from app.main import app
@@ -18,7 +18,7 @@ from app.services.auth import verify_session_token
 
 @pytest.mark.asyncio
 async def test_scoped_namespace_methods_cookie_override_tampering_and_revocation(monkeypatch):
-    results._write_windows.clear()
+    private._write_windows.clear()
     scoped_app = await app_registry_service.create_app(title="Scoped", slug="scoped")
     await app_registry_service.create_app(title="Other", slug="other")
     mint = f"/api/apps/{scoped_app.id}/storage-capability"
@@ -38,11 +38,12 @@ async def test_scoped_namespace_methods_cookie_override_tampering_and_revocation
             compound = path.replace("settings", "a%2Fb")
             assert (await scoped.put(compound, json={"value": {"nested": True}, "expected_revision": 0})).status_code == 200
             assert (await scoped.get(compound)).json()["value"] == {"nested": True}
-            for forbidden in [path.replace("scoped", "other"), path.replace("/state/", "/saved/"), path + "?result_public_id=foreign"]:
+            for forbidden in [path.replace("scoped", "other")]:
                 assert (await scoped.get(forbidden)).status_code == 403
-            assert (await scoped.put(path, json={"value": {}, "expected_revision": 1, "result_public_id": "foreign"})).status_code == 403
+            assert (await scoped.get(path.replace("/state/", "/saved/"))).status_code == 403
+            assert (await scoped.put(path, json={"value": {}, "expected_revision": 1, "result_public_id": "foreign"})).status_code == 422
             # Capabilities never unlock unrelated APIs, even with a valid cookie.
-            for forbidden in ["/api/tasks", "/api/app-catalog", "/api/results/unknown", "/api/auth/status"]:
+            for forbidden in ["/api/tasks", "/api/app-catalog", "/api/app-platform/apps", "/api/auth/status"]:
                 assert (await owner.get(forbidden, headers=headers)).status_code == 401
             assert (await owner.post(mint, json={}, headers=headers)).status_code == 401
             assert (await owner.get(path, headers={"Authorization": "AppCapability"})).status_code == 401
@@ -83,19 +84,3 @@ async def test_expired_capability_and_in_transaction_generation_check(monkeypatc
     monkeypatch.setattr(app_capabilities, "serializer", lambda: type("Expired", (), {"loads": expired})())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as http:
         assert (await http.get("/api/app-catalog/scoped/data/state/fresh", headers={"Authorization": f"AppCapability {token}"})).status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_generated_identity_bootstrap_handles_reserved_catalog_slug():
-    generated = await app_registry_service.create_app(title="Legacy Documents", slug="documents")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as http:
-        path = f"/api/apps/{generated.id}/storage-capability"
-        assert (await http.post(path, json={})).status_code == 401
-        await http.post("/api/auth/login", json={"password": ""})
-        response = await http.post(path, json={})
-        assert response.headers["cache-control"] == "private, no-store"
-        minted = response.json()
-        assert minted["app_slug"] != "documents"
-        assert (await http.get(f"/api/app-catalog/{minted['app_slug']}/data/state/test",
-            headers={"Authorization": f"AppCapability {minted['credential']}"})).status_code == 200
-        assert (await http.post(path, json={}, headers={"Authorization": f"AppCapability {minted['credential']}"})).status_code == 401

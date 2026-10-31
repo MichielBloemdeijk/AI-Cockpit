@@ -5,9 +5,9 @@ import org.junit.Test
 
 class ResultNavigationTest {
     @Test fun notificationActionUsesResultOnlyForResultPath() {
-        assertEquals("Open result", ResultNavigation.actionLabel("/results/opaque?delivery=one"))
+        assertEquals("Open result", ResultNavigation.actionLabel("/apps/recipes?collection=recipe&key=one&delivery=two"))
         assertEquals("Open app", ResultNavigation.actionLabel("/apps/notes"))
-        for (path in listOf(null, "/tasks/one", "https://evil/results/one", "//results/one", "/results/"))
+        for (path in listOf(null, "/tasks/one", "https://evil/apps/one?collection=a", "//apps/one", "/results/one"))
             assertEquals("Open task", ResultNavigation.actionLabel(path))
     }
 

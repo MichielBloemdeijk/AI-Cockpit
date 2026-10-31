@@ -1346,6 +1346,7 @@ class CockpitApp(Base):
     """Shared identity; generated build/source detail stays in GeneratedApp."""
     __tablename__ = "cockpit_apps"
     __table_args__ = (
+        # The old generated-app code (and this table) goes in app platform step 6.
         CheckConstraint("kind IN ('collection', 'generated')", name="ck_cockpit_apps_kind"),
         CheckConstraint("storage_bytes >= 0", name="ck_cockpit_apps_storage_bytes"),
     )
@@ -1363,91 +1364,22 @@ class CockpitApp(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-class ResultPage(Base):
-    """Stable maintained-document address allocated with its workflow task."""
+class TaskResult(Base):
+    """Links a task to the app record it published, for example a recipe in Recipes."""
 
-    __tablename__ = "result_pages"
-    __table_args__ = (UniqueConstraint("public_id", name="uq_result_pages_public_id"),)
+    __tablename__ = "task_results"
+    __table_args__ = (UniqueConstraint("app_slug", "collection", "record_key", name="uq_task_results_record"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    public_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    cockpit_app_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("cockpit_apps.id"), nullable=True)
-    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
-    initial_execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id"), nullable=False)
-    active_execution_run_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("task_execution_runs.id"), nullable=True)
-    app_slug: Mapped[str] = mapped_column(String(64), nullable=False, default="documents")
-    result_kind: Mapped[str] = mapped_column(String(64), nullable=False, default="document.v1")
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="building")
-    current_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    revision_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    state_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    first_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    warning: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # When a viewer last loaded the page; tells Jarvis which result "this page" is.
-    last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    app_slug: Mapped[str] = mapped_column(String(48), nullable=False)
+    collection: Mapped[str] = mapped_column(String(48), nullable=False)
+    record_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    # The run that last published it.
+    execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
-
-
-class ResultMetric(Base):
-    """Metadata only: never worker prose, arguments, tokens or client content."""
-    __tablename__ = "result_metrics"
-    __table_args__ = (Index("ix_result_metrics_page", "result_page_id", "id"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    metric_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    kind: Mapped[str] = mapped_column(String(64), nullable=False)
-    result_page_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("result_pages.id", ondelete="CASCADE"))
-    task_id: Mapped[str | None] = mapped_column(String(36))
-    execution_run_id: Mapped[str | None] = mapped_column(String(36))
-    attempt_id: Mapped[str | None] = mapped_column(String(36))
-    revision_number: Mapped[int | None] = mapped_column(Integer)
-    duration_ms: Mapped[float | None] = mapped_column(Float)
-    values_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class ResultPageRevision(Base):
-    __tablename__ = "result_page_revisions"
-    __table_args__ = (
-        UniqueConstraint("result_page_id", "revision_number", name="uq_result_page_revisions_number"),
-        UniqueConstraint("result_page_id", "publication_key", name="uq_result_revision_publication"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    result_page_id: Mapped[str] = mapped_column(String(36), ForeignKey("result_pages.id", ondelete="CASCADE"), nullable=False)
-    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    schema_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    base_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    base_revision_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_task_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    publication_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id"), nullable=False)
-    attempt_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("task_attempts.id"), nullable=True)
-    artifact_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_artifacts.id"), nullable=False)
-    content_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    provenance_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class ResultPageEvent(Base):
-    __tablename__ = "result_page_events"
-    __table_args__ = (
-        UniqueConstraint("result_page_id", "sequence", name="uq_result_event_sequence"),
-        UniqueConstraint("result_page_id", "event_key", name="uq_result_event_key"),
-    )
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    result_page_id: Mapped[str] = mapped_column(String(36), ForeignKey("result_pages.id", ondelete="CASCADE"), nullable=False)
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    event_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    source_task_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class AppDataRecord(Base):
@@ -1459,7 +1391,6 @@ class AppDataRecord(Base):
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     cockpit_app_id: Mapped[str] = mapped_column(String(36), ForeignKey("cockpit_apps.id"), nullable=False)
-    result_page_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("result_pages.id"), nullable=True)
     scope_key: Mapped[str] = mapped_column(String(36), nullable=False, default="", server_default="")
     namespace: Mapped[str] = mapped_column(String(64), nullable=False)
     record_key: Mapped[str] = mapped_column(String(128), nullable=False)

@@ -28,12 +28,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.services.admission_timing import span, record_interval, monotonic_ns
-from app.services.commit_signals import live_event_committed, capture_state_committed, result_event_committed
+from app.services.commit_signals import live_event_committed, capture_state_committed
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
-_observation_engine: AsyncEngine | None = None
-_observation_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def _note_committed_change(session, table):
@@ -42,8 +40,6 @@ def _note_committed_change(session, table):
         session.info["live_event_changed"] = True
     if table in {"task_capture_reports", "task_context_requests", "jarvis_devices", "live_sessions"}:
         session.info["capture_state_changed"] = True
-    if table == "result_page_events":
-        session.info["result_event_changed"] = True
 
 
 @event.listens_for(Session, "before_flush")
@@ -80,8 +76,6 @@ def _wake_committed_readers(session):
         live_event_committed.notify()
     if session.info.pop("capture_state_changed", False):
         capture_state_committed.notify()
-    if session.info.pop("result_event_changed", False):
-        result_event_committed.notify()
 
 
 @event.listens_for(Session, "after_rollback")
@@ -116,13 +110,9 @@ def initialize_engine(database_url: str | None = None) -> AsyncEngine:
     return engine
 
 
-def _create_engine(resolved_url: str, *, observation: bool = False) -> AsyncEngine:
+def _create_engine(resolved_url: str) -> AsyncEngine:
     resolved_url = settings.resolve_database_url(resolved_url)
     kwargs = _engine_kwargs_for_url(resolved_url)
-    if observation and resolved_url.startswith("sqlite"):
-        # A diagnostic connection must have its short lock budget from birth,
-        # including connection setup, before any SQL statement is submitted.
-        kwargs["connect_args"] = {"timeout": .1}
     engine = create_async_engine(resolved_url, future=True, **kwargs)
 
     if resolved_url.startswith("sqlite"):
@@ -139,7 +129,7 @@ def _create_engine(resolved_url: str, *, observation: bool = False) -> AsyncEngi
                         cursor.execute("PRAGMA foreign_keys=ON")
                         # Brokered actions retain crash-durable commits.
                         cursor.execute("PRAGMA synchronous=FULL")
-                        cursor.execute(f"PRAGMA busy_timeout={100 if observation else 30000}")
+                        cursor.execute("PRAGMA busy_timeout=30000")
                     finally:
                         cursor.close()
                 except BaseException:
@@ -163,20 +153,6 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
         initialize_engine()
     assert _session_factory is not None
     return _session_factory
-
-
-def _get_observation_factory() -> async_sessionmaker[AsyncSession]:
-    global _observation_engine, _observation_factory
-    factory = get_session_factory()
-    assert _engine is not None
-    url = _engine.url.render_as_string(hide_password=False)
-    # An independent engine would be a different in-memory database.
-    if not url.startswith("sqlite") or make_url(url).database in (None, "", ":memory:"):
-        return factory
-    if _observation_factory is None:
-        _observation_engine = _create_engine(url, observation=True)
-        _observation_factory = async_sessionmaker(bind=_observation_engine, expire_on_commit=False)
-    return _observation_factory
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
@@ -210,8 +186,8 @@ async def finish_database_operation(awaitable):
 
 
 @asynccontextmanager
-async def session_scope(*, observation: bool = False) -> AsyncIterator[AsyncSession]:
-    session_factory = _get_observation_factory() if observation else get_session_factory()
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    session_factory = get_session_factory()
     with span("db_session"):
         session = session_factory()
         try:
@@ -242,11 +218,6 @@ async def session_scope(*, observation: bool = False) -> AsyncIterator[AsyncSess
                 await session.close()
 
 
-def observation_session_scope():
-    """Diagnostic writes use short-budget connections to the same durable DB."""
-    return session_scope(observation=True)
-
-
 @asynccontextmanager
 async def read_session_scope() -> AsyncIterator[AsyncSession]:
     """Lookup-only scope: detach loaded rows and close without committing.
@@ -275,14 +246,7 @@ async def read_session_scope() -> AsyncIterator[AsyncSession]:
 
 
 async def close_engine() -> None:
-    global _engine, _session_factory, _observation_engine, _observation_factory
-    # All API/worker/MCP/test entry points finish diagnostics before DB cleanup.
-    from app.services.result_telemetry import observation_queue
-    await observation_queue.stop()
-    if _observation_engine is not None:
-        await _observation_engine.dispose()
-    _observation_engine = None
-    _observation_factory = None
+    global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()
     _engine = None

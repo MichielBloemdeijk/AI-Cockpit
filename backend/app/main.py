@@ -7,15 +7,16 @@ import logging
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.api import app_catalog, app_platform, apps, auth, chat, devices, jarvis, notifications, orchestration, results, task_context, tasks
+from app.api import app_catalog, app_platform, apps, auth, chat, devices, jarvis, notifications, orchestration, task_context, tasks
+from app.api.private import PRIVATE_HEADERS
 from app.api import conversations, knowledge, worker_tools
-from app.app_platform import close_apps_engine, ensure_apps_database
+from app.app_platform import close_apps_engine, ensure_apps_database, install_builtin_apps
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
 from app.services.conversation_store import conversation_store
 from app.services.run_supervisor import run_supervisor
@@ -67,6 +68,8 @@ async def lifespan(application: FastAPI):
     await worker_coordinator.reconcile_availability()
     await recover_pending_task_notifications()
     await ensure_apps_database()
+    if settings.app_builtin_install:
+        await install_builtin_apps()
     await jarvis_live_telemetry.start()
     await reminder_scheduler.start()
     await jarvis_coordinator.start()
@@ -121,7 +124,6 @@ app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(jarvis.router)
 app.include_router(task_context.router)
-app.include_router(results.router)
 app.include_router(app_catalog.router)
 app.include_router(app_catalog.data_router)
 app.include_router(tasks.router)
@@ -160,9 +162,9 @@ async def private_result_responses(request, call_next):
         if (origin and origin not in allowed) or request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "Cross-origin write rejected"}, status_code=403)
     response = await call_next(request)
-    if (request.url.path.startswith(("/api/results/", "/api/app-catalog", "/api/auth/", "/api/jarvis/devices"))
+    if (request.url.path.startswith(("/api/app-catalog", "/api/app-platform", "/api/auth/", "/api/jarvis/devices"))
             or (request.url.path.startswith("/api/apps/") and request.url.path.endswith("/storage-capability"))):
-        for key, value in results.PRIVATE_HEADERS.items():
+        for key, value in PRIVATE_HEADERS.items():
             response.headers[key] = value
     return response
 
@@ -170,13 +172,6 @@ async def private_result_responses(request, call_next):
 # Serve Next.js static export if it exists
 _result_export = Path(__file__).parent.parent.parent / "frontend" / "result-export" / "out"
 _frontend_out = Path(__file__).parent.parent.parent / "frontend" / "out"
-
-
-@app.get("/results/{public_id}", include_in_schema=False)
-async def focused_result_shell(public_id: str):
-    # The shell contains no private data. Snapshot/events authorize separately.
-    from app.services.result_static import result_shell_response
-    return result_shell_response(_result_export)
 
 
 @app.get("/login", include_in_schema=False)
@@ -192,14 +187,6 @@ async def focused_companion_shell(request: Request):
 async def focused_task_shell(task_id: str):
     from app.services.result_static import result_shell_response
     return result_shell_response(_result_export, "task")
-
-
-@app.get("/collections/{slug}", include_in_schema=False)
-async def focused_collection_shell(slug: str):
-    from app.services.result_static import result_shell_response
-    if slug not in {"documents", "recipes"}:
-        raise HTTPException(404, "Unknown maintained collection")
-    return result_shell_response(_result_export, slug, fallback_root=_frontend_out)
 
 
 if _result_export.exists():

@@ -17,7 +17,6 @@ from app.db.tables import (
     TaskExecutionRun, WorkflowRun,
 )
 from app.services.task_service import task_service
-from app.services.task_results import fail_document_result
 
 
 MAX_JPEG_BYTES = 5 * 1024 * 1024
@@ -261,10 +260,6 @@ class TaskContextUploadService:
             task.status_reason = reason
             task.terminal_summary = f"Required screen context failed: {reason}"
             task.finished_at = now
-        await fail_document_result(
-            session, task_id=row.task_id, run_id=row.execution_run_id,
-            reason=f"Required screen context failed: {reason}",
-        )
         await TaskRepository(session).append_event(
             task_id=row.task_id, attempt_id=task.current_attempt_id if task.current_run_id == row.execution_run_id else None,
             execution_run_id=row.execution_run_id, event_type="task.context.failed",

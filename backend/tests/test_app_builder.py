@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
 import pytest
+import pytest_asyncio
 
 from app import app_platform
 from app.config import settings
@@ -18,6 +19,14 @@ from app.services.task_workflows import load_workflow
 from app.services.worker_coordinator import worker_coordinator
 from app.services.conversation_store import conversation_store
 from tests.test_app_platform import SAMPLE, build
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def without_builtin_apps():
+    """These tests start from a platform with no apps; conftest installs Documents and Recipes."""
+    for slug in ("documents", "recipes"):
+        await app_platform.uninstall(slug)
+
 
 needs_browser = pytest.mark.skipif(
     shutil.which("node") is None or not (settings.app_check_playwright_path / "node_modules" / "playwright").is_dir(),
@@ -193,7 +202,7 @@ async def test_build_workflow_checks_out_installs_on_publish_and_replays(monkeyp
     await app_platform.install_package(build())
     args = await _claimed_build("Change the installed app Notes: add a colour")
 
-    catalog = {tool["name"]: tool for tool in _tool_catalog("app-build.v1", load_workflow("build_app@1").capabilities)}
+    catalog = {tool["name"]: tool for tool in await _tool_catalog("app-build.v1", load_workflow("build_app@1").capabilities)}
     assert set(catalog) == {"task_history", "app_checkout", "app_check", "task_question", "result_publish", "task_finish"}
     publish_fields = set(catalog["result_publish"]["inputSchema"]["properties"])
     assert {"slug", "version"}.isdisjoint(publish_fields) and {"title", "body"} <= publish_fields

@@ -80,6 +80,16 @@ class AppError(AppsBase):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
+class AppView(AppsBase):
+    """The record an app last showed, so Jarvis knows what "this recipe" means."""
+    __tablename__ = "app_views"
+
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), primary_key=True)
+    collection: Mapped[str] = mapped_column(String(48), nullable=False)
+    record_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 _engine: AsyncEngine | None = None
 _engine_url: str | None = None
 _factory: async_sessionmaker[AsyncSession] | None = None

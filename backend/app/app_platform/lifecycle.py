@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy import delete, func, select, text
 
-from app.app_platform.manifest import ManifestError, compatibility_problems, load_package
+from app.app_platform.manifest import ManifestError, compatibility_problems, load_package, package_workflows
 from app.app_platform.store import AppRecord, AppVersion, InstalledApp, apps_session
 from app.config import settings
 
@@ -92,11 +92,17 @@ def package_digest(root: Path) -> str:
 
 async def install_package(source: Path) -> ActiveApp:
     """Validate, copy and activate a package. Raises ManifestError when it is not installable."""
+    from app.app_platform.workflows import workflow_conflicts
+
     manifest, schemas = load_package(source)
     digest = package_digest(source)
     stored = manifest.model_dump(by_alias=True, mode="json")
     for name, schema in schemas.items():
         stored["collections"][name]["schema_json"] = schema
+    stored["workflow_definitions"] = package_workflows(source, manifest)
+    conflicts = workflow_conflicts(manifest.slug, manifest.workflows)
+    if conflicts:
+        raise ManifestError(f"Workflow ids already in use: {', '.join(conflicts)}")
 
     destination = settings.apps_path / manifest.slug / str(manifest.version)
     async with apps_session() as session:

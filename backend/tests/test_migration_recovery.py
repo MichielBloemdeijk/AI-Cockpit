@@ -65,7 +65,7 @@ async def test_admission_receipt_and_credential_owner_survive_unstamped_migratio
 
 
 def test_in_process_migrations_preserve_application_logging(caplog) -> None:
-    app_logger = logging.getLogger("app.services.result_telemetry")
+    app_logger = logging.getLogger("app.services.task_service")
     caplog.set_level(logging.INFO, logger=app_logger.name)
     handlers, level = list(logging.getLogger().handlers), logging.getLogger().level
     run_migrations()
@@ -83,7 +83,7 @@ def test_result_platform_backfill_resumes_without_changing_generated_routes(tmp_
         connection.execute("INSERT INTO generated_apps (id, slug, title, status, route_path, frontend_root) VALUES ('legacy-generated', 'documents', 'Old documents app', 'draft', '/apps/documents', 'frontend/generated-apps/documents')")
         # Simulate an interrupted migration after one additive column.
         connection.execute("ALTER TABLE result_pages ADD COLUMN state_revision INTEGER NOT NULL DEFAULT 0")
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261001_0031")
     with sqlite3.connect(database_path) as connection:
         before = connection.execute("SELECT id, slug, kind, route_path FROM cockpit_apps ORDER BY slug").fetchall()
         assert len(before) == 3
@@ -93,19 +93,24 @@ def test_result_platform_backfill_resumes_without_changing_generated_routes(tmp_
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     # Replay after a crash before Alembic stamped the completed migration.
     command.stamp(config, "20260930_0030")
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261001_0031")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT id, slug, kind, route_path FROM cockpit_apps ORDER BY slug").fetchall() == before
+    # Results became app records: only the generated app's identity remains.
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        assert [kind for _, kind in connection.execute("SELECT slug, kind FROM cockpit_apps")] == ["generated"]
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_result_metric_migration_replay_preserves_observations(tmp_path: Path) -> None:
     database_path = tmp_path / "result-metric-replay.db"
     config = _config(database_path)
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261001_0033")
     with sqlite3.connect(database_path) as connection:
         connection.execute("INSERT INTO result_metrics (metric_key, kind, values_json) VALUES ('capture:test', 'capture_preflight', '{\"outcome\":\"timeout\"}')")
     command.stamp(config, "20261001_0032")
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261001_0033")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT metric_key, kind FROM result_metrics").fetchall() == [('capture:test', 'capture_preflight')]
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -124,9 +129,9 @@ def test_storage_capability_migration_replay_preserves_revocations(tmp_path: Pat
     with sqlite3.connect(database_path) as connection:
         connection.execute("ALTER TABLE cockpit_apps ADD COLUMN capability_revision INTEGER NOT NULL DEFAULT 0")
         connection.execute("UPDATE cockpit_apps SET capability_revision = 7")
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261001_0032")
     command.stamp(config, "20261001_0031")
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261001_0032")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT capability_revision FROM cockpit_apps").fetchall() == [(7,), (7,)]
 

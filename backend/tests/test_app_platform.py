@@ -6,11 +6,20 @@ import shutil
 
 from httpx import ASGITransport, AsyncClient
 import pytest
+import pytest_asyncio
 
 from app import app_platform
 from app.app_platform.manifest import compatibility_problems
 from app.config import settings
 from app.main import app
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def without_builtin_apps():
+    """These tests start from a platform with no apps; conftest installs Documents and Recipes."""
+    for slug in ("documents", "recipes"):
+        await app_platform.uninstall(slug)
+
 
 SAMPLE = Path(app_platform.__file__).parent / "samples" / "notes"
 

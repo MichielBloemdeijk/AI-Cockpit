@@ -1,0 +1,164 @@
+{
+  "tests": [
+    {
+      "name": "lists and searches documents",
+      "records": {
+        "document": [
+          {
+            "key": "eiffel",
+            "value": {
+              "title": "The Eiffel Tower",
+              "summary": "A wrought-iron tower in Paris.",
+              "body": "Built for the 1889 World's Fair."
+            }
+          },
+          {
+            "key": "rhine",
+            "value": {
+              "title": "The Rhine",
+              "summary": "A river through six countries.",
+              "body": "It flows into the North Sea."
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "expect_count": "#documents li",
+          "count": 2
+        },
+        {
+          "fill": "#search",
+          "value": "river"
+        },
+        {
+          "expect_count": "#documents li",
+          "count": 1
+        },
+        {
+          "click": "#documents button"
+        },
+        {
+          "expect_text": "It flows into the North Sea.",
+          "selector": "#body"
+        }
+      ]
+    },
+    {
+      "name": "renders markdown safely and deletes",
+      "open": {
+        "collection": "document",
+        "key": "doc"
+      },
+      "records": {
+        "document": [
+          {
+            "key": "doc",
+            "value": {
+              "title": "Markdown",
+              "summary": "Every block type.",
+              "body": "## Heading\n\nSome **bold** and *italic* text with `code` and a [link](https://example.com/a).\n\n- one\n- two\n\n1. first\n2. second\n\n> quoted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\nblock code\n```\n\n<script>alert(1)</script> [bad](javascript:alert(1))",
+              "sources": [
+                {
+                  "url": "https://example.com/source",
+                  "label": "Example source"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "expect_text": "Heading",
+          "selector": "#body h3"
+        },
+        {
+          "expect_count": "#body strong",
+          "count": 1
+        },
+        {
+          "expect_count": "#body em",
+          "count": 1
+        },
+        {
+          "expect_count": "#body ul li",
+          "count": 2
+        },
+        {
+          "expect_count": "#body ol li",
+          "count": 2
+        },
+        {
+          "expect_count": "#body blockquote",
+          "count": 1
+        },
+        {
+          "expect_count": "#body td",
+          "count": 2
+        },
+        {
+          "expect_text": "block code",
+          "selector": "#body pre"
+        },
+        {
+          "expect_count": "#body a",
+          "count": 1
+        },
+        {
+          "expect_count": "#body script",
+          "count": 0
+        },
+        {
+          "expect_text": "<script>alert(1)</script>",
+          "selector": "#body"
+        },
+        {
+          "expect_text": "Example source",
+          "selector": "#sources"
+        },
+        {
+          "click": "#delete"
+        },
+        {
+          "expect_records": {
+            "collection": "document",
+            "count": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "does not repeat the title from the body",
+      "open": {
+        "collection": "document",
+        "key": "trip"
+      },
+      "records": {
+        "document": [
+          {
+            "key": "trip",
+            "value": {
+              "title": "Packing checklist",
+              "body": "# Packing checklist\n\n## Clothing\n\n- Socks"
+            }
+          }
+        ]
+      },
+      "steps": [
+        {
+          "expect_text": "Packing checklist",
+          "selector": "#title"
+        },
+        {
+          "expect_count": "#body h2",
+          "count": 0
+        },
+        {
+          "expect_text": "Clothing",
+          "selector": "#body h3"
+        }
+      ]
+    }
+  ]
+}

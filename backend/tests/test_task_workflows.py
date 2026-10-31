@@ -15,12 +15,14 @@ from app.services.agent_execution import AgentExecutionResult
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
 from app.services.task_workflows import (
-    _UniqueSafeLoader, _safe_definition_file, load_workflow, validate_workflow_result,
+    _UniqueSafeLoader, _safe_definition_file, load_workflow,
 )
+from app.services.task_result_types import validate_result
 from app.services.worker_coordinator import worker_coordinator
 
 
-def test_workflow_loader_rejects_duplicate_keys_and_escape(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_workflow_loader_rejects_duplicate_keys_and_escape(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Duplicate"):
         yaml.load("id: first\nid: second", Loader=_UniqueSafeLoader)
     with pytest.raises(ValueError, match="inside"):
@@ -28,13 +30,15 @@ def test_workflow_loader_rejects_duplicate_keys_and_escape(tmp_path: Path) -> No
     definition = load_workflow("text_report@1")
     assert definition.output_schema == "text-report.v1"
     screen = load_workflow("screen_document@1")
-    assert screen.output_schema == "document.v1"
+    assert screen.output_schema == "collection:documents.document" and screen.app == "documents"
     assert "task.context.images@2" in screen.capabilities
     assert len(definition.digest) == 64
-    with pytest.raises(ValueError, match="unavailable"):
+    with pytest.raises(ValueError, match="not installed"):
         load_workflow("missing_workflow@1")
     with pytest.raises(ValueError, match="does not match"):
-        validate_workflow_result("text-report.v1", {"title": "Only a title"})
+        await validate_result("text-report.v1", {"title": "Only a title"})
+    with pytest.raises(ValueError, match="invalid at body"):
+        await validate_result("collection:documents.document", {"title": "Doc", "body": 3})
 
 
 @pytest.mark.asyncio
@@ -61,7 +65,7 @@ async def test_workflow_admission_publication_followup_and_api_result(monkeypatc
         attempt_id=claim.task.attempt_id, claim_token=claim.task.claim_token,
         workspace=Path(claim.task.workspace_path), workflow_schema="text-report.v1",
     )
-    assert {tool["name"] for tool in _tool_catalog(args.workflow_schema)} == {
+    assert {tool["name"] for tool in await _tool_catalog(args.workflow_schema)} == {
         "task_history", "result_publish",
     }
     with pytest.raises(ValueError, match="not allowlisted"):

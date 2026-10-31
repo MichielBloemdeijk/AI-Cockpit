@@ -6,11 +6,17 @@
  * message to the Cockpit page hosting the frame, which performs it with a token
  * scoped to this app and posts the result back.
  *
- *   await cockpit.ready                       -> { slug, title, version }
+ *   await cockpit.ready                       -> { slug, title, version, target }
+ *   cockpit.onTarget(function (target) {...}) -- Cockpit opened another record
+ *   cockpit.viewing(collection, key)          -- tell Jarvis which record is shown
  *   await cockpit.data.get(collection, key)   -> { key, value, revision } | null
  *   await cockpit.data.put(collection, key, value, { expectedRevision })
  *   await cockpit.data.delete(collection, key, { expectedRevision })
  *   await cockpit.data.query(collection, { where, order, limit }) -> [records]
+ *
+ * `target` is { collection, key } when Cockpit opened the app on a record (a
+ * notification, a link or Jarvis), otherwise null. Show that record; call
+ * cockpit.viewing whenever the user opens another one, so "this one" resolves.
  *
  * Failed calls reject with an Error whose `status` is the HTTP status (409 means
  * the record changed since it was read).
@@ -18,6 +24,7 @@
 (function () {
   "use strict";
   var pending = new Map();
+  var targetListeners = [];
   var nextId = 1;
   var resolveReady;
   var ready = new Promise(function (resolve) { resolveReady = resolve; });
@@ -26,7 +33,12 @@
     if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
     var message = event.data;
     if (message.cockpit === "hello") {
-      resolveReady({ slug: message.slug, title: message.title, version: message.version });
+      resolveReady({ slug: message.slug, title: message.title, version: message.version,
+        target: message.target || null });
+      return;
+    }
+    if (message.cockpit === "target") {
+      targetListeners.forEach(function (listener) { listener(message.target || null); });
       return;
     }
     if (message.cockpit !== "response") return;
@@ -54,6 +66,10 @@
 
   window.cockpit = {
     ready: ready,
+    onTarget: function (listener) { targetListeners.push(listener); },
+    viewing: function (collection, key) {
+      window.parent.postMessage({ cockpit: "viewing", collection: String(collection), key: String(key) }, "*");
+    },
     data: {
       get: function (collection, key) { return call("data.get", { collection: collection, key: key }); },
       put: function (collection, key, value, options) {

@@ -187,6 +187,9 @@ There is no automatic overall timeout in version 1. Workers must continue to hea
 
 ### 4.5 Progressive result plane
 
+> **Superseded on 2026-10-31:** results are now records in installed apps (Recipes,
+> Documents), not result pages. See [app platform step 3](jarvis-tasks/13-app-platform.md#step-3-2026-10-31).
+
 Admission allocates a stable `/results/<public-id>` URL immediately. That URL renders a maintained application route rather than generated source code or a per-result frontend build.
 
 Before publication, the page shows only observed state such as waiting for screen context, identifying the dish, checking sources, or validating the recipe. A tentative dish label may be shown as tentative. Ingredients and instructions appear only in an immutable validated revision.

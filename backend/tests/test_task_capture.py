@@ -15,7 +15,8 @@ from PIL import Image
 from app.main import app
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import NotificationOutbox, ResultPage, ResultPageRevision, TaskContextRequest
+from app import app_platform
+from app.db.tables import NotificationOutbox, TaskContextRequest, TaskResult
 from app.services.task_capture import CaptureCollection, task_capture_service
 from app.services.task_service import task_service
 from app.services.task_workflows import load_workflow
@@ -28,7 +29,7 @@ from sqlalchemy import select
 
 
 @pytest.mark.asyncio
-async def test_device_capture_report_preflight_and_revision_fence(complete_observations) -> None:
+async def test_device_capture_report_preflight_and_revision_fence() -> None:
     transport = ASGITransport(app=app)
     activation_id, capture_id = str(uuid4()), str(uuid4())
     async with AsyncClient(transport=transport, base_url="http://testserver") as admin:
@@ -94,13 +95,6 @@ async def test_device_capture_report_preflight_and_revision_fence(complete_obser
         assert result.status_code == 200 and result.json()["session_id"] == session["id"]
         assert (await device.put(f"/api/jarvis/captures/{early_id}/status", json={**captured, "revision": 4})).status_code == 409
         assert (await device.put(f"/api/jarvis/captures/{early_id}/status", json={**bound, "revision": 4, "reason": "locked"})).status_code == 409
-    from app.db.tables import ResultMetric
-    from app.services.result_telemetry import observation_queue
-    assert await observation_queue.drain()
-    async with session_scope() as observation_session:
-        measurements = list((await observation_session.execute(select(ResultMetric).where(ResultMetric.kind == "capture_preflight"))).scalars())
-        assert {row.values_json["outcome"] for row in measurements} >= {"captured", "timeout", "rejected"}
-        assert all(row.result_page_id is None and row.duration_ms >= 0 for row in measurements)
 
 
 @pytest.mark.asyncio
@@ -206,7 +200,7 @@ async def test_captured_workflow_admission_waits_for_upload_and_targets_event(mo
         tool_args = SimpleNamespace(
             task_id=created.task.id, run_id=claim.task.execution_run_id,
             attempt_id=claim.task.attempt_id, claim_token=claim.task.claim_token,
-            workflow_schema="document.v1",
+            workflow_schema="collection:documents.document",
         )
         image_result = await _image_result({}, tool_args)
         assert base64.b64decode(next(item["data"] for item in image_result["content"] if item["type"] == "image")) == jpeg
@@ -222,15 +216,10 @@ async def test_captured_workflow_admission_waits_for_upload_and_targets_event(mo
             "source_event_sequences": [], "operation_key": "screen-document-1",
         }, tool_args)) == published
         async with session_scope() as session:
-            page = (await session.execute(select(ResultPage).where(ResultPage.task_id == created.task.id))).scalar_one()
-            assert page.status == "ready" and page.revision_number == 1
-            assert len(list((await session.execute(select(ResultPageRevision).where(
-                ResultPageRevision.result_page_id == page.id,
-            ))).scalars().all())) == 1
-            result_url = f"/results/{page.public_id}"
-        result_snapshot = await device.get(f"/api{result_url}")
-        assert result_snapshot.status_code == 200
-        assert result_snapshot.json()["content"]["body"] == "The screen shows a visible marker."
+            published = (await session.execute(select(TaskResult).where(TaskResult.task_id == created.task.id))).scalar_one()
+        stored = await app_platform.get_record("documents", "document", published.record_key)
+        assert stored["revision"] == 1 and stored["value"]["body"] == "The screen shows a visible marker."
+        result_url = f"/apps/documents?collection=document&key={published.record_key}"
         await task_presentation_service.sync_candidates()
         async with session_scope() as session:
             notifications = list((await session.execute(select(NotificationOutbox).where(
@@ -254,10 +243,7 @@ async def test_captured_workflow_admission_waits_for_upload_and_targets_event(mo
         failed_detail = await task_service.get_task(failed.task.id)
         assert failed_detail is not None and failed_detail.task.status == "failed"
         async with session_scope() as session:
-            failed_page = (await session.execute(select(ResultPage).where(
-                ResultPage.task_id == failed.task.id,
-            ))).scalar_one()
-            assert failed_page.status == "failed" and failed_page.current_revision_id is None
+            assert (await session.execute(select(TaskResult).where(TaskResult.task_id == failed.task.id))).first() is None
         late = await device.put(
             f"/api/jarvis/context-requests/{second_pending[0]['request_id']}/content",
             content=jpeg, headers={**headers, "X-Upload-Token": second_pending[0]["upload_token"]},
@@ -272,13 +258,6 @@ async def test_captured_workflow_admission_waits_for_upload_and_targets_event(mo
         )
         assert admitted.output["accepted"] and admitted.output["status"] == "waiting_for_input"
         assert admitted.output["timing_ms"]["ready_call_to_admission"] >= 0
-        from app.db.tables import ResultMetric
-        from app.services.result_telemetry import observation_queue
-        assert await observation_queue.drain()
-        async with session_scope() as observation_session:
-            measurement = (await observation_session.execute(select(ResultMetric).where(ResultMetric.kind == "screen_admission"))).scalar_one()
-            assert measurement.values_json["includes_capture_preflight"] is True
-            assert measurement.duration_ms >= measurement.values_json["preflight_ms"]
         replayed = await restricted_brain_gateway.execute(
             tool_name="start_workflow", arguments=args, call_id="screen-call-1",
             conversation_id=live_session["conversation_id"], origin_turn_id=None,
@@ -295,7 +274,7 @@ async def test_captured_workflow_admission_waits_for_upload_and_targets_event(mo
             conversation_id=live_session["conversation_id"], origin_turn_id=None,
             session_id=live_session["id"], generation=live_session["generation"], turn_scope="fixture-screen-turn",
         )
-        assert replayed_again.output["result_url"] == admitted.output["result_url"]
+        assert "result_url" not in replayed_again.output and replayed_again.output["replayed"] is True
         pending_followup = await task_service.continue_task(admitted.output["internal_task_id"],
             content="Use this capture in a later screen workflow", origin="test", idempotency_key="pending-screen-failure",
             execution_kind="workflow", execution_config={"definition": "screen_document@1"}, capture_binding=CaptureCollection((("invocation", binding),), missing_roles=("latest",)),

@@ -44,12 +44,9 @@ async def test_paired_device_can_ack_open_but_cannot_manage_push_and_revocation_
     from app.services.task_service import task_service
     from app.services.worker_coordinator import worker_coordinator
     from test_task_result_contract import claim, finish
-    from app.services.result_telemetry import snapshot as metric_snapshot
-    from test_task_result_contract import page_for
     worker = await worker_coordinator.activate(process_identity="native-open-ack")
     task = await task_service.dispatch(goal="Native ack fixture", origin_surface="test", idempotency_key="native-ack", result_request={"mode": "new"})
     await finish(worker, task.task.id, await claim(worker, task.task.id))
-    page = await page_for(task.task.id)
     async with session_scope() as session:
         delivery_id = (await session.execute(select(NotificationOutbox).where(NotificationOutbox.task_id == task.task.id))).scalar_one().id
     endpoint = f"/api/notifications/deliveries/{delivery_id}/ack"
@@ -70,10 +67,6 @@ async def test_paired_device_can_ack_open_but_cannot_manage_push_and_revocation_
         # Scoped app capabilities must fail even alongside a valid owner cookie.
         assert (await admin.post(endpoint, json={"state": "opened"}, headers={"Authorization": "AppCapability invalid"})).status_code == 401
         assert (await admin.post(endpoint, json={"state": "opened"})).status_code == 200
-        from app.services.result_telemetry import observation_queue
-        assert await observation_queue.drain()
         async with session_scope() as session:
-            metrics = await metric_snapshot(session, page)
-            assert metrics["counts"]["notification_opened"] == 1
             (await session.get(JarvisDevice, paired["device_id"])).revoked_at = utc_now()
         assert (await device.post(endpoint, json={"state": "opened"})).status_code == 401

@@ -14,7 +14,8 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import ResultPage
+from app import app_platform
+from app.db.tables import TaskResult
 from app.jarvis_tasks.task_mcp import _call, _image_result, _tool_catalog
 from app.main import app
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
@@ -24,14 +25,20 @@ from app.services.task_workflows import load_workflow, validate_pinned_workflow
 from app.services.worker_coordinator import worker_coordinator
 
 
+# Provided by the built-in Recipes and Documents apps, so installed rather than allowlisted.
 WORKFLOWS = ["recipe_from_screen@1", "research_screen@1"]
+
+
+async def task_record(task_id):
+    """The task's one result and its record as stored in the app."""
+    async with session_scope() as session:
+        result = (await session.execute(select(TaskResult).where(TaskResult.task_id == task_id))).scalar_one()
+    return result, await app_platform.get_record(result.app_slug, result.collection, result.record_key)
 
 
 def test_defined_screen_outcome_routes_before_worker_image_analysis(monkeypatch):
     from app.services.openai_live_adapter import OpenAILiveAdapter
-    recipe = load_workflow("recipe_from_screen@1")
     monkeypatch.setattr(settings, "task_research_enabled", True)
-    monkeypatch.setattr(settings, "task_workflow_allowlist", f"recipe_from_screen@1:{recipe.digest}")
     workflow = next(tool for tool in get_jarvis_tool_definitions("openai_live") if tool["name"] == "start_workflow")
     assert "ingredients" in workflow["description"]
     assert "capture_id" not in workflow["parameters"]["required"]
@@ -46,10 +53,17 @@ def test_defined_screen_outcome_routes_before_worker_image_analysis(monkeypatch)
         assert "save something useful" in instructions
 
 
+async def result_snapshot(task_id):
+    """The task's one result: its id, and the record's revision and content."""
+    async with session_scope() as session:
+        result = (await session.execute(select(TaskResult).where(TaskResult.task_id == task_id))).scalar_one()
+    record = await app_platform.get_record(result.app_slug, result.collection, result.record_key)
+    return {"result_id": result.id, "revision": record["revision"], "content": record["value"]}
+
+
 async def admit(monkeypatch, definition, *, image_bytes=None, goal=None, claim_task=True, password=""):
     loaded = load_workflow(definition)
     monkeypatch.setattr(settings, "task_research_enabled", True)
-    monkeypatch.setattr(settings, "task_workflow_allowlist", f"{definition}:{loaded.digest}")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         login = await client.post("/api/auth/login", json={"password": password})
         assert login.status_code == 200, login.text
@@ -115,7 +129,7 @@ async def researched(args):
 
 def content(args, source):
     common = {"title": "Tomato pasta", "source_event_sequences": [source["source_event_sequence"]]}
-    if args.workflow_schema == "recipe.v1":
+    if args.workflow_schema == "collection:recipes.recipe":
         return common | {"ingredients": ["100g pasta", "200g tomatoes"],
             "instructions": ["Boil pasta.", "Simmer tomatoes and combine."],
             "sources": [{"source_event_sequence": source["source_event_sequence"], "url": source["url"], "title": source["title"]}]}
@@ -139,10 +153,14 @@ async def test_research_reference_is_directly_available_despite_transport_noise(
     await _call("result_publish", content(args, source) | {"operation_key": "published"}, args)
 
 
-def test_registry_catalog_and_retired_schema_rejection(monkeypatch):
+@pytest.mark.asyncio
+async def test_registry_catalog_and_retired_schema_rejection(monkeypatch):
     monkeypatch.setattr(settings, "task_research_enabled", True)
     definitions = [load_workflow(identity) for identity in WORKFLOWS + ["text_report@1", "screen_document@1"]]
-    monkeypatch.setattr(settings, "task_workflow_allowlist", ",".join(f"{item.id}@1:{item.digest}" for item in definitions))
+    # Only the core workflow needs the allowlist; app workflows are enabled by their install.
+    monkeypatch.setattr(settings, "task_workflow_allowlist", f"text_report@1:{definitions[2].digest}")
+    assert [item.app for item in definitions] == ["recipes", "documents", None, "documents"]
+    assert definitions[0].output_schema == "collection:recipes.recipe"
     catalog = next(tool for tool in get_jarvis_tool_definitions() if tool["name"] == "start_workflow")
     assert set(catalog["parameters"]["properties"]["definition"]["enum"]) == set(WORKFLOWS + ["screen_document@1", "text_report@1"])
     assert "Find me a recipe" in catalog["description"] and "Explain" not in definitions[0].purpose
@@ -152,9 +170,11 @@ def test_registry_catalog_and_retired_schema_rejection(monkeypatch):
     with pytest.raises(ValueError):
         validate_pinned_workflow({"workflow": legacy})
     for item in definitions[:2]:
-        assert {tool["name"] for tool in _tool_catalog(item.output_schema, list(item.capabilities))} == {
+        tools = await _tool_catalog(item.output_schema, list(item.capabilities))
+        assert {tool["name"] for tool in tools} == {
             "task_history", "task_context_images", "task_question", "result_publish", "task_finish"}
-        tools = _tool_catalog(item.output_schema, list(item.capabilities))
+        publish = next(tool for tool in tools if tool["name"] == "result_publish")
+        assert {"title", "source_event_sequences", "operation_key", "base_revision"} <= set(publish["inputSchema"]["properties"])
         image_tool = next(tool for tool in tools if tool["name"] == "task_context_images")
         assert image_tool["name"] in item.instructions
         assert "task_context_imagess" not in item.instructions
@@ -187,9 +207,10 @@ async def test_clear_partial_failure_replay_and_invalid_output(monkeypatch, defi
     result = await _call("result_publish", payload | {"operation_key": "publish"}, args)
     assert result["status"] == "completed"
     assert await _call("result_publish", payload | {"operation_key": "publish"}, args) == result
-    async with session_scope() as session:
-        page = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-        assert page.result_kind == args.workflow_schema and page.revision_number == 1
+    result, stored = await task_record(args.task_id)
+    assert f"collection:{result.app_slug}.{result.collection}" == args.workflow_schema and stored["revision"] == 1
+    # Task provenance stays with the task; the app record holds the content only.
+    assert "source_event_sequences" not in stored["value"] and stored["value"]["title"] == "Tomato pasta"
 
 
 @pytest.mark.asyncio
@@ -216,14 +237,12 @@ async def test_ambiguity_resumes_asking_run(monkeypatch, definition):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("definition", WORKFLOWS)
-async def test_followup_reuses_source_image_and_same_url_then_failed_update(monkeypatch, definition):
+async def test_followup_reuses_source_image_and_same_record_then_failed_update(monkeypatch, definition):
     args, worker = await admit(monkeypatch, definition)
     _, source = await researched(args)
     payload = content(args, source)
     await _call("result_publish", payload | {"operation_key": "first"}, args)
-    async with session_scope() as session:
-        first = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-        public_id = first.public_id
+    first, _ = await task_record(args.task_id)
     await worker_coordinator.release_claim(worker.worker_id, args.attempt_id, claim_token=args.claim_token, writers_stopped=True)
     for ordinal in (2, 3):
         admitted = await task_service.continue_task(args.task_id, content="Clarify the wording", idempotency_key=f"follow-{ordinal}", origin="test")
@@ -238,7 +257,7 @@ async def test_followup_reuses_source_image_and_same_url_then_failed_update(monk
                 with pytest.raises(ValueError, match="base revision"):
                     await _call("result_publish", {**payload, "operation_key": "stale", **({"base_revision": base} if base is not None else {})}, args)
             history = await _call("task_history", {}, args)
-            assert history["maintained_result"]["revision_number"] == 1
+            assert history["maintained_result"]["revision"] == 1
             revised = {**payload, "title": "Clearer instructions", "operation_key": "revise", "base_revision": 1}
             await _call("result_publish", revised, args)
             await _call("result_publish", revised, args)
@@ -247,10 +266,9 @@ async def test_followup_reuses_source_image_and_same_url_then_failed_update(monk
         else:
             await _call("task_finish", {"summary": "Cannot support the update", "status": "failed", "operation_key": "failed"}, args)
         await worker_coordinator.release_claim(worker.worker_id, args.attempt_id, claim_token=args.claim_token, writers_stopped=True)
-    async with session_scope() as session:
-        final = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-        assert final.public_id == public_id and final.revision_number == 2 and final.status == "ready"
-        assert final.warning == "Cannot support the update"
+    final, stored = await task_record(args.task_id)
+    assert final.record_key == first.record_key and stored["revision"] == 2
+    assert stored["value"]["title"] == "Clearer instructions"
     for active in (False, True):
         await task_service.continue_task(args.task_id, content="Revise this result", idempotency_key=f"cancel-follow-{active}", origin="test")
         claim = await worker_coordinator.claim_next(worker.worker_id) if active else None
@@ -260,10 +278,8 @@ async def test_followup_reuses_source_image_and_same_url_then_failed_update(monk
             await task_service.confirm_control(args.task_id, command_id=controlled.command.id,
                 stopped_attempt_id=claim.task.attempt_id, stop_evidence={"kind": "fixture_writer_stopped"})
             await worker_coordinator.release_claim(worker.worker_id, claim.task.attempt_id, writers_stopped=True)
-        async with session_scope() as session:
-            preserved = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-            assert preserved.public_id == public_id and preserved.revision_number == 2 and preserved.status == "ready"
-            assert preserved.warning == "Task cancelled by user."
+        preserved, kept = await task_record(args.task_id)
+        assert preserved.record_key == first.record_key and kept == stored
 
 
 @pytest.mark.asyncio

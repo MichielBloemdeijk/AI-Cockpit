@@ -387,9 +387,10 @@ class CodexTaskRuntime:
             if result_intent:
                 prompt += "\n\nBackend-admitted result intent: " + json.dumps(result_intent, ensure_ascii=False)
                 if result_intent["mode"] == "update":
-                    prompt += ("\nThis request revises the user's existing result page. Start from maintained_result."
-                        "current_content (or task_history), apply the requested changes and additions, and keep "
-                        "everything the user did not ask to change. The revision replaces the page at the same link.")
+                    prompt += ("\nThis request revises the user's existing result, a record in one of their apps. "
+                        "Start from maintained_result.current_content (or task_history), apply the requested changes "
+                        "and additions, and keep everything the user did not ask to change. The revision replaces the "
+                        "record, which keeps its link.")
                 if answer_only:
                     prompt += "\nAnswer this question without publishing or editing a maintained result."
                 elif workflow is None:

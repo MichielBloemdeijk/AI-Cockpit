@@ -17,17 +17,16 @@ from app.db.tables import (
     JarvisPreference,
     JarvisState,
     LiveSession,
-    ResultPage,
     Task,
     TaskEvent,
     TaskPresentation,
     TaskQuestion,
+    TaskResult,
     WorkerInstance,
 )
 from app.services.jarvis_time import temporal_frame
 from app.services.runtime_health import runtime_health_service
 from app.services.task_error_messages import public_failure_summary
-from app.services.task_result_types import result_type
 from app.services.task_service import ACTIVE_TASK_STATUSES
 
 
@@ -38,9 +37,30 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def result_value(page: ResultPage) -> dict[str, Any]:
-    return {"title": page.title or result_type(page.result_kind).label, "kind": page.result_kind,
-            "status": page.status, "revision_number": page.revision_number}
+def result_value(result: TaskResult) -> dict[str, Any]:
+    return {"title": result.title, "app": result.app_slug, "collection": result.collection}
+
+
+async def last_opened_record(session, timestamp: datetime) -> dict[str, Any] | None:
+    """The app record the user most recently opened, with the task that made it if any."""
+    from app import app_platform
+
+    view = await app_platform.last_view(timestamp - OPEN_RESULT_WINDOW)
+    if view is None:
+        return None
+    result = (await session.execute(select(TaskResult).where(TaskResult.app_slug == view["app"],
+        TaskResult.collection == view["collection"], TaskResult.record_key == view["key"]))).scalar_one_or_none()
+    opened = {"app": view["app"], "app_title": view["app_title"], "collection": view["collection"],
+              "opened_seconds_ago": max(0, int((timestamp - _aware(view["viewed_at"])).total_seconds()))}
+    if result is not None:
+        return {"task_id": result.task_id, **opened, "title": result.title}
+    try:
+        record = await app_platform.get_record(view["app"], view["collection"], view["key"])
+    except (app_platform.AppNotFound, app_platform.RecordError):
+        record = None
+    title = (record or {}).get("value", {}).get("title") if record else None
+    return {**opened, **({"title": title} if isinstance(title, str) else {}),
+            "note": "Not made by a task; change it in the app or start a new task."}
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -229,16 +249,12 @@ class JarvisSituationProjector:
 
         listed_ids = [task.id for task in [*active_tasks, *terminal_tasks]]
         results_by_task: dict[str, list[dict[str, Any]]] = {}
-        for page in (await session.execute(
-            select(ResultPage).where(ResultPage.task_id.in_(listed_ids))
-            .order_by(ResultPage.created_at, ResultPage.id)
+        for result in (await session.execute(
+            select(TaskResult).where(TaskResult.task_id.in_(listed_ids))
+            .order_by(TaskResult.created_at, TaskResult.id)
         )).scalars():
-            results_by_task.setdefault(page.task_id, []).append(result_value(page))
-        opened = (await session.execute(
-            select(ResultPage)
-            .where(ResultPage.last_viewed_at >= timestamp - OPEN_RESULT_WINDOW)
-            .order_by(ResultPage.last_viewed_at.desc()).limit(1)
-        )).scalar_one_or_none()
+            results_by_task.setdefault(result.task_id, []).append(result_value(result))
+        opened = await last_opened_record(session, timestamp)
 
         def task_value(task: Task) -> dict[str, Any]:
             due = _aware(task.resume_at)
@@ -287,13 +303,10 @@ class JarvisSituationProjector:
             "situation_revision": state.situation_revision,
             "conversation_id": conversation_id,
             "temporal": temporal_frame(time_zone=active_time_zone, now=timestamp),
-            # The result page the user most recently had open: what "this page" or
+            # The app record the user most recently opened: what "this page" or
             # "the recipe" usually means. Viewing alone does not prove it is still on screen.
             # Kept first: the router truncates this context.
-            "last_opened_result": None if opened is None else {
-                "task_id": opened.task_id, **result_value(opened),
-                "opened_seconds_ago": max(0, int((timestamp - _aware(opened.last_viewed_at)).total_seconds())),
-            },
+            "last_opened_result": opened,
             "conversation_summary": state.conversation_summary,
             "dialogue": dialogue,
             "tasks": [task_value(task) for task in active_tasks],

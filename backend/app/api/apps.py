@@ -13,7 +13,7 @@ from app.models.apps import (
 from app.presenters.apps import present_generated_app_detail, present_generated_app_summary
 from app.services.app_registry import GeneratedAppRecord, app_registry_service
 from app.services.auth import require_auth
-from app.api.results import protect_state_write
+from app.api.private import protect_state_write
 
 router = APIRouter(prefix="/api/apps", tags=["apps"], dependencies=[Depends(require_auth)])
 

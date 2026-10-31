@@ -9,6 +9,10 @@ cleanly, then runs the package's declarative UI tests from `tests/ui.json`:
                 "steps": [{"fill": "#text", "value": "bread"}, {"click": "button[type=submit]"},
                           {"expect_text": "bread"}, {"expect_records": {"collection": "note", "count": 2}}]}]}
 
+A test may set `"open": {"collection": "note", "key": "a"}` to start the app on
+that record, as Cockpit does when a link or Jarvis opens it. Confirmation
+dialogs (`confirm()`) are accepted, as a user would.
+
 Steps are data, never code, so checking a package never runs model-written code
 outside the browser sandbox. Records the UI wrote are validated against the
 collection schemas afterwards, as the real data API would on write.
@@ -27,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, Validat
 from app.app_platform.hosting import HOST_CSP, SDK_FILE
 from app.app_platform.lifecycle import AppNotFound, get_active, package_digest
 from app.app_platform.manifest import ManifestError, compatibility_problems, load_package
+from app.app_platform.workflows import workflow_conflicts
 from app.config import settings
 
 HARNESS = Path(__file__).parent / "harness.mjs"
@@ -92,9 +97,15 @@ class SeedRecord(_Step):
     value: Any
 
 
+class OpenTarget(_Step):
+    collection: StrictStr = Field(min_length=1, max_length=48)
+    key: StrictStr = Field(min_length=1, max_length=128)
+
+
 class UiTest(_Step):
     name: StrictStr = Field(min_length=1, max_length=120)
     records: dict[str, list[SeedRecord]] = Field(default_factory=dict)
+    open: OpenTarget | None = None
     steps: list[Fill | Click | Press | Select | Check | Wait | ExpectText | ExpectCount | ExpectRecords] = Field(
         min_length=1, max_length=60)
 
@@ -113,6 +124,8 @@ def _tests(root: Path, collections: dict[str, dict]) -> tuple[list[dict[str, Any
         return [], [f"{TESTS_FILE.as_posix()} is invalid: {exc}"]
     problems = []
     for test in tests.tests:
+        if test.open is not None and test.open.collection not in collections:
+            problems.append(f"test {test.name!r} opens unknown collection {test.open.collection}")
         for collection, records in test.records.items():
             if collection not in collections:
                 problems.append(f"test {test.name!r} seeds unknown collection {collection}")
@@ -150,6 +163,9 @@ async def check_package(root: Path, *, screenshots: Path | None = None) -> dict[
     except ManifestError as exc:
         return {"ok": False, "problems": [str(exc)], "tests": []}
     problems: list[str] = []
+    conflicts = workflow_conflicts(manifest.slug, manifest.workflows)
+    if conflicts:
+        problems.append(f"Rename these workflows; their ids are already in use: {', '.join(conflicts)}")
     try:
         active = await get_active(manifest.slug)
     except AppNotFound:

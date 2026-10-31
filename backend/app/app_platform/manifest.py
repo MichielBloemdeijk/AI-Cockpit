@@ -21,7 +21,8 @@ NAME_PATTERN = r"^[a-z][a-z0-9_]{0,47}$"
 FIELD_PATTERN = r"^[a-z_][a-z0-9_]{0,63}$"
 # Manifest sections the design reserves for later build steps. An app that
 # declares them must not install as if they worked.
-UNSUPPORTED_SECTIONS = ("functions", "workflows", "files", "triggers")
+UNSUPPORTED_SECTIONS = ("functions", "files", "triggers")
+WORKFLOW_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 
 
 class ManifestError(ValueError):
@@ -39,6 +40,7 @@ class UiSpec(_Strict):
 class CollectionSpec(_Strict):
     schema_path: str = Field(alias="schema", min_length=1, max_length=255)
     indexes: list[str] = Field(default_factory=list, max_length=16)
+    # Workflows may publish their results as records of this collection.
     result_type: bool = False
 
     @field_validator("indexes")
@@ -69,6 +71,15 @@ class AppManifest(_Strict):
     collections: dict[str, CollectionSpec] = Field(default_factory=dict)
     grants: GrantSpec = Field(default_factory=GrantSpec)
     jarvis: JarvisSpec = Field(default_factory=JarvisSpec)
+    # Ids of the workflows in workflows/<id>/, which publish into result collections.
+    workflows: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator("workflows")
+    @classmethod
+    def workflow_ids_are_plain(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or not all(re.fullmatch(WORKFLOW_PATTERN, value) for value in values):
+            raise ValueError("Workflows are unique lowercase identifiers")
+        return values
 
     @field_validator("collections")
     @classmethod
@@ -86,7 +97,10 @@ def _inside(root: Path, relative: str) -> Path:
 
 
 def load_package(root: Path) -> tuple[AppManifest, dict[str, dict[str, Any]]]:
-    """Validate a package folder; returns the manifest and each collection's JSON Schema."""
+    """Validate a package folder; returns the manifest and each collection's JSON Schema.
+
+    Its workflows are validated too; `package_workflows` returns their identities.
+    """
     manifest_path = root / MANIFEST_FILE
     if not manifest_path.is_file():
         raise ManifestError(f"Package has no {MANIFEST_FILE}")
@@ -122,8 +136,28 @@ def load_package(root: Path) -> tuple[AppManifest, dict[str, dict[str, Any]]]:
         missing = [field for field in spec.indexes if field not in properties]
         if missing:
             raise ManifestError(f"Collection {name} indexes unknown fields: {', '.join(missing)}")
+        if spec.result_type and ((properties.get("title") or {}).get("type") != "string"
+                                 or "title" not in (schema.get("required") or [])):
+            raise ManifestError(f"Result collection {name} must require a string title")
         schemas[name] = schema
+    package_workflows(root, manifest)
     return manifest, schemas
+
+
+def package_workflows(root: Path, manifest: AppManifest) -> dict[str, dict[str, Any]]:
+    """Validate the package's workflows; returns {id: {"version", "digest"}}."""
+    from app.services.task_workflows import load_package_workflow
+
+    results = tuple(name for name, spec in manifest.collections.items() if spec.result_type)
+    definitions: dict[str, dict[str, Any]] = {}
+    for workflow_id in manifest.workflows:
+        try:
+            loaded = load_package_workflow(_inside(root, f"workflows/{workflow_id}"), workflow_id,
+                                           app=manifest.slug, result_collections=results)
+        except (ValueError, OSError) as exc:
+            raise ManifestError(f"Workflow {workflow_id} is invalid: {exc}") from exc
+        definitions[workflow_id] = {"version": loaded.version, "digest": loaded.digest}
+    return definitions
 
 
 def compatibility_problems(old: dict[str, dict[str, Any]], new: dict[str, dict[str, Any]]) -> list[str]:

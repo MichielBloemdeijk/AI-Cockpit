@@ -11,19 +11,20 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.db.session import session_scope
-from app.db.tables import JarvisDevice, JarvisLiveEvent, LiveSession, ResultPage
+from app.db.tables import JarvisDevice, JarvisLiveEvent, LiveSession, TaskResult
+from app.services.task_results import present
 
 OPEN_REQUEST_TTL = timedelta(seconds=30)
 
 
 async def show(*, session_id: str, generation: int, request_identity: str, task_id: str, title: str) -> dict:
     async with session_scope() as session:
-        page = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id)
-            .order_by(ResultPage.created_at.desc(), ResultPage.id.desc()).limit(1))).scalar_one_or_none()
-    path = f"/results/{page.public_id}" if page else f"/tasks/{task_id}"
-    result = await open_path(session_id=session_id, generation=generation, request_identity=request_identity,
+        result = (await session.execute(select(TaskResult).where(TaskResult.task_id == task_id)
+            .order_by(TaskResult.updated_at.desc(), TaskResult.id.desc()).limit(1))).scalar_one_or_none()
+    path = present(result)["url"] if result else f"/tasks/{task_id}"
+    opened = await open_path(session_id=session_id, generation=generation, request_identity=request_identity,
                              path=path, title=title)
-    return {"shown": "result" if page else "task", **result}
+    return {"shown": "result" if result else "task", **opened}
 
 
 async def open_path(*, session_id: str, generation: int, request_identity: str, path: str, title: str) -> dict:

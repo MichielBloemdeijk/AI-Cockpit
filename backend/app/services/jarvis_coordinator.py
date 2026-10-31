@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-import hashlib
 import logging
 import time
 from typing import Any
@@ -13,6 +12,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from app.config import settings
+from app.services.task_workflows import workflow_catalog_revision
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
@@ -1304,9 +1304,7 @@ class JarvisCoordinator:
                 controller_id=controller_id,
                 activation_id=str(activation_id) if activation_id else None,
                 activation_source=str(activation_source) if activation_source else None,
-                workflow_catalog_revision=hashlib.sha256(
-                    settings.task_workflow_allowlist.encode("utf-8")
-                ).hexdigest(),
+                workflow_catalog_revision=workflow_catalog_revision(),
                 client_time_zone=temporal.time_zone,
                 client_utc_offset_minutes=temporal.utc_offset_minutes,
                 client_observed_at=temporal.observed_at,

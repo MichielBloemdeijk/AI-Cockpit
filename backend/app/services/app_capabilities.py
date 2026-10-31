@@ -69,7 +69,4 @@ async def authorize_storage(request: Request, slug: str, namespace: str) -> Stor
                 or namespace != "state" or claims.get("namespace") != namespace
                 or request.method not in claims.get("methods", [])):
             raise HTTPException(403, "App capability does not authorize this request")
-    # Generated capabilities are app-level; results belong to maintained apps.
-    if request.query_params.get("result_public_id"):
-        raise HTTPException(403, "App capability cannot access result-scoped state")
     return StorageGrant(app.id, app.capability_revision)

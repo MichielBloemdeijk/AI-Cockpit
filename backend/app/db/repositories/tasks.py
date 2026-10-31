@@ -103,10 +103,7 @@ class TaskRepository:
             select(TaskEvent).where(TaskEvent.idempotency_key == idempotency_key).limit(1)
         )
         self.session.info["task_feedback_committed"] = True
-        event = result.scalar_one()
-        from app.services.task_results import project_task_event
-        await project_task_event(self.session, event)
-        return event
+        return result.scalar_one()
 
     async def transition_with_event(
         self,

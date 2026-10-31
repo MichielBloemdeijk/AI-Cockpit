@@ -110,16 +110,38 @@ export function bridgeHttpRequest(slug: string, request: BridgeRequest): { url: 
   }
 }
 
+/** A record Cockpit opens the app on, from a link such as `/apps/recipes?collection=recipe&key=k`. */
+export interface AppTarget {
+  collection: string;
+  key: string;
+}
+
+export function appTarget(search: URLSearchParams): AppTarget | null {
+  const collection = search.get("collection");
+  const key = search.get("key");
+  return collection && key ? { collection, key } : null;
+}
+
 export interface AppBridgeOptions {
   session: AppSession;
   frame: () => Window | null;
   renewSession: () => Promise<AppSession>;
+  target?: AppTarget | null;
   fetcher?: typeof fetch;
 }
 
-/** Returns a `message` event handler that serves one app frame. */
-export function createAppBridge({ session, frame, renewSession, fetcher = fetch }: AppBridgeOptions) {
+export interface AppBridge {
+  /** The window `message` handler that serves the app frame. */
+  onMessage: (event: MessageEvent) => void;
+  /** Open another record in the running app. */
+  showTarget: (target: AppTarget | null) => void;
+}
+
+/** Serves one app frame: its SDK calls, error reports, record views and targets. */
+export function createAppBridge({ session, frame, renewSession, target = null, fetcher = fetch }: AppBridgeOptions): AppBridge {
   let current = session;
+  let currentTarget = target;
+  let ready = false;
 
   async function authorized(url: string, init: RequestInit): Promise<Response> {
     const send = (token: string) => fetcher(url, {
@@ -133,6 +155,20 @@ export function createAppBridge({ session, frame, renewSession, fetcher = fetch 
     return send(current.token);
   }
 
+  function post(path: string, body: unknown) {
+    // Reports help Jarvis (errors to repair, the record on screen); losing one is harmless.
+    void authorized(`${BASE}/api/app-platform/apps/${encodeURIComponent(current.slug)}/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => undefined);
+  }
+
+  function recordView(view: unknown) {
+    const { collection, key } = (view ?? {}) as { collection?: unknown; key?: unknown };
+    if (typeof collection === "string" && typeof key === "string" && collection && key) post("views", { collection, key });
+  }
+
   async function perform(request: BridgeRequest): Promise<unknown> {
     const { url, init, nullOn404 } = bridgeHttpRequest(current.slug, request);
     const response = await authorized(url, init);
@@ -141,22 +177,24 @@ export function createAppBridge({ session, frame, renewSession, fetcher = fetch 
     return request.method === "data.query" ? body.records : request.method === "data.delete" ? body.deleted : body;
   }
 
-  return (event: MessageEvent) => {
+  function onMessage(event: MessageEvent) {
     const target = frame();
     if (!target || event.source !== target || !event.data || typeof event.data !== "object") return;
     const message = event.data as { cockpit?: string };
     if (message.cockpit === "ready") {
-      target.postMessage({ cockpit: "hello", slug: current.slug, title: current.title, version: current.version }, "*");
+      ready = true;
+      target.postMessage({ cockpit: "hello", slug: current.slug, title: current.title, version: current.version,
+        target: currentTarget }, "*");
+      if (currentTarget) recordView(currentTarget);
       return;
     }
     if (message.cockpit === "error") {
-      // Reported so Jarvis can see and repair the app; losing one report is harmless.
       const { message: text, detail } = event.data as { message?: unknown; detail?: unknown };
-      void authorized(`${BASE}/api/app-platform/apps/${encodeURIComponent(current.slug)}/errors`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: String(text ?? "").slice(0, 1000), detail: String(detail ?? "").slice(0, 4000) }),
-      }).catch(() => undefined);
+      post("errors", { message: String(text ?? "").slice(0, 1000), detail: String(detail ?? "").slice(0, 4000) });
+      return;
+    }
+    if (message.cockpit === "viewing") {
+      recordView(event.data);
       return;
     }
     if (message.cockpit !== "request") return;
@@ -171,5 +209,16 @@ export function createAppBridge({ session, frame, renewSession, fetcher = fetch 
         error: error instanceof Error ? error.message : "Request failed",
       }, "*"),
     );
-  };
+  }
+
+  function showTarget(next: AppTarget | null) {
+    if (next?.collection === currentTarget?.collection && next?.key === currentTarget?.key) return;
+    currentTarget = next;
+    const target = frame();
+    if (!ready || !target) return;
+    target.postMessage({ cockpit: "target", target: next }, "*");
+    if (next) recordView(next);
+  }
+
+  return { onMessage, showTarget };
 }

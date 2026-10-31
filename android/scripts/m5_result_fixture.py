@@ -9,7 +9,9 @@ from sqlalchemy import select
 from app.main import app as cockpit
 from app.services.auth import require_auth
 from app.db.session import session_scope
-from app.db.tables import ResultPage
+from app import app_platform
+from app.db.tables import TaskResult
+from app.services.task_results import present
 from app.services.task_service import task_service
 from app.services.worker_coordinator import worker_coordinator
 
@@ -46,8 +48,9 @@ async def publish(task_id: str):
     await worker_coordinator.release_claim(worker.worker_id, task.attempt_id,
         claim_token=task.claim_token, writers_stopped=True)
     async with session_scope() as session:
-        page = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id))).scalar_one()
-        return {"url": f"/results/{page.public_id}", "revision": page.revision_number}
+        result = (await session.execute(select(TaskResult).where(TaskResult.task_id == task_id))).scalar_one()
+    record = await app_platform.get_record(result.app_slug, result.collection, result.record_key)
+    return {"url": present(result)["url"], "revision": record["revision"]}
 
 
 app.mount("/", cockpit)

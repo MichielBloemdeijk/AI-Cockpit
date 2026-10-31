@@ -9,12 +9,11 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import ResultPage
 from app.services.codex_task_runtime import codex_task_runtime
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
-from app.services.task_results import result_snapshot
 from test_codex_task_runtime_live import _live_directory
+from test_m4_workflows import result_snapshot
 
 
 @pytest.mark.asyncio
@@ -40,23 +39,21 @@ async def test_general_codex_publication_update_and_answer_preserve_identity():
                 assert outcome.status == "completed", (await task_service.get_task(task_id)).task.terminal_summary
 
             async def snapshot():
-                async with session_scope() as session:
-                    page = (await session.execute(select(ResultPage).where(ResultPage.task_id == task_id))).scalar_one()
-                    return await result_snapshot(session, page)
+                return await result_snapshot(task_id)
 
             await execute()
             first = await snapshot()
-            assert first["revision_number"] == 1 and first["content"]["body"].strip() == "READY"
+            assert first["revision"] == 1 and first["content"]["body"].strip() == "READY"
             await task_service.continue_task(task_id, content="Replace the Document body with only UPDATED. No tools needed.",
                 origin="test", idempotency_key="m5-live-edit", result_request={"mode": "update",
-                    "public_id": first["public_id"], "expected_revision": 1})
+                    "result_id": first["result_id"], "expected_revision": 1})
             await execute()
             updated = await snapshot()
-            assert updated["public_id"] == first["public_id"] and updated["revision_number"] == 2
+            assert updated["result_id"] == first["result_id"] and updated["revision"] == 2
             assert updated["content"]["body"].strip() == "UPDATED"
             assert not list(directory.rglob("document.md")), "A maintained result does not require a surrogate file"
             await task_service.continue_task(task_id, content="Answer with only ANSWER. Do not edit any result or file.",
-                origin="test", idempotency_key="m5-live-answer", result_request={"mode": "answer", "public_id": first["public_id"]})
+                origin="test", idempotency_key="m5-live-answer", result_request={"mode": "answer", "result_id": first["result_id"]})
             await execute()
             assert await snapshot() == updated
             detail = await task_service.get_task(task_id)
@@ -83,16 +80,12 @@ async def test_workflow_answer_uses_filtered_codex_inventory_without_republishin
         await _call("result_publish", content(args, source) | {"operation_key": "initial-fixture"}, args)
         await worker_coordinator.release_claim(claimed_worker.worker_id, args.attempt_id,
             claim_token=args.claim_token, writers_stopped=True)
-        async with session_scope() as session:
-            page = (await session.execute(select(ResultPage).where(ResultPage.task_id == args.task_id))).scalar_one()
-            before = await result_snapshot(session, page)
+        before = await result_snapshot(args.task_id)
         await task_service.continue_task(args.task_id,
             content="Answer-only follow-up: simply acknowledge with task_finish(status completed, summary ANSWER, operation_key answer). No research or publication is needed.",
-            origin="test", idempotency_key="workflow-live-answer", result_request={"mode": "answer", "public_id": before["public_id"]})
+            origin="test", idempotency_key="workflow-live-answer", result_request={"mode": "answer", "result_id": before["result_id"]})
         worker = TaskWorker(runtime=codex_task_runtime)
         worker.worker_id = claimed_worker.worker_id
         outcome = await asyncio.wait_for(worker.run_once(), timeout=120)
         assert outcome.status == "completed", (await task_service.get_task(args.task_id)).task.terminal_summary
-        async with session_scope() as session:
-            after = await session.get(ResultPage, page.id)
-            assert await result_snapshot(session, after) == before
+        assert await result_snapshot(args.task_id) == before

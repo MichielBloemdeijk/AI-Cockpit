@@ -21,9 +21,10 @@ it names. The result must work on a phone screen and on a desktop.
 
 Ask task_question only when the request is too vague to build anything useful.
 Otherwise choose sensible defaults and mention them in the body. If the request
-can't be done on this platform (it needs network access, server code,
-scheduled jobs, files or another app's data, which come later), build the
-useful part if there is one, or task_finish with status failed and explain.
+can't be done on this platform (it needs server code, scheduled jobs, files or
+another app's data, which come later), build the useful part if there is one,
+or task_finish with status failed and explain. Work that needs research or the
+phone's screen belongs in a workflow the app provides (see below).
 
 ## Package format (cockpit-app.v1)
 
@@ -34,9 +35,11 @@ app/
   ui/index.html      the UI entry; other ui/ files are served next to it
   tests/ui.json      declarative UI tests
   README.md          what the app does and how its data is shaped
+  workflows/<id>/    optional Jarvis workflows that add records (see below)
 ```
 
-Manifest, every field shown (only `description`, `collections` and `jarvis` are optional):
+Manifest, every field shown (only `description`, `collections`, `jarvis` and
+`workflows` are optional):
 
 ```json
 {"schema": "cockpit-app.v1", "slug": "plants", "title": "Plants", "version": 1,
@@ -49,8 +52,8 @@ Manifest, every field shown (only `description`, `collections` and `jarvis` are 
 - Collection names are lowercase identifiers. Indexes must be top-level
   properties used for filtering or sorting. Schemas are objects; prefer
   `"additionalProperties": false` and bounded strings.
-- No other manifest sections exist yet (`functions`, `workflows`, `files`,
-  `triggers` are rejected).
+- No other manifest sections exist yet (`functions`, `files` and `triggers` are
+  rejected).
 - A new version must have a higher `version` and stay compatible with stored
   data: add optional fields only. Never remove, rename or retype a field, never
   make an existing optional field required, and never drop a collection.
@@ -67,12 +70,19 @@ Manifest, every field shown (only `description`, `collections` and `jarvis` are 
   before your own script, then:
 
   ```js
-  await cockpit.ready;                                   // { slug, title, version }
+  const { target } = await cockpit.ready;                // { slug, title, version, target }
   await cockpit.data.query("plant", { where: { room: "kitchen" }, order: "-updated_at", limit: 200 });
   await cockpit.data.get("plant", key);                  // { key, value, revision } or null
   await cockpit.data.put("plant", key, value, { expectedRevision });  // 0 = must be new
   await cockpit.data.delete("plant", key, { expectedRevision });
+  cockpit.onTarget((target) => { /* show that record */ });
+  cockpit.viewing("plant", key);                         // the record now on screen
   ```
+
+  `target` is `{ collection, key }` when Cockpit opens the app on one record
+  (a notification, a link or Jarvis), otherwise null. Show that record, also
+  when `onTarget` reports another one later. Call `cockpit.viewing` whenever
+  the owner opens a record, so Jarvis knows what "this one" means.
 
   Query results are `[{ key, value, revision, updated_at }]`. `where` compares
   top-level fields for equality. Keys use letters, digits and `_ . : -`, for
@@ -102,6 +112,9 @@ data is shown. Each test starts with an empty store plus its own `records`.
 ]}
 ```
 
+A test may start the app on a record with `"open": {"collection": "plant",
+"key": "p1"}`. Confirmation dialogs (`confirm()`) are accepted.
+
 Steps: `fill`+`value`, `click`, `press`+`key`, `select`+`value`, `check`+`value`
 (boolean), `wait` (ms, at most 2000), `expect_text` (optional `selector`),
 `expect_count`+`count`, and `expect_records` with `collection`, `count` and an
@@ -110,3 +123,21 @@ always also gets a "loads" test that fails on console errors.
 
 You may run your own quick checks in the workspace, but app_check is what
 counts: it runs the UI under the real sandbox.
+
+## Workflows: records Jarvis adds
+
+An app can let Jarvis fill it: the built-in Recipes app's `recipe_from_screen`
+finds a recipe for the dish on the phone's screen and saves it as a record.
+
+- Mark the collection `"result_type": true`. Its schema must require a string
+  `title`. A workflow's result is validated against it and saved as a record
+  (its key is the task run's id); a follow-up revises that same record.
+- List the workflow in the manifest (`"workflows": ["plant_from_photo"]`) and
+  put it in `workflows/<id>/`: `workflow.yaml`, `instructions.md` and
+  `fixtures/cases.yaml`. Copy the layout of an existing app's workflow (use
+  app_checkout on `recipes` to read one); `output_schema` is
+  `collection:<collection name>`. Workflow ids must not exist yet, and app
+  workflows cannot build apps.
+- Screen input uses `input_schema: screen-request.v2`, `required_initial_context:
+  [screen_images]` and the `task.context.images@2` capability; research uses
+  `research.native@1`. Installing the app enables its workflows.
