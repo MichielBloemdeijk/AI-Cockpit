@@ -52,6 +52,21 @@ describe("app bridge", () => {
     ]);
   });
 
+  it("forwards errors the app reports with its own token, without answering the frame", async () => {
+    const frame = fakeFrame();
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const handler = createAppBridge({ session, frame: () => frame.window, renewSession: vi.fn(), fetcher });
+
+    handler(message(frame.window, { cockpit: "error", message: "cockpit is not defined", detail: "at render" }));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+
+    const [url, init] = fetcher.mock.calls[0];
+    expect(url).toBe("/api/app-platform/apps/notes/errors");
+    expect(init.headers.Authorization).toBe("AppPlatform token-1");
+    expect(JSON.parse(init.body)).toEqual({ message: "cockpit is not defined", detail: "at render" });
+    expect(frame.posted).toEqual([]);
+  });
+
   it("returns null for a missing record and reports conflicts with their status", async () => {
     const frame = fakeFrame();
     const fetcher = vi.fn()

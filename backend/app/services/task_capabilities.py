@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 
-CAPABILITY_TOOLS = {
-    "task.context.read@1": "task_history",
-    "task.context.images@2": "task_context_images",
-    "research.native@1": None,
-    "task.question.ask@1": "task_question",
-    "task.result.publish@1": "result_publish",
-    "task.finish@1": "task_finish",
+CAPABILITY_TOOLS: dict[str, tuple[str, ...]] = {
+    "task.context.read@1": ("task_history",),
+    "task.context.images@2": ("task_context_images",),
+    "research.native@1": (),
+    "task.question.ask@1": ("task_question",),
+    "task.result.publish@1": ("result_publish",),
+    "task.finish@1": ("task_finish",),
+    "app.package@1": ("app_checkout", "app_check"),
 }
 
 INPUT_CONTEXTS = {
@@ -18,7 +19,7 @@ INPUT_CONTEXTS = {
 
 
 def workflow_tools(pinned: dict) -> list[str]:
-    return [tool for capability in pinned["capabilities"] if (tool := CAPABILITY_TOOLS[capability]) is not None]
+    return [tool for capability in pinned["capabilities"] for tool in CAPABILITY_TOOLS[capability]]
 
 
 def validate_capabilities(capabilities: object, contexts: tuple[str, ...]) -> tuple[str, ...]:

@@ -17,15 +17,8 @@ from app.services.jarvis_devices import require_jarvis_auth
 router = APIRouter(prefix="/api/app-platform", tags=["app-platform"])
 host_router = APIRouter(prefix="/api/app-host", tags=["app-platform"])
 
-SDK_FILE = Path(app_platform.__file__).parent / "sdk" / "cockpit-app.js"
-# App UIs run in an opaque-origin sandbox and may not call the network
-# themselves; they reach their data through the Cockpit page's bridge.
 HOST_HEADERS = {
-    "Content-Security-Policy": (
-        "sandbox allow-scripts allow-forms allow-popups allow-modals; default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
-        "font-src 'self' data:; connect-src 'none'; frame-ancestors 'self'"
-    ),
+    "Content-Security-Policy": app_platform.HOST_CSP,
     "X-Content-Type-Options": "nosniff",
     "Cache-Control": "private, max-age=3600",
 }
@@ -33,6 +26,15 @@ HOST_HEADERS = {
 
 class InstallRequest(BaseModel):
     source: str = Field(min_length=1, max_length=255, description="Package folder name inside app_builds_dir")
+
+
+class ResetRequest(BaseModel):
+    collection: str | None = Field(default=None, max_length=48)
+
+
+class ErrorReport(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+    detail: str = Field(default="", max_length=4000)
 
 
 class PutRecordRequest(BaseModel):
@@ -82,6 +84,41 @@ async def rollback_app(slug: str) -> dict[str, Any]:
         raise _not_found(exc) from exc
     except app_platform.ManifestError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/apps/{slug}/status", dependencies=[Depends(require_jarvis_auth)])
+async def app_status(slug: str) -> dict[str, Any]:
+    try:
+        return await app_platform.status(slug)
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+
+
+@router.post("/apps/{slug}/reset", dependencies=[Depends(require_auth)])
+async def reset_app(slug: str, body: ResetRequest) -> dict[str, int]:
+    try:
+        return {"deleted": await app_platform.reset(slug, body.collection)}
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except app_platform.ManifestError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.delete("/apps/{slug}", dependencies=[Depends(require_auth)])
+async def uninstall_app(slug: str) -> dict[str, bool]:
+    try:
+        await app_platform.uninstall(slug)
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    return {"uninstalled": True}
+
+
+@router.post("/apps/{slug}/errors", dependencies=[Depends(app_data_access)], status_code=204)
+async def report_app_error(slug: str, body: ErrorReport) -> None:
+    try:
+        await app_platform.record_error(slug, body.message, body.detail)
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
 
 
 @router.post("/apps/{slug}/session", dependencies=[Depends(require_jarvis_auth)])
@@ -163,7 +200,7 @@ async def delete_app_record(slug: str, collection: str, key: str,
 
 @host_router.get("/_sdk/cockpit-app.js")
 async def app_sdk() -> FileResponse:
-    return FileResponse(SDK_FILE, media_type="text/javascript", headers={"X-Content-Type-Options": "nosniff",
+    return FileResponse(app_platform.SDK_FILE, media_type="text/javascript", headers={"X-Content-Type-Options": "nosniff",
                                                                           "Cache-Control": "no-cache"})
 
 

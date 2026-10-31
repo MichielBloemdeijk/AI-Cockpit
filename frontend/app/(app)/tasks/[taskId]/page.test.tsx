@@ -132,6 +132,31 @@ it("renders a typed workflow result with its retained evidence references", asyn
   container.remove();
 });
 
+it("links an app build result to the installed app", async () => {
+  api.getTask.mockResolvedValue({
+    ...retainedTask,
+    artifacts: [{
+      id: "artifact-1", artifact_type: "workflow_result", mime_type: "application/json",
+      title: "Built Tic-tac-toe", uri: null, content_text: null,
+      content_json: { schema: "app-build.v1", content: {
+        title: "Built Tic-tac-toe", body: "Two players take turns; scores are kept.",
+        source_event_sequences: [], slug: "tic-tac-toe", version: 1,
+      } },
+    }],
+  });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<Suspense fallback={null}><TaskDetailPage params={Promise.resolve({ taskId: "task-1" })} /></Suspense>);
+  });
+  expect(container.textContent).toContain("Two players take turns; scores are kept.");
+  const link = Array.from(container.querySelectorAll("a")).find((anchor) => anchor.textContent?.includes("Open app"));
+  expect(link?.getAttribute("href")).toBe("/apps/tic-tac-toe");
+  await act(async () => { root.unmount(); });
+  container.remove();
+});
+
 it.each(["answer", "update", "new"] as const)("submits explicit %s association without guessing a result identity", async (mode) => {
   api.getTask.mockResolvedValue({ ...retainedTask, results: [
     { public_id: "result-1", url: "/results/result-1", title: "First", revision_number: 1, status: "ready" },

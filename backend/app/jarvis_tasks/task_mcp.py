@@ -24,7 +24,11 @@ from app.config import settings  # noqa: E402
 from app.services.task_service import task_service  # noqa: E402
 from app.services.task_workflows import validate_pinned_workflow  # noqa: E402
 from app.services.task_capabilities import workflow_tools  # noqa: E402
-from app.services.task_result_types import RESULT_TYPES, result_type  # noqa: E402
+from app.services.task_result_types import INSTALL_FIELDS, RESULT_TYPES, result_type  # noqa: E402
+
+# A build_app run keeps the package it builds here, inside its workspace.
+APP_PACKAGE_DIR = "app"
+APP_CHECK_DIR = ".app-check"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -42,6 +46,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--context-blobs-dir", default="")
     parser.add_argument("--project-roots", default="")
     parser.add_argument("--local-broker", action="store_true")
+    parser.add_argument("--apps-database-url", default="")
+    parser.add_argument("--apps-dir", default="")
     return parser
 
 
@@ -61,6 +67,23 @@ def _terminal_tools() -> list[dict[str, Any]]:
     {"name": "task_finish", "description": "Answer a question without revising a result, or report failure. Stop tools after success.",
      "inputSchema": {"type": "object", "properties": {"summary": {"type": "string"}, "status": {"type": "string", "enum": ["completed", "failed"]}, "operation_key": {"type": "string"}},
                      "required": ["summary", "status", "operation_key"], "additionalProperties": False}},
+    ]
+
+
+def _app_package_tools() -> list[dict[str, Any]]:
+    return [
+        {"name": "app_checkout", "description": (
+            "Copy an installed app's current package into ./app so you can change or fix it. Returns its "
+            "manifest summary, the version to set next, and recent errors the app reported. New apps skip this "
+            "and create ./app themselves."),
+         "inputSchema": {"type": "object", "properties": {"app": {"type": "string", "description": "Slug or title"}},
+                         "required": ["app"], "additionalProperties": False}},
+        {"name": "app_check", "description": (
+            "Check ./app the way installation will: manifest, compatibility with the installed version and "
+            "stored data, and the UI in headless Chromium under the real sandbox, running tests/ui.json. "
+            "Returns problems, each test's outcome, the rendered text and screenshot paths under "
+            "./.app-check. Fix every problem before result_publish."),
+         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     ]
 
 
@@ -105,11 +128,17 @@ def _tool_catalog(workflow_schema: str | None = None, capabilities: list[str] | 
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             })
         schema = result_type(workflow_schema).model.model_json_schema()
+        if workflow_schema == "app-build.v1":
+            schema["properties"] = {key: value for key, value in schema["properties"].items() if key not in INSTALL_FIELDS}
+            schema["required"] = [key for key in schema["required"] if key not in INSTALL_FIELDS]
         properties = schema["properties"] | {"operation_key": {"type": "string"},
             "base_revision": {"type": "integer", "minimum": 0, "description": "Expected current revision from task_history; required when updating an existing result."}}
-        tools = common + [{
+        tools = common + _app_package_tools() + [{
             "name": "result_publish",
-            "description": "Atomically publish a typed workflow result and complete this run.",
+            "description": ("Check and install ./app, then publish what you built and complete this run. If the "
+                            "check fails nothing is installed and the problems are returned."
+                            if workflow_schema == "app-build.v1" else
+                            "Atomically publish a typed workflow result and complete this run."),
             "inputSchema": {
                 "type": "object",
                 "properties": properties,
@@ -232,6 +261,10 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
             final_text=arguments["summary"] if arguments["status"] == "completed" else None,
             workflow_answer=True, idempotency_key=f"workflow:{args.run_id}:{key}", **fence)
         return {"status": arguments["status"]}
+    if name in {"app_checkout", "app_check"}:
+        await task_service.validate_execution_authority(args.task_id, attempt_id=args.attempt_id,
+            execution_run_id=args.run_id, claim_token=args.claim_token)
+        return await _app_package_call(name, arguments, args)
     if name == "result_publish":
         if workflow_schema is None:
             raise ValueError("Result publication is not allowlisted for this profile")
@@ -239,6 +272,19 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
             raise ValueError("Result publication has missing or unsupported arguments")
         content = {field: value for field, value in arguments.items() if field not in {"operation_key", "base_revision"}}
         key = arguments["operation_key"]
+        if workflow_schema == "app-build.v1":
+            try:
+                await task_service.validate_execution_authority(args.task_id, attempt_id=args.attempt_id,
+                    execution_run_id=args.run_id, claim_token=args.claim_token)
+            except ValueError:
+                # Without authority nothing is installed; only replaying the
+                # completed publication can still succeed below.
+                content.update(_package_identity(args))
+            else:
+                installed = await _install_built_app(args)
+                if "problems" in installed:
+                    return installed
+                content.update(installed)
         await task_service.complete(
             args.task_id, summary=content["title"], idempotency_key=f"workflow:{args.run_id}:{key}",
             workflow_result=content, workflow_operation_key=key,
@@ -360,6 +406,49 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
     raise ValueError("Tool is not allowlisted")
 
 
+async def _app_package_call(name: str, arguments: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    from app import app_platform
+
+    package = args.workspace / APP_PACKAGE_DIR
+    if name == "app_check":
+        return await app_platform.check_package(package, screenshots=args.workspace / APP_CHECK_DIR)
+    reference = arguments.get("app")
+    if set(arguments) != {"app"} or not isinstance(reference, str) or not reference.strip():
+        raise ValueError("app_checkout needs the app's slug or title")
+    try:
+        app = await app_platform.find_app(reference)
+    except app_platform.AppNotFound:
+        return {"found": False, "apps": [item.slug for item in await app_platform.list_apps()]}
+    if not (package / "cockpit-app.json").is_file():
+        await app_platform.checkout(app.slug, package)
+    status = await app_platform.status(app.slug)
+    return {"found": True, "path": APP_PACKAGE_DIR, **status, "next_version": app.version + 1}
+
+
+def _package_identity(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        manifest = json.loads((args.workspace / APP_PACKAGE_DIR / "cockpit-app.json").read_text(encoding="utf-8"))
+        return {"slug": manifest["slug"], "version": manifest["version"]}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("The app package has no readable manifest") from exc
+
+
+async def _install_built_app(args: argparse.Namespace) -> dict[str, Any]:
+    """Install ./app when it passes the check; returns the installed identity or the problems."""
+    from app import app_platform
+
+    package = args.workspace / APP_PACKAGE_DIR
+    report = await app_platform.check_package(package, screenshots=args.workspace / APP_CHECK_DIR)
+    if not report["ok"]:
+        return {"status": "not_installed", "problems": report["problems"],
+                "tests": [{key: test[key] for key in ("name", "ok", "error", "problems")} for test in report["tests"]]}
+    try:
+        installed = await app_platform.install_package(package)
+    except app_platform.ManifestError as exc:
+        return {"status": "not_installed", "problems": [str(exc)], "tests": []}
+    return {"slug": installed.slug, "version": installed.version}
+
+
 async def _handle(request: dict[str, Any], args: argparse.Namespace) -> dict[str, Any] | None:
     request_id = request.get("id")
     if request_id is None:
@@ -413,6 +502,10 @@ async def _main() -> None:
         settings.task_workflow_allowlist = args.workflow_allowlist
     if args.context_blobs_dir:
         settings.task_context_blobs_dir = args.context_blobs_dir
+    if args.apps_database_url:
+        settings.apps_database_url = args.apps_database_url
+    if args.apps_dir:
+        settings.apps_dir = args.apps_dir
     initialize_engine(args.database_url)
     try:
         while True:

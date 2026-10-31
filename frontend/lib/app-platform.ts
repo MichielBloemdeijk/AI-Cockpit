@@ -121,18 +121,21 @@ export interface AppBridgeOptions {
 export function createAppBridge({ session, frame, renewSession, fetcher = fetch }: AppBridgeOptions) {
   let current = session;
 
-  async function perform(request: BridgeRequest): Promise<unknown> {
-    const { url, init, nullOn404 } = bridgeHttpRequest(current.slug, request);
+  async function authorized(url: string, init: RequestInit): Promise<Response> {
     const send = (token: string) => fetcher(url, {
       ...init,
       credentials: "omit",
       headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `AppPlatform ${token}` },
     });
-    let response = await send(current.token);
-    if (response.status === 401) {
-      current = await renewSession();
-      response = await send(current.token);
-    }
+    const response = await send(current.token);
+    if (response.status !== 401) return response;
+    current = await renewSession();
+    return send(current.token);
+  }
+
+  async function perform(request: BridgeRequest): Promise<unknown> {
+    const { url, init, nullOn404 } = bridgeHttpRequest(current.slug, request);
+    const response = await authorized(url, init);
     if (nullOn404 && response.status === 404) return null;
     const body = await readJson<Record<string, unknown>>(response);
     return request.method === "data.query" ? body.records : request.method === "data.delete" ? body.deleted : body;
@@ -144,6 +147,16 @@ export function createAppBridge({ session, frame, renewSession, fetcher = fetch 
     const message = event.data as { cockpit?: string };
     if (message.cockpit === "ready") {
       target.postMessage({ cockpit: "hello", slug: current.slug, title: current.title, version: current.version }, "*");
+      return;
+    }
+    if (message.cockpit === "error") {
+      // Reported so Jarvis can see and repair the app; losing one report is harmless.
+      const { message: text, detail } = event.data as { message?: unknown; detail?: unknown };
+      void authorized(`${BASE}/api/app-platform/apps/${encodeURIComponent(current.slug)}/errors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: String(text ?? "").slice(0, 1000), detail: String(detail ?? "").slice(0, 4000) }),
+      }).catch(() => undefined);
       return;
     }
     if (message.cockpit !== "request") return;

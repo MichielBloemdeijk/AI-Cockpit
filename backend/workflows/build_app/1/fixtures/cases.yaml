@@ -1,0 +1,13 @@
+cases:
+  - id: new_game
+    request: Make a tic-tac-toe game for two players on one phone that keeps the score.
+    expected: Installs a new app with a playable board, win and draw detection, and saved scores in a collection, with UI tests for a win and the score.
+  - id: change_existing
+    request: Add a due date to my notes and sort the notes by it.
+    expected: Checks out the installed Notes app, adds an optional due field, raises the version, keeps old notes valid, and installs the new version.
+  - id: repair
+    request: "The notes app is broken: it shows 'cockpit is not defined'. Fix it."
+    expected: Checks out the app, reads its reported errors, fixes the cause, adds a test that would have caught it, and installs a new version.
+  - id: unsupported
+    request: Build an app that checks the weather online every morning.
+    expected: Explains that network access and scheduled jobs are not available yet; builds nothing misleading.

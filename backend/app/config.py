@@ -151,6 +151,8 @@ class Settings(BaseSettings):
     apps_database_url: str = "sqlite+aiosqlite:///./data/apps.db"
     apps_dir: str = "data/apps"
     app_builds_dir: str = "data/app-builds"
+    # Folder whose node_modules provide Playwright for the app package UI check.
+    app_check_playwright_dir: str = "../frontend"
     worker_heartbeat_interval_seconds: float = 5.0
     worker_stale_after_seconds: float = 20.0
     worker_lease_ttl_seconds: float = 30.0
@@ -262,6 +264,11 @@ class Settings(BaseSettings):
     def app_builds_path(self) -> Path:
         configured_path = Path(self.app_builds_dir)
         return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+
+    @property
+    def app_check_playwright_path(self) -> Path:
+        configured_path = Path(self.app_check_playwright_dir)
+        return (configured_path if configured_path.is_absolute() else self.backend_root / configured_path).resolve()
 
     @property
     def resolved_apps_database_url(self) -> str:

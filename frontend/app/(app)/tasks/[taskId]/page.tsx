@@ -13,15 +13,17 @@ import { ACTIVE_TASK_STATUSES, taskStatusLabel } from "@/lib/task-status";
 
 const RETRYABLE = new Set(["failed", "interrupted", "cancelled"]);
 
-function textReport(artifact: TaskArtifact): { title: string; body: string; sources: number[] } | null {
+/** Text reports and app builds share a title and body; an app build also names the installed app. */
+function textReport(artifact: TaskArtifact): { title: string; body: string; sources: number[]; app: string | null } | null {
   const envelope = artifact.content_json;
-  if (artifact.artifact_type !== "workflow_result" || envelope?.schema !== "text-report.v1") return null;
+  if (artifact.artifact_type !== "workflow_result" || !envelope || !["text-report.v1", "app-build.v1"].includes(String(envelope.schema))) return null;
   const content = envelope.content;
   if (!content || typeof content !== "object" || Array.isArray(content)) return null;
   const value = content as Record<string, unknown>;
   if (typeof value.title !== "string" || typeof value.body !== "string" || !Array.isArray(value.source_event_sequences)) return null;
   const sources = value.source_event_sequences.filter((item): item is number => typeof item === "number" && Number.isInteger(item) && item > 0);
-  return { title: value.title, body: value.body, sources };
+  const app = envelope.schema === "app-build.v1" && typeof value.slug === "string" ? value.slug : null;
+  return { title: value.title, body: value.body, sources, app };
 }
 
 export default function TaskDetailPage({ params }: { params: Promise<{ taskId: string }> }) {
@@ -207,6 +209,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ taskId: s
                   <div className="text-xs font-medium uppercase tracking-wider text-emerald-300">{report ? "Workflow result" : artifact.artifact_type}</div>
                   <h3 className="mt-1 text-sm font-medium text-zinc-100">{report?.title || artifact.title || artifact.mime_type}</h3>
                   {report && <p className="mt-3 whitespace-pre-wrap text-sm text-zinc-300">{report.body}</p>}
+                  {report?.app && <Link href={`/apps/${encodeURIComponent(report.app)}`} className="mt-3 inline-flex items-center gap-1 text-sm text-sky-400"><ExternalLink size={14} /> Open app</Link>}
                   {report && report.sources.length > 0 && <p className="mt-3 text-xs text-zinc-500">Task evidence: {report.sources.map((source) => `#${source}`).join(", ")}</p>}
                   {!report && artifact.content_text && <pre className="mt-3 whitespace-pre-wrap font-sans text-sm text-zinc-300">{artifact.content_text}</pre>}
                   {artifact.uri && <a href={artifact.uri} className="mt-2 block break-all text-xs text-blue-400">{artifact.uri}</a>}

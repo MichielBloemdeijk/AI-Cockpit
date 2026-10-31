@@ -1,0 +1,24 @@
+{
+  "tests": [
+    {
+      "name": "adds and pins a note",
+      "steps": [
+        {"fill": "#text", "value": "buy milk"},
+        {"click": "button[type=submit]"},
+        {"expect_text": "buy milk", "selector": "#notes"},
+        {"click": "li button.quiet"},
+        {"expect_count": "li.pinned", "count": 1},
+        {"expect_records": {"collection": "note", "count": 1, "where": {"pinned": true}}}
+      ]
+    },
+    {
+      "name": "lists stored notes with pinned first",
+      "records": {"note": [{"key": "a", "value": {"text": "older", "pinned": false}},
+                           {"key": "b", "value": {"text": "important", "pinned": true}}]},
+      "steps": [
+        {"expect_text": "important", "selector": "li.pinned"},
+        {"expect_count": "#notes li", "count": 2}
+      ]
+    }
+  ]
+}

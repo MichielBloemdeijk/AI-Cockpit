@@ -64,6 +64,22 @@ class AppRecord(AppsBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 
 
+class AppError(AppsBase):
+    """A UI or runtime error an app reported, kept so Jarvis can see and repair it."""
+    __tablename__ = "app_errors"
+    __table_args__ = (UniqueConstraint("app_slug", "fingerprint", name="uq_app_errors_fingerprint"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(String(1000), nullable=False)
+    detail: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 _engine: AsyncEngine | None = None
 _engine_url: str | None = None
 _factory: async_sessionmaker[AsyncSession] | None = None

@@ -83,7 +83,7 @@ async def test_new_versions_must_be_newer_and_compatible_and_can_roll_back() -> 
     await app_platform.put_record("notes", "note", "a", {"text": "keep me"})
 
     with pytest.raises(app_platform.ManifestError, match="not newer"):
-        await app_platform.install_package(build("again"))
+        await app_platform.install_package(build("again", edit=lambda manifest, _schema: manifest.update(title="Again")))
 
     def retype(_manifest, schema):
         schema["properties"]["pinned"] = {"type": "string"}

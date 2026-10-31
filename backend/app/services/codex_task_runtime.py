@@ -93,7 +93,8 @@ def task_mcp_arguments(context: AgentExecutionContext, *, workflow: dict | None 
         "--task-id", context.task_id, "--run-id", context.execution_run_id,
         "--attempt-id", context.attempt_id, "--claim-token", context.claim_token,
         "--workspace", str(Path(context.workspace_path).resolve()),
-        "--project-roots", settings.task_project_roots]
+        "--project-roots", settings.task_project_roots,
+        "--apps-database-url", settings.resolved_apps_database_url, "--apps-dir", str(settings.apps_path)]
     if local_broker:
         arguments.append("--local-broker")
     if workflow:

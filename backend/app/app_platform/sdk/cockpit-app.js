@@ -70,5 +70,19 @@
       },
     },
   };
+  // Uncaught errors are reported to Cockpit so Jarvis can see and repair them.
+  var reported = 0;
+  function report(message, detail) {
+    if (reported++ >= 20) return;
+    window.parent.postMessage({ cockpit: "error", message: String(message).slice(0, 1000),
+      detail: String(detail || "").slice(0, 4000) }, "*");
+  }
+  window.addEventListener("error", function (event) {
+    report(event.message, event.error && event.error.stack || (event.filename + ":" + event.lineno));
+  });
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event.reason;
+    report("Unhandled rejection: " + (reason && reason.message || reason), reason && reason.stack);
+  });
   window.parent.postMessage({ cockpit: "ready" }, "*");
 })();

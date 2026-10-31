@@ -47,8 +47,14 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "list_apps",
         "open_app",
         "query_app_data",
+        "app_status",
+        "build_app",
+        "fix_app",
+        "manage_app",
     }
 )
+APP_TOOLS = frozenset({"list_apps", "open_app", "query_app_data", "app_status", "build_app", "fix_app", "manage_app"})
+BUILD_WORKFLOW = "build_app@1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,19 +119,77 @@ class RestrictedBrainGateway:
         await finish_intent(receipt.id, output=result.output)
         return result
 
+    async def _start_app_build(self, goal: str, *, call_id: str, conversation_id: str,
+                               origin_turn_id: str | None) -> dict[str, Any]:
+        try:
+            snapshot = await task_service.dispatch(
+                goal=goal, origin_surface="jarvis", origin_conversation_id=conversation_id,
+                origin_turn_id=origin_turn_id, execution_kind="workflow",
+                execution_config={"definition": BUILD_WORKFLOW}, idempotency_key=f"jarvis-shell:{call_id}:build-app")
+        except ValueError as exc:
+            return {"started": False, "error": str(exc)}
+        await natural_task_resolver.touch(snapshot.task.id)
+        return {"started": True, "task_id": snapshot.task.id, "status": snapshot.task.status,
+                "queue_position": snapshot.queue_position, "internal_fields_are_not_user_facing": True}
+
     async def _app_tool(self, tool_name: str, arguments: dict[str, Any], *, call_id: str,
-                        session_id: str | None, generation: int | None) -> dict[str, Any]:
-        """Installed apps (docs/jarvis-tasks/13-app-platform.md): list, open and read their data."""
+                        session_id: str | None, generation: int | None,
+                        conversation_id: str, origin_turn_id: str | None) -> dict[str, Any]:
+        """Installed apps (docs/jarvis-tasks/13-app-platform.md): list, open, read, build and manage them."""
         from app import app_platform
 
         if tool_name == "list_apps":
             apps = [app.summary() for app in await app_platform.list_apps()]
             return {"apps": [{key: app[key] for key in ("slug", "title", "description", "jarvis_summary", "collections")}
                              for app in apps]}
+        request = " ".join(str(arguments.get("request") or arguments.get("problem") or "").split())
+        if len(request) > 4000:
+            raise ValueError("App request is too long")
+        if tool_name == "build_app" and not arguments.get("app"):
+            if not request:
+                raise ValueError("Say what the app should do")
+            return await self._start_app_build(f"Build a new app: {request}", call_id=call_id,
+                conversation_id=conversation_id, origin_turn_id=origin_turn_id)
         try:
             app = await app_platform.find_app(str(arguments.get("app") or ""))
         except app_platform.AppNotFound:
             return {"found": False, "speak": "No installed app matches that name; say so briefly."}
+        if tool_name in {"build_app", "fix_app"}:
+            current = f"the installed app {app.title} (slug {app.slug}, version {app.version})"
+            if tool_name == "build_app":
+                if not request:
+                    raise ValueError("Say what should change")
+                goal = f"Change {current}: {request}"
+            else:
+                errors = (await app_platform.status(app.slug))["recent_errors"]
+                reported = "; ".join(f"v{error['version']}: {error['message']} (x{error['count']})" for error in errors)
+                if not request and not errors:
+                    return {"found": True, "started": False,
+                            "speak": f"{app.title} has reported no errors; ask what is wrong with it."}
+                goal = (f"Fix {current}. Problem: {request or 'it reported errors'}."
+                        + (f" Errors it reported: {reported}" if reported else ""))
+            return {"found": True, "app": app.title, **await self._start_app_build(
+                goal, call_id=call_id, conversation_id=conversation_id, origin_turn_id=origin_turn_id)}
+        if tool_name == "app_status":
+            status = await app_platform.status(app.slug)
+            return {"found": True, **{key: status[key] for key in (
+                "slug", "title", "version", "versions", "records", "recent_errors")}}
+        if tool_name == "manage_app":
+            action = arguments.get("action")
+            try:
+                if action == "rollback":
+                    previous = await app_platform.rollback(app.slug)
+                    return {"found": True, "done": True, "app": app.title, "version": previous.version}
+                if action == "reset":
+                    collection = str(arguments.get("collection") or "") or None
+                    deleted = await app_platform.reset(app.slug, collection)
+                    return {"found": True, "done": True, "app": app.title, "deleted_records": deleted}
+                if action == "uninstall":
+                    await app_platform.uninstall(app.slug)
+                    return {"found": True, "done": True, "app": app.title, "uninstalled": True}
+            except app_platform.ManifestError as exc:
+                return {"found": True, "done": False, "error": str(exc)}
+            raise ValueError("manage_app action must be rollback, reset or uninstall")
         if tool_name == "open_app":
             if session_id is None or generation is None:
                 return {"found": True, "opened": False, "url": app.summary()["url"], "title": app.title}
@@ -342,9 +406,10 @@ class RestrictedBrainGateway:
                 question=str(arguments.get("question") or ""),
                 capture_wait_seconds=capture_wait_seconds))
 
-        if tool_name in {"list_apps", "open_app", "query_app_data"}:
+        if tool_name in APP_TOOLS:
             return BrainResult(output=await self._app_tool(tool_name, arguments, call_id=call_id,
-                                                           session_id=session_id, generation=generation))
+                session_id=session_id, generation=generation,
+                conversation_id=conversation_id, origin_turn_id=origin_turn_id))
 
         if tool_name == "show_on_phone":
             if session_id is None or generation is None:

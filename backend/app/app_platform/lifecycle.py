@@ -1,21 +1,27 @@
-"""Install, activate and roll back app versions.
+"""Install, activate, roll back, reset and uninstall app versions.
 
 Installing copies a validated package to `apps_dir/<slug>/<version>/`, records
 the version and makes it active in one transaction. Every installed version is
-kept, so rolling back only moves the active pointer.
+kept, so rolling back only moves the active pointer. Installing the same package
+again is a no-op, so a builder can safely retry its install step.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 import shutil
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, func, select, text
 
 from app.app_platform.manifest import ManifestError, compatibility_problems, load_package
-from app.app_platform.store import AppVersion, InstalledApp, apps_session
+from app.app_platform.store import AppRecord, AppVersion, InstalledApp, apps_session
 from app.config import settings
+
+
+MAX_PACKAGE_BYTES = 20 * 1024 * 1024
+MAX_PACKAGE_FILES = 2000
 
 
 class AppNotFound(LookupError):
@@ -50,23 +56,44 @@ def _schemas(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {name: spec["schema_json"] for name, spec in (manifest.get("collections") or {}).items()}
 
 
+def _index_name(slug: str, collection: str, field: str) -> str:
+    return f"ix_app_{slug.replace('-', '_')}_{collection}_{field}"
+
+
 def _index_statements(slug: str, manifest: dict[str, Any]) -> list[str]:
     # Identifiers are validated against strict patterns by the manifest model,
     # so they are safe to place in DDL (SQLite cannot bind parameters there).
     statements = []
     for collection, spec in (manifest.get("collections") or {}).items():
         for field in spec.get("indexes") or []:
-            name = f"ix_app_{slug.replace('-', '_')}_{collection}_{field}"
             statements.append(
-                f"CREATE INDEX IF NOT EXISTS {name} ON app_records (json_extract(value_json, '$.{field}')) "
-                f"WHERE app_slug = '{slug}' AND collection = '{collection}'"
+                f"CREATE INDEX IF NOT EXISTS {_index_name(slug, collection, field)} ON app_records "
+                f"(json_extract(value_json, '$.{field}')) WHERE app_slug = '{slug}' AND collection = '{collection}'"
             )
     return statements
+
+
+def package_digest(root: Path) -> str:
+    """A digest of every file's path and bytes; also enforces the package size limits."""
+    files = sorted(path for path in root.rglob("*") if path.is_file())
+    if len(files) > MAX_PACKAGE_FILES:
+        raise ManifestError(f"Package has more than {MAX_PACKAGE_FILES} files")
+    digest, total = sha256(), 0
+    for path in files:
+        if path.is_symlink():
+            raise ManifestError(f"Package contains a link: {path.relative_to(root).as_posix()}")
+        data = path.read_bytes()
+        total += len(data)
+        if total > MAX_PACKAGE_BYTES:
+            raise ManifestError("Package is larger than 20 MiB")
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + sha256(data).digest())
+    return digest.hexdigest()
 
 
 async def install_package(source: Path) -> ActiveApp:
     """Validate, copy and activate a package. Raises ManifestError when it is not installable."""
     manifest, schemas = load_package(source)
+    digest = package_digest(source)
     stored = manifest.model_dump(by_alias=True, mode="json")
     for name, schema in schemas.items():
         stored["collections"][name]["schema_json"] = schema
@@ -76,6 +103,9 @@ async def install_package(source: Path) -> ActiveApp:
         existing = await session.get(InstalledApp, manifest.slug)
         versions = (await session.execute(select(AppVersion.version, AppVersion.manifest_json)
             .where(AppVersion.slug == manifest.slug))).all()
+        same = next((value for version, value in versions if version == manifest.version), None)
+        if same is not None and package_digest(destination) == digest:
+            return ActiveApp(manifest.slug, same["title"], manifest.version, same, destination)
         if versions and manifest.version <= max(version for version, _ in versions):
             raise ManifestError(f"{manifest.slug} version {manifest.version} is not newer than the installed versions")
         if existing is not None:
@@ -164,3 +194,55 @@ async def package_file(slug: str, version: int, relative: str) -> Path:
         raise AppNotFound(relative)
     return candidate
 
+
+
+async def uninstall(slug: str) -> None:
+    """Remove an app with every version, record and index. It cannot be undone."""
+    async with apps_session() as session:
+        app = await session.get(InstalledApp, slug)
+        if app is None:
+            raise AppNotFound(slug)
+        manifests = (await session.execute(select(AppVersion.manifest_json).where(AppVersion.slug == slug))).scalars()
+        for manifest in manifests:
+            for collection, spec in (manifest.get("collections") or {}).items():
+                for field in spec.get("indexes") or []:
+                    await session.execute(text(f"DROP INDEX IF EXISTS {_index_name(slug, collection, field)}"))
+        # Versions and records go with the app through ON DELETE CASCADE.
+        await session.execute(delete(InstalledApp).where(InstalledApp.slug == slug))
+    shutil.rmtree(settings.apps_path / slug, ignore_errors=True)
+
+
+async def reset(slug: str, collection: str | None = None) -> int:
+    """Delete an app's records (all, or one collection's); returns how many were deleted."""
+    app = await get_active(slug)
+    if collection is not None and collection not in app.collections:
+        raise ManifestError(f"{slug} has no collection {collection}")
+    statement = delete(AppRecord).where(AppRecord.app_slug == slug)
+    if collection is not None:
+        statement = statement.where(AppRecord.collection == collection)
+    async with apps_session() as session:
+        return (await session.execute(statement)).rowcount or 0
+
+
+async def status(slug: str) -> dict[str, Any]:
+    """What Jarvis needs to judge an app's state: versions, record counts and recent UI errors."""
+    from app.app_platform.errors import recent_errors
+
+    app = await get_active(slug)
+    async with apps_session() as session:
+        versions = list((await session.execute(select(AppVersion.version).where(AppVersion.slug == slug)
+            .order_by(AppVersion.version))).scalars())
+        counts = dict((await session.execute(select(AppRecord.collection, func.count()).where(
+            AppRecord.app_slug == slug).group_by(AppRecord.collection))).all())
+    return {**app.summary(), "versions": versions,
+            "records": {name: counts.get(name, 0) for name in sorted(app.collections)},
+            "recent_errors": await recent_errors(slug)}
+
+
+async def checkout(slug: str, destination: Path) -> ActiveApp:
+    """Copy the active version's package to an empty folder, for a builder to change."""
+    app = await get_active(slug)
+    if destination.exists() and any(destination.iterdir()):
+        raise ManifestError(f"Checkout folder is not empty: {destination}")
+    shutil.copytree(app.package_path, destination, dirs_exist_ok=True)
+    return app

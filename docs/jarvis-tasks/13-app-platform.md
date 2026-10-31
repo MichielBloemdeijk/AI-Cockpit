@@ -1,6 +1,6 @@
 # App platform: apps Jarvis builds, runs and maintains
 
-Status: **approved** 2026-10-30; build step 1 implemented (see
+Status: **approved** 2026-10-30; build steps 1 and 2 implemented (see
 [Implementation notes](#implementation-notes)). Follows the
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
@@ -263,7 +263,65 @@ Deliberate simplifications to revisit:
   opaque-origin frame can't send the owner's cookies on its sub-resource
   requests. If a bundle ever needs to be private, put a short-lived token in its
   path.
-- There is no uninstall or reset tool yet; both come with step 2, which needs
-  them for repair.
 - The old generated-apps host page at `/apps/[slug]` was replaced by this one in
   step 1 rather than in step 6. The old system had no installed apps left.
+
+### Step 2 (2026-10-31)
+
+- **Builder workflow:** `backend/workflows/build_app/1` is an ordinary Codex
+  workflow (input `text-request.v1`, output `app-build.v1`). It keeps local
+  shell and file editing in its sandboxed workspace and drops research,
+  subagents and skills. The package lives in `./app` in the task workspace.
+- **Capability `app.package@1`** adds two bridge tools:
+  - `app_checkout` copies the active package of an installed app into `./app`
+    and returns its next version, record counts and recent errors.
+  - `app_check` runs the same check as installation.
+- **The check runs outside the model** (`app_platform/check/`). It covers the
+  manifest, size limits (20 MiB, 2000 files), the version and compatibility
+  with the installed app, and the UI.
+  - The UI runs in headless Chromium (`check/harness.mjs`, Playwright from the
+    frontend) under the real CSP sandbox, framed by a stand-in host whose
+    bridge keeps data in memory.
+  - Every package gets a "loads" test that fails on console errors, uncaught
+    errors and blocked network use. It also runs the package's declarative
+    tests from `tests/ui.json`: fill, click, press, select, check, wait, and
+    the text, count and record expectations.
+  - Records the UI wrote are validated against the collection schemas
+    afterwards.
+  - Tests are data, never code, so checking a package never runs model-written
+    code outside the browser sandbox.
+- **Install on publish:** `result_publish` for `app-build.v1` checks and
+  installs `./app` before it completes the run. If the check fails, nothing is
+  installed and the problems go back to the builder. `slug` and `version` in
+  the result come from the installed package, not from the model. Installing
+  the same package again is a no-op (by package digest), so retries are safe.
+  A replay without execution authority installs nothing.
+- **Error reports:** the SDK reports uncaught errors and unhandled rejections
+  (at most 20 per page load). The bridge posts them with the app token to
+  `POST /apps/{slug}/errors`. They are stored deduplicated per version and
+  message in `app_errors` (the latest 50 per app).
+- **Management:** `GET /apps/{slug}/status`, `POST /apps/{slug}/reset`
+  (all records or one collection) and `DELETE /apps/{slug}` (versions,
+  records, errors, indexes and files). The last two are owner-only; app tokens
+  never reach management.
+- **Jarvis tools:**
+  - `build_app` starts the workflow for a new app, or for a change when `app`
+    is given.
+  - `fix_app` starts it with the app's reported errors. It declines when there
+    are none and the user named no problem.
+  - `app_status` reports versions, record counts and errors.
+  - `manage_app` handles rollback, reset and uninstall. The tool description
+    asks Jarvis to confirm before reset or uninstall.
+- **Results:** the task page shows an `app-build.v1` result with an "Open app"
+  link.
+
+Deliberate simplifications to revisit:
+
+- Autonomous repair is available but not automatic. Jarvis sees errors through
+  `app_status` and can start `fix_app` when it judges that useful. Nothing yet
+  starts a repair on its own when an error arrives; that belongs with the
+  triggers in step 4.
+- Builds and fixes are separate tasks, each with its own result. They don't
+  revise one maintained result.
+- `build_app@1` must be enabled with its digest in `TASK_WORKFLOW_ALLOWLIST`,
+  like every workflow.

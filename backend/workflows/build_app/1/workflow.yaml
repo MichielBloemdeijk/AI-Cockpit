@@ -1,0 +1,24 @@
+schema: workflow-definition.v2
+id: build_app
+version: 1
+purpose: Design, build, test and install a Cockpit app, or change or fix an installed one.
+routing_examples:
+  - Build me an app to track my plants and when I watered them.
+  - Make a tic-tac-toe game that keeps score.
+  - The notes app shows an error when I pin something; fix it.
+instructions: instructions.md
+input_schema: text-request.v1
+output_schema: app-build.v1
+required_initial_context: []
+capabilities:
+  - task.context.read@1
+  - app.package@1
+  - task.question.ask@1
+  - task.result.publish@1
+  - task.finish@1
+defaults:
+  execution_profile: fast
+fixtures: fixtures/cases.yaml
+
+tools:
+  remove: [native.research, native.subagents, native.skills]

@@ -19,6 +19,16 @@ class TextReport(_Content):
     body: StrictStr = Field(min_length=1, max_length=32_000)
 
 
+class AppBuild(TextReport):
+    """What a build_app run built or changed; publishing it installs the package."""
+    slug: StrictStr = Field(min_length=2, max_length=48)
+    version: StrictInt = Field(ge=1)
+
+
+# Filled in from the installed package rather than by the builder.
+INSTALL_FIELDS = ("slug", "version")
+
+
 class DocumentSource(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     url: StrictStr = Field(min_length=1, max_length=2000)
@@ -103,6 +113,7 @@ class ResultType:
 
 RESULT_TYPES = {
     "text-report.v1": ResultType(TextReport, None, "Report"),
+    "app-build.v1": ResultType(AppBuild, None, "App build"),
     "document.v1": ResultType(Document, "documents", "Document"),
     "recipe.v1": ResultType(Recipe, "recipes", "Recipe", requires_sources=True),
 }

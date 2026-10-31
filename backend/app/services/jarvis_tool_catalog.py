@@ -290,6 +290,37 @@ def _canonical_tools() -> list[dict[str, Any]]:
                 "order": {"type": "string", "description": "Optional field to sort by; prefix '-' for descending."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             }, "required": ["app"], "additionalProperties": False}},
+        {"type": "function", "name": "build_app", "description": (
+            "Have an app built in the background, or an installed app changed, when the user asks for one, for "
+            "example 'make me an app to track my plants' or 'add due dates to my notes'. The builder designs, "
+            "tests and installs it; confirm briefly that it has started. Apps can show a UI and store data; they "
+            "cannot use the network or run on a schedule yet."),
+            "parameters": {"type": "object", "properties": {
+                "request": {"type": "string", "description": "What the app should do or what should change, in the user's words with any details they gave."},
+                "app": {"type": "string", "description": "The installed app to change; omit for a new app."},
+            }, "required": ["request"], "additionalProperties": False}},
+        {"type": "function", "name": "fix_app", "description": (
+            "Have an installed app repaired in the background when the user says it is broken, or when "
+            "app_status shows errors the user wants fixed. Its reported errors are passed to the builder."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug."},
+                "problem": {"type": "string", "description": "What the user said is wrong, if anything."},
+            }, "required": ["app"], "additionalProperties": False}},
+        {"type": "function", "name": "app_status", "description": (
+            "An installed app's versions, how many records it holds and errors it reported recently. Use it "
+            "when the user asks whether an app works or what changed."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug."},
+            }, "required": ["app"], "additionalProperties": False}},
+        {"type": "function", "name": "manage_app", "description": (
+            "Roll an app back to its previous version, reset (delete) its data, or uninstall it. Only when the "
+            "user asks for exactly that. Reset and uninstall delete data permanently: confirm with the user "
+            "first in a short question, then call this."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug."},
+                "action": {"type": "string", "enum": ["rollback", "reset", "uninstall"]},
+                "collection": {"type": "string", "description": "For reset: only this collection's records."},
+            }, "required": ["app", "action"], "additionalProperties": False}},
     ]
     if screen_definitions:
         tools.append({
