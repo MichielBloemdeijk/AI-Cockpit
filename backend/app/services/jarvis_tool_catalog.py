@@ -74,7 +74,7 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "name": "dispatch_task",
-            "description": "After listening to the complete request, delegate substantial work to a durable background task and briefly confirm admission. Only goal and intent_id are required; omit optional fields unless the request needs them. For a maintained Document, request result mode new; its URL is allocated during admission and the final Markdown is published automatically. Never use it to change an existing result; continue that result's task instead.",
+            "description": "After listening to the complete request, delegate substantial work to a durable background task and briefly confirm admission. Only goal and intent_id are required; omit optional fields unless the request needs them. When the user wants a written result to keep, request result mode new: the final Markdown is saved as a record in the Documents app. A quick answer needs no result; it stays in the task history. Never use it to change an existing result; continue that result's task instead.",
             "parameters": {
                 "type": "object",
                 "properties": {

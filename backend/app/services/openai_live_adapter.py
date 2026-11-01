@@ -1362,7 +1362,7 @@ class OpenAILiveAdapter:
             "the document, what is on my screen) is an edit of that result: call continue_task on its task, never "
             "dispatch_task or start_workflow. Its task is the one whose results match the user's words, usually "
             "last_opened_result in the application context; pass that task_id as task_reference. Omit result: the "
-            "worker revises the existing page in place at the same link. Use result mode answer only for a question "
+            "worker revises that record in place in its app. Use result mode answer only for a question "
             "about a result that changes nothing, and mode new only when the user wants a separate additional result. "
             "For straightforward requests submit the minimum required arguments in one decision. "
             "Only fields listed in the tool schema's required array are mandatory. "
