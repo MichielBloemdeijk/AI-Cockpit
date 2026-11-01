@@ -396,3 +396,16 @@ async def test_the_reference_package_passes_its_ui_and_function_tests(tmp_path: 
     assert "Add a test for function daily_summary in tests/functions.json" in broken["problems"]
     failed = {test["name"]: test for test in broken["tests"] if not test["ok"]}
     assert "function fetch_page: saves a page's text" in failed
+
+    def uncovered(manifest, root):
+        ui_tests = json.loads((root / "tests" / "ui.json").read_text(encoding="utf-8"))
+        ui_tests["tests"] = [test for test in ui_tests["tests"] if not test.get("files")
+                             and not any("upload" in step for step in test["steps"])]
+        (root / "tests" / "ui.json").write_text(json.dumps(ui_tests), encoding="utf-8")
+        page = root / "ui" / "index.html"
+        page.write_text(page.read_text(encoding="utf-8").replace(
+            "cockpit.ready.then(render)", "window.show = (name) => cockpit.files.get(name);\n    cockpit.ready.then(render)"),
+            encoding="utf-8")
+    problems = (await check_package(clippings(uncovered, name="uncovered")))["problems"]
+    assert any("uploads files: add a test" in problem for problem in problems)
+    assert any("shows stored files: add a test" in problem for problem in problems)

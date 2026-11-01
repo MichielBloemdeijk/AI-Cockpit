@@ -473,8 +473,9 @@ Deliberate simplifications to revisit:
   the real host a photo upload landed in the file store, and the live runtime
   ran the scheduled function when it fell due (155 ms) and filled the
   check-on list. Two gaps it showed: the app never shows the photos it stores,
-  and its UI tests don't cover the upload; neither is required by the check
-  or the instructions yet.
+  and its UI tests don't cover the upload. Since then the instructions require
+  showing stored photos, and the check requires an upload test when the UI
+  uploads files and a seeded-files test when it shows them.
 
 Deliberate simplifications to revisit:
 

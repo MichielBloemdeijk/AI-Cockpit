@@ -108,6 +108,10 @@ Manifest, the required fields (`description`, `collections`, `files`,
 
 Cover the main actions: creating, changing and deleting data, and how stored
 data is shown. Each test starts with an empty store plus its own `records`.
+When the UI uploads files, a test chooses a file with an `upload` step and
+checks it was stored (`expect_files`); when it shows stored files, a test
+seeds one with `"files"` and checks it is shown (for example `expect_count` of
+`img` elements).
 
 ```json
 {"tests": [
@@ -144,6 +148,13 @@ Declare `"files": {"quota_mb": 100}` to give the app a file store (at most
 2048 MB; 25 MiB per file). Names are paths such as `photos/2026/fern.jpg`:
 letters, digits, `_ . -`, spaces and `/` folders. Keep what describes a file
 (caption, date, which record it belongs to) in a record that names the file.
+
+Show what the owner stores. Photos appear as images (at least the latest, as
+a thumbnail where a record is listed, and all of them where one record is
+shown); other files can be opened or downloaded. Load them with
+`cockpit.files.get(name)` and `URL.createObjectURL(blob)`; revoke the URL
+when the image is replaced. A file store the owner can fill but never see is
+a bug.
 
 ## Functions
 

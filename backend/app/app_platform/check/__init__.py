@@ -14,7 +14,9 @@ that record, as Cockpit does when a link or Jarvis opens it. Confirmation
 dialogs (`confirm()`) are accepted, as a user would. `"files"` seeds the file
 store (`{"a.txt": {"text": "hi"}}`, or `"base64"`), `"functions"` gives the
 results the UI's function calls return (`{"import_url": {"output": {...}}}` or
-`{"error": "..."}`), and the `upload` and `expect_files` steps cover files.
+`{"error": "..."}`), and the `upload` and `expect_files` steps cover files. A UI
+that uploads files needs a test with an upload step, and one that shows stored
+files needs a test that seeds some.
 
 UI steps are data, never code. Records the UI wrote are validated against the
 collection schemas afterwards, as the real data API would on write.
@@ -242,6 +244,7 @@ def _tests(root: Path, manifest: AppManifest, collections: dict[str, dict]) -> t
         problems.extend(_seed_problems(test, manifest, collections))
         problems.extend(f"test {test.name!r} gives a result for {name}, which is not a function with an http trigger"
                         for name in test.functions if name not in callable_functions)
+    problems.extend(_file_coverage_problems(root, tests))
     if problems:
         return [], problems
     serialized = []
@@ -252,6 +255,24 @@ def _tests(root: Path, manifest: AppManifest, collections: dict[str, dict]) -> t
                           for name, seed in test.files.items()}
         serialized.append(value)
     return serialized, []
+
+
+def _ui_source(root: Path) -> str:
+    return "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in sorted((root / "ui").rglob("*"))
+                     if path.suffix in {".html", ".js", ".mjs"} and path.is_file())
+
+
+def _file_coverage_problems(root: Path, tests: UiTests) -> list[str]:
+    """A UI that uploads or shows files needs tests that do the same."""
+    source = _ui_source(root)
+    problems = []
+    if "files.put" in source and not any(isinstance(step, Upload) for test in tests.tests for step in test.steps):
+        problems.append(f"The UI uploads files: add a test in {TESTS_FILE.as_posix()} with an upload step "
+                        "and expect_files")
+    if "files.get" in source and not any(test.files for test in tests.tests):
+        problems.append(f"The UI shows stored files: add a test in {TESTS_FILE.as_posix()} that seeds \"files\" "
+                        "and checks they are shown")
+    return problems
 
 
 def _matches(expected: Any, actual: Any) -> bool:
