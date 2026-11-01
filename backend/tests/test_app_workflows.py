@@ -155,3 +155,31 @@ async def test_the_check_records_workflow_starts_in_ui_and_function_tests() -> N
     assert report["ok"], report["problems"]
     names = [test["name"] for test in report["tests"]]
     assert "starts the workflow" in names and "function weekly: starts the recipe workflow" in names
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_folder_must_be_listed_in_the_manifest() -> None:
+    def stray(manifest, root):
+        (root / "workflows" / "recipe_from_text").rename(root / "workflows" / "unlisted_flow")
+        manifest["workflows"] = []
+    with pytest.raises(app_platform.ManifestError, match="workflows/unlisted_flow is not listed"):
+        await app_platform.install_package(cookbook(stray))
+
+
+def test_the_builders_workflow_example_is_valid(tmp_path: Path) -> None:
+    """The workflow.yaml the build_app instructions show must load as written."""
+    import re
+    from app.services.task_workflows import load_package_workflow
+
+    instructions = (Path(__file__).parents[1] / "workflows" / "build_app" / "1" / "instructions.md").read_text(
+        encoding="utf-8")
+    example = re.search(r"```yaml\n(.*?)```", instructions, re.S).group(1)
+    folder = tmp_path / "plant_from_photo"
+    (folder / "fixtures").mkdir(parents=True)
+    (folder / "workflow.yaml").write_text("\n".join(line.removeprefix("  ") for line in example.splitlines()),
+                                          encoding="utf-8")
+    (folder / "instructions.md").write_text("Identify the plant and publish it.", encoding="utf-8")
+    (folder / "fixtures" / "cases.yaml").write_text(
+        'cases: [{id: clear, request: "What plant is this?", expected: sourced_record}]', encoding="utf-8")
+    loaded = load_package_workflow(folder, "plant_from_photo", app="plants", result_collections=("plant",))
+    assert loaded.output_schema == "collection:plants.plant" and loaded.required_initial_context == ("screen_images",)

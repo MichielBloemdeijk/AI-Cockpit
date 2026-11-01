@@ -567,3 +567,38 @@ Deliberate simplifications to revisit:
   to build one" when there are none. App creation happens through Jarvis.
 - **Docs:** the README, the frontend README and `ARCHITECTURE.md` describe the
   app platform instead of the generated-app registry.
+
+### Closing the gaps (2026-11-02)
+
+- **Apps start their own workflows.** `cockpit.workflows.start(id, goal)` from
+  a function or the UI (`POST /api/app-platform/workflows/{slug}/{id}`) starts
+  one of the app's workflows as an ordinary task (`services/app_workflows.py`).
+  Only workflows without required context qualify; screen workflows stay with
+  Jarvis. Each start is a paid task, so an app may start at most
+  `APP_WORKFLOW_DAILY_LIMIT` (10) in 24 hours. A retried function run or button
+  press returns the same task. Package checks record starts instead of running
+  them (`expect.workflows`, `expect_workflows`).
+- **Jarvis** already started app workflows through `start_workflow`; its
+  description now names the app. The new `write_app_data` tool adds, updates
+  (merging fields, fenced by the revision it read) or deletes one record, as
+  the app's own screen would.
+- **App data next to the core database.** `APPS_DATABASE_URL`, `APPS_DIR`,
+  `APP_FILES_DIR` and `APP_BUILDS_DIR` default to the core SQLite database's
+  folder. A backend started with its own database (tests, emulator and
+  self-test harnesses) therefore never reads or writes the live `apps.db`;
+  before this, the emulator harnesses would have used it.
+- **Links that open a new window on the phone.** WebView turned a document's
+  `target="_blank"` source links into a top-level navigation, which the app
+  sandbox blocks, so they did nothing. The Android WebView now accepts
+  new-window requests and routes their address like any other link: outside
+  ones to the browser. The sandbox is unchanged. Needs the new APK.
+- **Android acceptance scripts** read results as app records
+  (`verify-screen-workflow.task_result`), quote record links for `adb shell`,
+  and run the production frontend in front of their backend (the dev server's
+  live reload refuses the emulator's address). `verify-result-platform.py`
+  (notification → record in Documents, reopen after process death, record
+  view reported, source link opens the browser) and `verify-show-on-phone.py`
+  pass on the API 37 emulator, model-free. The paid and audio-corpus scripts
+  (`verify-screen-workflow`, `verify-mobile-result`, `verify-audio-controls`,
+  `verify-phone-browser-capture`, `verify-announcements`) are updated but were
+  not run.

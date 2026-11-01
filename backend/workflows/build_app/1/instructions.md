@@ -288,12 +288,49 @@ finds a recipe for the dish on the phone's screen and saves it as a record.
 - Mark the collection `"result_type": true`. Its schema must require a string
   `title`. A workflow's result is validated against it and saved as a record
   (its key is the task run's id); a follow-up revises that same record.
-- List the workflow in the manifest (`"workflows": ["plant_from_photo"]`) and
-  put it in `workflows/<id>/`: `workflow.yaml`, `instructions.md` and
-  `fixtures/cases.yaml`. Copy the layout of an existing app's workflow (use
-  app_checkout on `recipes` to read one); `output_schema` is
-  `collection:<collection name>`. Workflow ids must not exist yet, and app
-  workflows cannot build apps.
+- List the workflow in the manifest (`"workflows": ["plant_from_photo"]`); a
+  folder under `workflows/` that the manifest doesn't list is refused. Put it in
+  `workflows/<id>/` with three files. Workflow ids must not exist yet, and app
+  workflows cannot build apps. `workflow.yaml`, every field required:
+
+  ```yaml
+  schema: workflow-definition.v2
+  id: plant_from_photo
+  version: 1
+  purpose: Identify the plant on the phone's screen and save it with care notes.
+  routing_examples:
+    - What plant is this? Save it.
+    - Add the plant on my screen to my plants.
+  instructions: instructions.md
+  input_schema: screen-request.v2
+  output_schema: collection:plant
+  required_initial_context: [screen_images]
+  capabilities:
+    - task.context.read@1
+    - task.context.images@2
+    - research.native@1
+    - task.question.ask@1
+    - task.result.publish@1
+    - task.finish@1
+  defaults:
+    execution_profile: fast
+  fixtures: fixtures/cases.yaml
+  tools:
+    remove: [native.local, native.subagents, native.skills]
+  ```
+
+  `instructions.md` tells the worker, in plain prose, how to do the job: read
+  the request with task_history (and the screen with task_context_images when
+  it has screen input), research when needed, ask task_question only when the
+  answer really depends on it, then publish one record with result_publish
+  whose fields match the collection schema, with a stable operation_key. Say
+  that a follow-up revises the same record: pass task_history's
+  `maintained_result.revision` as result_publish's `base_revision`, and that a
+  question about the record finishes with task_finish without revising it.
+  Researched sources cite the completed webSearch events in
+  `source_event_sequences`; never invent URLs. `fixtures/cases.yaml` lists a
+  few example requests: `cases: [{id: clear, request: "What plant is this?",
+  expected: sourced_record}]`.
 - Screen input uses `input_schema: screen-request.v2`, `required_initial_context:
   [screen_images]` and the `task.context.images@2` capability; research uses
   `research.native@1`. Installing the app enables its workflows.

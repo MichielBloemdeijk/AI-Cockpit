@@ -233,6 +233,12 @@ def load_package(root: Path) -> tuple[AppManifest, dict[str, dict[str, Any]]]:
     for name, spec in manifest.functions.items():
         _check_function(root, manifest, name, spec)
     package_workflows(root, manifest)
+    folders = root / "workflows"
+    unlisted = sorted(folder.name for folder in folders.iterdir() if folder.is_dir()
+                      and folder.name not in manifest.workflows) if folders.is_dir() else []
+    if unlisted:
+        raise ManifestError(f"workflows/{', workflows/'.join(unlisted)} is not listed in the manifest's \"workflows\"; "
+                            "list it to enable it, or remove the folder")
     return manifest, schemas
 
 
