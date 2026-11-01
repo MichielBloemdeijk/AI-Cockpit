@@ -32,7 +32,9 @@ They run the function's code in the real function host, with the same limits
 and guard as in use, against in-memory records and files the test seeds.
 Fetches must be mocked, and the URL must still be in the app's network grants.
 `expect.output` matches when every expected key or item is equal (extra keys in
-the output are fine); `expect.error` is text the error must contain.
+the output are fine); `expect.error` is text the error must contain. Workflow
+starts are recorded, never run: `expect.workflows` and the UI step
+`expect_workflows` count them.
 """
 from __future__ import annotations
 
@@ -134,6 +136,16 @@ class ExpectFiles(_Step):
     expect_files: FileExpectation
 
 
+class WorkflowExpectation(_Step):
+    """How many times the app started a workflow (all of them, or the one named)."""
+    count: StrictInt = Field(ge=0)
+    workflow: StrictStr | None = None
+
+
+class ExpectWorkflows(_Step):
+    expect_workflows: WorkflowExpectation
+
+
 class SeedRecord(_Step):
     key: StrictStr = Field(min_length=1, max_length=128)
     value: Any
@@ -168,7 +180,7 @@ class UiTest(_Step):
     functions: dict[str, FunctionResult] = Field(default_factory=dict)
     open: OpenTarget | None = None
     steps: list[Fill | Click | Press | Select | Check | Wait | Upload | ExpectText | ExpectCount | ExpectRecords
-                | ExpectFiles] = Field(min_length=1, max_length=60)
+                | ExpectFiles | ExpectWorkflows] = Field(min_length=1, max_length=60)
 
 
 class UiTests(_Step):
@@ -189,6 +201,7 @@ class FunctionExpectation(_Step):
     error: StrictStr | None = None
     records: list[RecordExpectation] = Field(default_factory=list)
     files: FileExpectation | None = None
+    workflows: list[WorkflowExpectation] = Field(default_factory=list)
 
 
 class FunctionTest(_Step):
@@ -207,6 +220,15 @@ class FunctionTests(_Step):
 
 def _http_functions(manifest: AppManifest) -> set[str]:
     return {name for name, spec in manifest.functions.items() if isinstance(spec.trigger, HttpTrigger)}
+
+
+def _workflows(root: Path, manifest: AppManifest) -> dict[str, bool]:
+    """{workflow id: needs the phone's screen} for the package's workflows (validated by load_package)."""
+    from app.services.task_workflows import load_package_workflow
+    results = tuple(name for name, spec in manifest.collections.items() if spec.result_type)
+    return {workflow_id: bool(load_package_workflow(root / "workflows" / workflow_id, workflow_id, app=manifest.slug,
+                                                    result_collections=results).required_initial_context)
+            for workflow_id in manifest.workflows}
 
 
 def _read_only(manifest: AppManifest) -> set[str]:
@@ -319,7 +341,7 @@ async def _run_function_test(root: Path, manifest: AppManifest, collections: dic
         return report
     services = MemoryServices(
         grants=manifest.grants.network, schemas=collections, read_only=_read_only(manifest),
-        has_files=manifest.files is not None,
+        has_files=manifest.files is not None, workflows=_workflows(root, manifest),
         records={collection: {record.key: record.value for record in records}
                  for collection, records in test.records.items()},
         files={name: (seed.data(), seed.content_type) for name, seed in test.files.items()},
@@ -353,6 +375,11 @@ async def _run_function_test(root: Path, manifest: AppManifest, collections: dic
         if count != expect.files.count:
             report["problems"].append(f"expected {expect.files.count} files starting with "
                                       f"{expect.files.prefix!r}, found {count}")
+    for expectation in expect.workflows:
+        count = sum(1 for start in services.started if expectation.workflow in (None, start["workflow"]))
+        if count != expectation.count:
+            report["problems"].append(f"expected {expectation.count} starts of "
+                                      f"{expectation.workflow or 'any workflow'}, found {count}")
     report["ok"] = report["error"] is None and not report["problems"]
     return report
 
@@ -435,6 +462,7 @@ async def check_package(root: Path, *, screenshots: Path | None = None) -> dict[
         "slug": manifest.slug, "title": manifest.title, "version": manifest.version, "tests": tests,
         "httpFunctions": sorted(_http_functions(manifest)),
         "readOnly": sorted(_read_only(manifest)),
+        "workflows": _workflows(root, manifest),
     }
     try:
         report = await _run_harness(job)

@@ -180,8 +180,8 @@ def main():
         screen.wait_for("explicit reopen restores controls", lambda: probe()["notification"], seconds=10)
         report["checks"]["dismissal_respected_until_explicit_app_open"] = True
         worker = child("--worker", collection["task_id"])
-        result = client.get(f"/api/results/{worker['public_id']}"); result.raise_for_status()
-        assert result.json()["status"] == "ready" and worker["roles_read"] == ["invocation", "latest"]
+        result = screen.task_result(client, collection["task_id"])
+        assert result and result["result_id"] == worker["result_id"] and worker["roles_read"] == ["invocation", "latest"]
         report["checks"]["task_finishes_after_live_stop_with_real_worker_restart"] = True
         report["worker"] = worker
         click("Hey Jarvis"); waiting = wait_mode("waiting")

@@ -20,6 +20,7 @@ from pathlib import Path
 import sys
 from time import monotonic
 from typing import Any
+from uuid import uuid4
 import weakref
 
 from jsonschema import Draft202012Validator
@@ -88,6 +89,7 @@ class Services:
             "data.get": self.data_get, "data.put": self.data_put, "data.delete": self.data_delete,
             "data.query": self.data_query, "files.list": self.files_list, "files.read": self.files_read,
             "files.write": self.files_write, "files.delete": self.files_delete,
+            "workflows.start": self.workflows_start,
         }.get(method)
         if handler is None:
             raise FunctionError(f"Unknown platform call {method}")
@@ -100,11 +102,13 @@ class Services:
 
 
 class AppServices(Services):
-    """The real data, file store and network of one installed app."""
+    """The real data, file store, network and workflows of one installed app."""
 
-    def __init__(self, app: ActiveApp) -> None:
+    def __init__(self, app: ActiveApp, run_id: str = "") -> None:
         super().__init__(list((app.manifest.get("grants") or {}).get("network") or []))
         self.slug = app.slug
+        self.run_id = run_id or str(uuid4())
+        self.started = 0
 
     async def data_get(self, collection, key):
         return await get_record(self.slug, collection, key)
@@ -131,6 +135,13 @@ class AppServices(Services):
     async def files_delete(self, name):
         return await app_files.delete_file(self.slug, name)
 
+    async def workflows_start(self, workflow, goal):
+        from app.services.app_workflows import start_app_workflow
+        self.started += 1
+        # The run and its count of starts make a retried run's starts the same tasks.
+        return await start_app_workflow(self.slug, str(workflow), str(goal),
+                                        request_key=f"function:{self.run_id}:{self.started}")
+
 
 @dataclass(slots=True)
 class FetchMock:
@@ -146,9 +157,13 @@ class MemoryServices(Services):
 
     def __init__(self, *, grants: list[str], schemas: dict[str, dict], has_files: bool,
                  records: dict[str, dict[str, Any]], files: dict[str, tuple[bytes, str]],
-                 mocks: list[FetchMock], read_only: set[str] = frozenset()) -> None:
+                 mocks: list[FetchMock], read_only: set[str] = frozenset(),
+                 workflows: dict[str, bool] | None = None) -> None:
         super().__init__(grants)
         self.schemas, self.has_files, self.mocks, self.read_only = schemas, has_files, mocks, set(read_only)
+        # {workflow id: needs the phone's screen}; starts are recorded, never run.
+        self.workflows = workflows or {}
+        self.started: list[dict[str, str]] = []
         self.records = {(collection, key): {"key": key, "value": value, "revision": 1}
                         for collection, values in records.items() for key, value in values.items()}
         self.files = dict(files)
@@ -217,6 +232,17 @@ class MemoryServices(Services):
     async def files_delete(self, name):
         self._store()
         return self.files.pop(name, None) is not None
+
+    async def workflows_start(self, workflow, goal):
+        if workflow not in self.workflows:
+            raise ValueError(f"The app has no workflow {workflow}")
+        if self.workflows[workflow]:
+            raise ValueError(f"Workflow {workflow} needs the phone's screen; only Jarvis can start it")
+        if not str(goal or "").strip():
+            raise ValueError("A workflow needs a goal of at most 4000 characters")
+        self.started.append({"workflow": workflow, "goal": str(goal)})
+        return {"task_id": f"test-task-{len(self.started)}", "status": "queued",
+                "url": f"/tasks/test-task-{len(self.started)}"}
 
     async def fetch(self, params):
         url, method = str(params.get("url") or ""), str(params.get("method") or "GET").upper()
@@ -330,16 +356,16 @@ async def run_function(slug: str, name: str, input: Any = None, *, trigger: str 
     spec = (app.manifest.get("functions") or {}).get(name)
     if spec is None:
         raise FunctionError(f"{app.title} has no function {name}")
-    started_at = utc_now()
+    started_at, run_id = utc_now(), str(uuid4())
     token = event_depth.set(depth + 1)
     try:
         result = await execute(app.package_path / spec["file"], input=input, trigger=trigger,
                                app={"slug": app.slug, "title": app.title, "version": app.version},
-                               timeout=spec.get("timeout_seconds", 30), services=AppServices(app))
+                               timeout=spec.get("timeout_seconds", 30), services=AppServices(app, run_id))
     finally:
         event_depth.reset(token)
     async with apps_session() as session:
-        session.add(AppFunctionRun(app_slug=slug, version=app.version, function=name, trigger=trigger,
+        session.add(AppFunctionRun(id=run_id, app_slug=slug, version=app.version, function=name, trigger=trigger,
                                    status=result.status, input_json=_clip(input), started_at=started_at,
                                    output_json=_clip(result.output) if result.ok else "",
                                    error=_clip(result.error), logs=_clip(result.logs),

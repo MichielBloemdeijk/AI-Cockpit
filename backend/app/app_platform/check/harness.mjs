@@ -50,6 +50,10 @@ function hostPage(test) {
   const functionResults = ${scriptJson(test.functions || {})};
   const httpFunctions = ${scriptJson(job.httpFunctions || [])};
   const readOnly = ${scriptJson(job.readOnly || [])};
+  // {workflow id: needs the phone's screen}; starts are recorded, never run.
+  const workflows = ${scriptJson(job.workflows || {})};
+  const started = [];
+  window.__workflows = () => started.slice();
   window.__ready = false;
   window.__appErrors = [];
   window.__records = () => Array.from(store.entries()).map(([id, record]) =>
@@ -71,6 +75,13 @@ function hostPage(test) {
     }
     if (method === "files.get") return files.get(String(params.name)) || null;
     if (method === "files.delete") return files.delete(String(params.name));
+    if (method === "workflows.start") {
+      if (!(params.workflow in workflows)) fail(404, "The app has no workflow " + params.workflow);
+      if (workflows[params.workflow]) fail(422, "Workflow " + params.workflow + " needs the phone's screen; only Jarvis can start it");
+      if (!String(params.goal || "").trim()) fail(422, "A workflow needs a goal");
+      started.push({ workflow: params.workflow, goal: String(params.goal) });
+      return { task_id: "test-task-" + started.length, status: "queued", url: "/tasks/test-task-" + started.length };
+    }
     if (method === "functions.call") {
       if (!httpFunctions.includes(params.name)) fail(403, "Function " + params.name + " has no http trigger");
       const result = functionResults[params.name];
@@ -163,6 +174,13 @@ async function runStep(page, frame, step) {
     const buffer = step.base64 !== undefined ? Buffer.from(step.base64, "base64") : Buffer.from(step.text ?? "", "utf8");
     return frame.locator(step.upload).first().setInputFiles(
       { name: step.name, mimeType: step.content_type || "text/plain", buffer }, options);
+  }
+  if ("expect_workflows" in step) {
+    const { count, workflow = null } = step.expect_workflows;
+    return poll(async () => {
+      const found = (await page.evaluate(() => window.__workflows())).filter((start) => workflow === null || start.workflow === workflow);
+      return found.length === count || `found ${found.length}`;
+    }, `Expected ${count} starts of ${workflow || "any workflow"}`);
   }
   if ("expect_files" in step) {
     const { count, prefix = "" } = step.expect_files;

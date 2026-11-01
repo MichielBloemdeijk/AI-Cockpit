@@ -202,10 +202,9 @@ def main():
             assert {r["capture_id"] for r in uploaded_collection} == {initial_id, fresh_id}
             worker_result = child(str(Path(__file__)), "--worker", collection["task_id"])
             assert worker_result["roles_read"] == ["invocation", "latest"], worker_result
-            published = client.get(f"/api/results/{worker_result['public_id']}")
-            published.raise_for_status()
-            assert published.json()["status"] == "ready" and published.json()["revision_number"] == 1
-            assert published.json()["content"]["title"] == "Tomato sandwich"
+            published = screen.task_result(client, collection["task_id"])
+            assert published and published["result_id"] == worker_result["result_id"]
+            assert published["record"]["revision"] == 1 and published["record"]["value"]["title"] == "Tomato sandwich"
             report["worker"] = worker_result
             report["checks"]["recipe_worker_real_process_reads_images_history_and_publishes"] = True
             assert submitted(fresh_id, "red") != first_hash

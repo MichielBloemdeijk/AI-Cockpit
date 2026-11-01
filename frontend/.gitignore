@@ -17,6 +17,7 @@
 /.next/
 /.next-verify-*
 /.next-jarvis-agent-test*/
+/.next-android-acceptance/
 /out/
 
 # production

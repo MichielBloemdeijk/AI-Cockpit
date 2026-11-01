@@ -50,10 +50,11 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "fix_app",
         "manage_app",
         "call_app_function",
+        "write_app_data",
     }
 )
 APP_TOOLS = frozenset({"list_apps", "open_app", "query_app_data", "app_status", "build_app", "fix_app", "manage_app",
-                       "call_app_function"})
+                       "call_app_function", "write_app_data"})
 BUILD_WORKFLOW = "build_app@1"
 
 
@@ -132,6 +133,40 @@ class RestrictedBrainGateway:
         return {"started": True, "task_id": snapshot.task.id, "status": snapshot.task.status,
                 "queue_position": snapshot.queue_position, "internal_fields_are_not_user_facing": True}
 
+    async def _write_app_data(self, app, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Add, change or delete one record in an app the way its own UI would."""
+        from uuid import uuid4
+
+        from app import app_platform
+
+        collection = str(arguments.get("collection") or "")
+        if not collection and len(app.collections) == 1:
+            collection = next(iter(app.collections))
+        action = arguments.get("action")
+        key = str(arguments.get("key") or "")
+        try:
+            if action == "delete":
+                if not key:
+                    return {"done": False, "error": "Say which record to delete (its key from query_app_data)"}
+                return {"done": await app_platform.delete_record(app.slug, collection, key), "deleted": key}
+            value = arguments.get("value")
+            if not isinstance(value, dict):
+                return {"done": False, "error": "value must be an object with the record's fields"}
+            if action == "update":
+                current = await app_platform.get_record(app.slug, collection, key) if key else None
+                if current is None:
+                    return {"done": False, "error": f"No {collection} record {key!r} to update"}
+                stored = await app_platform.put_record(app.slug, collection, key, {**current["value"], **value},
+                                                       expected_revision=current["revision"])
+            elif action == "add":
+                key = key or f"{collection}-{uuid4().hex[:12]}"
+                stored = await app_platform.put_record(app.slug, collection, key, value, expected_revision=0)
+            else:
+                raise ValueError("write_app_data action must be add, update or delete")
+        except app_platform.RecordError as exc:
+            return {"done": False, "error": str(exc), "collections": sorted(app.collections)}
+        return {"done": True, "collection": collection, "key": stored["key"], "value": stored["value"]}
+
     async def _app_tool(self, tool_name: str, arguments: dict[str, Any], *, call_id: str,
                         session_id: str | None, generation: int | None,
                         conversation_id: str, origin_turn_id: str | None) -> dict[str, Any]:
@@ -173,6 +208,8 @@ class RestrictedBrainGateway:
             return {"found": True, **{key: status[key] for key in (
                 "slug", "title", "version", "versions", "records", "functions", "stored_files", "grants", "used_by",
                 "recent_runs", "recent_errors")}}
+        if tool_name == "write_app_data":
+            return {"found": True, "app": app.title, **await self._write_app_data(app, arguments)}
         if tool_name == "call_app_function":
             try:
                 result = await app_platform.run_function(app.slug, str(arguments.get("function") or ""),

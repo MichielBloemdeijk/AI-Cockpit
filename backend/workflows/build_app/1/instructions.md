@@ -90,6 +90,7 @@ Manifest, the required fields (`description`, `collections`, `files`,
   image.src = URL.createObjectURL(blob);
   await cockpit.files.delete("photos/fern.jpg");
   await cockpit.functions.call("import_url", { url });   // the function's output; rejects with its error
+  await cockpit.workflows.start("plan_week", "Plan dinners for next week");  // { task_id, status, url }
   ```
 
   `target` is `{ collection, key }` when Cockpit opens the app on one record
@@ -206,6 +207,7 @@ the internet, processing uploaded files, periodic jobs.
   cockpit.data.query("plant", where={"room": "hall"}, order="-updated_at", limit=50)
   cockpit.files.list(prefix="photos/")  ;  cockpit.files.read(name)  # bytes or None
   cockpit.files.read_text(name)  ;  cockpit.files.write(name, data, content_type=None)  ;  cockpit.files.delete(name)
+  cockpit.workflows.start("plan_week", "Plan dinners for next week")  # {"task_id", "status", "url"}
   response = cockpit.fetch(url, method="GET", headers=None, body=None, json=None, timeout=20)
   response.status, response.ok, response.headers, response.text, response.content, response.json()
   print(...)                                    # kept in the run's log
@@ -239,7 +241,10 @@ every fetch needs a mock, and its URL must be in `grants.network`.
 ]}
 ```
 
-A mock may give `method`, `status`, `headers` and `body` or `json`.
+A mock may give `method`, `status`, `headers` and `body` or `json`. Workflow
+starts are recorded, never run: `"expect": {"workflows": [{"workflow":
+"plan_week", "count": 1}]}` here, and the UI step `{"expect_workflows":
+{"count": 1, "workflow": "plan_week"}}`.
 `expect.output` matches when every expected key is equal (extra keys are
 fine); `expect.error` is text the error must contain; `expect.records` and
 `expect.files` count what the store holds afterwards.
@@ -292,3 +297,12 @@ finds a recipe for the dish on the phone's screen and saves it as a record.
 - Screen input uses `input_schema: screen-request.v2`, `required_initial_context:
   [screen_images]` and the `task.context.images@2` capability; research uses
   `research.native@1`. Installing the app enables its workflows.
+- Jarvis starts any of them (`start_workflow`). Workflows with
+  `input_schema: text-request.v1` and no required context can also be started
+  by the app itself with `cockpit.workflows.start(id, goal)`, from its UI (a
+  button such as "Plan next week") or from a function (for example a weekly
+  schedule). The goal is the request the workflow gets. Each start is a paid
+  agent task, so an app may start at most 10 in 24 hours: start one only
+  when the owner asks or a schedule clearly calls for it, never per record or
+  per event. The result arrives as a record in the workflow's collection and
+  the owner is notified.

@@ -147,18 +147,22 @@ class Settings(BaseSettings):
     task_workspaces_dir: str = "data/task-workspaces"
     task_context_blobs_dir: str = "data/task-context-blobs"
     android_releases_dir: str = "data/android-releases"
-    # App platform: installed packages, their data store, and the folder builds install from.
-    apps_database_url: str = "sqlite+aiosqlite:///./data/apps.db"
-    apps_dir: str = "data/apps"
+    # App platform: installed packages, their data store, apps' file stores and the
+    # folder builds install from. Empty means next to the core SQLite database
+    # (apps.db, apps/, app-files/, app-builds/), so a backend with its own
+    # database (a test or emulator harness) never touches another's app data.
+    apps_database_url: str = ""
+    apps_dir: str = ""
     # Install the packages in backend/apps (Recipes, Documents) on start.
     app_builtin_install: bool = True
-    app_builds_dir: str = "data/app-builds"
-    # Apps' file stores, one folder per app.
-    app_files_dir: str = "data/app-files"
+    app_builds_dir: str = ""
+    app_files_dir: str = ""
     # Run scheduled and event functions and start repairs (in the API process).
     app_runtime_enabled: bool = True
     # Start a fix on its own when an app reports new errors (at most once a day per app).
     app_auto_repair: bool = True
+    # Workflows (paid agent tasks) an app may start itself from its functions and UI per 24 hours.
+    app_workflow_daily_limit: int = 10
     # Folder whose node_modules provide Playwright for the app package UI check.
     app_check_playwright_dir: str = "../frontend"
     worker_heartbeat_interval_seconds: float = 5.0
@@ -264,19 +268,28 @@ class Settings(BaseSettings):
         return self.backend_root / configured_path
 
     @property
-    def apps_path(self) -> Path:
-        configured_path = Path(self.apps_dir)
+    def app_data_root(self) -> Path:
+        """Where app platform data goes unless configured: the core database's folder."""
+        database = self.database_path
+        return database.parent if database is not None else self.backend_root / "data"
+
+    def _app_path(self, configured: str, default: str) -> Path:
+        if not configured:
+            return self.app_data_root / default
+        configured_path = Path(configured)
         return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+
+    @property
+    def apps_path(self) -> Path:
+        return self._app_path(self.apps_dir, "apps")
 
     @property
     def app_builds_path(self) -> Path:
-        configured_path = Path(self.app_builds_dir)
-        return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+        return self._app_path(self.app_builds_dir, "app-builds")
 
     @property
     def app_files_path(self) -> Path:
-        configured_path = Path(self.app_files_dir)
-        return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+        return self._app_path(self.app_files_dir, "app-files")
 
     @property
     def app_check_playwright_path(self) -> Path:
@@ -285,6 +298,8 @@ class Settings(BaseSettings):
 
     @property
     def resolved_apps_database_url(self) -> str:
+        if not self.apps_database_url:
+            return f"sqlite+aiosqlite:///{(self.app_data_root / 'apps.db').resolve().as_posix()}"
         return self.resolve_database_url(self.apps_database_url)
 
     @property

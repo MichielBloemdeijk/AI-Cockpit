@@ -319,6 +319,19 @@ def _canonical_tools() -> list[dict[str, Any]]:
                 "collection": {"type": "string", "description": "For reset: only this collection's records."},
                 "files": {"type": "boolean", "description": "For reset: also delete the app's stored files."},
             }, "required": ["app", "action"], "additionalProperties": False}},
+        {"type": "function", "name": "write_app_data", "description": (
+            "Add, change or delete one record in an installed app, as its own screen would, when the user asks for "
+            "exactly that, for example 'add milk to my shopping list' or 'mark the fern as watered'. Read the "
+            "records first with query_app_data to find the key and fields. Records must fit the app's data shape; "
+            "an error says what is wrong. Confirm with the user before deleting."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug."},
+                "collection": {"type": "string", "description": "Collection name; may be omitted when the app has one."},
+                "action": {"type": "string", "enum": ["add", "update", "delete"],
+                           "description": "add a new record, update fields of an existing one, or delete one."},
+                "key": {"type": "string", "description": "The record's key; required for update and delete."},
+                "value": {"type": "object", "description": "add: the whole record. update: only the fields to change."},
+            }, "required": ["app", "action"], "additionalProperties": False}},
         {"type": "function", "name": "call_app_function", "description": (
             "Run one of an installed app's functions now and get its output, when the user asks the app to do "
             "something its functions do, for example 'import this recipe URL' or 'run the plant reminder now'. "
@@ -332,8 +345,8 @@ def _canonical_tools() -> list[dict[str, Any]]:
     if screen_definitions:
         tools.append({
             "type": "function", "name": "start_workflow",
-            "description": "Start an enabled workflow. Workflows requiring a screen use this invocation's captured screen and require capture readiness. " + " ".join(
-                f"{item.id}@{item.version}: {item.purpose}. Required context: {', '.join(item.required_initial_context) or 'none'}. Examples: {'; '.join(item.routing_examples)}."
+            "description": "Start an enabled workflow, including those installed apps provide (their results are saved in that app). Workflows requiring a screen use this invocation's captured screen and require capture readiness. " + " ".join(
+                f"{item.id}@{item.version}{f' (app {item.app})' if item.app else ''}: {item.purpose}. Required context: {', '.join(item.required_initial_context) or 'none'}. Examples: {'; '.join(item.routing_examples)}."
                 for item in available
             ),
             "parameters": {

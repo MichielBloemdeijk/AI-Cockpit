@@ -223,7 +223,7 @@ def main():
             helper.adb(serial, "shell", "am", "start", "-W", "-n", f"{PACKAGE}/.web.ResultFixtureActivity",
                 "--es", "server_url", spec["backend_url"].replace("127.0.0.1", "10.0.2.2"),
                 "--es", "pairing_code", result.json()["code"], "--ez", "audio_evaluation", "true",
-                "--es", "path", "/results/00000000-0000-0000-0000-000000000000")
+                "--es", "path", "'/apps/documents?collection=document&key=announcement-fixture'")
             time.sleep(2)
             broadcast("--es", "recording_id", "announcements")
             device_ms = float(helper.adb(serial, "shell", "date", "+%s%3N"))

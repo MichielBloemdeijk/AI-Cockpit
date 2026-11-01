@@ -47,6 +47,11 @@ describe("app bridge", () => {
     expect(JSON.parse(String(call.init.body))).toEqual({ input: { days: 7 } });
     expect(call.result({ ok: true, output: { n: 1 } })).toEqual({ n: 1 });
     expect(() => call.result({ ok: false, error: "ValueError: no notes" })).toThrow("ValueError: no notes");
+
+    const start = bridgeHttpRequest("notes", { cockpit: "request", id: 5, method: "workflows.start",
+      params: { workflow: "summarize_week", goal: "Summarize this week", requestKey: "k1" } });
+    expect(start.url).toBe("/api/app-platform/workflows/notes/summarize_week");
+    expect(JSON.parse(String(start.init.body))).toEqual({ goal: "Summarize this week", request_key: "k1" });
   });
 
   it("returns downloaded files as Blobs", async () => {

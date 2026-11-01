@@ -141,8 +141,11 @@ def test_mobile_result_rejects_terminal_failure_and_waits_for_real_publication()
         status = "running"
         questions = []
         def get(self, url):
-            value = {"status": self.status, "questions": self.questions, "results": [{"public_id": "page"}]} if "/tasks/" in url else {"status": "ready"}
-            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: value)
+            link = {"result_id": "r1", "url": "/apps/documents?collection=document&key=run-1", "app": "documents",
+                    "collection": "document", "key": "run-1"}
+            value = ({"status": self.status, "questions": self.questions, "results": [link]} if "/tasks/" in url
+                     else {"key": "run-1", "value": {"title": "Ada"}, "revision": 2})
+            return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: value)
     client = Client()
     assert mobile.result_snapshot(client, "task") is None
     client.status = "waiting_for_input"  # Promised capture uploads can still be pending.
@@ -155,7 +158,9 @@ def test_mobile_result_rejects_terminal_failure_and_waits_for_real_publication()
     with pytest.raises(RuntimeError, match="Real workflow ended"):
         mobile.result_snapshot(client, "task")
     client.status = "completed"
-    assert mobile.result_snapshot(client, "task") == {"status": "ready"}
+    assert mobile.result_snapshot(client, "task") == {
+        "url": "/apps/documents?collection=document&key=run-1", "result_id": "r1", "collection": "document",
+        "revision": 2, "content": {"title": "Ada"}}
 
 
 def test_final_latency_is_a_separate_fixed_admission_after_functional_and_cold_cases(tmp_path, monkeypatch):

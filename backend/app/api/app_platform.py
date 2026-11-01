@@ -236,6 +236,25 @@ async def call_app_function(slug: str, name: str, body: CallRequest, request: Re
         raise _not_found(exc) from exc
 
 
+class WorkflowStartRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=4000)
+    # Chosen by the caller per start; a retry with the same key returns the same task.
+    request_key: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
+
+
+@router.post("/workflows/{slug}/{workflow}", dependencies=[Depends(app_data_access)])
+async def start_app_workflow(slug: str, workflow: str, body: WorkflowStartRequest) -> dict[str, Any]:
+    """An app starts one of its own workflows (a paid agent task) from its UI."""
+    from app.services.app_workflows import start_app_workflow as start
+
+    try:
+        return await start(slug, workflow, body.goal, request_key=f"ui:{body.request_key}")
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 FILE_HEADERS = {
     # Stored files are the app's data, never pages of Cockpit's own origin.
     "Content-Security-Policy": "sandbox",

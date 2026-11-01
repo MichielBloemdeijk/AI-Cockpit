@@ -90,8 +90,16 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 2: retire legacy executor and Chat agent (closes I01, I02, I04; supervisor now logs run failures, part of B02) | Done | `bd68c27` |
 | Phase 2: remove unused routes (17) | Done; kept `/api/jarvis/diagnostics` and `/api/jarvis/live/observer` | `354e8cf` |
 | Phase 2: council/picker models; dead LLM helpers (part of I06) | Done | `9d7e692` |
+| Generated apps → app platform, steps 1–6 (see below; closes C05, removes the old generated-app subsystem and part of I05) | Done | `e597ac8` … `fa7066f` |
+| Phase 3 (X02, part): frontend lint scope excludes build outputs of test and audit runs; the source lint errors fixed | Done | `f089bdb` |
+| Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Not started | — |
+| Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Not started | — |
+| Phase 4: task lifecycle, conversation runs, execution contracts, live transitions, provider transport | Not started | — |
+| Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02) | Not started | — |
+| Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02 scripts) | Not started | — |
+| Final assessment with a fresh-context agent | Not run | — |
 
-Generated apps (owner decision, 2026-10-30): app creation stays part of Jarvis, rebuilt as an installable app platform; see [13-app-platform.md](../../jarvis-tasks/13-app-platform.md). The old generated-app subsystem (registry, `/api/apps`, storage SDK, `/workspace/apps` generated entries, `generated_app` task targets) stays until that platform replaces it; its 15 old app folders were deleted. Its capabilities can no longer be revoked over HTTP (they still expire after 15 minutes). Recipes and Documents move onto the platform as its first packages, which also covers C05 (result renderer registry) and much of C07. Tool-event presenters in `agent-event-presenter.ts`/`conversation_timeline.py` and the `live_item` read path now only render historical events; they go with the C14/I05 work.
+Generated apps (owner decision, 2026-10-30): app creation stays part of Jarvis, rebuilt as an installable app platform; see [13-app-platform.md](../../jarvis-tasks/13-app-platform.md). **Done (2026-11-01):** all six platform steps are implemented, and the old generated-app subsystem (registry, `/api/apps`, `/api/app-catalog`, the storage SDK, the generated-app tables and the `generated_app` task target) is removed. Results are records in installed apps, so the result renderer registry (C05) is gone; the static companion still imports the task route page (C07 remains for that). Tool-event presenters in `agent-event-presenter.ts`/`conversation_timeline.py` and the `live_item` read path now only render historical events; they go with the C14/I05 work.
 
 ## Phase 0 — Small immediate fixes
 

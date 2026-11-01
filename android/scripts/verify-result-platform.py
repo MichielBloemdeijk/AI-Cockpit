@@ -1,7 +1,13 @@
-"""Unattended M5 production shell + Android notification/WebView acceptance.
+"""Unattended Android acceptance for results kept as app records.
 
-No model, capture, provider, speech or physical-device claims. Uses installed
-API37 SDK/AVD, a disposable password-backed database and the real static export.
+A fixture worker publishes a Document into the Documents app. The phone, paired
+through its real deep link against a disposable password-backed backend behind
+the real Next frontend, must notify without stealing focus, open the record in
+the app from the notification's "Open result" action, show it again after a
+process death without rerunning anything, report the record it shows, and open
+the document's external source in the browser.
+
+No model, capture, provider, speech or physical-device claims.
 Run from backend with: uv run python ../android/scripts/verify-result-platform.py
 """
 from __future__ import annotations
@@ -77,7 +83,8 @@ def visible(serial, evidence, marker, name):
 
 
 def open_result(serial, path, *, clear=False, server=None, pairing_code=None):
-    extras = ["--es", "path", path, "--ez", "clear_cookies", str(clear).lower()]
+    # Single quotes keep the device shell from splitting the record link at "&".
+    extras = ["--es", "path", f"'{path}'", "--ez", "clear_cookies", str(clear).lower()]
     if pairing_code:
         extras += ["--es", "server_url", server, "--es", "pairing_code", pairing_code]
     screen.adb(serial, "shell", "am", "start", "-W", "-f", "0x10008000", "-n",
@@ -92,6 +99,18 @@ def login(serial, evidence, password):
     screen.adb(serial, "shell", "input", "text", password)
     screen.adb(serial, "shell", "input", "keyevent", "4")
     tap_text(serial, evidence, "Sign in")
+
+
+def browser_page_visible(serial, evidence, marker):
+    """Whether the browser shows the page, after closing the tips and promotions it lays over it."""
+    current = nodes(serial, evidence, "external-page")
+    if any(marker in node.get("text", "") or marker in node.get("content-desc", "") for node in current):
+        return True
+    dismiss = next((node for node in current if node.get("text") in {"Close", "No thanks", "Got it", "Not now"}
+                    and node.get("clickable") == "true"), None)
+    if dismiss is not None:
+        screen.tap_node(serial, dismiss)
+    return False
 
 
 def foreground(serial):
@@ -117,7 +136,7 @@ def main():
         raise RuntimeError("This harness requires the installed Windows Android SDK")
     evidence = Path(tempfile.mkdtemp(prefix="jarvis-m5-results-"))
     print(f"Evidence: {evidence}", flush=True)
-    server = external = emulator = None
+    server = external = frontend = emulator = None
     serial = None
     report = {"status": "failed", "scope": "Model-free API37 production result delivery; not capture/provider/physical acceptance"}
     try:
@@ -125,7 +144,6 @@ def main():
         next_bin = screen.ROOT / "frontend/node_modules/next/dist/bin/next"
         if not node or not next_bin.is_file():
             raise RuntimeError("Frontend dependencies are unavailable")
-        subprocess.run([node, str(next_bin), "build", "result-export"], cwd=screen.ROOT / "frontend", check=True, timeout=180)
         subprocess.run([str(screen.ANDROID / "gradlew.bat"), ":app:testDebugUnitTest", ":app:assembleDebug", ":screen-fixture:assembleDebug"],
             cwd=screen.ANDROID, check=True, timeout=300)
         serial, emulator = screen.ensure_emulator()
@@ -142,7 +160,7 @@ def main():
         screen.adb(serial, "shell", "cmd", "statusbar", "collapse")
         screen.adb(serial, "shell", "input", "keyevent", "3")
         screen.adb(serial, "logcat", "-c")
-        port, external_port = screen.unused_port(), screen.unused_port()
+        port, external_port, web_port = screen.unused_port(), screen.unused_port(), screen.unused_port()
         db_path = evidence / "fixture.db"
         external_url = f"http://10.0.2.2:{external_port}/source"
         resolved = screen.adb(serial, "shell", "cmd", "package", "resolve-activity", "--brief",
@@ -152,7 +170,7 @@ def main():
             raise RuntimeError("A default emulator HTTP browser is required")
         browser_package = component.split("/", 1)[0]
         env = {**os.environ, "DATABASE_URL": f"sqlite+aiosqlite:///{db_path.as_posix()}",
-            "AUTH_PASSWORD": PASSWORD, "JARVIS_ACCESS_MODE": "password", "JARVIS_PUBLIC_URL": f"http://10.0.2.2:{port}",
+            "AUTH_PASSWORD": PASSWORD, "JARVIS_ACCESS_MODE": "password", "JARVIS_PUBLIC_URL": f"http://10.0.2.2:{web_port}",
             "SESSION_SECRET_KEY": uuid4().hex, "SESSION_COOKIE_SECURE": "false",
             "M5_EXTERNAL_URL": external_url, "TASK_POOL_ENABLED": "false", "TASK_EXECUTOR": "codex",
             "TASK_ORCHESTRATION_ENABLED": "false", "TASK_ORCHESTRATION_LIVE_ENABLED": "false",
@@ -168,20 +186,24 @@ def main():
             "--host", "127.0.0.1", "--port", str(port)], env, evidence / "server.log")
         external = screen.start_service(["-m", "uvicorn", "m5_result_fixture:external_app", "--app-dir", app_dir,
             "--host", "127.0.0.1", "--port", str(external_port)], env, evidence / "external.log")
-        android_url = f"http://10.0.2.2:{port}"
+        # The phone talks to the frontend, which hosts /apps/<slug> and forwards /api, as Tailscale serves it.
+        frontend = screen.start_frontend(web_port, f"http://127.0.0.1:{port}", evidence, production=True)
+        android_url = f"http://10.0.2.2:{web_port}"
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10) as client:
             screen.wait_for("isolated API", lambda: client.get("/api/health").status_code == 200)
+            screen.wait_for("frontend", lambda: httpx.get(f"http://127.0.0.1:{web_port}/login", timeout=90).status_code == 200,
+                seconds=240)
             client.post("/api/auth/login", json={"password": PASSWORD}).raise_for_status()
             started = time.monotonic()
             created = client.post("/api/tasks", json={"goal": "M5 Android result fixture", "idempotency_key": uuid4().hex,
                 "result": {"mode": "new"}})
             created.raise_for_status()
-            task_id, path = created.json()["id"], created.json()["result_url"]
-            public_id = path.rsplit("/", 1)[1]
+            task_id = created.json()["id"]
+            assert created.json()["result_url"] is None  # a new result has no record until it is published
             report["admission_ms"] = round((time.monotonic() - started) * 1000)
-            html = client.get(path)
-            assert html.status_code == 200 and "/_result-assets/" in html.text
-            assert "private" in html.headers["cache-control"] and "noindex" in html.headers["x-robots-tag"]
+            # The record's key is the run that creates it, so its link is known before publication.
+            run_id = client.get(f"/api/tasks/{task_id}").json()["current_run_id"]
+            path = f"/apps/documents?collection=document&key={run_id}"
             pairing = client.post("/api/jarvis/devices/pairing-code")
             pairing.raise_for_status()
             # Exercise the real Android link entry point from an unpaired app.
@@ -196,14 +218,17 @@ def main():
             screen.adb(serial, "shell", "am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", "'" + link + "'", "-p", screen.PACKAGE)
             screen.wait_for("retained linked native app", lambda: visible(serial, evidence, "This phone is linked", "linked"), seconds=30)
             assert "Replace phone link" not in screen.adb(serial, "shell", "dumpsys", "activity", "top")
+            # The device session opens the app without an owner login, before the record exists.
             open_result(serial, path, clear=True)
-            screen.wait_for("device authenticated building result", lambda: visible(serial, evidence, "Building this result", "building"), seconds=30)
-            # Saved bearer renews a lost WebView cookie without owner login.
+            screen.wait_for("device-authenticated Documents app", lambda: visible(serial, evidence, "Documents", "app"), seconds=60)
+            # The saved device credential renews a lost WebView cookie without owner login.
             open_result(serial, path, clear=True)
-            screen.wait_for("cookie renewal without login", lambda: visible(serial, evidence, "Building this result", "cookie-renewed"), seconds=30)
+            screen.wait_for("cookie renewal without login", lambda: visible(serial, evidence, "Documents", "cookie-renewed"), seconds=60)
             screen.adb(serial, "shell", "input", "keyevent", "3")
             started = time.monotonic()
-            client.post(f"/_fixture/publish/{task_id}").raise_for_status()
+            published = client.post(f"/_fixture/publish/{task_id}")
+            published.raise_for_status()
+            assert published.json()["url"] == path and published.json()["revision"] == 1
             notification = screen.wait_for("native Open result notification", lambda: (
                 dump if "Task completed" in (dump := screen.adb(serial, "shell", "dumpsys", "notification", "--noredact"))
                 and "Open result" in dump else None), seconds=30)
@@ -217,46 +242,39 @@ def main():
             screen.tap_node(serial, action)
             screen.wait_for("notification result content", lambda: visible(serial, evidence,
                 "M5-NATIVE-DOCUMENT-READY", "ready"), seconds=30)
-            report["publication_to_visible_with_login_ms"] = round((time.monotonic() - started) * 1000)
-            tap_text(serial, evidence, "Save")
-            screen.wait_for("saved result control", lambda: visible(serial, evidence, "Saved", "saved"), seconds=20)
-            snapshot = client.get(f"/api/results/{public_id}").json()
-            assert snapshot["actions"][0]["value"]["saved"] is True and snapshot["revision_number"] == 1
+            report["publication_to_visible_ms"] = round((time.monotonic() - started) * 1000)
+            record = client.get(f"/api/app-platform/data/documents/document/{run_id}").json()
+            assert record["revision"] == 1
+            # Process death: the record shows again and nothing reruns.
             screen.adb(serial, "shell", "am", "force-stop", screen.PACKAGE)
             open_result(serial, path)
-            screen.wait_for("reopened saved result", lambda: visible(serial, evidence, "Saved", "reopened"), seconds=30)
-            assert client.get(f"/api/results/{public_id}").json() == snapshot
-            tap_text(serial, evidence, "View source task")
-            screen.wait_for("source task result list", lambda: visible(serial, evidence, "Maintained results", "task"), seconds=30)
-            backlink = screen.wait_for("source task result backlink", lambda: next((n for n in nodes(serial, evidence, "task")
-                if n.get("text") == "M5 native document" and n.get("class") == "android.widget.TextView"), None), seconds=20)
-            screen.tap_node(serial, backlink)
-            screen.wait_for("same result backlink", lambda: visible(serial, evidence, "M5-NATIVE-DOCUMENT-READY", "backlink"), seconds=30)
+            screen.wait_for("reopened record", lambda: visible(serial, evidence, "M5-NATIVE-DOCUMENT-READY", "reopened"), seconds=60)
+            assert client.get(f"/api/app-platform/data/documents/document/{run_id}").json() == record
             tap_text(serial, evidence, "External fixture source")
             activity = screen.wait_for("external browser activity", lambda: external_activity(serial, external_url, browser_package), seconds=30)
             # Chrome first resumes a no-display intent dispatcher. Reopening
             # Jarvis during that handoff lets the pending Chrome launch win.
-            screen.wait_for("external browser page", lambda: visible(serial, evidence,
-                "M5-EXTERNAL-BROWSER-ONLY", "external-page"), seconds=30)
+            screen.wait_for("external browser page", lambda: browser_page_visible(serial, evidence,
+                "M5-EXTERNAL-BROWSER-ONLY"), seconds=45)
             (evidence / "android-external-activity.txt").write_text(activity, encoding="utf-8")
             # Return to the unchanged result rather than using browser Back as
             # a surrogate proof; force-stop/reopen already verified persistence.
             open_result(serial, path)
-            screen.wait_for("result after external navigation", lambda: visible(serial, evidence, "Saved", "external-return"), seconds=30)
+            screen.wait_for("record after external navigation", lambda: visible(serial, evidence,
+                "M5-NATIVE-DOCUMENT-READY", "external-return"), seconds=60)
             with sqlite3.connect(db_path) as db:
                 assert db.execute("SELECT count(*) FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()[0] == 1
-                assert db.execute("SELECT count(*) FROM result_page_revisions").fetchone()[0] == 1
-                opened = db.execute("SELECT count(*) FROM result_metrics WHERE kind='notification_opened'").fetchone()[0]
-                assert opened == 1
-            metrics = client.get(f"/api/results/{public_id}/observability").json()
-            assert metrics["counts"]["client_first_ready"] >= 1 and metrics["counts"]["sse_connection"] >= 1
+                deep_link = db.execute("SELECT deep_link FROM notification_outbox WHERE task_id=?", (task_id,)).fetchone()[0]
+                assert deep_link == path
+            # The app reported the record on screen, so Jarvis knows what "this one" means.
+            with sqlite3.connect(db_path.parent / "apps.db") as apps:
+                assert apps.execute("SELECT record_key FROM app_views WHERE app_slug='documents'").fetchone() == (run_id,)
             report.update(status="pass", android_api=screen.adb(serial, "shell", "getprop", "ro.build.version.sdk"),
                 avd=screen.AVD_NAME, system_image=screen.IMAGE_ID, result_url=path, task_id=task_id,
-                production_static_shell=True, future_id=True, real_deep_link=True, interrupted_link_recovery=True, device_scoped_session=True, no_owner_login=True,
+                real_deep_link=True, interrupted_link_recovery=True, device_scoped_session=True, no_owner_login=True,
                 cookie_loss_notification_device_return=True, open_result_action_tapped=True,
-                completion_does_not_launch=True, saved_reopen=True, source_task_backlink=True,
-                external_browser_intent=True, reopen_does_not_execute=True, native_open_receipt=True,
-                models_called=0, evidence_dir=str(evidence))
+                completion_does_not_launch=True, record_reopened_after_process_death=True, record_view_reported=True,
+                external_browser_intent=True, reopen_does_not_execute=True, models_called=0, evidence_dir=str(evidence))
     except Exception as exc:
         report["failure"] = f"{type(exc).__name__}: {exc}"
         raise
@@ -272,7 +290,7 @@ def main():
                 args.report.parent.mkdir(parents=True, exist_ok=True)
                 args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         finally:
-            for process in (external, server, None if args.keep_emulator else emulator):
+            for process in (frontend, external, server, None if args.keep_emulator else emulator):
                 screen.stop_tree(process)
     print(json.dumps(report, indent=2), flush=True)
 

@@ -145,17 +145,42 @@ def start_service(args: list[str], env: dict[str, str], log_path: Path) -> subpr
     return process
 
 
-def start_frontend(port: int, backend_url: str, evidence: Path) -> subprocess.Popen:
+def task_result(client, task_id: str) -> dict | None:
+    """The task's published result: its link (url, app, collection, key) and its app record, or None."""
+    detail = client.get(f"/api/tasks/{task_id}")
+    detail.raise_for_status()
+    links = detail.json().get("results") or []
+    if not links:
+        return None
+    link = links[0]
+    record = client.get(f"/api/app-platform/data/{link['app']}/{link['collection']}/{link['key']}")
+    if record.status_code == 404:
+        return None
+    record.raise_for_status()
+    return {**link, "record": record.json()}
+
+
+def start_frontend(port: int, backend_url: str, evidence: Path, *, production: bool = False) -> subprocess.Popen:
+    """The Next frontend in front of a disposable backend, as Tailscale serves it to the phone.
+
+    `production` builds into its own folder and runs `next start`. The dev server's
+    live reload refuses the emulator's 10.0.2.2 origin and reloads app pages in a
+    loop, so app hosting is only meaningful in production mode. The API proxy is
+    fixed at build time, so each run builds for its own backend.
+    """
     node = shutil.which("node")
     next_bin = ROOT / "frontend" / "node_modules" / "next" / "dist" / "bin" / "next"
     if node is None or not next_bin.is_file():
         raise RuntimeError("Install frontend dependencies before running the mobile result fixture")
     env = {**os.environ, "AI_COCKPIT_API_PROXY_URL": backend_url,
            "AI_COCKPIT_BACKEND_URL": backend_url,
-           "AI_COCKPIT_NEXT_DIST_DIR": ".next-jarvis-agent-test-m2"}
+           "AI_COCKPIT_NEXT_DIST_DIR": ".next-android-acceptance" if production else ".next-jarvis-agent-test-m2"}
     log = (evidence / "frontend.log").open("wb")
     try:
-        process = start_owned_process([node, str(next_bin), "dev", "--hostname", "127.0.0.1",
+        if production:
+            subprocess.run([node, str(next_bin), "build"], cwd=ROOT / "frontend", env=env, stdout=log,
+                           stderr=subprocess.STDOUT, check=True, timeout=600)
+        process = start_owned_process([node, str(next_bin), "start" if production else "dev", "--hostname", "127.0.0.1",
                                        "--port", str(port)], cwd=ROOT / "frontend", env=env,
                                       stdout=log, stderr=subprocess.STDOUT)
     finally:
@@ -203,9 +228,9 @@ def verify_evidence(db_path: Path, task_id: str, activation_id: str,
             assert image.format == "JPEG" and image.width >= 500
             red, green, blue = image.convert("RGB").getpixel((image.width // 2, image.height * 3 // 4))
             assert blue > 140 and blue > red * 2 and blue > green * 2, "Fixture blue panel not captured"
-        page = db.execute("SELECT * FROM result_pages WHERE task_id=?", (task_id,)).fetchone()
-        assert page and page["status"] == "ready" and page["revision_number"] == 1
-        url = f"/results/{page['public_id']}"
+        link = task_result(client, task_id)
+        assert link and link["record"]["revision"] == 1
+        url = link["url"]
         notification = db.execute("SELECT * FROM notification_outbox WHERE task_id=? AND event_kind='task.completed'",
                                   (task_id,)).fetchone()
         assert notification and notification["deep_link"] == url
@@ -224,27 +249,26 @@ def verify_evidence(db_path: Path, task_id: str, activation_id: str,
                                 (request["session_id"],)).fetchone()
         timing = json.loads(tool_event["payload_json"])["output"]["timing_ms"] if tool_event else None
         assert timing and timing["ready_call_to_admission"] >= 0
-        result = client.get(f"/api/results/{page['public_id']}")
-        result.raise_for_status()
-        body = result.json()
-        assert body["url"] == url and body["active_execution_run_id"] == request["execution_run_id"]
-        text = json.dumps(body["content"]).upper()
+        stored = db.execute("SELECT execution_run_id FROM task_results WHERE task_id=?", (task_id,)).fetchone()
+        assert stored and stored["execution_run_id"] == request["execution_run_id"]
+        body = link["record"]["value"]
+        text = json.dumps(body).upper()
         research_usage = []
         if definition == "screen_document@1":
             assert "FIXTURE-A-VISIBLE-MARKER" in text and "BLUE" in text
         else:
             assert "TOMATO" in text and "PASTA" in text
-            assert body["result_kind"] == ("recipe.v1" if definition.startswith("recipe") else "document.v1")
+            assert link["collection"] == ("recipe" if definition.startswith("recipe") else "document")
             if definition.startswith("recipe"):
-                assert body["content"]["ingredients"] and body["content"]["instructions"] and body["content"]["sources"]
+                assert body["ingredients"] and body["instructions"] and body["sources"]
             events = db.execute("SELECT sequence, payload_json FROM task_events WHERE task_id=? "
                 "AND event_type IN ('agent.native.item','agent.native.subagent.item')", (task_id,)).fetchall()
             research_usage = [{"source_event_sequence": row["sequence"], "item": json.loads(row["payload_json"])["item"]}
                 for row in events if json.loads(row["payload_json"]).get("item", {}).get("type") == "webSearch"]
-            assert research_usage and body["content"]["source_event_sequences"]
+            assert research_usage and body["sources"]
         return {
             "task_id": task_id, "activation_id": activation_id, "capture_id": capture_id,
-            "definition": definition, "result_kind": body["result_kind"], "search_usage": research_usage,
+            "definition": definition, "result_kind": link["kind"], "search_usage": research_usage,
             "active_execution_s": iso_seconds(attempt["started_at"], attempt["ended_at"]),
             "admission_to_ready_s": iso_seconds(task["created_at"], task["finished_at"]),
             "execution_run_id": request["execution_run_id"], "result_url": url,
@@ -460,13 +484,17 @@ def main() -> None:
 
         from app.services.task_workflows import load_workflow
         workflow = load_workflow(args.workflow)
-        port = unused_port()
+        port, web_port = unused_port(), unused_port()
         db_path = evidence / "fixture.db"
         env = os.environ.copy()
         env.update({
             "DATABASE_URL": f"sqlite+aiosqlite:///{db_path.as_posix()}",
+            # The phone's WebView writes (such as the record it shows) come from the frontend's address.
+            "JARVIS_PUBLIC_URL": f"http://10.0.2.2:{web_port}",
             "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal", "SESSION_SECRET_KEY": uuid4().hex,
-            "TASK_EXECUTOR": "codex", "TASK_WORKFLOW_ALLOWLIST": f"{args.workflow}:{workflow.digest}",
+            # App workflows (Recipes, Documents) are enabled by their installed app; only core ones need the allowlist.
+            "TASK_EXECUTOR": "codex",
+            "TASK_WORKFLOW_ALLOWLIST": "" if workflow.app else f"{args.workflow}:{workflow.digest}",
             "TASK_RESEARCH_ENABLED": "false" if args.workflow == "screen_document@1" else "true",
             # Codex's guarded workspace sandbox grants writes under the repo,
             # not an arbitrary Windows temp directory.
@@ -500,8 +528,7 @@ def main() -> None:
                      seconds=90)
             response = client.post("/api/auth/login", json={"password": ""})
             response.raise_for_status()
-            web_port = unused_port()
-            frontend = start_frontend(web_port, base, evidence)
+            frontend = start_frontend(web_port, base, evidence, production=True)
             with httpx.Client(base_url=f"http://127.0.0.1:{web_port}", timeout=10) as web_client:
                 wait_for("frontend/API proxy", lambda: web_client.get("/api/auth/status").status_code == 401,
                          seconds=90)
@@ -570,7 +597,7 @@ def main() -> None:
             adb(serial, "shell", "am", "force-stop", PACKAGE)
             adb(serial, "shell", "am", "start", "-f", "0x10008000", "-n",
                 f"{PACKAGE}/.assistant.CaptureFixtureActivity",
-                "--es", "open_result_path", report["result_url"])
+                "--es", "open_result_path", f"'{report['result_url']}'")
             wait_for("Android WebView result after reconnect", mobile_result_visible, seconds=45)
             with sqlite3.connect(db_path) as db:
                 assert db.execute("SELECT count(*) FROM task_attempts WHERE task_id=?",

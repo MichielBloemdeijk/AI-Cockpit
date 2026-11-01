@@ -18,6 +18,8 @@
  *   await cockpit.files.get(name)             -> Blob | null  (show it with URL.createObjectURL)
  *   await cockpit.files.delete(name)          -> true | false
  *   await cockpit.functions.call(name, input) -> the function's output (http-triggered functions only)
+ *   await cockpit.workflows.start(workflow, goal) -> { task_id, status, url }  (a paid agent task;
+ *         the app's own workflows that need no phone screen, at most 10 a day)
  *
  * Another app's collection is "<app>.<collection>" ("recipes.recipe") and needs
  * a grant in the manifest (grants.read, or grants.write to change it); Cockpit's
@@ -109,6 +111,12 @@
     functions: {
       call: function (name, input) {
         return call("functions.call", { name: name, input: input === undefined ? null : input });
+      },
+    },
+    workflows: {
+      start: function (workflow, goal) {
+        return call("workflows.start", { workflow: workflow, goal: goal,
+          requestKey: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2) });
       },
     },
   };

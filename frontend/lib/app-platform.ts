@@ -63,7 +63,7 @@ type BridgeRequest = {
   cockpit: "request";
   id: number;
   method: "data.get" | "data.put" | "data.delete" | "data.query"
-    | "files.list" | "files.put" | "files.get" | "files.delete" | "functions.call";
+    | "files.list" | "files.put" | "files.get" | "files.delete" | "functions.call" | "workflows.start";
   params: {
     collection?: unknown;
     key?: unknown;
@@ -77,6 +77,9 @@ type BridgeRequest = {
     data?: unknown;
     contentType?: unknown;
     input?: unknown;
+    workflow?: unknown;
+    goal?: unknown;
+    requestKey?: unknown;
   };
 };
 
@@ -138,6 +141,13 @@ export function bridgeHttpRequest(slug: string, request: BridgeRequest): BridgeH
     }, (body) => {
       if (!body.ok) throw new AppPlatformError(String(body.error || "The function failed"), 500);
       return body.output;
+    });
+  }
+  if (request.method === "workflows.start") {
+    return json(`${BASE}/api/app-platform/workflows/${app}/${segment(params.workflow, "workflow")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: String(params.goal ?? ""), request_key: String(params.requestKey ?? "") }),
     });
   }
   const base = `${BASE}/api/app-platform/data/${app}/${segment(params.collection, "collection")}`;

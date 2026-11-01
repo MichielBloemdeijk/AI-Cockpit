@@ -21,6 +21,7 @@ def module(name, filename):
 
 
 def result_snapshot(client, task_id, *, failure_type=RuntimeError):
+    """The completed task's result as {url, result_id, collection, revision, content}, or None before then."""
     task = client.get(f"/api/tasks/{task_id}")
     task.raise_for_status()
     detail = task.json()
@@ -30,13 +31,14 @@ def result_snapshot(client, task_id, *, failure_type=RuntimeError):
     if record["status"] == "waiting_for_input" and any(
             question.get("state") == "asked" for question in detail.get("questions", [])):
         raise failure_type("Research fixture unexpectedly requested clarification")
-    results = detail.get("results", [])
-    if record["status"] != "completed" or not results:
+    if record["status"] != "completed":
         return None
-    result = client.get(f"/api/results/{results[0]['public_id']}")
-    result.raise_for_status()
-    value = result.json()
-    return value if value["status"] == "ready" else None
+    screen = module("mobile_screen", "verify-screen-workflow.py")
+    result = screen.task_result(client, task_id)
+    if result is None:
+        return None
+    return {"url": result["url"], "result_id": result["result_id"], "collection": result["collection"],
+            "revision": result["record"]["revision"], "content": result["record"]["value"]}
 
 
 def run(screen, serial, database, backend_url, render_dir, folder, configuration, env, *, gate):
@@ -78,7 +80,7 @@ def run(screen, serial, database, backend_url, render_dir, folder, configuration
             print("Mobile result: waiting for sourced worker publication", flush=True)
             first = screen.wait_for("real research result", lambda: result_snapshot(client, task_id,
                 failure_type=screen.FixtureFailed), seconds=240)
-            if first["result_kind"] != "document.v1" or not first["content"].get("sources"):
+            if first["collection"] != "document" or not first["content"].get("sources"):
                 raise RuntimeError("Research worker did not publish a sourced document")
             if "ada" not in json.dumps(first["content"]).lower():
                 raise RuntimeError("Research result does not describe the visible topic")
@@ -101,7 +103,7 @@ def run(screen, serial, database, backend_url, render_dir, folder, configuration
             screen.wait_for("published document in WebView", lambda: ui.visible(serial, folder, "Ada", "result"), seconds=45)
             screen.adb(serial, "shell", "am", "force-stop", screen.PACKAGE)
             screen.adb(serial, "shell", "am", "start", "-f", "0x10008000", "-n",
-                f"{screen.PACKAGE}/.assistant.CaptureFixtureActivity", "--es", "open_result_path", path)
+                f"{screen.PACKAGE}/.assistant.CaptureFixtureActivity", "--es", "open_result_path", f"'{path}'")
             screen.wait_for("reopened document after process loss", lambda: ui.visible(serial, folder, "Ada", "reopened"), seconds=45)
             with sqlite3.connect(database) as db:
                 if db.execute("SELECT COUNT(*) FROM task_execution_runs WHERE task_id=?", (task_id,)).fetchone()[0] != run_count:
@@ -127,19 +129,19 @@ def run(screen, serial, database, backend_url, render_dir, folder, configuration
                 if current == initial_run:
                     return None
                 page = result_snapshot(client, task_id, failure_type=screen.FixtureFailed)
-                if page and page["revision_number"] <= first["revision_number"]:
+                if page and page["revision"] <= first["revision"]:
                     raise screen.FixtureFailed("Edit follow-up completed without revising the result")
-                return page if page and page["revision_number"] > first["revision_number"] else None
+                return page if page and page["revision"] > first["revision"] else None
             final = screen.wait_for("continued result publication", updated, seconds=240)
             with sqlite3.connect(database) as db:
                 followup_run = db.execute("SELECT current_run_id FROM tasks WHERE id=?", (task_id,)).fetchone()[0]
             proof = {"adapter": "openai_live", "workflow": "research_screen@1", "custom_wake": True,
                 "real_notification_delivered": bool(notification), "notification_action_tapped": True,
                 "reopened_result": True, "no_extra_run_on_reopen": True, "ui_followup": True,
-                "same_task_continuation": final["public_id"] == first["public_id"] and followup_run != initial_run,
+                "same_task_continuation": final["result_id"] == first["result_id"] and followup_run != initial_run,
                 "both_screen_roles": roles >= {"invocation", "latest"}, "source_count": len(first["content"]["sources"]),
                 "task_id": task_id, "initial_run_id": initial_run, "followup_run_id": followup_run,
-                "public_id": first["public_id"], "initial_result": first, "final_result": final,
+                "result_id": first["result_id"], "initial_result": first, "final_result": final,
                 "admission_latency_ms": sample.get("latency_ms")}
             error = validate_observation("mobile_result", proof)
             if error:

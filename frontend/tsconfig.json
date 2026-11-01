@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -19,7 +23,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": [
+        "./*"
+      ]
     }
   },
   "include": [
@@ -28,7 +34,14 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
-    "**/*.mts"
+    "**/*.mts",
+    ".next-jarvis-agent-test-m2/types/**/*.ts",
+    ".next-jarvis-agent-test-m2/dev/types/**/*.ts",
+    ".next-android-acceptance/types/**/*.ts",
+    ".next-android-acceptance/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "result-export"]
+  "exclude": [
+    "node_modules",
+    "result-export"
+  ]
 }

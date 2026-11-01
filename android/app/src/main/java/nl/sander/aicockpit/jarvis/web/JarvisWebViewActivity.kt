@@ -3,6 +3,7 @@ package nl.sander.aicockpit.jarvis.web
 import android.content.Intent
 import android.content.ActivityNotFoundException
 import android.os.Bundle
+import android.os.Message
 import android.graphics.Color
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -50,6 +51,10 @@ open class JarvisWebViewActivity : ComponentActivity() {
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.userAgentString += " JarvisPhone/1"
+            // Links that open a new window (target="_blank" in an app's sandboxed frame,
+            // such as a document's sources) arrive in onCreateWindow below; without
+            // this, WebView turns them into a top-level navigation the sandbox blocks.
+            settings.setSupportMultipleWindows(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
@@ -76,16 +81,44 @@ open class JarvisWebViewActivity : ComponentActivity() {
                     }
                     when (ResultNavigation.destination(store.serverUrl, target.toString())) {
                         ResultNavigation.Destination.INTERNAL -> return false
-                        ResultNavigation.Destination.EXTERNAL -> if (request.isForMainFrame) {
-                            try { startActivity(Intent(Intent.ACTION_VIEW, target)) }
-                            catch (_: ActivityNotFoundException) { /* No browser installed. Keep the result. */ }
-                        }
+                        ResultNavigation.Destination.EXTERNAL -> if (request.isForMainFrame) openInBrowser(target)
                         ResultNavigation.Destination.BLOCKED -> Unit
                     }
                     return true
                 }
             }
             webChromeClient = object : WebChromeClient() {
+                override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+                    // Only a tapped link may open a window, and it never becomes one: its
+                    // address is caught and routed like any other navigation.
+                    if (!isUserGesture) return false
+                    val opener = WebView(this@JarvisWebViewActivity)
+                    opener.webViewClient = object : WebViewClient() {
+                        private var routed = false
+                        fun route(target: android.net.Uri) {
+                            if (routed) return
+                            routed = true
+                            when (ResultNavigation.destination(store.serverUrl, target.toString())) {
+                                ResultNavigation.Destination.INTERNAL -> webView.loadUrl(target.toString())
+                                ResultNavigation.Destination.EXTERNAL -> openInBrowser(target)
+                                ResultNavigation.Destination.BLOCKED -> Unit
+                            }
+                            opener.post { opener.destroy() }
+                        }
+                        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                            route(request.url)
+                            return true
+                        }
+                        override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                            view.stopLoading()
+                            route(android.net.Uri.parse(url))
+                        }
+                    }
+                    (resultMsg.obj as WebView.WebViewTransport).webView = opener
+                    resultMsg.sendToTarget()
+                    return true
+                }
+
                 override fun onPermissionRequest(request: PermissionRequest) {
                     // Android voice belongs to the service, never a WebView recorder.
                     request.deny()
@@ -174,6 +207,11 @@ open class JarvisWebViewActivity : ComponentActivity() {
         voiceBridge?.close(); voiceBridge = null
         if (::webView.isInitialized) { webView.stopLoading(); webView.destroy() }
         super.onDestroy()
+    }
+
+    private fun openInBrowser(target: android.net.Uri) {
+        try { startActivity(Intent(Intent.ACTION_VIEW, target)) }
+        catch (_: ActivityNotFoundException) { /* No browser installed. Keep the result. */ }
     }
 
     companion object { const val EXTRA_PATH = "path" }

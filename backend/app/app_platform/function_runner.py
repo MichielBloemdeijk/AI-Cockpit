@@ -123,6 +123,12 @@ class _Files:
         return _call("files.delete", {"name": name})
 
 
+class _Workflows:
+    def start(self, workflow, goal):
+        """Start one of the app's workflows (a paid agent task); returns {"task_id", "status", "url"}."""
+        return _call("workflows.start", {"workflow": workflow, "goal": goal})
+
+
 class Cockpit:
     """The platform as a function sees it: `handle(input, cockpit)`."""
 
@@ -131,6 +137,7 @@ class Cockpit:
         self.trigger = trigger
         self.data = _Data()
         self.files = _Files()
+        self.workflows = _Workflows()
 
     def fetch(self, url, method="GET", headers=None, body=None, json=None, timeout=20):
         if json is not None:
