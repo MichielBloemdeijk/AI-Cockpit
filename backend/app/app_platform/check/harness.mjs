@@ -47,6 +47,7 @@ function hostPage(test) {
   }
   const functionResults = ${scriptJson(test.functions || {})};
   const httpFunctions = ${scriptJson(job.httpFunctions || [])};
+  const readOnly = ${scriptJson(job.readOnly || [])};
   window.__ready = false;
   window.__appErrors = [];
   window.__records = () => Array.from(store.entries()).map(([id, record]) =>
@@ -78,6 +79,8 @@ function hostPage(test) {
     const id = params.collection + "/" + params.key;
     const current = store.get(id);
     const expected = params.expectedRevision;
+    if ((method === "data.put" || method === "data.delete") && (readOnly.includes(params.collection)
+        || String(params.collection).startsWith("system."))) fail(403, params.collection + " is read-only for this app; it needs grants.write");
     if (method === "data.get") return current ? structuredClone(current) : null;
     if (method === "data.put") {
       if (expected !== undefined && expected !== null && expected !== (current ? current.revision : 0))

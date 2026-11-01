@@ -1,0 +1,26 @@
+{
+  "tests": [
+    {
+      "name": "follows a renamed recipe",
+      "function": "follow_recipe",
+      "input": {"event": "record_changed", "collection": "recipes.recipe", "app": "recipes", "key": "r1",
+                "change": "put", "revision": 2,
+                "value": {"title": "Roasted tomato soup", "ingredients": ["tomatoes"], "instructions": ["Roast."],
+                          "sources": [{"url": "https://example.org/soup", "title": "Soup"}]}},
+      "records": {"meal": [
+        {"key": "monday", "value": {"day": "monday", "recipe": "r1", "title": "Tomato soup"}},
+        {"key": "friday", "value": {"day": "friday", "recipe": "r2", "title": "Apple pie"}}
+      ]},
+      "expect": {"output": {"updated": 1},
+                 "records": [{"collection": "meal", "count": 1, "where": {"title": "Roasted tomato soup"}}]}
+    },
+    {
+      "name": "marks meals of a deleted recipe",
+      "function": "follow_recipe",
+      "input": {"event": "record_changed", "collection": "recipes.recipe", "app": "recipes", "key": "r1",
+                "change": "delete"},
+      "records": {"meal": [{"key": "monday", "value": {"day": "monday", "recipe": "r1", "title": "Tomato soup"}}]},
+      "expect": {"output": {"updated": 1}, "records": [{"collection": "meal", "count": 1, "where": {"missing": true}}]}
+    }
+  ]
+}

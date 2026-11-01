@@ -1,0 +1,18 @@
+{
+  "schema": "cockpit-app.v1",
+  "slug": "meal-planner",
+  "title": "Meal planner",
+  "version": 1,
+  "description": "Plans the week's dinners from the Recipes app. The reference package for reading another app's data.",
+  "ui": {"entry": "ui/index.html"},
+  "collections": {
+    "meal": {"schema": "schemas/meal.json", "indexes": ["day"]}
+  },
+  "functions": {
+    "follow_recipe": {"file": "functions/follow_recipe.py",
+                      "trigger": {"event": "record_changed", "collection": "recipes.recipe"},
+                      "description": "Keep planned meals in step when their recipe is renamed or deleted."}
+  },
+  "grants": {"read": ["recipes.recipe"]},
+  "jarvis": {"summary": "Dinners planned per weekday; each meal names a recipe from the Recipes app by key and title."}
+}

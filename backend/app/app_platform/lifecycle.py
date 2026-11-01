@@ -93,6 +93,75 @@ def package_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+async def consumers(slug: str) -> dict[str, list[str]]:
+    """{collection: titles of the other installed apps with a grant on it}."""
+    shared: dict[str, list[str]] = {}
+    for app in await list_apps():
+        if app.slug == slug:
+            continue
+        grants = app.manifest.get("grants") or {}
+        for grant in {*(grants.get("read") or []), *(grants.get("write") or [])}:
+            owner, _, collection = grant.partition(".")
+            if owner == slug:
+                shared.setdefault(collection, []).append(app.title)
+    return shared
+
+
+async def schema_change_problems(slug: str, old: dict[str, dict[str, Any]],
+                                 new: dict[str, dict[str, Any]]) -> list[str]:
+    """Collection changes that would break stored data or another app ("stored data decides").
+
+    A collection may always gain optional fields. Any other change (a field
+    removed, renamed or retyped, a new required field, a removed collection)
+    is allowed only when no other app has a grant on the collection and every
+    stored record still fits the new schema (a removed collection must be empty).
+    """
+    from jsonschema import Draft202012Validator
+
+    shared = await consumers(slug)
+    problems: list[str] = []
+    for name, old_schema in old.items():
+        changes = compatibility_problems({name: old_schema}, new)
+        if not changes:
+            continue
+        if name in shared:
+            problems.append(f"{'; '.join(changes)}: {', '.join(sorted(shared[name]))} uses {slug}.{name}, so it "
+                            "may only gain optional fields; put a new shape in a new collection")
+            continue
+        async with apps_session() as session:
+            rows = list((await session.execute(select(AppRecord.record_key, AppRecord.value_json).where(
+                AppRecord.app_slug == slug, AppRecord.collection == name))).all())
+        if name not in new:
+            if rows:
+                problems.append(f"collection {name} was removed but still holds {len(rows)} records")
+            continue
+        validator = Draft202012Validator(new[name])
+        misfits = [(key, error.message) for key, value in rows for error in list(validator.iter_errors(value))[:1]]
+        if misfits:
+            key, message = misfits[0]
+            problems.append(f"{'; '.join(changes)}, and {len(misfits)} of {len(rows)} stored {name} records "
+                            f"don't fit the new schema (for example {key!r}: {message})")
+    return problems
+
+
+async def grant_problems(slug: str, grants: dict[str, Any]) -> list[str]:
+    """Granted collections that don't exist: the app named in a grant must be installed with it."""
+    problems = []
+    for grant in sorted({*(grants.get("read") or []), *(grants.get("write") or [])}):
+        owner, _, collection = grant.partition(".")
+        if owner == "system":
+            continue  # the pattern allows only existing system collections
+        try:
+            provider = await get_active(owner)
+        except AppNotFound:
+            problems.append(f"Grant {grant}: no app {owner} is installed")
+            continue
+        if collection not in provider.collections:
+            problems.append(f"Grant {grant}: {provider.title} has no collection {collection} "
+                            f"(it has {', '.join(sorted(provider.collections)) or 'none'})")
+    return problems
+
+
 async def install_package(source: Path) -> ActiveApp:
     """Validate, copy and activate a package. Raises ManifestError when it is not installable."""
     from app.app_platform.workflows import workflow_conflicts
@@ -119,9 +188,12 @@ async def install_package(source: Path) -> ActiveApp:
             raise ManifestError(f"{manifest.slug} version {manifest.version} is not newer than the installed versions")
         if existing is not None:
             active = next(value for version, value in versions if version == existing.active_version)
-            problems = compatibility_problems(_schemas(active), schemas)
+            problems = await schema_change_problems(manifest.slug, _schemas(active), schemas)
             if problems:
-                raise ManifestError("Incompatible with the active version: " + "; ".join(problems))
+                raise ManifestError("Incompatible with stored data: " + "; ".join(problems))
+        problems = await grant_problems(manifest.slug, stored.get("grants") or {})
+        if problems:
+            raise ManifestError("; ".join(problems))
         if destination.exists():
             raise ManifestError(f"Package folder already exists: {destination}")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -258,7 +330,31 @@ async def status(slug: str) -> dict[str, Any]:
     return {**app.summary(), "versions": versions,
             "records": {name: counts.get(name, 0) for name in sorted(app.collections)},
             "functions": functions, "stored_files": await usage(slug) if app.manifest.get("files") else None,
+            "grants": app.manifest.get("grants") or {}, "used_by": await consumers(slug),
             "recent_runs": await recent_runs(slug), "recent_errors": await recent_errors(slug)}
+
+
+async def data_catalog() -> dict[str, Any]:
+    """Every installed app's collections (schema, record count, an example) and the system collections."""
+    from app.app_platform import system
+
+    apps = []
+    for app in await list_apps():
+        shared = await consumers(app.slug)
+        collections = {}
+        async with apps_session() as session:
+            for name, spec in sorted(app.collections.items()):
+                count = (await session.execute(select(func.count()).where(
+                    AppRecord.app_slug == app.slug, AppRecord.collection == name))).scalar_one()
+                example = (await session.execute(select(AppRecord.value_json).where(
+                    AppRecord.app_slug == app.slug, AppRecord.collection == name)
+                    .order_by(AppRecord.updated_at.desc()).limit(1))).scalar_one_or_none()
+                collections[f"{app.slug}.{name}"] = {"schema": spec["schema_json"], "records": count,
+                                                     "example": example, "used_by": sorted(shared.get(name, []))}
+        apps.append({"slug": app.slug, "title": app.title, "version": app.version,
+                     "summary": (app.manifest.get("jarvis") or {}).get("summary", ""), "collections": collections})
+    return {"apps": apps, "system": {f"system.{name}": {"schema": schema, "read_only": True}
+                                     for name, schema in system.SCHEMAS.items()}}
 
 
 async def checkout(slug: str, destination: Path) -> ActiveApp:

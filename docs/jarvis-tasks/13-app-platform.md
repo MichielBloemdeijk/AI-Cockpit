@@ -1,6 +1,6 @@
 # App platform: apps Jarvis builds, runs and maintains
 
-Status: **approved** 2026-10-30; build steps 1 to 4 implemented (see
+Status: **approved** 2026-10-30; build steps 1 to 5 implemented (see
 [Implementation notes](#implementation-notes)). Follows the
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
@@ -217,9 +217,11 @@ Steps 4 and 5 can swap if the first real app needs sharing before functions.
 
 ## Open questions
 
-- **Collection schema migrations:** when a new app version changes a collection
-  compatibly, are existing records migrated by a function the builder writes, or
-  validated lazily on read?
+- ~~Collection schema migrations~~: stored data decides (owner's decision,
+  2026-11-01). A version may change a collection in any way when no other app
+  has a grant on it and every stored record fits the new schema; shared
+  collections only gain optional fields. Code that rewrites records comes when
+  a real need appears.
 - ~~Function language~~: Python only (owner's decision, 2026-11-01). Node can
   be added if an app needs it.
 - ~~Where app UIs open on the phone~~: in the WebView shell, through the same
@@ -487,3 +489,50 @@ Deliberate simplifications to revisit:
   builder is told to make event functions idempotent.
 - `apps.db` and the app file store are not in a backup routine yet; nothing
   in Cockpit has one (open question above).
+
+### Step 5 (2026-11-01)
+
+- **Grants.** `grants.read` and `grants.write` list other apps' collections as
+  `<app>.<collection>`, and `system.tasks`, `system.results` and
+  `system.conversations` (read only). Write includes read. An app uses the
+  qualified name everywhere: `cockpit.data.*` in its UI and functions, test
+  seeds and `record_changed` triggers. The data API resolves it in
+  `records.py`: without the grant the call fails, and writes are validated
+  against the owning app's schema and trigger its event functions. An app
+  token still reaches only its own app's routes; the grant decides what those
+  routes may reach. Installing needs the granted app and collection to exist;
+  the slug `system` is reserved.
+- **Watching another app's data.** A function may subscribe to a granted
+  collection (`{"event": "record_changed", "collection": "recipes.recipe"}`).
+  A change is queued once for the owner and once for each watcher, which sees
+  the qualified name and the owner's slug in its input.
+- **Schema changes: stored data decides.** Adding optional fields is always
+  allowed. Any other change (`lifecycle.schema_change_problems`) needs the
+  collection to be unshared and every stored record to fit the new schema; a
+  removed collection must be empty. Installation and the package check apply
+  the same rule and name a record that doesn't fit. `app_status` shows
+  `used_by`.
+- **System collections** (`system.py`) are read-only views of the core
+  database with the usual record shape: tasks (goal, status, summary,
+  timestamps), results (the task, app, collection, key, title and url) and
+  conversations (title and timestamps; `get` adds the latest 100 final
+  messages). Queries filter and order the latest 500 entries in memory.
+- **Builder.** A new bridge tool, `app_catalog`, returns every installed app's
+  collections with schemas, record counts, an example and who uses them, plus
+  the system collections. The instructions cover grants, qualified names,
+  watching, system data and the schema rule. Package checks validate seeds of
+  granted collections against the owner's schema and refuse writes to
+  read-only grants, in UI tests as well as function tests.
+- **Reference package:** `app_platform/samples/meal-planner` plans dinners from
+  Recipes through a read grant and follows renamed or deleted recipes with an
+  event function.
+
+Deliberate simplifications to revisit:
+
+- Uninstalling or resetting an app others read is allowed; their reads then
+  fail or come back empty. Jarvis sees the failures as app errors.
+- Rolling an app back to a version with an older schema doesn't check stored
+  records against it.
+- System collections can't trigger functions yet (for example "when a task
+  finishes"); apps poll them from a scheduled function instead.
+- Grants are all-or-nothing per collection: no field- or record-level limits.

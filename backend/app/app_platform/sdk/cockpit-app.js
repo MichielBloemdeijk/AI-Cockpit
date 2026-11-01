@@ -19,7 +19,10 @@
  *   await cockpit.files.delete(name)          -> true | false
  *   await cockpit.functions.call(name, input) -> the function's output (http-triggered functions only)
  *
- * Files need a "files" section in the manifest; names are paths like
+ * Another app's collection is "<app>.<collection>" ("recipes.recipe") and needs
+ * a grant in the manifest (grants.read, or grants.write to change it); Cockpit's
+ * own data is read-only as "system.tasks", "system.results" and
+ * "system.conversations". Files need a "files" section in the manifest; names are paths like
  * "photos/a.jpg". A failed function call rejects with the function's error.
  *
  * `target` is { collection, key } when Cockpit opened the app on a record (a

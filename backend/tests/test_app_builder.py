@@ -148,13 +148,15 @@ async def test_check_reports_version_and_compatibility_against_the_installed_app
     monkeypatch.setattr("app.app_platform.check._run_harness", no_browser)
     await app_platform.install_package(build())
     assert (await app_platform.check_package(build()))["ok"] is True  # the active package itself
+    await app_platform.put_record("notes", "note", "a", {"text": "milk", "pinned": True})
 
     def retype(manifest, schema):
         manifest["title"] = "Notes 2"
         schema["properties"]["pinned"] = {"type": "string"}
     report = await app_platform.check_package(build("changed", edit=retype))
-    assert report["problems"][:2] == ["Set version to 2: version 1 is installed",
-                                      "Incompatible with stored data: note.pinned changed type"]
+    assert report["problems"][0] == "Set version to 2: version 1 is installed"
+    assert report["problems"][1].startswith("Incompatible with stored data: note.pinned changed type, and 1 of 1 "
+                                            "stored note records don't fit the new schema")
     # The package's own test seeds are validated against its new schema too.
     assert "seed 'a' is invalid" in report["problems"][2]
 
@@ -203,7 +205,8 @@ async def test_build_workflow_checks_out_installs_on_publish_and_replays(monkeyp
     args = await _claimed_build("Change the installed app Notes: add a colour")
 
     catalog = {tool["name"]: tool for tool in await _tool_catalog("app-build.v1", load_workflow("build_app@1").capabilities)}
-    assert set(catalog) == {"task_history", "app_checkout", "app_check", "task_question", "result_publish", "task_finish"}
+    assert set(catalog) == {"task_history", "app_checkout", "app_catalog", "app_check", "task_question", "result_publish",
+                            "task_finish"}
     publish_fields = set(catalog["result_publish"]["inputSchema"]["properties"])
     assert {"slug", "version"}.isdisjoint(publish_fields) and {"title", "body"} <= publish_fields
 

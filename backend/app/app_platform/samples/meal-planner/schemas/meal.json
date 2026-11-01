@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "day": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]},
+    "recipe": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Key of a recipes.recipe record"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "missing": {"type": "boolean", "description": "The recipe was deleted from the Recipes app"}
+  },
+  "required": ["day", "recipe", "title"],
+  "additionalProperties": false
+}

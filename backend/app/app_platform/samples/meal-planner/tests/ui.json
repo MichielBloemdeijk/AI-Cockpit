@@ -1,0 +1,36 @@
+{
+  "tests": [
+    {
+      "name": "plans a dinner from a recipe in the Recipes app",
+      "records": {
+        "recipes.recipe": [
+          {"key": "r1", "value": {"title": "Tomato soup", "ingredients": ["tomatoes"], "instructions": ["Simmer."],
+                                  "sources": [{"url": "https://example.org/soup", "title": "Soup"}]}},
+          {"key": "r2", "value": {"title": "Apple pie", "ingredients": ["apples"], "instructions": ["Bake."],
+                                  "sources": [{"url": "https://example.org/pie", "title": "Pie"}]}}
+        ]
+      },
+      "steps": [
+        {"expect_count": "#recipe option", "count": 2},
+        {"select": "#day", "value": "tuesday"},
+        {"select": "#recipe", "value": "r1"},
+        {"click": "button[type=submit]"},
+        {"expect_text": "Tomato soup", "selector": "#meals"},
+        {"expect_records": {"collection": "meal", "count": 1, "where": {"day": "tuesday", "recipe": "r1"}}},
+        {"expect_records": {"collection": "recipes.recipe", "count": 2}}
+      ]
+    },
+    {
+      "name": "shows a meal whose recipe was deleted",
+      "records": {
+        "meal": [{"key": "friday", "value": {"day": "friday", "recipe": "gone", "title": "Old stew", "missing": true}}]
+      },
+      "steps": [
+        {"expect_text": "Old stew (deleted from Recipes)", "selector": "#meals"},
+        {"expect_text": "No recipes in the Recipes app yet", "selector": "#recipe"},
+        {"click": "#meals button"},
+        {"expect_records": {"collection": "meal", "count": 0}}
+      ]
+    }
+  ]
+}

@@ -22,9 +22,9 @@ it names. The result must work on a phone screen and on a desktop.
 
 Ask task_question only when the request is too vague to build anything useful.
 Otherwise choose sensible defaults and mention them in the body. If the request
-can't be done on this platform (it needs another app's data, which comes later,
-or a long-running server), build the useful part if there is one, or
-task_finish with status failed and explain. Work that needs AI, research or the
+can't be done on this platform (for example it needs a long-running server),
+build the useful part if there is one, or task_finish with status failed and
+explain. Work that needs AI, research or the
 phone's screen belongs in a workflow the app provides (see below); plain code
 that runs on request, on a schedule or when data changes is a function.
 
@@ -57,8 +57,13 @@ Manifest, the required fields (`description`, `collections`, `files`,
   properties used for filtering or sorting. Schemas are objects; prefer
   `"additionalProperties": false` and bounded strings.
 - A new version must have a higher `version` and stay compatible with stored
-  data: add optional fields only. Never remove, rename or retype a field, never
-  make an existing optional field required, and never drop a collection.
+  data. Adding optional fields is always fine. Any other change to a collection
+  (removing, renaming or retyping a field, a new required field, dropping the
+  collection) is accepted only when no other app has a grant on it and every
+  stored record still fits the new schema (a dropped collection must be empty).
+  app_checkout shows record counts and `used_by`; app_check reports records
+  that don't fit. A collection other apps use only gains optional fields; put a
+  new shape in a new collection instead.
 - `jarvis.summary` tells Jarvis what the data means so it can answer questions
   about it. Write it for that reader.
 
@@ -234,6 +239,37 @@ A mock may give `method`, `status`, `headers` and `body` or `json`.
 `expect.output` matches when every expected key is equal (extra keys are
 fine); `expect.error` is text the error must contain; `expect.records` and
 `expect.files` count what the store holds afterwards.
+
+## Other apps' data
+
+An app can read, or read and write, another app's collection, and read
+Cockpit's own data. Call app_catalog to see every installed app's collections
+with their schemas, record counts and an example, before designing around
+them.
+
+```json
+"grants": {"read": ["recipes.recipe", "system.tasks"], "write": ["notes.note"]}
+```
+
+- Name another app's collection `<app>.<collection>` everywhere: in grants,
+  `cockpit.data.*` calls in the UI and in functions, test seeds, and
+  `record_changed` triggers (a function can react to changes in a granted
+  collection; its input's `collection` is the qualified name). Records you
+  write there are validated against that app's schema.
+- `write` includes read. Don't write to another app's collection unless the
+  request asks for it; prefer keeping your own records that point to theirs
+  by key.
+- System collections are read-only: `system.tasks` (goal, status, summary,
+  timestamps), `system.results` (results tasks saved as records, with their
+  app, collection, key, title and url) and `system.conversations` (title and
+  timestamps; `get` adds the latest messages). They query the latest 500
+  entries.
+- Tests seed granted collections under their qualified names; seeds must fit
+  the owning app's schema. A write to a read-only grant fails in tests as in
+  use.
+- The owning app must be installed with that collection when you install.
+  Once another app depends on a collection, its owner may only add optional
+  fields to it.
 
 ## Workflows: records Jarvis adds
 

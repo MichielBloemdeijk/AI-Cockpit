@@ -90,13 +90,15 @@ async def test_records_are_validated_revisioned_and_queryable() -> None:
 async def test_new_versions_must_be_newer_and_compatible_and_can_roll_back() -> None:
     await app_platform.install_package(build())
     await app_platform.put_record("notes", "note", "a", {"text": "keep me"})
+    await app_platform.put_record("notes", "note", "p", {"text": "pinned", "pinned": True})
 
     with pytest.raises(app_platform.ManifestError, match="not newer"):
         await app_platform.install_package(build("again", edit=lambda manifest, _schema: manifest.update(title="Again")))
 
     def retype(_manifest, schema):
         schema["properties"]["pinned"] = {"type": "string"}
-    with pytest.raises(app_platform.ManifestError, match="changed type"):
+    # A stored record uses pinned as a boolean, so it may not change type.
+    with pytest.raises(app_platform.ManifestError, match="changed type, and 1 of 2 stored note records"):
         await app_platform.install_package(build("retyped", version=2, edit=retype))
     assert not (settings.apps_path / "notes" / "2").exists()
 

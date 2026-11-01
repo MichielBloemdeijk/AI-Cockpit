@@ -9,7 +9,7 @@ CAPABILITY_TOOLS: dict[str, tuple[str, ...]] = {
     "task.question.ask@1": ("task_question",),
     "task.result.publish@1": ("result_publish",),
     "task.finish@1": ("task_finish",),
-    "app.package@1": ("app_checkout", "app_check"),
+    "app.package@1": ("app_checkout", "app_catalog", "app_check"),
 }
 
 INPUT_CONTEXTS = {

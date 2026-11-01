@@ -78,6 +78,11 @@ def _app_package_tools() -> list[dict[str, Any]]:
             "and create ./app themselves."),
          "inputSchema": {"type": "object", "properties": {"app": {"type": "string", "description": "Slug or title"}},
                          "required": ["app"], "additionalProperties": False}},
+        {"name": "app_catalog", "description": (
+            "The data other apps hold, for an app that reads or writes it through grants: every installed app "
+            "with each collection's JSON Schema, record count and one example record, plus the read-only system "
+            "collections (system.tasks, system.results, system.conversations)."),
+         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
         {"name": "app_check", "description": (
             "Check ./app the way installation will: manifest, compatibility with the installed version and "
             "stored data, and the UI in headless Chromium under the real sandbox, running tests/ui.json. "
@@ -260,7 +265,7 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
             final_text=arguments["summary"] if arguments["status"] == "completed" else None,
             workflow_answer=True, idempotency_key=f"workflow:{args.run_id}:{key}", **fence)
         return {"status": arguments["status"]}
-    if name in {"app_checkout", "app_check"}:
+    if name in {"app_checkout", "app_check", "app_catalog"}:
         await task_service.validate_execution_authority(args.task_id, attempt_id=args.attempt_id,
             execution_run_id=args.run_id, claim_token=args.claim_token)
         return await _app_package_call(name, arguments, args)
@@ -410,6 +415,10 @@ async def _app_package_call(name: str, arguments: dict[str, Any], args: argparse
     package = args.workspace / APP_PACKAGE_DIR
     if name == "app_check":
         return await app_platform.check_package(package, screenshots=args.workspace / APP_CHECK_DIR)
+    if name == "app_catalog":
+        if arguments:
+            raise ValueError("app_catalog takes no arguments")
+        return await app_platform.data_catalog()
     reference = arguments.get("app")
     if set(arguments) != {"app"} or not isinstance(reference, str) or not reference.strip():
         raise ValueError("app_checkout needs the app's slug or title")

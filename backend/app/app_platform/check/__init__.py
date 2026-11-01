@@ -49,9 +49,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, Validat
 from app.app_platform.files import FileError, check_name
 from app.app_platform.function_host import FetchMock, MemoryServices, execute
 from app.app_platform.hosting import HOST_CSP, SDK_FILE
-from app.app_platform.lifecycle import AppNotFound, get_active, package_digest
-from app.app_platform.manifest import (AppManifest, HttpTrigger, ManifestError, compatibility_problems,
-                                       load_package)
+from app.app_platform import system
+from app.app_platform.lifecycle import AppNotFound, get_active, grant_problems, package_digest, schema_change_problems
+from app.app_platform.manifest import AppManifest, HttpTrigger, ManifestError, load_package
 from app.app_platform.workflows import workflow_conflicts
 from app.config import settings
 
@@ -208,6 +208,27 @@ def _http_functions(manifest: AppManifest) -> set[str]:
     return {name for name, spec in manifest.functions.items() if isinstance(spec.trigger, HttpTrigger)}
 
 
+def _read_only(manifest: AppManifest) -> set[str]:
+    return set(manifest.grants.read) - set(manifest.grants.write)
+
+
+async def _granted_schemas(manifest: AppManifest) -> dict[str, dict]:
+    """{"recipes.recipe": schema} for every granted collection that exists."""
+    granted = {}
+    for grant in manifest.grants.readable():
+        owner, _, name = grant.partition(".")
+        if owner == "system":
+            granted[grant] = system.SCHEMAS[name]
+            continue
+        try:
+            provider = await get_active(owner)
+        except AppNotFound:
+            continue
+        if name in provider.collections:
+            granted[grant] = provider.collections[name]["schema_json"]
+    return granted
+
+
 def _seed_problems(test: UiTest | FunctionTest, manifest: AppManifest, collections: dict[str, dict]) -> list[str]:
     problems = []
     for collection, records in test.records.items():
@@ -296,7 +317,8 @@ async def _run_function_test(root: Path, manifest: AppManifest, collections: dic
     if report["problems"]:
         return report
     services = MemoryServices(
-        grants=manifest.grants.network, schemas=collections, has_files=manifest.files is not None,
+        grants=manifest.grants.network, schemas=collections, read_only=_read_only(manifest),
+        has_files=manifest.files is not None,
         records={collection: {record.key: record.value for record in records}
                  for collection, records in test.records.items()},
         files={name: (seed.data(), seed.content_type) for name, seed in test.files.items()},
@@ -392,11 +414,15 @@ async def check_package(root: Path, *, screenshots: Path | None = None) -> dict[
         if manifest.version <= active.version:
             problems.append(f"Set version to {active.version + 1}: version {active.version} is installed")
         old = {name: spec["schema_json"] for name, spec in active.collections.items()}
-        problems.extend(f"Incompatible with stored data: {problem}" for problem in compatibility_problems(old, schemas))
+        problems.extend(f"Incompatible with stored data: {problem}"
+                        for problem in await schema_change_problems(manifest.slug, old, schemas))
+    problems.extend(await grant_problems(manifest.slug, manifest.grants.model_dump()))
+    # Tests may seed and use granted collections under their qualified names.
+    collections = {**schemas, **await _granted_schemas(manifest)}
 
-    tests, test_problems = _tests(root, manifest, schemas)
+    tests, test_problems = _tests(root, manifest, collections)
     problems.extend(test_problems)
-    function_reports, function_problems = await _function_tests(root, manifest, schemas)
+    function_reports, function_problems = await _function_tests(root, manifest, collections)
     problems.extend(function_problems)
     if screenshots is not None:
         shutil.rmtree(screenshots, ignore_errors=True)
@@ -407,6 +433,7 @@ async def check_package(root: Path, *, screenshots: Path | None = None) -> dict[
         "screenshotsDir": str(screenshots) if screenshots else None,
         "slug": manifest.slug, "title": manifest.title, "version": manifest.version, "tests": tests,
         "httpFunctions": sorted(_http_functions(manifest)),
+        "readOnly": sorted(_read_only(manifest)),
     }
     try:
         report = await _run_harness(job)
@@ -415,7 +442,7 @@ async def check_package(root: Path, *, screenshots: Path | None = None) -> dict[
 
     for test in report["tests"]:
         for record in test.pop("records"):
-            schema = schemas.get(record["collection"])
+            schema = collections.get(record["collection"])
             if schema is None:
                 test["problems"].append(f"wrote to unknown collection {record['collection']}")
                 continue

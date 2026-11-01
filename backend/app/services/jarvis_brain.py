@@ -171,8 +171,8 @@ class RestrictedBrainGateway:
         if tool_name == "app_status":
             status = await app_platform.status(app.slug)
             return {"found": True, **{key: status[key] for key in (
-                "slug", "title", "version", "versions", "records", "functions", "stored_files", "recent_runs",
-                "recent_errors")}}
+                "slug", "title", "version", "versions", "records", "functions", "stored_files", "grants", "used_by",
+                "recent_runs", "recent_errors")}}
         if tool_name == "call_app_function":
             try:
                 result = await app_platform.run_function(app.slug, str(arguments.get("function") or ""),

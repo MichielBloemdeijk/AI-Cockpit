@@ -146,16 +146,20 @@ class MemoryServices(Services):
 
     def __init__(self, *, grants: list[str], schemas: dict[str, dict], has_files: bool,
                  records: dict[str, dict[str, Any]], files: dict[str, tuple[bytes, str]],
-                 mocks: list[FetchMock]) -> None:
+                 mocks: list[FetchMock], read_only: set[str] = frozenset()) -> None:
         super().__init__(grants)
-        self.schemas, self.has_files, self.mocks = schemas, has_files, mocks
+        self.schemas, self.has_files, self.mocks, self.read_only = schemas, has_files, mocks, set(read_only)
         self.records = {(collection, key): {"key": key, "value": value, "revision": 1}
                         for collection, values in records.items() for key, value in values.items()}
         self.files = dict(files)
 
-    def _collection(self, collection):
+    def _collection(self, collection, *, write=False):
         if collection not in self.schemas:
+            if "." in collection:
+                raise RecordError(f"The app has no grant for {collection}; add it to grants.read or grants.write")
             raise RecordError(f"The app has no collection {collection}")
+        if write and (collection in self.read_only or collection.startswith("system.")):
+            raise RecordError(f"{collection} is read-only for this app; it needs grants.write")
 
     def _store(self):
         if not self.has_files:
@@ -166,7 +170,7 @@ class MemoryServices(Services):
         return self.records.get((collection, key))
 
     async def data_put(self, collection, key, value, expected_revision=None):
-        self._collection(collection)
+        self._collection(collection, write=True)
         errors = list(Draft202012Validator(self.schemas[collection]).iter_errors(value))
         if errors:
             raise RecordError(f"{collection} record is invalid: {errors[0].message}")
@@ -179,7 +183,7 @@ class MemoryServices(Services):
         return record
 
     async def data_delete(self, collection, key, expected_revision=None):
-        self._collection(collection)
+        self._collection(collection, write=True)
         return self.records.pop((collection, key), None) is not None
 
     async def data_query(self, collection, where=None, order=None, limit=50):

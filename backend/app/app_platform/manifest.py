@@ -22,6 +22,9 @@ NAME_PATTERN = r"^[a-z][a-z0-9_]{0,47}$"
 FIELD_PATTERN = r"^[a-z_][a-z0-9_]{0,63}$"
 WORKFLOW_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 FUNCTION_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+# Another app's collection ("recipes.recipe") or a system collection ("system.tasks").
+GRANT_PATTERN = r"^[a-z][a-z0-9-]{1,47}\.[a-z][a-z0-9_]{0,47}$"
+SYSTEM_COLLECTIONS = ("system.tasks", "system.results", "system.conversations")
 # A host name, or "*." and a domain for every subdomain of it.
 HOST_PATTERN = r"^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
 
@@ -53,10 +56,31 @@ class CollectionSpec(_Strict):
 
 
 class GrantSpec(_Strict):
-    read: list[str] = Field(default_factory=list)
-    write: list[str] = Field(default_factory=list)
+    """Other apps' collections this app may read, or read and write, and its network hosts."""
+    read: list[str] = Field(default_factory=list, max_length=32)
+    write: list[str] = Field(default_factory=list, max_length=32)
     # Hosts the app's functions may fetch from.
     network: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("read", "write")
+    @classmethod
+    def collections_are_qualified(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or not all(
+                re.fullmatch(GRANT_PATTERN, value)
+                and (not value.startswith("system.") or value in SYSTEM_COLLECTIONS) for value in values):
+            raise ValueError("Data grants name other apps' collections as \"<app>.<collection>\", "
+                             "or \"system.tasks\", \"system.results\" or \"system.conversations\"")
+        return values
+
+    @field_validator("write")
+    @classmethod
+    def system_data_is_read_only(cls, values: list[str]) -> list[str]:
+        if any(value.startswith("system.") for value in values):
+            raise ValueError("System collections are read-only; grant them under read")
+        return values
+
+    def readable(self) -> set[str]:
+        return set(self.read) | set(self.write)
 
     @field_validator("network")
     @classmethod
@@ -91,7 +115,8 @@ class ScheduleTrigger(_Strict):
 
 class EventTrigger(_Strict):
     event: Literal["record_changed", "file_changed"]
-    # record_changed: the collection to watch (required).
+    # record_changed: the collection to watch (required): the app's own, or another
+    # app's one it has a grant for ("recipes.recipe").
     collection: str | None = None
     # file_changed: only files whose name starts with this.
     prefix: str | None = Field(default=None, max_length=200)
@@ -130,6 +155,13 @@ class AppManifest(_Strict):
         if len(values) != len(set(values)) or not all(re.fullmatch(WORKFLOW_PATTERN, value) for value in values):
             raise ValueError("Workflows are unique lowercase identifiers")
         return values
+
+    @field_validator("slug")
+    @classmethod
+    def slug_is_not_reserved(cls, value: str) -> str:
+        if value == "system":
+            raise ValueError("The slug 'system' is reserved for Cockpit's own collections")
+        return value
 
     @field_validator("functions")
     @classmethod
@@ -171,6 +203,10 @@ def load_package(root: Path) -> tuple[AppManifest, dict[str, dict[str, Any]]]:
         manifest = AppManifest.model_validate(raw)
     except ValidationError as exc:
         raise ManifestError(f"Invalid manifest: {exc.errors(include_url=False)}") from exc
+
+    own = [grant for grant in manifest.grants.readable() if grant.split(".", 1)[0] == manifest.slug]
+    if own:
+        raise ManifestError(f"Grants name the app's own collections ({', '.join(sorted(own))}); use their plain names")
 
     entry = _inside(root, manifest.ui.entry)
     if not entry.is_file() or not entry.is_relative_to((root / "ui").resolve()):
@@ -219,8 +255,11 @@ def _check_function(root: Path, manifest: AppManifest, name: str, spec: Function
         raise ManifestError(f"Function {name}: handle takes exactly two arguments (input, cockpit)")
     trigger = spec.trigger
     if isinstance(trigger, EventTrigger):
-        if trigger.event == "record_changed" and trigger.collection not in manifest.collections:
-            raise ManifestError(f"Function {name}: record_changed needs one of the app's collections")
+        watched = trigger.collection or ""
+        shared = "." in watched and not watched.startswith("system.") and watched in manifest.grants.readable()
+        if trigger.event == "record_changed" and watched not in manifest.collections and not shared:
+            raise ManifestError(f"Function {name}: record_changed needs one of the app's collections, "
+                                "or another app's collection it has a grant for")
         if trigger.event == "file_changed" and (manifest.files is None or trigger.collection is not None):
             raise ManifestError(f"Function {name}: file_changed needs a files section and takes no collection")
 

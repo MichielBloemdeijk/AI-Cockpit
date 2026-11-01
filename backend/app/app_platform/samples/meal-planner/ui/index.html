@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meal planner</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 16px; background: #18181b; color: #f4f4f5; }
+    form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 16px; }
+    select { min-width: 0; padding: 8px; border-radius: 8px; border: 1px solid #3f3f46; background: #27272a; color: inherit; }
+    button { padding: 8px 12px; border-radius: 8px; border: 0; background: #2563eb; color: white; cursor: pointer; }
+    ol { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    li { display: flex; gap: 8px; align-items: baseline; padding: 10px; border-radius: 8px; background: #27272a; }
+    li .day { width: 6em; color: #a1a1aa; text-transform: capitalize; }
+    li .title { flex: 1; }
+    li.missing .title { text-decoration: line-through; color: #a1a1aa; }
+    .quiet { background: transparent; color: #a1a1aa; padding: 4px 8px; }
+    #status { color: #f87171; min-height: 1.2em; }
+    .empty { color: #a1a1aa; }
+  </style>
+</head>
+<body>
+  <form id="plan">
+    <select id="day" aria-label="Day"></select>
+    <select id="recipe" aria-label="Recipe"></select>
+    <button type="submit">Plan</button>
+  </form>
+  <p id="status"></p>
+  <ol id="meals"></ol>
+  <script src="/api/app-host/_sdk/cockpit-app.js"></script>
+  <script>
+    const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    const status = document.getElementById("status");
+    const daySelect = document.getElementById("day");
+    const recipeSelect = document.getElementById("recipe");
+    daySelect.replaceChildren(...DAYS.map((day) => new Option(day[0].toUpperCase() + day.slice(1), day)));
+
+    async function render() {
+      // The Recipes app's records, read through this app's grant.
+      const recipes = await cockpit.data.query("recipes.recipe", { order: "title", limit: 200 });
+      recipeSelect.replaceChildren(...recipes.map((recipe) => new Option(recipe.value.title, recipe.key)));
+      recipeSelect.disabled = !recipes.length;
+      if (!recipes.length) recipeSelect.replaceChildren(new Option("No recipes in the Recipes app yet", ""));
+      const meals = await cockpit.data.query("meal", { limit: 50 });
+      meals.sort((a, b) => DAYS.indexOf(a.value.day) - DAYS.indexOf(b.value.day));
+      const list = document.getElementById("meals");
+      if (!meals.length) {
+        const empty = document.createElement("li");
+        empty.className = "empty";
+        empty.textContent = "Nothing planned yet.";
+        list.replaceChildren(empty);
+        return;
+      }
+      list.replaceChildren(...meals.map((meal) => {
+        const item = document.createElement("li");
+        item.className = meal.value.missing ? "missing" : "";
+        const day = document.createElement("span");
+        day.className = "day";
+        day.textContent = meal.value.day;
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = meal.value.title + (meal.value.missing ? " (deleted from Recipes)" : "");
+        const remove = document.createElement("button");
+        remove.className = "quiet";
+        remove.textContent = "Remove";
+        remove.onclick = () => act(() => cockpit.data.delete("meal", meal.key, { expectedRevision: meal.revision }));
+        item.append(day, title, remove);
+        return item;
+      }));
+    }
+
+    async function act(work) {
+      status.textContent = "";
+      try { await work(); } catch (error) { status.textContent = error.message; }
+      await render().catch((error) => { status.textContent = error.message; });
+    }
+
+    document.getElementById("plan").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const option = recipeSelect.selectedOptions[0];
+      if (!option || !option.value) return;
+      act(() => cockpit.data.put("meal", daySelect.value,
+        { day: daySelect.value, recipe: option.value, title: option.textContent }));
+    });
+
+    cockpit.ready.then(render).catch((error) => { status.textContent = error.message; });
+  </script>
+</body>
+</html>
