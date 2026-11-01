@@ -1,20 +1,16 @@
-"""Companion shells, notification links and the old generated-app state. No model or browser."""
+"""Companion shells and notification links. No model or browser."""
 from __future__ import annotations
 
-import asyncio
 from collections import OrderedDict
-import json
 
 from httpx import ASGITransport, AsyncClient
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.api import private
 from app.db.session import session_scope
-from app.db.tables import AppDataRecord, CockpitApp, NotificationOutbox
+from app.db.tables import NotificationOutbox
 from app.main import app
-from app.services import app_catalog
-from app.services.app_registry import app_registry_service
 from app.services.task_service import task_service
 
 
@@ -25,28 +21,6 @@ def reset_rate_limit(monkeypatch):
 
 def client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
-
-
-@pytest.mark.asyncio
-async def test_storage_deterministic_bytes_quota_concurrent_writes_and_rollback(monkeypatch):
-    await app_registry_service.create_app(title="Storage test", slug="storage-test")
-    async with client() as http:
-        await http.post("/api/auth/login", json={"password": ""})
-        prefix = "/api/app-catalog/storage-test/data/state/"
-        value = {"text": "é" * 20}
-        serialized_size = len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
-        monkeypatch.setattr(app_catalog, "APP_QUOTA", serialized_size * 2)
-        replies = await asyncio.gather(*[http.put(prefix + str(index), json={"value": value, "expected_revision": 0}) for index in range(3)])
-        assert sorted(response.status_code for response in replies) == [200, 200, 413]
-        async with session_scope() as session:
-            catalog = (await session.execute(select(CockpitApp).where(CockpitApp.slug == "storage-test"))).scalar_one()
-            assert catalog.storage_bytes == serialized_size * 2
-            assert catalog.storage_bytes == (await session.execute(select(func.sum(AppDataRecord.size_bytes)).where(AppDataRecord.cockpit_app_id == catalog.id))).scalar_one()
-        monkeypatch.setattr(app_catalog, "APP_QUOTA", 10 * 1024 * 1024)
-        assert (await http.put(prefix + "large", json={"value": {"x": "a" * 65536}, "expected_revision": 0})).status_code == 413
-        assert (await http.get(prefix + "large")).json() == {"value": None, "revision": 0}
-        assert (await http.put(prefix + "fresh", json={"value": {}, "expected_revision": True})).status_code == 422
-        assert (await http.get("/api/app-catalog/storage-test/data/saved/x")).status_code == 404
 
 
 @pytest.mark.asyncio

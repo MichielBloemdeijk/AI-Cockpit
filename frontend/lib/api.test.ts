@@ -6,8 +6,6 @@ import {
   controlTaskPool,
   closeJarvisLiveSession,
   createJarvisLiveCall,
-  createGeneratedApp,
-  getGeneratedAppBySlug,
   getJarvisState,
   getJarvisLogEvents,
   getJarvisLiveEvents,
@@ -17,7 +15,6 @@ import {
   getTaskEvents,
   injectFakeJarvisEvent,
   listConversations,
-  listGeneratedApps,
   listTasks,
   login,
   streamChat,
@@ -26,6 +23,7 @@ import {
   startFreshJarvisLog,
   dispatchTask,
   continueTask,
+  getAccessConfig,
   type ConversationEventView,
   updateChatSettings,
 } from "./api";
@@ -346,61 +344,15 @@ describe("login", () => {
   });
 });
 
-describe("generated app api", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("lists generated apps from the apps endpoint", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [{ id: "app-1", slug: "hello-world" }],
-    } satisfies Partial<Response>);
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await listGeneratedApps();
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/apps", expect.objectContaining({ credentials: "include", signal: expect.any(AbortSignal) }));
-    expect(result).toEqual([{ id: "app-1", slug: "hello-world" }]);
-  });
-
-  it("creates generated apps through the registry endpoint", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: "app-1", slug: "hello-world" }),
-    } satisfies Partial<Response>);
-    vi.stubGlobal("fetch", fetchMock);
-
-    await createGeneratedApp({ title: "Hello World", status: "draft" });
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/apps", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ title: "Hello World", status: "draft" }),
-    });
-  });
-
-  it("fetches app detail by slug", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: "app-1", slug: "hello-world" }),
-    } satisfies Partial<Response>);
-    vi.stubGlobal("fetch", fetchMock);
-
-    await getGeneratedAppBySlug("hello-world");
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/apps/slug/hello-world", { credentials: "include" });
-  });
-
-  it("fails fast when generated app loading times out", async () => {
+describe("request timeouts", () => {
+  it("fails fast when a page-load request times out", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn((_input: string, init?: RequestInit) => new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const pending = expect(listGeneratedApps()).rejects.toThrow("Request timed out. Please try again.");
+    const pending = expect(getAccessConfig()).rejects.toThrow("Request timed out. Please try again.");
     await vi.advanceTimersByTimeAsync(10000);
 
     await pending;

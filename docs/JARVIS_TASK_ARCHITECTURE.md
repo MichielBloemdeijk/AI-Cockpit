@@ -73,7 +73,7 @@ The repository already has:
 - durable tasks, attempts, ordered events, artifacts, questions, targets, cancellation, retries, presentations, and notification delivery;
 - a general task worker and agent runtime;
 - paired Android device authentication, assistant-role integration, native Live audio, resumable events, notifications, and an in-app WebView;
-- generated application hosting and existing Apps navigation;
+- installed app packages on the app platform (see [13-app-platform.md](jarvis-tasks/13-app-platform.md)) and Apps navigation;
 - fake-provider and browser Live smoke-test foundations.
 
 M0–M5 additionally supply durable turns/runs, the shared pool and controls, guarded Codex execution, background decisions/shared attention, telemetry, shared capability/context/result registries, two small reference workflows, the generic result platform and an API-37 capture/private-upload/result-delivery emulator slice. These are implemented and verified for the guarded route; they do not establish all production paths or performance objectives.

@@ -63,7 +63,7 @@ async def authorized_roots(args) -> dict[str, Path]:
                 ResourceLease.claim_token == args.claim_token,
                 ResourceLease.execution_run_id == args.run_id))).all()
         for target, lease in rows:
-            if target.resource_type not in {"directory", "path", "workspace", "repository", "generated_app"}:
+            if target.resource_type not in {"directory", "path", "workspace", "repository"}:
                 continue
             raw = Path(target.resource_key)
             path = (raw if raw.is_absolute() else settings.backend_root.parent / raw).resolve()

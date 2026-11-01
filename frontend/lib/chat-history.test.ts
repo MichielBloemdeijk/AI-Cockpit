@@ -525,15 +525,6 @@ describe("mapConversationMessages", () => {
             id: "cb994bdb-9459-4ccf-a757-7488b8728532",
             title: "Make the background brighter",
           },
-          app: {
-            route_path: "/apps/create-a-basic-app-that-says-hello-world",
-            frontend_root: "frontend/generated-apps/create-a-basic-app-that-says-hello-world",
-            frontend_entry_path: "frontend/generated-apps/create-a-basic-app-that-says-hello-world/page.tsx",
-            allowed_write_roots: [
-              "frontend/generated-apps/create-a-basic-app-that-says-hello-world",
-              "frontend/public/apps/create-a-basic-app-that-says-hello-world",
-            ],
-          },
         },
       },
     ];
@@ -542,10 +533,9 @@ describe("mapConversationMessages", () => {
 
     expect(messages).toHaveLength(1);
     expect(messages[0].kind).toBe("status");
-    expect(messages[0].title).toBe("Started app task");
+    expect(messages[0].title).toBe("Started agent run");
     expect(messages[0].content).toContain("Make the background brighter");
     expect(messages[0].code).toContain("Task id: cb994bdb-9459-4ccf-a757-7488b8728532");
-    expect(messages[0].code).toContain("App root: frontend/generated-apps/create-a-basic-app-that-says-hello-world");
   });
 
   it("maps conversation.task.start_failed as a warning status row", () => {

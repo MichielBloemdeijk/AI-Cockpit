@@ -88,14 +88,6 @@ class MemoryStatus(str, Enum):
     deleted = "deleted"
 
 
-class GeneratedAppStatus(str, Enum):
-    draft = "draft"
-    building = "building"
-    ready_for_test = "ready_for_test"
-    verified = "verified"
-    failed = "failed"
-
-
 class ConversationKind(str, Enum):
     standard = "standard"
     jarvis_daily = "jarvis_daily"
@@ -564,49 +556,6 @@ class AppSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
-
-
-class GeneratedApp(Base):
-    __tablename__ = "generated_apps"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    cockpit_app_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("cockpit_apps.id"), nullable=True, unique=True)
-    slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default=GeneratedAppStatus.draft.value)
-    route_path: Mapped[str] = mapped_column(String(255), nullable=False)
-    frontend_root: Mapped[str] = mapped_column(String(512), nullable=False)
-    frontend_entry_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    icon_asset_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    cover_asset_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    verification_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_task_run_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversation_runs.id", ondelete="SET NULL"), nullable=True
-    )
-    source_conversation_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
-    )
-    lease_task_run_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversation_runs.id", ondelete="SET NULL"), nullable=True
-    )
-    lease_conversation_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
-    )
-    lease_acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    manifest_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-    source_task_run: Mapped[ConversationRun | None] = relationship(foreign_keys=[source_task_run_id])
-    source_conversation: Mapped[Conversation | None] = relationship(foreign_keys=[source_conversation_id])
-    lease_task_run: Mapped[ConversationRun | None] = relationship(foreign_keys=[lease_task_run_id])
-    lease_conversation: Mapped[Conversation | None] = relationship(foreign_keys=[lease_conversation_id])
 
 
 class Task(Base):
@@ -1342,28 +1291,6 @@ class TaskContextRequest(Base):
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class CockpitApp(Base):
-    """Shared identity; generated build/source detail stays in GeneratedApp."""
-    __tablename__ = "cockpit_apps"
-    __table_args__ = (
-        # The old generated-app code (and this table) goes in app platform step 6.
-        CheckConstraint("kind IN ('collection', 'generated')", name="ck_cockpit_apps_kind"),
-        CheckConstraint("storage_bytes >= 0", name="ck_cockpit_apps_storage_bytes"),
-    )
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    route_path: Mapped[str] = mapped_column(String(255), nullable=False)
-    runtime: Mapped[str] = mapped_column(String(64), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
-    storage_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    capability_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
-
-
 class TaskResult(Base):
     """Links a task to the app record it published, for example a recipe in Recipes."""
 
@@ -1378,25 +1305,6 @@ class TaskResult(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     # The run that last published it.
     execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
-
-
-class AppDataRecord(Base):
-    __tablename__ = "app_data_records"
-    __table_args__ = (
-        # Empty scope means app-level. NOT NULL avoids SQLite's NULL uniqueness hole.
-        UniqueConstraint("cockpit_app_id", "scope_key", "namespace", "record_key", name="uq_app_data_scope"),
-        CheckConstraint("revision > 0 AND size_bytes >= 0", name="ck_app_data_revision_size"),
-    )
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    cockpit_app_id: Mapped[str] = mapped_column(String(36), ForeignKey("cockpit_apps.id"), nullable=False)
-    scope_key: Mapped[str] = mapped_column(String(36), nullable=False, default="", server_default="")
-    namespace: Mapped[str] = mapped_column(String(64), nullable=False)
-    record_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    value_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -1562,9 +1470,6 @@ Index("ix_conversation_events_event_type", ConversationEvent.event_type)
 Index("ix_conversation_messages_conversation_created", ConversationMessage.conversation_id, ConversationMessage.created_at)
 Index("ix_conversation_artifacts_conversation_created", ConversationArtifact.conversation_id, ConversationArtifact.created_at)
 Index("ix_memory_items_conversation_created", MemoryItem.source_conversation_id, MemoryItem.created_at)
-Index("ix_generated_apps_updated_at", GeneratedApp.updated_at)
-Index("ix_generated_apps_status", GeneratedApp.status)
-Index("ix_generated_apps_lease_task", GeneratedApp.lease_task_run_id)
 Index("ix_conversations_kind_updated", Conversation.conversation_kind, Conversation.updated_at)
 Index("ix_conversations_lifecycle", Conversation.lifecycle_status)
 Index("ix_live_sessions_conversation_created", LiveSession.conversation_id, LiveSession.created_at)

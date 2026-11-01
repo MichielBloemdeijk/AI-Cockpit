@@ -20,6 +20,8 @@ def _id(slug):
 def upgrade():
     bind = op.get_bind()
     tables = set(sa.inspect(bind).get_table_names())
+    if "generated_apps" not in tables:
+        return  # replayed after 0043 removed the generated-apps tables
     if "cockpit_apps" not in tables:
         op.create_table("cockpit_apps",
             sa.Column("id", sa.String(36), primary_key=True),

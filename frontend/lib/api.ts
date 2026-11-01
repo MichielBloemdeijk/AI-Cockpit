@@ -11,7 +11,6 @@ export function resolveApiBase(): string {
 
 const BASE = resolveApiBase();
 const REQUEST_TIMEOUT_MESSAGE = "Request timed out. Please try again.";
-const DEFAULT_PAGE_LOAD_TIMEOUT_MS = 10000;
 const AUTH_CHECK_TIMEOUT_MS = 5000;
 
 async function fetchWithTimeout(
@@ -306,55 +305,6 @@ export interface KnowledgeDocumentView {
   kind: string;
   content: string;
   updated_at: string | null;
-}
-
-export interface GeneratedAppSummary {
-  id: string;
-  slug: string;
-  title: string;
-  description: string | null;
-  status: string;
-  route_path: string;
-  verification_status: string | null;
-  source_task_run_id: string | null;
-  source_conversation_id: string | null;
-  updated_at: string;
-  created_at: string;
-}
-
-export interface GeneratedAppDetail extends GeneratedAppSummary {
-  frontend_root: string;
-  frontend_entry_path: string | null;
-  icon_asset_path: string | null;
-  cover_asset_path: string | null;
-  manifest_json: Record<string, unknown> | null;
-  last_error: string | null;
-  allowed_write_roots: string[];
-}
-
-export interface GeneratedAppCreate {
-  title: string;
-  slug?: string;
-  description?: string;
-  status?: string;
-  verification_status?: string;
-  source_task_run_id?: string;
-  source_conversation_id?: string;
-  manifest_json?: Record<string, unknown>;
-}
-
-export interface GeneratedAppUpdate {
-  title?: string;
-  description?: string;
-  status?: string;
-  verification_status?: string;
-  frontend_entry_path?: string;
-  icon_asset_path?: string;
-  cover_asset_path?: string;
-  manifest_json?: Record<string, unknown>;
-  last_error?: string;
-  source_task_run_id?: string;
-  source_conversation_id?: string;
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -1556,53 +1506,11 @@ export async function deleteKnowledgeItem(memoryItemId: string): Promise<MemoryI
   return res.json();
 }
 
-// ─── Apps ─────────────────────────────────────────────────────────────────────
-
-export async function listGeneratedApps(): Promise<GeneratedAppSummary[]> {
-  const res = await fetchWithTimeout(`${BASE}/api/apps`, { credentials: "include" }, DEFAULT_PAGE_LOAD_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 export async function submitJarvisPlayback(sessionId: string, payload: Record<string, unknown>): Promise<void> {
   const response = await fetch(`${BASE}/api/jarvis/live/sessions/${encodeURIComponent(sessionId)}/playback`, {
     method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!response.ok) throw new Error(`Playback evidence HTTP ${response.status}`);
-}
-
-export async function createGeneratedApp(req: GeneratedAppCreate): Promise<GeneratedAppDetail> {
-  const res = await fetch(`${BASE}/api/apps`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(req),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function getGeneratedApp(appId: string): Promise<GeneratedAppDetail> {
-  const res = await fetch(`${BASE}/api/apps/${appId}`, { credentials: "include" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function getGeneratedAppBySlug(slug: string): Promise<GeneratedAppDetail> {
-  const res = await fetch(`${BASE}/api/apps/slug/${encodeURIComponent(slug)}`, { credentials: "include" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-export async function updateGeneratedApp(appId: string, req: GeneratedAppUpdate): Promise<GeneratedAppDetail> {
-  const res = await fetch(`${BASE}/api/apps/${appId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(req),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 

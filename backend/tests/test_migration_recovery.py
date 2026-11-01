@@ -96,11 +96,15 @@ def test_result_platform_backfill_resumes_without_changing_generated_routes(tmp_
     command.upgrade(config, "20261001_0031")
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT id, slug, kind, route_path FROM cockpit_apps ORDER BY slug").fetchall() == before
-    # Results became app records: only the generated app's identity remains.
+    # Apps moved to the app platform: the old generated-apps tables are gone.
     command.upgrade(config, "head")
     with sqlite3.connect(database_path) as connection:
-        assert [kind for _, kind in connection.execute("SELECT slug, kind FROM cockpit_apps")] == ["generated"]
+        tables = {name for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert not tables & {"generated_apps", "cockpit_apps", "app_data_records"}
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    # A replay after the drop finds nothing left to remove.
+    command.stamp(config, "20261031_0042")
+    command.upgrade(config, "head")
 
 
 def test_result_metric_migration_replay_preserves_observations(tmp_path: Path) -> None:

@@ -15,10 +15,6 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Vendored VAD runtime assets are third-party generated JavaScript/WASM.
     "public/vad/**",
-    // Generated apps are runtime/user content and have their own verification lifecycle.
-    "generated-apps/**",
-    "app/apps/*/**",
-    "!app/apps/[[]slug[]]/**",
   ]),
 ]);
 

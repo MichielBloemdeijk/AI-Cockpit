@@ -126,39 +126,12 @@ function isLowSignalToolIntentSummary(content: string): boolean {
 
 function buildTaskStartedContent(payload: Record<string, unknown> | null): { title: string; content: string; details?: string } {
   const task = asRecord(payload?.task);
-  const app = asRecord(payload?.app);
   const taskTitle = typeof task?.title === "string" ? task.title.trim() : "";
-  const routePath = typeof app?.route_path === "string" ? app.route_path.trim() : "";
-
-  const title = app ? "Started app task" : "Started agent run";
-  const content = app
-    ? taskTitle && routePath
-      ? `${taskTitle} for ${routePath}`
-      : taskTitle || routePath || "The agent switched into a longer app-building run."
-    : taskTitle || "The agent switched from direct reply mode into a longer execution loop.";
-
-  const detailLines: string[] = [];
   const taskId = typeof task?.id === "string" ? task.id.trim() : "";
-  if (taskId) {
-    detailLines.push(`Task id: ${taskId}`);
-  }
-  const appRoot = typeof app?.frontend_root === "string" ? app.frontend_root.trim() : "";
-  if (appRoot) {
-    detailLines.push(`App root: ${appRoot}`);
-  }
-  const entryPage = typeof app?.frontend_entry_path === "string" ? app.frontend_entry_path.trim() : "";
-  if (entryPage) {
-    detailLines.push(`Entry page: ${entryPage}`);
-  }
-  const writeRoots = asStringArray(app?.allowed_write_roots);
-  if (writeRoots.length > 0) {
-    detailLines.push(`Allowed write roots: ${writeRoots.join(", ")}`);
-  }
-
   return {
-    title,
-    content,
-    details: detailLines.length > 0 ? detailLines.join("\n") : undefined,
+    title: "Started agent run",
+    content: taskTitle || "The agent switched from direct reply mode into a longer execution loop.",
+    details: taskId ? `Task id: ${taskId}` : undefined,
   };
 }
 

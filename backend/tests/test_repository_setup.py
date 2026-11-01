@@ -44,7 +44,7 @@ def test_readme_quick_start_is_copyable_and_current() -> None:
     assert "git clone https://github.com/MichielBloemdeijk/AI-Cockpit.git" in readme
     assert "uv sync" in readme
     assert "npm ci" in readme
-    assert "frontend/generated-apps/<slug>" in readme
+    assert "docs/jarvis-tasks/13-app-platform.md" in readme
     assert "<repo-url>" not in readme
     assert "](PLAN.md)" not in readme
 

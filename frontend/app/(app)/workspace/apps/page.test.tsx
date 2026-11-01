@@ -4,14 +4,8 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const apiMocks = vi.hoisted(() => ({
-  createGeneratedApp: vi.fn(),
-  listGeneratedApps: vi.fn(),
-}));
-
 const platformMocks = vi.hoisted(() => ({ listPlatformApps: vi.fn() }));
 
-vi.mock("@/lib/api", () => apiMocks);
 vi.mock("@/lib/app-platform", () => platformMocks);
 
 import AppsPage from "./page";
@@ -24,9 +18,9 @@ describe("AppsPage refresh behavior", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    apiMocks.listGeneratedApps.mockResolvedValue([]);
     platformMocks.listPlatformApps.mockResolvedValue([{ slug: "notes", title: "Notes", version: 2,
-      description: "Short notes", collections: ["note"], jarvis_summary: "", url: "/apps/notes" }]);
+      description: "Short notes", collections: ["note"], functions: [], files: false, jarvis_summary: "",
+      url: "/apps/notes" }]);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -44,7 +38,7 @@ describe("AppsPage refresh behavior", () => {
   });
 
   it("refreshes on mount and only refreshes pageshow restores from cache", async () => {
-    expect(apiMocks.listGeneratedApps).toHaveBeenCalledTimes(1);
+    expect(platformMocks.listPlatformApps).toHaveBeenCalledTimes(1);
     expect(container.querySelector('a[href="/apps/notes"]')?.textContent).toBe("Open app");
     expect(container.textContent).toContain("v2");
 
@@ -53,13 +47,13 @@ describe("AppsPage refresh behavior", () => {
     await act(async () => {
       window.dispatchEvent(normalPageShow);
     });
-    expect(apiMocks.listGeneratedApps).toHaveBeenCalledTimes(1);
+    expect(platformMocks.listPlatformApps).toHaveBeenCalledTimes(1);
 
     const restoredPageShow = new Event("pageshow");
     Object.defineProperty(restoredPageShow, "persisted", { value: true });
     await act(async () => {
       window.dispatchEvent(restoredPageShow);
     });
-    expect(apiMocks.listGeneratedApps).toHaveBeenCalledTimes(2);
+    expect(platformMocks.listPlatformApps).toHaveBeenCalledTimes(2);
   });
 });

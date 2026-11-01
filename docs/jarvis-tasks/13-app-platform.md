@@ -1,6 +1,6 @@
 # App platform: apps Jarvis builds, runs and maintains
 
-Status: **approved** 2026-10-30; build steps 1 to 5 implemented (see
+Status: **approved** 2026-10-30; all six build steps implemented (see
 [Implementation notes](#implementation-notes)). Follows the
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
@@ -185,7 +185,7 @@ an equivalent working app.
 
 ## What this replaces
 
-The old generated-apps code goes once the new path works: `app_registry` and
+Removed in step 6 (2026-11-01). The old generated-apps code goes once the new path works: `app_registry` and
 live-route copying into `frontend/app/apps`, `/api/apps`, the `generated_apps`
 table, the `generated_app` task target, `frontend/app/apps/[slug]`, and the
 `generated-apps` frontend folders. The 15 old app folders were already deleted on
@@ -547,3 +547,23 @@ Deliberate simplifications to revisit:
 - System collections can't trigger functions yet (for example "when a task
   finishes"); apps poll them from a scheduled function instead.
 - Grants are all-or-nothing per collection: no field- or record-level limits.
+
+### Step 6 (2026-11-01)
+
+- **Removed:** the generated-app registry (`app_registry`), its catalog and
+  scoped-storage services (`app_catalog`, `app_capabilities`), the `/api/apps`
+  and `/api/app-catalog` routes, their models and presenters, the
+  `generated_app` task target type, the old app detail page
+  (`/workspace/apps/[slug]`), `lib/app-storage.ts`, the generated-app client
+  functions in `lib/api.ts`, and the gitignore and lint entries for
+  `frontend/generated-apps`.
+- **Migration `0043`** drops `generated_apps`, `cockpit_apps` and
+  `app_data_records`, and any `generated_app` task targets and leases. It is
+  replay-safe, and the older migrations that touched those tables skip them
+  once they are gone. The live database had no rows in them; an older,
+  previous-era database (`ai_cockpit.db`, not in use) still lists 11 drafts
+  whose sources were deleted on 2026-10-30.
+- **Apps page:** `/workspace/apps` lists installed apps only, with "Ask Jarvis
+  to build one" when there are none. App creation happens through Jarvis.
+- **Docs:** the README, the frontend README and `ARCHITECTURE.md` describe the
+  app platform instead of the generated-app registry.

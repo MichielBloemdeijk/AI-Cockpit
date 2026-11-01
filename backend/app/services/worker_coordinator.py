@@ -97,7 +97,7 @@ class PoolSnapshot:
 def _canonical_resource(resource_type: str, resource_key: str) -> tuple[str, str]:
     normalized_type = resource_type.strip().casefold()
     normalized_key = resource_key.strip()
-    if normalized_type not in {"directory", "path", "workspace", "repository", "generated_app"}:
+    if normalized_type not in {"directory", "path", "workspace", "repository"}:
         return normalized_type, normalized_key.casefold()
     candidate = Path(normalized_key)
     if not candidate.is_absolute():

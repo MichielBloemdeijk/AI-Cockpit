@@ -1,6 +1,6 @@
 # AI Cockpit
 
-AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, generated apps, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. GPT-Live powers Jarvis audio and managed routing. Durable Jarvis workers use the subscription-first Codex runtime with safe API handoff; other chat modes retain local and OpenRouter options.
+AI Cockpit is a locally hosted AI workspace with durable conversations, Agent and Council chat modes, reviewed knowledge, apps Jarvis builds and maintains, and a persistent Jarvis assistant. The frontend is a Next.js application, the API is FastAPI, local state is stored in SQLite, and the optional Android 17 companion can act as the selected system assistant. GPT-Live powers Jarvis audio and managed routing. Durable Jarvis workers use the subscription-first Codex runtime with safe API handoff; other chat modes retain local and OpenRouter options.
 
 This repository currently targets local development. Windows has convenience scripts and VS Code tasks; macOS and Linux can use the manual commands below.
 
@@ -283,17 +283,20 @@ tailscale serve reset
 
 No router port forwarding is required for either approach.
 
-## Generated Apps
+## Apps
 
-Ask for a new app or an update from an Agent conversation. The relevant paths are:
+Ask Jarvis for an app ("make me an app to track my plants") or a change to one.
+It designs, builds, tests and installs the app as a package on the app
+platform ([design](docs/jarvis-tasks/13-app-platform.md)). The relevant paths
+are:
 
-- `frontend/generated-apps/<slug>` — authoritative editable source for an app
-- `frontend/public/apps/<slug>` — public assets for that app
-- `frontend/app/apps/<slug>` — synchronized Next.js route copy used by the live development server
-- `/workspace/apps` — app management UI
-- `/apps/<slug>` — live app URL
+- `backend/data/apps/<slug>/<version>/` — installed packages; every version is kept for rollback
+- `backend/data/apps.db` and `backend/data/app-files/<slug>/` — app records and files
+- `backend/apps/` — the built-in packages (Recipes, Documents)
+- `/workspace/apps` — the list of installed apps
+- `/apps/<slug>` — an app, in a sandboxed frame
 
-Generated app and conversation runtime data are intentionally ignored by Git.
+App data and conversation runtime data are intentionally ignored by Git.
 
 ## Development Commands
 
@@ -394,7 +397,7 @@ Stop the other process using the port. The frontend proxy and documented URLs as
 ```text
 AI-Cockpit/
 ├── backend/                 FastAPI API, agent runtime, persistence, tests
-├── frontend/                Next.js UI and generated-app route host
+├── frontend/                Next.js UI and the app host page
 ├── android/                 Android 17 system-assistant companion
 ├── docs/ARCHITECTURE.md     Current implementation architecture
 ├── docs/JARVIS_TASK_ARCHITECTURE.md  Target modular-task architecture and plan index
@@ -411,7 +414,6 @@ Interactive API details are available from `/docs` while the backend is running.
 
 - This is a development-oriented local application, not a hardened production deployment.
 - Agent mode can execute tools and write within configured conversation/app workspaces. Review model-produced changes before relying on them.
-- Generated apps do not yet have browser-driven verification and automatic repair loops.
 - Interrupted runs are persisted but are not automatically resumed after a backend restart.
 - Android compilation and device acceptance require a local API 37 SDK and Android 17 hardware; the repository can resolve the Android dependency graph without them.
 - The installed wake model has foreground POC acceptance, but the stricter v2 quiet/distant, false-wake, address-precision, battery, and screen-off acceptance gates still require calibrated real-device runs.

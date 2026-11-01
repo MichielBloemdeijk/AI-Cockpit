@@ -26,9 +26,8 @@ Useful commands:
 - `app/(app)/background` — placeholder surface explaining that background runs are disabled
 - `app/(app)/knowledge` — reviewed memory queue and approved knowledge browser
 - `app/(app)/settings` — model defaults for future sessions and the default agent-loop model
-- `app/(app)/workspace/apps` — generated app management views
-- `generated-apps` — authoritative generated app source trees (runtime content, Git-ignored)
-- `app/apps` — synchronized generated app routes plus the tracked `[slug]` fallback
+- `app/(app)/workspace/apps` — the list of installed apps
+- `app/apps/[slug]` — the host page that frames an installed app and serves its SDK bridge (`lib/app-platform.ts`)
 - `app/login` — authentication entrypoint
 
 ## Key Modules
@@ -36,7 +35,7 @@ Useful commands:
 - `lib/api.ts` — typed browser client for the backend APIs
 - `lib/hooks.ts` — stateful hooks such as `useAuth` and `useChat`
 - `lib/chat-history.ts` — maps conversation artifacts and events into chat-ready message data
-- `components/` — shared UI building blocks for chat, navigation, and generated app surfaces
+- `components/` — shared UI building blocks for chat and navigation
 
 ## Current UI Shape
 

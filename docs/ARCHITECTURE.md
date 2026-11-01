@@ -33,24 +33,19 @@ AI Cockpit is a locally hosted personal AI workspace built around these active c
 - configurable defaults for new chat sessions, including tool flags and council settings
 - limited chat tools for workspace search and Python execution, with per-conversation workspace boundaries
 - a chat-first agent loop with provider-native tool use, plan-first product behavior, resumable question states, and durable run trace artifacts inside per-conversation workspaces
-- durable generated app hosting through a backend app registry, cockpit app-management pages under `/workspace/apps`, and real runtime routes under `/apps/[slug]`
-- chat-resident generated-app bootstrap, conversation-owned lease semantics, and app-scoped write-root expansion for generated app work
+- apps that Jarvis designs, builds, tests, installs and repairs as packages on the [app platform](jarvis-tasks/13-app-platform.md): sandboxed UIs under `/apps/<slug>`, typed records, files, background functions and data shared through grants
 - provider-aware prompt caching, prompt telemetry, transcript compaction, cold-cache microcompaction, raw visible-output artifacts, and provider-exposed reasoning capture across both chat and agent flows
 - a phone-first `/jarvis` PWA with GPT-Live WebRTC, provisional transcript streaming, durable daily logs and focus, first-class tasks and reminders, natural task references, local wake/address detection, and optional Web Push delivery
 - an Android 17/API 37 companion that can hold the assistant role, invoke a native Compose session, run the same local wake model, stream Live audio and durable events, and host the phone UI in a constrained WebView
 
-## Required App-Builder Direction
+## App-Builder Direction
 
-The required product direction for generated apps is a chat-resident agent loop:
+Apps are add-ons on the app platform. Jarvis builds or changes one with the
+`build_app@1` workflow, which checks the package (UI tests in headless Chromium,
+function tests in the function host) and installs it; failing apps report
+errors that start a repair. See [the app platform](jarvis-tasks/13-app-platform.md).
 
-1. the user starts an Agent chat
-2. the user asks for a new app or an update to an existing app
-3. the agent acquires or refreshes the app lease directly from the chat flow
-4. the agent bootstraps or reattaches the generated app contract
-5. the agent reads and writes files inside the app write roots from the same chat session
-6. the agent returns to the user in that same chat thread when the work is complete
-
-This remains the primary control plane for interactive generated-app work. Delegation from chat creates a first-class global task directly; the retired `/voice` page permanently redirects to `/jarvis`. A separate `python -m app.worker` process claims and executes global tasks. FastAPI records only the causal delegation event and task card, not a child conversation run.
+Delegation from chat creates a first-class global task directly; the retired `/voice` page permanently redirects to `/jarvis`. A separate `python -m app.worker` process claims and executes global tasks. FastAPI records only the causal delegation event and task card, not a child conversation run.
 
 The product is split into a FastAPI backend, a Next.js frontend/PWA, an optional native Android client, a local SQLite database for durable state and text indexes, and a file-backed approved-knowledge directory.
 
@@ -110,11 +105,10 @@ intent. Run-owned new/update/answer associations support multiple same-task
 results, fixed-base edits and non-mutating questions. Task/Jarvis inspection and
 the task UI expose these choices. General and workflow workers recognize committed
 attempt outcomes during cleanup rather than reporting false claim loss.
-Generated apps remain trusted same-origin code; storage capability scope is not
-an untrusted-code sandbox. Focused deployment login-next and result/collection/task
+Focused deployment login-next and result/collection/task
 backlinks now pass the password-backed production browser journey. The export
-reuses maintained screens with document navigation for future-ID aliases;
-generated-app management stays in the full Next frontend. Personal access uses explicit configuration and signed owner/device sessions;
+reuses maintained screens with document navigation for future-ID aliases.
+Personal access uses explicit configuration and signed owner/device sessions;
 optional private plaintext passwords are compared in constant time.
 Metadata-only result timing, publication outcomes, SSE emission and client
 milestone/delivery receipts now have durable authenticated inspection and
@@ -153,7 +147,7 @@ Android assistant ---------------------------------+       +-> GPT-Live
 
 - Runs as a Next.js app during development on port 3000.
 - Uses cookie-authenticated fetch requests to the backend.
-- Maintains client-side UI state for the active conversation, transient streams, independent Jarvis cursors, wake inference, and generated-app management surfaces.
+- Maintains client-side UI state for the active conversation, transient streams, independent Jarvis cursors, wake inference, and the app host bridge.
 - Uses a `100dvh` phone layout with safe-area-aware bottom navigation and task/activity sheets while preserving the multi-column desktop workspace.
 
 ### Backend
@@ -175,8 +169,7 @@ Android assistant ---------------------------------+       +-> GPT-Live
 
 - Durable conversational state lives in SQLite through SQLAlchemy async and Alembic-managed schema.
 - Per-conversation generated files live under the configured conversation workspace root.
-- Authoritative generated app source lives under `frontend/generated-apps/<slug>`, public assets live under `frontend/public/apps/<slug>`, and the registry synchronizes healthy source trees into `frontend/app/apps/<slug>` for Next.js routing.
-- Verifier scenarios exercise the same generated-app builder path but clean any transient `verifier-*` scaffold and asset roots after each run so the route tree stays reserved for durable surfaces.
+- Installed app packages live under `backend/data/apps/<slug>/<version>/`; app records, runs and schedules in `backend/data/apps.db`, and app files under `backend/data/app-files/<slug>/`.
 - Approved memory is written into markdown files under `knowledge/notes/` or structured entries in `knowledge/preferences.yaml`.
 - User-visible conversations, task facts, and approved memory are projected transactionally into SQLite recall documents with `unicode61` and trigram FTS5 indexes.
 
@@ -200,7 +193,7 @@ It then registers these active routers:
 - `chat` for compatibility chat endpoints, model discovery, and chat settings
 - `conversations` for durable transcript, event, artifact, branch, tool, and memory operations
 - `knowledge` for review queue and approved knowledge APIs
-- `apps` for the generated app registry and runtime app metadata
+- `app_platform` for installed apps: management, records, files, functions and UI hosting
 - `jarvis` for the current daily log, provider-neutral controller sessions, independent conversation/session replay, fake-provider injection, and policy-driven presentation timing/delivery
 - `tasks` for global dispatch, status, ordered event replay, attempts, questions, targets, artifacts, cancellation, and retry
 - `notifications` for authenticated VAPID subscriptions and event-linked delivery acknowledgements
@@ -264,17 +257,6 @@ Implemented responsibilities:
 - execute limited chat tools within the active conversation workspace
 - create proposed memory items for a conversation span
 - approve or reject memory items and write approved items into the durable knowledge directory
-
-#### `backend/app/api/apps.py`
-
-Provides the generated app registry APIs.
-
-Implemented responsibilities:
-
-- list generated apps
-- create generated apps directly through the registry
-- fetch generated apps by id or slug
-- update app status, verification state, provenance, manifest data, and error state
 
 #### `backend/app/api/knowledge.py`
 
@@ -408,25 +390,13 @@ Implemented responsibilities:
 - normalize stored workspace paths for frontend display
 - resolve safe workspace-relative file listings for the chat UI
 
-#### `backend/app/services/app_registry.py`
-
-Implements the durable generated app registry.
-
-Current behavior:
-
-- persists generated app metadata, contract paths, verification state, manifest JSON, and provenance
-- maps each app to a real runtime route under `/apps/<slug>`
-- treats `lease_conversation_id` as the authoritative active owner for interactive chat editing while keeping `lease_task_run_id` as provenance or active-holder detail
-- exposes explicit write roots for frontend code and public assets
-
 #### `backend/app/presenters/`
 
-Provides response mapping for conversation, app, and knowledge APIs.
+Provides response mapping for conversation and knowledge APIs.
 
 Implemented responsibilities:
 
 - convert conversation records into summary, detail, event, artifact, branch, and memory DTOs
-- convert generated app records into API-facing view models
 - convert reviewed knowledge records into API-facing view models
 
 This presenter layer keeps route modules thin and avoids repeating record-to-response mapping across endpoints.
@@ -579,24 +549,6 @@ Current examples:
 - agent run summaries
 - agent tool outputs
 
-#### `generated_apps`
-
-Stores durable generated app metadata.
-
-Important fields:
-
-- `slug`
-- `title`
-- `status`
-- `verification_status`
-- `route_path`
-- `frontend_root`
-- `frontend_entry_path`
-- `source_task_run_id`
-- `source_conversation_id`
-- `manifest_json`
-- `last_error`
-
 #### `memory_items`
 
 Stores proposed and approved reviewed memory extracted from conversations.
@@ -656,9 +608,9 @@ The frontend uses the Next.js app router.
 Current route groups:
 
 - `frontend/app/login` for authentication
-- `frontend/app/apps` for synchronized generated app routes and the metadata/error fallback
+- `frontend/app/apps/[slug]` for the host page that frames an installed app and bridges its SDK calls
 - `frontend/app/(app)/chat` for the main chat surface
-- `frontend/app/(app)/workspace/apps` for cockpit app management and app detail pages
+- `frontend/app/(app)/workspace/apps` for the list of installed apps
 - `frontend/app/(app)/tasks` for the global task list and full task trace; the old background routes redirect here
 - `frontend/app/(app)/settings` for model/task defaults, server-persisted Jarvis preferences, Android pairing, browser Push, and local wake calibration
 - `frontend/app/(app)/wiki` for the review queue, approved Wiki search, and file-backed document browser; `/knowledge` permanently redirects here
@@ -675,7 +627,6 @@ It currently provides typed functions for:
 - chat streaming and council execution
 - conversation listing, transcript/event retrieval, archive controls, branching, and tool execution
 - global task listing, dispatch, detail, cancellation, retry, and question answers
-- generated app registry reads and writes
 - knowledge review and approved document browsing
 - model discovery
 - Jarvis state, preferences, reminders, natural task resolution, live-event URLs, memory proposals, history recall, Live calls, and Android pairing codes
@@ -752,22 +703,10 @@ Current behavior:
 - hides the deterministic developer conversation lab unless developer mode is enabled
 - runs the exact-word wake model off the main thread, associates wake scores with recent speech instead of same-frame VAD, accepts one strong or two low-confidence hits, prepares browser WebRTC locally while armed, and holds the first backend response for a deliberately permissive transcript-stage check
 
-### Generated Apps UI Flow
+### Apps UI Flow
 
-The apps surfaces are split intentionally:
-
-- `frontend/app/(app)/workspace/apps` is the cockpit management UI
-- `frontend/generated-apps/<slug>` is the authoritative editable app source
-- `frontend/app/apps/<slug>` is the synchronized Next.js runtime route
-- `frontend/app/apps/[slug]` is the metadata/error fallback when no healthy synchronized route exists
-
-Current behavior:
-
-- the cockpit apps page lists generated apps, their status, verification state, and route path
-- the cockpit app detail page shows contract paths, provenance, write roots, and manifest data
-- registry reads and updates synchronize healthy generated source into its exact live route without pruning unrelated apps
-- verifier runs clean up any transient `verifier-*` app scaffold after the scenario completes instead of leaving scratch routes behind
-- interactive edits to generated apps are tracked through conversation runs and app lease metadata rather than a separate task-first control plane
+- `/workspace/apps` lists installed apps; `/apps/<slug>` frames one in a sandboxed iframe without network access.
+- `frontend/lib/app-platform.ts` serves the app's SDK calls (records, files, functions) with a token scoped to that app, reports its errors and the record on screen, and opens it on a target record from links and notifications.
 
 ### Wiki UI State
 
@@ -817,16 +756,6 @@ Current behavior:
 4. Workspace search reads across allowed roots, while Python execution can only write inside the active conversation workspace.
 5. Tool outputs are stored as transcript-visible assistant messages so the result survives reloads.
 
-### Chat-Started App Editing Flow
-
-1. The user asks for app creation or app edits in the main chat flow.
-2. The agent runtime acquires or refreshes the generated app lease through the app registry using the active conversation context.
-3. The backend bootstraps or attaches the generated app, scaffolds the app contract if needed, and stores the app context in the active agent run metadata.
-4. The generated app is available in the registry, in `/workspace/apps`, and at `/apps/<slug>` immediately.
-5. The active agent run carries explicit write roots for the generated app so later edits stay inside the app boundary.
-6. The agent loop persists plan events, thought summaries, tool events, question pauses, compaction summaries, prompt metrics, and final run summaries into the conversation trace.
-7. After a backend restart, previously running runs are marked interrupted and can be resumed manually because the durable run metadata, events, and artifacts remain in SQLite.
-
 ### Reviewed Memory Approval
 
 1. Proposed memory items are created against a conversation.
@@ -843,16 +772,18 @@ Current behavior:
 - `backend/app/config.py`: environment-backed settings and path helpers
 - `backend/app/api/`: route definitions
 - `backend/app/models/`: Pydantic request and response models
-- `backend/app/services/`: orchestration, auth, LLM access, agent tools, generated apps, conversation read/write seams, and knowledge bridge
-- `backend/app/presenters/`: API response mapping for conversation, apps, and knowledge
+- `backend/app/services/`: orchestration, auth, LLM access, agent tools, conversation read/write seams, and knowledge bridge
+- `backend/app/app_platform/`: app packages, records, files, the function host, triggers, sharing and the package check
+- `backend/apps/`: built-in app packages (Recipes, Documents)
+- `backend/app/presenters/`: API response mapping for conversation and knowledge
 - `backend/app/db/`: SQLAlchemy base, tables, sessions, repositories
 - `backend/alembic/`: schema migrations
-- `backend/tests/`: backend coverage for persistence, conversations, generated apps, compaction, runtime behavior, and reviewed memory
+- `backend/tests/`: backend coverage for persistence, conversations, tasks, the app platform, compaction, runtime behavior, and reviewed memory
 
 ### Frontend
 
 - `frontend/app/`: route entrypoints and layouts
-- `frontend/components/`: chat, sidebar, app-management, and shared presentation components
+- `frontend/components/`: chat, sidebar, and shared presentation components
 - `frontend/components/chat/`: shared chat page panels and formatting helpers
 - `frontend/components/chat-message/`: dedicated per-kind chat renderers
 - `frontend/lib/api.ts`: typed backend client
@@ -892,8 +823,7 @@ Current backend test coverage lives under `backend/tests/` and includes:
 - conversation store behavior
 - conversation API behavior
 - conversation compaction behavior
-- generated app registry behavior and explicit write-root enforcement
-- chat-started app bootstrap behavior inside the chat-first agent runtime
+- app platform packages, checks (real-browser UI tests and function tests), functions, triggers, files, sharing, and the app builder workflow
 - agent runtime and reviewed memory behavior
 - workspace and limited-tool boundaries
 - slashless collection route coverage for the frontend rewrite path
@@ -910,7 +840,6 @@ These are not accidental omissions; they are the main boundaries of the current 
 - The current durable agent runtime is intentionally single-agent and does not yet include subagents, MCP integration, or plugin loading.
 - `/api/chat` still acts as a compatibility-facing entrypoint even though persistence is conversation-first underneath.
 - Run state is durably restored after restart, but active execution is not automatically resumed; interrupted runs need an explicit resume.
-- Generated apps can now be created and hosted durably, but browser-driven verification evidence and automatic repair loops are still future work.
 - Browser and Android source paths now cover Live media, sideband transport, controller handoff, streamed transcripts, reminders, natural task references, indexed recall, reviewed memory, paired notifications, and local wake/address gating. The API 37 debug build passes; Android release acceptance still requires physical-device checks for assistant selection, keyguard, screen-off listening, process death, network loss, and battery drain.
 - The selected exact-word model remains less consistent at low volume and its prior automated false-activation result does not meet the stricter v2 target. Calibrated quiet/distant/noisy/hard-negative recordings, GPU retraining, and held-out real-device address evaluation remain release gates rather than claimed passes.
 

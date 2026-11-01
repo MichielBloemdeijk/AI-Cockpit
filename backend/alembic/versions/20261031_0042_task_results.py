@@ -19,7 +19,8 @@ def upgrade():
     if inspector.has_table("cockpit_apps"):
         op.execute("DELETE FROM app_data_records WHERE cockpit_app_id IN (SELECT id FROM cockpit_apps WHERE kind = 'collection')")
         op.execute("DELETE FROM cockpit_apps WHERE kind = 'collection'")
-    if "result_page_id" in {column["name"] for column in inspector.get_columns("app_data_records")}:
+    if inspector.has_table("app_data_records") and "result_page_id" in {
+            column["name"] for column in inspector.get_columns("app_data_records")}:
         with op.batch_alter_table("app_data_records", recreate="always") as batch:
             batch.drop_column("result_page_id")
     for table in ("result_metrics", "result_page_events", "result_page_revisions", "result_pages"):

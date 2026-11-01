@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.api import app_catalog, app_platform, apps, auth, chat, devices, jarvis, notifications, orchestration, task_context, tasks
+from app.api import app_platform, auth, chat, devices, jarvis, notifications, orchestration, task_context, tasks
 from app.api.private import PRIVATE_HEADERS
 from app.api import conversations, knowledge, worker_tools
 from app.app_platform import app_runtime, close_apps_engine, ensure_apps_database, install_builtin_apps
@@ -128,13 +128,10 @@ app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(jarvis.router)
 app.include_router(task_context.router)
-app.include_router(app_catalog.router)
-app.include_router(app_catalog.data_router)
 app.include_router(tasks.router)
 app.include_router(worker_tools.router)
 app.include_router(orchestration.router)
 app.include_router(knowledge.router)
-app.include_router(apps.router)
 app.include_router(app_platform.router)
 app.include_router(app_platform.host_router)
 app.include_router(notifications.router)
@@ -166,8 +163,7 @@ async def private_result_responses(request, call_next):
         if (origin and origin not in allowed) or request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"detail": "Cross-origin write rejected"}, status_code=403)
     response = await call_next(request)
-    if (request.url.path.startswith(("/api/app-catalog", "/api/app-platform", "/api/auth/", "/api/jarvis/devices"))
-            or (request.url.path.startswith("/api/apps/") and request.url.path.endswith("/storage-capability"))):
+    if request.url.path.startswith(("/api/app-platform", "/api/auth/", "/api/jarvis/devices")):
         for key, value in PRIVATE_HEADERS.items():
             response.headers[key] = value
     return response

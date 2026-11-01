@@ -48,9 +48,6 @@ def accepted_exceptions(gate: str) -> dict:
         for identifier, reason in policy["assertions"].items()} if gate in policy["gates"] else {}
 
 
-GENERATED_APP_PARENTS = frozenset({"frontend/app/apps", "frontend/public/apps"})
-
-
 def candidate_identity(root: Path = ROOT) -> dict:
     """Hash source including dirty/untracked files, never profiles, .env or data."""
     source_roots = ("backend/app", "backend/alembic", "backend/tests", "backend/workflows", "frontend/app", "frontend/components",
@@ -68,11 +65,7 @@ def candidate_identity(root: Path = ROOT) -> dict:
         # A package named data inside an explicit source root is real source.
         for directory, children, names in os.walk(folder, followlinks=False):
             parent = Path(directory)
-            # Apps Jarvis generates at runtime (gitignored) are not candidate source;
-            # only the tracked [slug] route lives beside them.
-            generated = parent.relative_to(root).as_posix() in GENERATED_APP_PARENTS
-            children[:] = [name for name in children if name not in excluded
-                and not linked(parent / name) and not (generated and name != "[slug]")]
+            children[:] = [name for name in children if name not in excluded and not linked(parent / name)]
             files.update(parent / name for name in names
                 if Path(name).suffix not in {".pyc", ".log"}
                 and not (parent / name).is_symlink() and (parent / name).is_file())
