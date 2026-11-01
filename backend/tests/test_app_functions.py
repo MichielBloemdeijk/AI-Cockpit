@@ -409,3 +409,22 @@ async def test_the_reference_package_passes_its_ui_and_function_tests(tmp_path: 
     problems = (await check_package(clippings(uncovered, name="uncovered")))["problems"]
     assert any("uploads files: add a test" in problem for problem in problems)
     assert any("shows stored files: add a test" in problem for problem in problems)
+
+
+@needs_browser
+@pytest.mark.asyncio
+async def test_ui_tests_run_on_a_fixed_date() -> None:
+    def dated(manifest, root):
+        page = root / "ui" / "index.html"
+        page.write_text(page.read_text(encoding="utf-8").replace(
+            '<p id="summary"></p>', '<p id="summary"></p><p id="today"></p>').replace(
+            "cockpit.ready.then(render)",
+            "document.getElementById('today').textContent = new Date().toISOString();\n    cockpit.ready.then(render)"),
+            encoding="utf-8")
+        tests_path = root / "tests" / "ui.json"
+        tests = json.loads(tests_path.read_text(encoding="utf-8"))
+        tests["tests"].append({"name": "shows the fixed date", "steps": [
+            {"expect_text": "2026-01-05T08:00:00.000Z", "selector": "#today"}]})
+        tests_path.write_text(json.dumps(tests), encoding="utf-8")
+    report = await check_package(clippings(dated, name="dated"))
+    assert report["ok"], report["problems"]

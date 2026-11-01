@@ -20,6 +20,8 @@ const { chromium } = createRequire(path.join(job.playwrightDir, "package.json"))
 
 const ORIGIN = "http://cockpit.test";
 const STEP_TIMEOUT = 5000;
+// UI tests run on a fixed date (timers still run), so tests never depend on the day they run.
+const FIXED_NOW = "2026-01-05T09:00:00+01:00";
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css",
   ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
@@ -194,7 +196,8 @@ async function runStep(page, frame, step) {
 }
 
 async function runTest(browser, test, index) {
-  const context = await browser.newContext({ viewport: { width: 420, height: 800 } });
+  const context = await browser.newContext({ viewport: { width: 420, height: 800 }, timezoneId: "Europe/Amsterdam" });
+  await context.clock.setFixedTime(new Date(FIXED_NOW));
   const page = await context.newPage();
   const problems = [];
   page.on("console", (message) => { if (message.type() === "error") problems.push(`console: ${message.text()}`); });

@@ -18,7 +18,8 @@ results the UI's function calls return (`{"import_url": {"output": {...}}}` or
 that uploads files needs a test with an upload step, and one that shows stored
 files needs a test that seeds some.
 
-UI steps are data, never code. Records the UI wrote are validated against the
+UI tests run with the date fixed at Monday 2026-01-05 09:00 Europe/Amsterdam,
+so date-dependent UIs render the same on every run. UI steps are data, never code. Records the UI wrote are validated against the
 collection schemas afterwards, as the real data API would on write.
 
 Every function needs at least one test in `tests/functions.json`:

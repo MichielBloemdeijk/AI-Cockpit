@@ -188,7 +188,8 @@ async def test_http_access_and_the_builders_data_catalog() -> None:
         token = (await owner.post("/api/app-platform/apps/meal-planner/session")).json()["token"]
     headers = {"Authorization": f"AppPlatform {token}"}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver", headers=headers) as scoped:
-        listed = await scoped.get("/api/app-platform/data/meal-planner/recipes.recipe")
+        # A limit above 200 returns at most 200, as in the package check.
+        listed = await scoped.get("/api/app-platform/data/meal-planner/recipes.recipe", params={"limit": 500})
         assert [record["key"] for record in listed.json()["records"]] == ["r1"]
         refused = await scoped.put("/api/app-platform/data/meal-planner/recipes.recipe/r2", json={"value": SOUP})
         assert refused.status_code == 422 and "no write grant" in refused.json()["detail"]

@@ -163,7 +163,8 @@ async def query_app_records(
     collection: str,
     where: str | None = Query(default=None, max_length=2000, description="JSON object of field equality filters"),
     order: str | None = Query(default=None, max_length=80),
-    limit: int = Query(default=50, ge=1, le=200),
+    # More than 200 returns the first 200, as in the package check and functions.
+    limit: int = Query(default=50, ge=1),
 ) -> dict[str, Any]:
     try:
         filters = json.loads(where) if where else None

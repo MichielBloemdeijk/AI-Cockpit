@@ -527,6 +527,17 @@ Deliberate simplifications to revisit:
   Recipes through a read grant and follows renamed or deleted recipes with an
   event function.
 
+- **Live pilot:** one Codex task through Jarvis's `build_app` built "Meal
+  Planner" (a dinner per day from the Recipes app, and one shopping list). It
+  called `app_catalog`, declared `grants.read: ["recipes.recipe"]`, and passed
+  its check. In the real host it first failed with HTTP 422: it queried 500
+  records, which the API refused while the check's stand-in host quietly
+  returned 200. Both now return at most 200. Its UI tests also depended on
+  the day they ran (the select for the 26th), so UI tests now run on a fixed
+  date, Monday 2026-01-05 09:00 Europe/Amsterdam. After those fixes, planning
+  a seeded test recipe filled the shopping list with no errors. Left as is:
+  on a phone the recipe selects are too narrow to read.
+
 Deliberate simplifications to revisit:
 
 - Uninstalling or resetting an app others read is allowed; their reads then

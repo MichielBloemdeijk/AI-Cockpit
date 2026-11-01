@@ -97,8 +97,9 @@ Manifest, the required fields (`description`, `collections`, `files`,
   when `onTarget` reports another one later. Call `cockpit.viewing` whenever
   the owner opens a record, so Jarvis knows what "this one" means.
 
-  Query results are `[{ key, value, revision, updated_at }]`. `where` compares
-  top-level fields for equality. Keys use letters, digits and `_ . : -`, for
+  Query results are `[{ key, value, revision, updated_at }]`, at most 200 per
+  query (a larger `limit` returns 200). `where` compares top-level fields for
+  equality. Keys use letters, digits and `_ . : -`, for
   example `plant-${Date.now()}`. Pass the revision you read when updating, and
   on an error with `status === 409` reload and show the latest data. Show other
   errors to the user instead of failing silently. Records are validated against
@@ -113,6 +114,9 @@ Manifest, the required fields (`description`, `collections`, `files`,
 
 Cover the main actions: creating, changing and deleting data, and how stored
 data is shown. Each test starts with an empty store plus its own `records`.
+The clock is fixed at Monday 5 January 2026, 09:00 in Europe/Amsterdam (timers
+still run), so anything that depends on today, such as the current week,
+renders the same on every run: write seeds and expectations for that date.
 When the UI uploads files, a test chooses a file with an `upload` step and
 checks it was stored (`expect_files`); when it shows stored files, a test
 seeds one with `"files"` and checks it is shown (for example `expect_count` of

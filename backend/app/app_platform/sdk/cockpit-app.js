@@ -12,7 +12,7 @@
  *   await cockpit.data.get(collection, key)   -> { key, value, revision } | null
  *   await cockpit.data.put(collection, key, value, { expectedRevision })
  *   await cockpit.data.delete(collection, key, { expectedRevision })
- *   await cockpit.data.query(collection, { where, order, limit }) -> [records]
+ *   await cockpit.data.query(collection, { where, order, limit }) -> [records]  (at most 200)
  *   await cockpit.files.list({ prefix })      -> [{ name, size, content_type, updated_at }]
  *   await cockpit.files.put(name, fileOrBlobOrText, { contentType }) -> { name, size, ... }
  *   await cockpit.files.get(name)             -> Blob | null  (show it with URL.createObjectURL)
