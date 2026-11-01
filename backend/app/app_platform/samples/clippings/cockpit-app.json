@@ -1,0 +1,23 @@
+{
+  "schema": "cockpit-app.v1",
+  "slug": "clippings",
+  "title": "Clippings",
+  "version": 1,
+  "description": "Text clippings from uploads and web pages, with a daily count. The reference package for files and functions.",
+  "ui": {"entry": "ui/index.html"},
+  "collections": {
+    "clip": {"schema": "schemas/clip.json", "indexes": ["words"]},
+    "summary": {"schema": "schemas/summary.json"}
+  },
+  "files": {"quota_mb": 20},
+  "functions": {
+    "index_clip": {"file": "functions/index_clip.py", "trigger": {"event": "file_changed", "prefix": "clips/"},
+                   "description": "Keep a clip record for every stored clip file."},
+    "fetch_page": {"file": "functions/fetch_page.py", "trigger": {"http": "POST"},
+                   "description": "Save a web page's text as a clip."},
+    "daily_summary": {"file": "functions/daily_summary.py", "trigger": {"schedule": "0 7 * * *"},
+                      "description": "Count the clips and their words every morning."}
+  },
+  "grants": {"network": ["example.org", "*.example.org"]},
+  "jarvis": {"summary": "Text clippings: each clip is a stored file with its word count and a preview; the summary record 'latest' counts them every morning."}
+}

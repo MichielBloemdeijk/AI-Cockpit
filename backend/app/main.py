@@ -16,7 +16,7 @@ from app.config import settings
 from app.api import app_catalog, app_platform, apps, auth, chat, devices, jarvis, notifications, orchestration, task_context, tasks
 from app.api.private import PRIVATE_HEADERS
 from app.api import conversations, knowledge, worker_tools
-from app.app_platform import close_apps_engine, ensure_apps_database, install_builtin_apps
+from app.app_platform import app_runtime, close_apps_engine, ensure_apps_database, install_builtin_apps
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
 from app.services.conversation_store import conversation_store
 from app.services.run_supervisor import run_supervisor
@@ -70,6 +70,9 @@ async def lifespan(application: FastAPI):
     await ensure_apps_database()
     if settings.app_builtin_install:
         await install_builtin_apps()
+    if settings.app_runtime_enabled:
+        from app.services.app_repair import start_app_repair
+        await app_runtime.start(repair=start_app_repair)
     await jarvis_live_telemetry.start()
     await reminder_scheduler.start()
     await jarvis_coordinator.start()
@@ -98,6 +101,7 @@ async def lifespan(application: FastAPI):
         await jarvis_live_telemetry.stop()
         await reminder_scheduler.stop()
         await run_supervisor.stop()
+        await app_runtime.stop()
         await close_apps_engine()
         await close_engine()
 

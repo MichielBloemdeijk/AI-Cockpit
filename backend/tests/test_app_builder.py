@@ -60,7 +60,7 @@ async def test_reinstall_is_a_no_op_and_reset_status_uninstall_manage_data() -> 
 
     with pytest.raises(app_platform.ManifestError, match="no collection"):
         await app_platform.reset("notes", "todo")
-    assert await app_platform.reset("notes") == 2
+    assert await app_platform.reset("notes") == {"records": 2, "files": 0}
     assert (await app_platform.status("notes"))["records"] == {"note": 0}
 
     checkout = settings.app_builds_path / "checkout"
@@ -93,7 +93,7 @@ async def test_http_management_and_scoped_error_reports() -> None:
         status = (await client.get("/api/app-platform/apps/notes/status")).json()
         assert status["recent_errors"][0]["message"] == "boom"
         await app_platform.put_record("notes", "note", "a", {"text": "x"})
-        assert (await client.post("/api/app-platform/apps/notes/reset", json={})).json() == {"deleted": 1}
+        assert (await client.post("/api/app-platform/apps/notes/reset", json={})).json() == {"records": 1, "files": 0}
         assert (await client.delete("/api/app-platform/apps/notes")).json() == {"uninstalled": True}
         assert (await client.get("/api/app-platform/apps/notes/status")).status_code == 404
     # The app's own token reaches its data and error reports, never management.

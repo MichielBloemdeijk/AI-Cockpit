@@ -8,6 +8,7 @@ again is a no-op, so a builder can safely retry its install step.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timezone
 from hashlib import sha256
 from pathlib import Path
 import shutil
@@ -47,6 +48,8 @@ class ActiveApp:
             "version": self.version,
             "description": self.manifest.get("description", ""),
             "collections": sorted(self.collections),
+            "functions": sorted(self.manifest.get("functions") or {}),
+            "files": bool(self.manifest.get("files")),
             "jarvis_summary": (self.manifest.get("jarvis") or {}).get("summary", ""),
             "url": f"/apps/{self.slug}",
         }
@@ -213,13 +216,16 @@ async def uninstall(slug: str) -> None:
             for collection, spec in (manifest.get("collections") or {}).items():
                 for field in spec.get("indexes") or []:
                     await session.execute(text(f"DROP INDEX IF EXISTS {_index_name(slug, collection, field)}"))
-        # Versions and records go with the app through ON DELETE CASCADE.
+        # Versions, records, files, runs and schedules go with the app through ON DELETE CASCADE.
         await session.execute(delete(InstalledApp).where(InstalledApp.slug == slug))
     shutil.rmtree(settings.apps_path / slug, ignore_errors=True)
+    shutil.rmtree(settings.app_files_path / slug, ignore_errors=True)
 
 
-async def reset(slug: str, collection: str | None = None) -> int:
-    """Delete an app's records (all, or one collection's); returns how many were deleted."""
+async def reset(slug: str, collection: str | None = None, *, files: bool = False) -> dict[str, int]:
+    """Delete an app's records (all, or one collection's) and, when asked, its files."""
+    from app.app_platform.files import clear_files
+
     app = await get_active(slug)
     if collection is not None and collection not in app.collections:
         raise ManifestError(f"{slug} has no collection {collection}")
@@ -227,12 +233,16 @@ async def reset(slug: str, collection: str | None = None) -> int:
     if collection is not None:
         statement = statement.where(AppRecord.collection == collection)
     async with apps_session() as session:
-        return (await session.execute(statement)).rowcount or 0
+        records = (await session.execute(statement)).rowcount or 0
+    return {"records": records, "files": await clear_files(slug) if files else 0}
 
 
 async def status(slug: str) -> dict[str, Any]:
-    """What Jarvis needs to judge an app's state: versions, record counts and recent UI errors."""
+    """What Jarvis needs to judge an app's state: versions, data, function runs and recent errors."""
     from app.app_platform.errors import recent_errors
+    from app.app_platform.files import usage
+    from app.app_platform.function_host import recent_runs
+    from app.app_platform.store import AppSchedule
 
     app = await get_active(slug)
     async with apps_session() as session:
@@ -240,9 +250,15 @@ async def status(slug: str) -> dict[str, Any]:
             .order_by(AppVersion.version))).scalars())
         counts = dict((await session.execute(select(AppRecord.collection, func.count()).where(
             AppRecord.app_slug == slug).group_by(AppRecord.collection))).all())
+        schedules = {row.function: row.next_run_at.replace(tzinfo=row.next_run_at.tzinfo or timezone.utc).isoformat()
+                     for row in (await session.execute(
+            select(AppSchedule).where(AppSchedule.app_slug == slug))).scalars()}
+    functions = {name: {"trigger": spec.get("trigger"), **({"next_run_at": schedules[name]} if name in schedules else {})}
+                 for name, spec in sorted((app.manifest.get("functions") or {}).items())}
     return {**app.summary(), "versions": versions,
             "records": {name: counts.get(name, 0) for name in sorted(app.collections)},
-            "recent_errors": await recent_errors(slug)}
+            "functions": functions, "stored_files": await usage(slug) if app.manifest.get("files") else None,
+            "recent_runs": await recent_runs(slug), "recent_errors": await recent_errors(slug)}
 
 
 async def checkout(slug: str, destination: Path) -> ActiveApp:

@@ -92,6 +92,90 @@ def contain_current_process_tree() -> None:
         raise
 
 
+def contain_child_process(pid: int, *, memory_bytes: int) -> int | None:
+    """Put a child process in its own job with a memory limit; closing the job kills it.
+
+    Returns the job handle for `close_job`, or None on hosts without job objects.
+    The child runs briefly before it is assigned, which is acceptable for the
+    soft limits this is used for (app functions).
+    """
+    if os.name != "nt":
+        return None
+    size_t = ctypes.c_size_t
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", size_t),
+            ("MaximumWorkingSetSize", size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", size_t),
+            ("JobMemoryLimit", size_t),
+            ("PeakProcessMemoryUsed", size_t),
+            ("PeakJobMemoryUsed", size_t),
+        ]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetInformationJobObject.restype = wintypes.BOOL
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        limits = ExtendedLimitInformation()
+        # KILL_ON_JOB_CLOSE | PROCESS_MEMORY | DIE_ON_UNHANDLED_EXCEPTION
+        limits.BasicLimitInformation.LimitFlags = 0x2000 | 0x100 | 0x400
+        limits.ProcessMemoryLimit = memory_bytes
+        if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        process = kernel.OpenProcess(0x0001 | 0x0100, False, pid)  # PROCESS_TERMINATE | PROCESS_SET_QUOTA
+        if not process:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel.AssignProcessToJobObject(job, process):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel.CloseHandle(process)
+        return int(job)
+    except BaseException:
+        kernel.CloseHandle(job)
+        raise
+
+
+def close_job(handle: int | None) -> None:
+    """Close a job from `contain_child_process`, killing anything still in it."""
+    if handle is None or os.name != "nt":
+        return
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle(handle)
+
+
 def exit_when_parent_exits(parent_pid: int) -> None:
     """Bind an execution child to its exact supervisor process, not a PID poll."""
     global _parent_handle

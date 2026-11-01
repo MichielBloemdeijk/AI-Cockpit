@@ -1,0 +1,52 @@
+{
+  "tests": [
+    {
+      "name": "indexes a stored clip",
+      "function": "index_clip",
+      "input": {"event": "file_changed", "name": "clips/My list.txt", "change": "put", "size": 15},
+      "files": {"clips/My list.txt": {"text": "milk  bread\neggs"}},
+      "expect": {
+        "output": {"file": "clips/My list.txt", "words": 3, "preview": "milk bread eggs"},
+        "records": [{"collection": "clip", "count": 1, "where": {"words": 3}}]
+      }
+    },
+    {
+      "name": "removes the record of a deleted clip",
+      "function": "index_clip",
+      "input": {"event": "file_changed", "name": "clips/a.txt", "change": "delete"},
+      "records": {"clip": [{"key": "clip:a.txt", "value": {"file": "clips/a.txt", "words": 1, "preview": "x"}}]},
+      "expect": {"output": {"removed": "clips/a.txt"}, "records": [{"collection": "clip", "count": 0}]}
+    },
+    {
+      "name": "saves a page's text",
+      "function": "fetch_page",
+      "input": {"url": "https://www.example.org/soup"},
+      "fetch": [{"url": "https://www.example.org/soup",
+                 "body": "<html><style>p{}</style><h1>Tomato &amp; soup</h1><script>x()</script><p>Simmer.</p></html>"}],
+      "expect": {"output": {"file": "clips/www.example.org-soup.txt", "characters": 21}, "files": {"count": 1}}
+    },
+    {
+      "name": "fails on an error page",
+      "function": "fetch_page",
+      "input": {"url": "https://example.org/missing"},
+      "fetch": [{"url": "https://example.org/missing", "status": 404}],
+      "expect": {"error": "answered 404"}
+    },
+    {
+      "name": "refuses hosts outside its grants",
+      "function": "fetch_page",
+      "input": {"url": "https://elsewhere.test/"},
+      "expect": {"error": "not in the app's network grants"}
+    },
+    {
+      "name": "counts the clips",
+      "function": "daily_summary",
+      "input": {"event": "schedule", "scheduled_for": "2026-11-02T06:00:00+00:00"},
+      "records": {"clip": [
+        {"key": "clip:a.txt", "value": {"file": "clips/a.txt", "words": 3, "preview": "a"}},
+        {"key": "clip:b.txt", "value": {"file": "clips/b.txt", "words": 4, "preview": "b"}}
+      ]},
+      "expect": {"output": {"clips": 2, "words": 7}, "records": [{"collection": "summary", "count": 1}]}
+    }
+  ]
+}

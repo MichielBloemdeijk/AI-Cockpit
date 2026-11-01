@@ -11,7 +11,9 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
+from app.app_platform.events import queue_change
 from app.app_platform.lifecycle import ActiveApp, get_active
 from app.app_platform.manifest import FIELD_PATTERN
 from app.app_platform.store import AppRecord, apps_session
@@ -67,6 +69,15 @@ async def put_record(slug: str, collection: str, key: str, value: Any, *,
         raise RecordError(f"{collection} record is invalid at {location}: {errors[0].message}")
     if len(json.dumps(value, separators=(",", ":")).encode()) > RECORD_LIMIT_BYTES:
         raise RecordError("Record is larger than 256 KiB")
+    try:
+        return await _write(app, collection, key, value, expected_revision)
+    except IntegrityError:
+        # Another writer created the key between our read and insert; decide again against it.
+        return await _write(app, collection, key, value, expected_revision)
+
+
+async def _write(app: ActiveApp, collection: str, key: str, value: Any, expected_revision: int | None) -> dict[str, Any]:
+    slug = app.slug
     async with apps_session() as session:
         row = (await session.execute(select(AppRecord).where(AppRecord.app_slug == slug,
             AppRecord.collection == collection, AppRecord.record_key == key))).scalar_one_or_none()
@@ -81,6 +92,8 @@ async def put_record(slug: str, collection: str, key: str, value: Any, *,
             row.revision = current + 1
         await session.flush()
         await session.refresh(row)
+        await queue_change(session, app, {"event": "record_changed", "collection": collection, "key": key,
+                                          "change": "put", "revision": row.revision, "value": value})
         return _record_view(row)
 
 
@@ -96,6 +109,8 @@ async def delete_record(slug: str, collection: str, key: str, *, expected_revisi
         if expected_revision is not None and expected_revision != row.revision:
             raise RevisionConflict(f"Expected revision {expected_revision}, found {row.revision}")
         await session.delete(row)
+        await queue_change(session, app, {"event": "record_changed", "collection": collection, "key": key,
+                                          "change": "delete"})
         return True
 
 

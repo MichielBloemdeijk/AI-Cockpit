@@ -49,9 +49,11 @@ ALLOWED_SHELL_TOOLS = frozenset(
         "build_app",
         "fix_app",
         "manage_app",
+        "call_app_function",
     }
 )
-APP_TOOLS = frozenset({"list_apps", "open_app", "query_app_data", "app_status", "build_app", "fix_app", "manage_app"})
+APP_TOOLS = frozenset({"list_apps", "open_app", "query_app_data", "app_status", "build_app", "fix_app", "manage_app",
+                       "call_app_function"})
 BUILD_WORKFLOW = "build_app@1"
 
 
@@ -138,8 +140,8 @@ class RestrictedBrainGateway:
 
         if tool_name == "list_apps":
             apps = [app.summary() for app in await app_platform.list_apps()]
-            return {"apps": [{key: app[key] for key in ("slug", "title", "description", "jarvis_summary", "collections")}
-                             for app in apps]}
+            keys = ("slug", "title", "description", "jarvis_summary", "collections", "functions")
+            return {"apps": [{key: app[key] for key in keys} for app in apps]}
         request = " ".join(str(arguments.get("request") or arguments.get("problem") or "").split())
         if len(request) > 4000:
             raise ValueError("App request is too long")
@@ -160,18 +162,24 @@ class RestrictedBrainGateway:
                 goal = f"Change {current}: {request}"
             else:
                 errors = (await app_platform.status(app.slug))["recent_errors"]
-                reported = "; ".join(f"v{error['version']}: {error['message']} (x{error['count']})" for error in errors)
                 if not request and not errors:
                     return {"found": True, "started": False,
                             "speak": f"{app.title} has reported no errors; ask what is wrong with it."}
-                goal = (f"Fix {current}. Problem: {request or 'it reported errors'}."
-                        + (f" Errors it reported: {reported}" if reported else ""))
+                goal = app_platform.repair_goal(app, errors, request)
             return {"found": True, "app": app.title, **await self._start_app_build(
                 goal, call_id=call_id, conversation_id=conversation_id, origin_turn_id=origin_turn_id)}
         if tool_name == "app_status":
             status = await app_platform.status(app.slug)
             return {"found": True, **{key: status[key] for key in (
-                "slug", "title", "version", "versions", "records", "recent_errors")}}
+                "slug", "title", "version", "versions", "records", "functions", "stored_files", "recent_runs",
+                "recent_errors")}}
+        if tool_name == "call_app_function":
+            try:
+                result = await app_platform.run_function(app.slug, str(arguments.get("function") or ""),
+                                                         arguments.get("input"), trigger="call")
+            except app_platform.FunctionError as exc:
+                return {"found": True, "error": str(exc), "functions": app.summary()["functions"]}
+            return {"found": True, "app": app.title, **result.view()}
         if tool_name == "manage_app":
             action = arguments.get("action")
             try:
@@ -180,8 +188,9 @@ class RestrictedBrainGateway:
                     return {"found": True, "done": True, "app": app.title, "version": previous.version}
                 if action == "reset":
                     collection = str(arguments.get("collection") or "") or None
-                    deleted = await app_platform.reset(app.slug, collection)
-                    return {"found": True, "done": True, "app": app.title, "deleted_records": deleted}
+                    deleted = await app_platform.reset(app.slug, collection, files=arguments.get("files") is True)
+                    return {"found": True, "done": True, "app": app.title, "deleted_records": deleted["records"],
+                            "deleted_files": deleted["files"]}
                 if action == "uninstall":
                     await app_platform.uninstall(app.slug)
                     return {"found": True, "done": True, "app": app.title, "uninstalled": True}

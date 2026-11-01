@@ -52,7 +52,7 @@ async def test_install_activates_and_lists_the_package() -> None:
     assert apps == [{
         "slug": "notes", "title": "Notes", "version": 1,
         "description": "Short pinned notes. The reference package for the app platform.",
-        "collections": ["note"],
+        "collections": ["note"], "functions": [], "files": False,
         "jarvis_summary": "Short notes the owner keeps; each has a text and can be pinned.",
         "url": "/apps/notes",
     }]
@@ -124,11 +124,11 @@ def test_compatibility_rules() -> None:
 
 
 @pytest.mark.asyncio
-async def test_manifest_rejects_reserved_sections_and_escaping_paths() -> None:
-    def functions(manifest, _schema):
-        manifest["functions"] = {"tick": {"file": "functions/tick.py"}}
-    with pytest.raises(app_platform.ManifestError, match="Not supported .*functions"):
-        await app_platform.install_package(build(edit=functions))
+async def test_manifest_rejects_unknown_sections_and_escaping_paths() -> None:
+    def triggers(manifest, _schema):
+        manifest["triggers"] = {"tick": {"schedule": "@daily"}}
+    with pytest.raises(app_platform.ManifestError, match="triggers"):
+        await app_platform.install_package(build(edit=triggers))
 
     def escape(manifest, _schema):
         manifest["ui"]["entry"] = "../outside.html"

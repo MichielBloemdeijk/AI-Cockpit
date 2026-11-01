@@ -22,6 +22,8 @@ os.environ["AI_COCKPIT_ENV_FILE"] = str(Path(__file__).parent / "no-personal-env
 # folder permission denied unelevated; elevated waits for UAC); it has its own probe tests.
 os.environ.setdefault("TASK_WINDOWS_SANDBOX", "unelevated")
 os.environ.setdefault("TASK_COMMAND_MODE", "trusted")
+# Tests drive the app runtime's steps directly instead of its background loop.
+os.environ.setdefault("APP_RUNTIME_ENABLED", "false")
 
 from app.config import settings
 from app.app_platform import close_apps_engine, ensure_apps_database, install_builtin_apps
@@ -117,7 +119,8 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     original_knowledge_preferences_file = settings.knowledge_preferences_file
     original_task_workspaces_dir = settings.task_workspaces_dir
     original_task_context_blobs_dir = settings.task_context_blobs_dir
-    original_app_platform = (settings.apps_database_url, settings.apps_dir, settings.app_builds_dir)
+    original_app_platform = (settings.apps_database_url, settings.apps_dir, settings.app_builds_dir,
+                             settings.app_files_dir)
     database_path = tmp_path / "test.db"
 
     await close_engine()
@@ -131,6 +134,7 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
     settings.apps_database_url = f"sqlite+aiosqlite:///{(tmp_path / 'apps.db').as_posix()}"
     settings.apps_dir = str(tmp_path / "apps")
     settings.app_builds_dir = str(tmp_path / "app-builds")
+    settings.app_files_dir = str(tmp_path / "app-files")
 
     await ensure_database_ready()
     shutil.copyfile(migrated_template_database, database_path)
@@ -159,7 +163,8 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
         await close_apps_engine()
         await close_engine()
         settings.database_url = original_database_url
-        settings.apps_database_url, settings.apps_dir, settings.app_builds_dir = original_app_platform
+        (settings.apps_database_url, settings.apps_dir, settings.app_builds_dir,
+         settings.app_files_dir) = original_app_platform
         settings.alembic_ini_path = original_alembic_path
         settings.conversation_workspaces_dir = original_conversation_workspaces_dir
         settings.knowledge_notes_dir = original_knowledge_notes_dir

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clippings</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 16px; background: #18181b; color: #f4f4f5; }
+    form { display: flex; gap: 8px; margin-bottom: 12px; }
+    input[type=url] { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid #3f3f46;
+      background: #27272a; color: inherit; }
+    button, label.button { padding: 8px 12px; border-radius: 8px; border: 0; background: #2563eb; color: white;
+      cursor: pointer; font: inherit; }
+    label.button input { display: none; }
+    ul { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; }
+    li { padding: 10px; border-radius: 8px; background: #27272a; display: grid; gap: 4px; }
+    li header { display: flex; align-items: baseline; gap: 8px; }
+    li header strong { flex: 1; overflow-wrap: anywhere; }
+    li p { margin: 0; color: #a1a1aa; font-size: 0.9em; }
+    .quiet { background: transparent; color: #a1a1aa; padding: 4px 8px; }
+    #summary { color: #a1a1aa; margin: 0; }
+    #status { color: #f87171; min-height: 1.2em; margin: 8px 0 0; }
+    .empty { color: #a1a1aa; }
+  </style>
+</head>
+<body>
+  <form id="fetch">
+    <input id="url" type="url" placeholder="https://… page to clip" required>
+    <button type="submit">Clip</button>
+  </form>
+  <label class="button">Upload text<input id="upload" type="file" accept=".txt,.md,text/plain"></label>
+  <p id="status"></p>
+  <p id="summary"></p>
+  <ul id="clips"></ul>
+  <script src="/api/app-host/_sdk/cockpit-app.js"></script>
+  <script>
+    const list = document.getElementById("clips");
+    const status = document.getElementById("status");
+
+    function report(error) { status.textContent = error ? error.message || String(error) : ""; }
+
+    async function render() {
+      const [clips, summary] = await Promise.all([
+        cockpit.data.query("clip", { order: "-updated_at", limit: 200 }),
+        cockpit.data.get("summary", "latest"),
+      ]);
+      document.getElementById("summary").textContent = summary
+        ? `${summary.value.clips} clips, ${summary.value.words} words at the last count` : "";
+      if (!clips.length) {
+        const empty = document.createElement("li");
+        empty.className = "empty";
+        empty.textContent = "No clips yet. Upload a text file or clip a page.";
+        list.replaceChildren(empty);
+        return;
+      }
+      list.replaceChildren(...clips.map((clip) => {
+        const item = document.createElement("li");
+        const header = document.createElement("header");
+        const name = document.createElement("strong");
+        name.textContent = clip.value.file.replace(/^clips\//, "");
+        const words = document.createElement("span");
+        words.textContent = `${clip.value.words} words`;
+        const remove = document.createElement("button");
+        remove.className = "quiet";
+        remove.textContent = "Delete";
+        remove.onclick = () => act(async () => {
+          // index_clip removes the record once the file is gone.
+          await cockpit.files.delete(clip.value.file);
+          await cockpit.data.delete("clip", clip.key);
+        });
+        header.append(name, words, remove);
+        const preview = document.createElement("p");
+        preview.textContent = clip.value.preview;
+        item.append(header, preview);
+        return item;
+      }));
+    }
+
+    async function act(work) {
+      report(null);
+      try { await work(); } catch (error) { report(error); }
+      await render().catch(report);
+    }
+
+    document.getElementById("upload").addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      act(async () => {
+        await cockpit.files.put(`clips/${file.name}`, file, { contentType: file.type || "text/plain" });
+        status.textContent = `Saved ${file.name}; it appears once it is indexed.`;
+      });
+      event.target.value = "";
+    });
+
+    document.getElementById("fetch").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = document.getElementById("url");
+      act(async () => {
+        const result = await cockpit.functions.call("fetch_page", { url: input.value });
+        status.textContent = `Clipped ${result.characters} characters.`;
+        input.value = "";
+      });
+    });
+
+    cockpit.ready.then(render).catch(report);
+  </script>
+</body>
+</html>

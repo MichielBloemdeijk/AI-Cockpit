@@ -6,6 +6,7 @@ and stored with the installed version.
 """
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 import re
@@ -19,10 +20,10 @@ MANIFEST_FILE = "cockpit-app.json"
 SLUG_PATTERN = r"^[a-z][a-z0-9-]{1,47}$"
 NAME_PATTERN = r"^[a-z][a-z0-9_]{0,47}$"
 FIELD_PATTERN = r"^[a-z_][a-z0-9_]{0,63}$"
-# Manifest sections the design reserves for later build steps. An app that
-# declares them must not install as if they worked.
-UNSUPPORTED_SECTIONS = ("functions", "files", "triggers")
 WORKFLOW_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+FUNCTION_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+# A host name, or "*." and a domain for every subdomain of it.
+HOST_PATTERN = r"^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
 
 
 class ManifestError(ValueError):
@@ -54,6 +55,53 @@ class CollectionSpec(_Strict):
 class GrantSpec(_Strict):
     read: list[str] = Field(default_factory=list)
     write: list[str] = Field(default_factory=list)
+    # Hosts the app's functions may fetch from.
+    network: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("network")
+    @classmethod
+    def hosts_are_names(cls, values: list[str]) -> list[str]:
+        if not all(re.fullmatch(HOST_PATTERN, value) for value in values):
+            raise ValueError("Network grants are lowercase host names, optionally starting with '*.'")
+        return values
+
+
+class FilesSpec(_Strict):
+    quota_mb: int = Field(default=100, ge=1, le=2048)
+
+
+class HttpTrigger(_Strict):
+    """The app's UI may call the function (Jarvis may call any function)."""
+    http: Literal["POST"]
+
+
+class ScheduleTrigger(_Strict):
+    schedule: str = Field(min_length=1, max_length=120)
+
+    @field_validator("schedule")
+    @classmethod
+    def schedule_parses(cls, value: str) -> str:
+        from app.app_platform.cron import CronError, parse
+        try:
+            parse(value)
+        except CronError as exc:
+            raise ValueError(f"Invalid schedule {value!r}: {exc}") from exc
+        return value
+
+
+class EventTrigger(_Strict):
+    event: Literal["record_changed", "file_changed"]
+    # record_changed: the collection to watch (required).
+    collection: str | None = None
+    # file_changed: only files whose name starts with this.
+    prefix: str | None = Field(default=None, max_length=200)
+
+
+class FunctionSpec(_Strict):
+    file: str = Field(min_length=1, max_length=255)
+    trigger: HttpTrigger | ScheduleTrigger | EventTrigger | None = None
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    description: str = Field(default="", max_length=500)
 
 
 class JarvisSpec(_Strict):
@@ -69,6 +117,8 @@ class AppManifest(_Strict):
     description: str = Field(default="", max_length=1000)
     ui: UiSpec
     collections: dict[str, CollectionSpec] = Field(default_factory=dict)
+    files: FilesSpec | None = None
+    functions: dict[str, FunctionSpec] = Field(default_factory=dict, max_length=32)
     grants: GrantSpec = Field(default_factory=GrantSpec)
     jarvis: JarvisSpec = Field(default_factory=JarvisSpec)
     # Ids of the workflows in workflows/<id>/, which publish into result collections.
@@ -79,6 +129,13 @@ class AppManifest(_Strict):
     def workflow_ids_are_plain(cls, values: list[str]) -> list[str]:
         if len(values) != len(set(values)) or not all(re.fullmatch(WORKFLOW_PATTERN, value) for value in values):
             raise ValueError("Workflows are unique lowercase identifiers")
+        return values
+
+    @field_validator("functions")
+    @classmethod
+    def function_names_are_plain(cls, values: dict[str, FunctionSpec]) -> dict[str, FunctionSpec]:
+        if not all(re.fullmatch(FUNCTION_PATTERN, name) for name in values):
+            raise ValueError("Function names must be lowercase identifiers")
         return values
 
     @field_validator("collections")
@@ -110,9 +167,6 @@ def load_package(root: Path) -> tuple[AppManifest, dict[str, dict[str, Any]]]:
         raise ManifestError(f"{MANIFEST_FILE} is not valid JSON: {exc}") from exc
     if not isinstance(raw, dict):
         raise ManifestError(f"{MANIFEST_FILE} must be an object")
-    unsupported = [section for section in UNSUPPORTED_SECTIONS if section in raw]
-    if unsupported:
-        raise ManifestError(f"Not supported by this platform version yet: {', '.join(unsupported)}")
     try:
         manifest = AppManifest.model_validate(raw)
     except ValidationError as exc:
@@ -140,8 +194,35 @@ def load_package(root: Path) -> tuple[AppManifest, dict[str, dict[str, Any]]]:
                                  or "title" not in (schema.get("required") or [])):
             raise ManifestError(f"Result collection {name} must require a string title")
         schemas[name] = schema
+    for name, spec in manifest.functions.items():
+        _check_function(root, manifest, name, spec)
     package_workflows(root, manifest)
     return manifest, schemas
+
+
+def _check_function(root: Path, manifest: AppManifest, name: str, spec: FunctionSpec) -> None:
+    """The file exists in functions/ and defines `def handle(input, cockpit)`; it is parsed, never run."""
+    path = _inside(root, spec.file)
+    if path.suffix != ".py" or not path.is_file() or not path.is_relative_to((root / "functions").resolve()):
+        raise ManifestError(f"Function {name}: file must be an existing .py file inside functions/")
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=spec.file)
+    except (SyntaxError, UnicodeDecodeError, ValueError) as exc:
+        raise ManifestError(f"Function {name}: {spec.file} does not parse: {exc}") from exc
+    handlers = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "handle"]
+    if not handlers:
+        raise ManifestError(f"Function {name}: {spec.file} must define handle(input, cockpit)")
+    if isinstance(handlers[-1], ast.AsyncFunctionDef):
+        raise ManifestError(f"Function {name}: handle must be a plain def, not async")
+    if len(handlers[-1].args.args) != 2:
+        raise ManifestError(f"Function {name}: handle takes exactly two arguments (input, cockpit)")
+    trigger = spec.trigger
+    if isinstance(trigger, EventTrigger):
+        if trigger.event == "record_changed" and trigger.collection not in manifest.collections:
+            raise ManifestError(f"Function {name}: record_changed needs one of the app's collections")
+        if trigger.event == "file_changed" and (manifest.files is None or trigger.collection is not None):
+            raise ManifestError(f"Function {name}: file_changed needs a files section and takes no collection")
 
 
 def package_workflows(root: Path, manifest: AppManifest) -> dict[str, dict[str, Any]]:

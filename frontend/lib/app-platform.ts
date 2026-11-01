@@ -16,6 +16,9 @@ export interface PlatformApp {
   version: number;
   description: string;
   collections: string[];
+  functions: string[];
+  /** The app has a file store. */
+  files: boolean;
   jarvis_summary: string;
   url: string;
 }
@@ -59,7 +62,8 @@ export async function openAppSession(slug: string): Promise<AppSession> {
 type BridgeRequest = {
   cockpit: "request";
   id: number;
-  method: "data.get" | "data.put" | "data.delete" | "data.query";
+  method: "data.get" | "data.put" | "data.delete" | "data.query"
+    | "files.list" | "files.put" | "files.get" | "files.delete" | "functions.call";
   params: {
     collection?: unknown;
     key?: unknown;
@@ -68,34 +72,87 @@ type BridgeRequest = {
     where?: unknown;
     order?: unknown;
     limit?: unknown;
+    name?: unknown;
+    prefix?: unknown;
+    data?: unknown;
+    contentType?: unknown;
+    input?: unknown;
   };
 };
+
+/** How one SDK call becomes an HTTP request, and how its response becomes the call's result. */
+export interface BridgeHttpRequest {
+  url: string;
+  init: RequestInit;
+  /** A 404 is a null result (a missing record or file), not an error. */
+  nullOn404: boolean;
+  /** The result is the response body as a Blob (a downloaded file) rather than JSON. */
+  blob: boolean;
+  /** Picks the result out of the JSON body. */
+  result: (body: Record<string, unknown>) => unknown;
+}
 
 function segment(value: unknown, name: string): string {
   if (typeof value !== "string" || !value) throw new AppPlatformError(`${name} is required`, 400);
   return encodeURIComponent(value);
 }
 
+/** A file name such as "photos/a.jpg", encoded per path segment. */
+function filePath(value: unknown): string {
+  if (typeof value !== "string" || !value) throw new AppPlatformError("name is required", 400);
+  return value.split("/").map(encodeURIComponent).join("/");
+}
+
+const whole = (body: Record<string, unknown>) => body;
+
 /** Build the HTTP request for one SDK call. Exported for tests. */
-export function bridgeHttpRequest(slug: string, request: BridgeRequest): { url: string; init: RequestInit; nullOn404: boolean } {
+export function bridgeHttpRequest(slug: string, request: BridgeRequest): BridgeHttpRequest {
   const { params } = request;
-  const base = `${BASE}/api/app-platform/data/${encodeURIComponent(slug)}/${segment(params.collection, "collection")}`;
+  const app = encodeURIComponent(slug);
+  const json = (url: string, init: RequestInit, result: BridgeHttpRequest["result"] = whole, nullOn404 = false) =>
+    ({ url, init, nullOn404, blob: false, result });
+  if (request.method.startsWith("files.")) {
+    const files = `${BASE}/api/app-platform/files/${app}`;
+    switch (request.method) {
+      case "files.list": {
+        const query = typeof params.prefix === "string" && params.prefix ? `?prefix=${encodeURIComponent(params.prefix)}` : "";
+        return json(`${files}${query}`, { method: "GET" }, (body) => body.files);
+      }
+      case "files.put": {
+        if (!(params.data instanceof Blob)) throw new AppPlatformError("files.put needs a Blob, File or string", 400);
+        const type = typeof params.contentType === "string" && params.contentType ? params.contentType
+          : params.data.type || "application/octet-stream";
+        return json(`${files}/${filePath(params.name)}`, { method: "PUT", headers: { "Content-Type": type }, body: params.data });
+      }
+      case "files.get":
+        return { url: `${files}/${filePath(params.name)}`, init: { method: "GET" }, nullOn404: true, blob: true, result: whole };
+      case "files.delete":
+        return json(`${files}/${filePath(params.name)}`, { method: "DELETE" }, (body) => body.deleted);
+    }
+  }
+  if (request.method === "functions.call") {
+    return json(`${BASE}/api/app-platform/functions/${app}/${segment(params.name, "name")}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: params.input ?? null }),
+    }, (body) => {
+      if (!body.ok) throw new AppPlatformError(String(body.error || "The function failed"), 500);
+      return body.output;
+    });
+  }
+  const base = `${BASE}/api/app-platform/data/${app}/${segment(params.collection, "collection")}`;
   switch (request.method) {
     case "data.get":
-      return { url: `${base}/${segment(params.key, "key")}`, init: { method: "GET" }, nullOn404: true };
+      return json(`${base}/${segment(params.key, "key")}`, { method: "GET" }, whole, true);
     case "data.put":
-      return {
-        url: `${base}/${segment(params.key, "key")}`,
-        init: {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value: params.value, expected_revision: params.expectedRevision ?? null }),
-        },
-        nullOn404: false,
-      };
+      return json(`${base}/${segment(params.key, "key")}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: params.value, expected_revision: params.expectedRevision ?? null }),
+      });
     case "data.delete": {
       const query = typeof params.expectedRevision === "number" ? `?expected_revision=${params.expectedRevision}` : "";
-      return { url: `${base}/${segment(params.key, "key")}${query}`, init: { method: "DELETE" }, nullOn404: false };
+      return json(`${base}/${segment(params.key, "key")}${query}`, { method: "DELETE" }, (body) => body.deleted);
     }
     case "data.query": {
       const search = new URLSearchParams();
@@ -103,7 +160,7 @@ export function bridgeHttpRequest(slug: string, request: BridgeRequest): { url: 
       if (typeof params.order === "string") search.set("order", params.order);
       if (typeof params.limit === "number") search.set("limit", String(params.limit));
       const query = search.toString();
-      return { url: query ? `${base}?${query}` : base, init: { method: "GET" }, nullOn404: false };
+      return json(query ? `${base}?${query}` : base, { method: "GET" }, (body) => body.records);
     }
     default:
       throw new AppPlatformError(`Unknown method ${(request as { method: string }).method}`, 400);
@@ -170,11 +227,11 @@ export function createAppBridge({ session, frame, renewSession, target = null, f
   }
 
   async function perform(request: BridgeRequest): Promise<unknown> {
-    const { url, init, nullOn404 } = bridgeHttpRequest(current.slug, request);
+    const { url, init, nullOn404, blob, result } = bridgeHttpRequest(current.slug, request);
     const response = await authorized(url, init);
     if (nullOn404 && response.status === 404) return null;
-    const body = await readJson<Record<string, unknown>>(response);
-    return request.method === "data.query" ? body.records : request.method === "data.delete" ? body.deleted : body;
+    if (blob && response.ok) return response.blob();
+    return result(await readJson<Record<string, unknown>>(response));
   }
 
   function onMessage(event: MessageEvent) {

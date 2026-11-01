@@ -1,6 +1,6 @@
 # App platform: apps Jarvis builds, runs and maintains
 
-Status: **approved** 2026-10-30; build steps 1 to 3 implemented (see
+Status: **approved** 2026-10-30; build steps 1 to 4 implemented (see
 [Implementation notes](#implementation-notes)). Follows the
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
@@ -220,8 +220,8 @@ Steps 4 and 5 can swap if the first real app needs sharing before functions.
 - **Collection schema migrations:** when a new app version changes a collection
   compatibly, are existing records migrated by a function the builder writes, or
   validated lazily on read?
-- **Function language:** Python only (matches the backend and the sandbox), or
-  Node as well?
+- ~~Function language~~: Python only (owner's decision, 2026-11-01). Node can
+  be added if an app needs it.
 - ~~Where app UIs open on the phone~~: in the WebView shell, through the same
   phone-display path as `show_on_phone` (settled in step 1).
 - **Data backup:** is `apps.db` included in the existing SQLite backup and
@@ -327,7 +327,7 @@ Deliberate simplifications to revisit:
 - Autonomous repair is available but not automatic. Jarvis sees errors through
   `app_status` and can start `fix_app` when it judges that useful. Nothing yet
   starts a repair on its own when an error arrives; that belongs with the
-  triggers in step 4.
+  triggers in step 4. (Done in step 4: automatic repair.)
 - Builds and fixes are separate tasks, each with its own result. They don't
   revise one maintained result.
 - `build_app@1` must be enabled with its digest in `TASK_WORKFLOW_ALLOWLIST`,
@@ -403,3 +403,78 @@ Deliberate simplifications to revisit:
 - The old Android emulator acceptance scripts under `android/scripts/`
   (`verify-*.py`) still use `/results/` links and need updating before the next
   emulator acceptance run.
+
+### Step 4 (2026-11-01)
+
+- **Functions.** `functions: {name: {file, trigger?, timeout_seconds?,
+  description?}}` in the manifest; each file in `functions/` defines
+  `def handle(input, cockpit)` and returns JSON. Installing parses the file
+  (it never runs it) and rejects a missing or async `handle`.
+- **Function host** (`function_host.py`, `function_runner.py`). Each run is a
+  fresh `python -I -B` process: a timeout (30 s default, 300 s at most), a
+  512 MiB Windows job-object memory limit, at most four runs at once, and an
+  environment without the backend's secrets. The runner talks JSON lines over
+  stdio; `cockpit.data`, `cockpit.files` and `cockpit.fetch` are served by the
+  host with the app's grants. Before the app's code is imported, an audit hook
+  blocks sockets, processes, native libraries, file writes and reads outside
+  the Python installation and the package's `functions/` folder.
+- **Isolation is a soft guard** (owner's decision, 2026-11-01): it stops
+  mistakes and keeps network and data access going through the grants, but
+  code written to escape it can (for example through an already loaded native
+  module). An OS-level sandbox (AppContainer or a restricted user) is the
+  upgrade if apps ever run code the owner didn't ask Jarvis for.
+- **Triggers.** `{"http": "POST"}` lets the app's UI call the function
+  (`cockpit.functions.call`); Jarvis and the owner can call any function
+  (`call_app_function`, `POST /api/app-platform/functions/{slug}/{name}`).
+  `{"schedule": cron}` uses five-field cron in the owner's time zone
+  (`cron.py`, no dependency). `{"event": "record_changed", "collection"}` and
+  `{"event": "file_changed", "prefix"}` run after a change.
+- **Runtime** (`runtime.py`): one loop in the API process
+  (`APP_RUNTIME_ENABLED`). Changes are queued in `app_events` in the same
+  transaction as the write, so a restart loses none; one app's changes run in
+  order, different apps side by side. Event chains stop after three levels
+  (an error tells the builder why). Schedules keep their next time in
+  `app_schedules`; a new or changed schedule starts counting from now, and
+  runs missed while Cockpit was off collapse into one.
+- **Runs and errors.** Every run is kept in `app_function_runs` (the latest
+  100 per app). A failure is also an app error, the same evidence UI errors
+  give; `app_status` shows functions, next scheduled times, recent runs and
+  stored files.
+- **Automatic repair** (`APP_AUTO_REPAIR`, on by default). When an app's
+  active version reports errors that arrived after its last repair started,
+  the runtime starts `build_app@1` with them (`services/app_repair.py`), at
+  most once a day per app. It is an ordinary build task, so its completion
+  notifies like any build; nothing announces the start.
+- **File store** (`files.py`). `files: {quota_mb}` enables it (25 MiB per
+  file). Bytes live under `app_files_dir/<slug>/<id>`; names are validated
+  paths that never reach the filesystem. The API serves downloads as
+  attachments with `CSP: sandbox`, so a stored HTML file can't run in
+  Cockpit's origin. `reset` keeps files unless asked (`files: true`);
+  uninstall removes them.
+- **Network.** `grants.network` lists hosts (`*.example.org` covers the domain
+  and its subdomains). `cockpit.fetch` refuses other hosts and names that
+  resolve to non-public addresses, follows redirects itself and checks every
+  hop, and limits bodies to 5 MiB.
+- **SDK and bridge.** `cockpit.files.list/put/get/delete` (Blobs over
+  `postMessage`) and `cockpit.functions.call`.
+- **Package check.** Every function needs a test in `tests/functions.json`.
+  Those tests run the real code in the function host against in-memory
+  records and files, with mocked fetches whose URLs must still be granted. UI
+  tests gained file seeds, function results, an `upload` step and
+  `expect_files`.
+- **Reference package:** `app_platform/samples/clippings` uses every part: an
+  upload, an event function, an HTTP function with a network grant and a
+  scheduled function.
+- **Builder:** `build_app@1`'s instructions cover functions, triggers, files,
+  grants and function tests.
+
+Deliberate simplifications to revisit:
+
+- Triggers start functions only. A function can't yet start an app workflow
+  (agent work); that comes when an app needs it.
+- A tick waits for its runs, so a long function delays the next schedule
+  check by up to its timeout.
+- Events are delivered at least once: a crash during a run repeats it. The
+  builder is told to make event functions idempotent.
+- `apps.db` and the app file store are not in a backup routine yet; nothing
+  in Cockpit has one (open question above).

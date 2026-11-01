@@ -13,6 +13,14 @@
  *   await cockpit.data.put(collection, key, value, { expectedRevision })
  *   await cockpit.data.delete(collection, key, { expectedRevision })
  *   await cockpit.data.query(collection, { where, order, limit }) -> [records]
+ *   await cockpit.files.list({ prefix })      -> [{ name, size, content_type, updated_at }]
+ *   await cockpit.files.put(name, fileOrBlobOrText, { contentType }) -> { name, size, ... }
+ *   await cockpit.files.get(name)             -> Blob | null  (show it with URL.createObjectURL)
+ *   await cockpit.files.delete(name)          -> true | false
+ *   await cockpit.functions.call(name, input) -> the function's output (http-triggered functions only)
+ *
+ * Files need a "files" section in the manifest; names are paths like
+ * "photos/a.jpg". A failed function call rejects with the function's error.
  *
  * `target` is { collection, key } when Cockpit opened the app on a record (a
  * notification, a link or Jarvis), otherwise null. Show that record; call
@@ -83,6 +91,21 @@
       query: function (collection, options) {
         return call("data.query", { collection: collection, where: options && options.where,
           order: options && options.order, limit: options && options.limit });
+      },
+    },
+    files: {
+      list: function (options) { return call("files.list", { prefix: options && options.prefix }); },
+      put: function (name, data, options) {
+        var contentType = options && options.contentType;
+        var blob = data instanceof Blob ? data : new Blob([data], { type: contentType || "text/plain" });
+        return call("files.put", { name: name, data: blob, contentType: contentType || blob.type || null });
+      },
+      get: function (name) { return call("files.get", { name: name }); },
+      delete: function (name) { return call("files.delete", { name: name }); },
+    },
+    functions: {
+      call: function (name, input) {
+        return call("functions.call", { name: name, input: input === undefined ? null : input });
       },
     },
   };

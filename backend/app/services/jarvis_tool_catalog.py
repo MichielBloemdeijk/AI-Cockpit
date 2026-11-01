@@ -288,8 +288,9 @@ def _canonical_tools() -> list[dict[str, Any]]:
         {"type": "function", "name": "build_app", "description": (
             "Have an app built in the background, or an installed app changed, when the user asks for one, for "
             "example 'make me an app to track my plants' or 'add due dates to my notes'. The builder designs, "
-            "tests and installs it; confirm briefly that it has started. Apps can show a UI and store data; they "
-            "cannot use the network or run on a schedule yet."),
+            "tests and installs it; confirm briefly that it has started. Apps can show a UI, store data and files, "
+            "and run code on request, on a schedule or when their data changes, with internet access to the "
+            "sites they declare."),
             "parameters": {"type": "object", "properties": {
                 "request": {"type": "string", "description": "What the app should do or what should change, in the user's words with any details they gave."},
                 "app": {"type": "string", "description": "The installed app to change; omit for a new app."},
@@ -302,8 +303,9 @@ def _canonical_tools() -> list[dict[str, Any]]:
                 "problem": {"type": "string", "description": "What the user said is wrong, if anything."},
             }, "required": ["app"], "additionalProperties": False}},
         {"type": "function", "name": "app_status", "description": (
-            "An installed app's versions, how many records it holds and errors it reported recently. Use it "
-            "when the user asks whether an app works or what changed."),
+            "An installed app's versions, records, files, functions (with when scheduled ones run next), "
+            "recent function runs and errors it reported. Use it when the user asks whether an app works, "
+            "what it did or what changed."),
             "parameters": {"type": "object", "properties": {
                 "app": {"type": "string", "description": "The app's name or slug."},
             }, "required": ["app"], "additionalProperties": False}},
@@ -315,7 +317,17 @@ def _canonical_tools() -> list[dict[str, Any]]:
                 "app": {"type": "string", "description": "The app's name or slug."},
                 "action": {"type": "string", "enum": ["rollback", "reset", "uninstall"]},
                 "collection": {"type": "string", "description": "For reset: only this collection's records."},
+                "files": {"type": "boolean", "description": "For reset: also delete the app's stored files."},
             }, "required": ["app", "action"], "additionalProperties": False}},
+        {"type": "function", "name": "call_app_function", "description": (
+            "Run one of an installed app's functions now and get its output, when the user asks the app to do "
+            "something its functions do, for example 'import this recipe URL' or 'run the plant reminder now'. "
+            "list_apps and app_status show each app's functions."),
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "description": "The app's name or slug."},
+                "function": {"type": "string", "description": "The function's name."},
+                "input": {"description": "The function's input, as the app expects it; omit when it takes none."},
+            }, "required": ["app", "function"], "additionalProperties": False}},
     ]
     if screen_definitions:
         tools.append({

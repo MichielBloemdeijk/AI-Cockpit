@@ -1,0 +1,46 @@
+{
+  "tests": [
+    {
+      "name": "uploads a text file into the file store",
+      "steps": [
+        {"expect_text": "No clips yet", "selector": "#clips"},
+        {"upload": "#upload", "name": "shopping.txt", "text": "milk bread eggs"},
+        {"expect_files": {"count": 1, "prefix": "clips/"}},
+        {"expect_text": "Saved shopping.txt", "selector": "#status"}
+      ]
+    },
+    {
+      "name": "shows clips and the latest count, and deletes a clip",
+      "records": {
+        "clip": [{"key": "clip:a.txt", "value": {"file": "clips/a.txt", "words": 3, "preview": "milk bread eggs"}}],
+        "summary": [{"key": "latest", "value": {"clips": 1, "words": 3}}]
+      },
+      "files": {"clips/a.txt": {"text": "milk bread eggs"}},
+      "steps": [
+        {"expect_text": "milk bread eggs", "selector": "#clips"},
+        {"expect_text": "1 clips, 3 words", "selector": "#summary"},
+        {"click": "#clips button"},
+        {"expect_files": {"count": 0}},
+        {"expect_records": {"collection": "clip", "count": 0}}
+      ]
+    },
+    {
+      "name": "clips a page through its function",
+      "functions": {"fetch_page": {"output": {"file": "clips/example.org.txt", "characters": 42}}},
+      "steps": [
+        {"fill": "#url", "value": "https://example.org/"},
+        {"click": "#fetch button"},
+        {"expect_text": "Clipped 42 characters.", "selector": "#status"}
+      ]
+    },
+    {
+      "name": "shows a function's error",
+      "functions": {"fetch_page": {"error": "ValueError: The page answered 404"}},
+      "steps": [
+        {"fill": "#url", "value": "https://example.org/missing"},
+        {"click": "#fetch button"},
+        {"expect_text": "The page answered 404", "selector": "#status"}
+      ]
+    }
+  ]
+}

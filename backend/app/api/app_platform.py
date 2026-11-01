@@ -30,6 +30,7 @@ class InstallRequest(BaseModel):
 
 class ResetRequest(BaseModel):
     collection: str | None = Field(default=None, max_length=48)
+    files: bool = Field(default=False, description="Also delete the app's stored files")
 
 
 class ErrorReport(BaseModel):
@@ -102,7 +103,7 @@ async def app_status(slug: str) -> dict[str, Any]:
 @router.post("/apps/{slug}/reset", dependencies=[Depends(require_auth)])
 async def reset_app(slug: str, body: ResetRequest) -> dict[str, int]:
     try:
-        return {"deleted": await app_platform.reset(slug, body.collection)}
+        return await app_platform.reset(slug, body.collection, files=body.files)
     except app_platform.AppNotFound as exc:
         raise _not_found(exc) from exc
     except app_platform.ManifestError as exc:
@@ -212,6 +213,88 @@ async def delete_app_record(slug: str, collection: str, key: str,
     except app_platform.RecordError as exc:
         raise _record_error(exc) from exc
     return {"deleted": deleted}
+
+
+class CallRequest(BaseModel):
+    input: Any = None
+
+
+@router.post("/functions/{slug}/{name}", dependencies=[Depends(app_data_access)])
+async def call_app_function(slug: str, name: str, body: CallRequest, request: Request) -> dict[str, Any]:
+    """Run a function. An app's own UI may call only its functions with an http trigger."""
+    try:
+        app = await app_platform.get_active(slug)
+        spec = (app.manifest.get("functions") or {}).get(name)
+        if spec is None:
+            raise HTTPException(404, f"{app.title} has no function {name}")
+        if (authorization_scheme(request) == app_platform.TOKEN_SCHEME
+                and "http" not in (spec.get("trigger") or {})):
+            raise HTTPException(403, f"Function {name} has no http trigger, so the app's UI cannot call it")
+        return (await app_platform.run_function(slug, name, body.input, trigger="call")).view()
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+
+
+FILE_HEADERS = {
+    # Stored files are the app's data, never pages of Cockpit's own origin.
+    "Content-Security-Policy": "sandbox",
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "private, no-store",
+}
+
+
+def _file_error(exc: Exception) -> HTTPException:
+    return HTTPException(422, str(exc))
+
+
+@router.get("/files/{slug}", dependencies=[Depends(app_data_access)])
+async def list_app_files(slug: str, prefix: str | None = Query(default=None, max_length=200)) -> dict[str, Any]:
+    try:
+        return {"files": await app_platform.list_files(slug, prefix)}
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except app_platform.FileError as exc:
+        raise _file_error(exc) from exc
+
+
+@router.put("/files/{slug}/{name:path}", dependencies=[Depends(app_data_access)])
+async def put_app_file(slug: str, name: str, request: Request) -> dict[str, Any]:
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > app_platform.files.FILE_LIMIT_BYTES:
+            raise HTTPException(413, "Files are at most 25 MiB")
+    try:
+        return await app_platform.put_file(slug, name, bytes(data), request.headers.get("content-type"))
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except app_platform.FileError as exc:
+        raise _file_error(exc) from exc
+
+
+@router.get("/files/{slug}/{name:path}", dependencies=[Depends(app_data_access)])
+async def get_app_file(slug: str, name: str) -> FileResponse:
+    try:
+        found = await app_platform.get_file(slug, name)
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except app_platform.FileError as exc:
+        raise _file_error(exc) from exc
+    if found is None:
+        raise HTTPException(404, "File not found")
+    meta, path = found
+    return FileResponse(path, media_type=meta["content_type"], filename=Path(meta["name"]).name,
+                        content_disposition_type="attachment", headers=FILE_HEADERS)
+
+
+@router.delete("/files/{slug}/{name:path}", dependencies=[Depends(app_data_access)])
+async def delete_app_file(slug: str, name: str) -> dict[str, bool]:
+    try:
+        return {"deleted": await app_platform.delete_file(slug, name)}
+    except app_platform.AppNotFound as exc:
+        raise _not_found(exc) from exc
+    except app_platform.FileError as exc:
+        raise _file_error(exc) from exc
 
 
 @host_router.get("/_sdk/cockpit-app.js")

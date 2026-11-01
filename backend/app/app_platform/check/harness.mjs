@@ -30,23 +30,51 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 const scriptJson = (value) => `JSON.parse(new TextDecoder().decode(Uint8Array.from(atob("${
   Buffer.from(JSON.stringify(value), "utf8").toString("base64")}"), (c) => c.charCodeAt(0))))`;
 
-function hostPage(seed, target) {
+function hostPage(test) {
   return `<!doctype html><html><body style="margin:0">
 <iframe id="app" src="/app/${job.entry}" sandbox="allow-scripts allow-forms allow-popups allow-modals"
   style="border:0;width:100vw;height:100vh"></iframe>
 <script>
   const store = new Map();
-  for (const [collection, records] of Object.entries(${scriptJson(seed)})) {
+  for (const [collection, records] of Object.entries(${scriptJson(test.records || {})})) {
     for (const record of records) store.set(collection + "/" + record.key,
       { key: record.key, value: record.value, revision: 1, updated_at: new Date().toISOString() });
   }
+  // The file store: name -> Blob. Seeds arrive as base64.
+  const files = new Map();
+  for (const [name, seed] of Object.entries(${scriptJson(test.files || {})})) {
+    files.set(name, new Blob([Uint8Array.from(atob(seed.base64), (c) => c.charCodeAt(0))], { type: seed.content_type }));
+  }
+  const functionResults = ${scriptJson(test.functions || {})};
+  const httpFunctions = ${scriptJson(job.httpFunctions || [])};
   window.__ready = false;
   window.__appErrors = [];
   window.__records = () => Array.from(store.entries()).map(([id, record]) =>
     ({ collection: id.slice(0, id.indexOf("/")), ...record }));
+  window.__files = () => Array.from(files.keys());
   const frame = document.getElementById("app");
   function fail(status, error) { const e = new Error(error); e.status = status; throw e; }
+  const fileMeta = (name, blob) => ({ name, size: blob.size, content_type: blob.type || "application/octet-stream",
+    updated_at: new Date().toISOString() });
   function handle(method, params) {
+    if (method === "files.list")
+      return Array.from(files.entries()).filter(([name]) => name.startsWith(params.prefix || ""))
+        .sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, blob]) => fileMeta(name, blob));
+    if (method === "files.put") {
+      if (!(params.data instanceof Blob)) fail(400, "files.put needs a Blob, File or string");
+      const blob = params.contentType ? new Blob([params.data], { type: params.contentType }) : params.data;
+      files.set(String(params.name), blob);
+      return fileMeta(String(params.name), blob);
+    }
+    if (method === "files.get") return files.get(String(params.name)) || null;
+    if (method === "files.delete") return files.delete(String(params.name));
+    if (method === "functions.call") {
+      if (!httpFunctions.includes(params.name)) fail(403, "Function " + params.name + " has no http trigger");
+      const result = functionResults[params.name];
+      if (!result) fail(500, "The UI test gives no result for function " + params.name);
+      if (result.error) fail(500, result.error);
+      return structuredClone(result.output ?? null);
+    }
     const id = params.collection + "/" + params.key;
     const current = store.get(id);
     const expected = params.expectedRevision;
@@ -87,7 +115,7 @@ function hostPage(seed, target) {
     if (message.cockpit === "ready") {
       window.__ready = true;
       reply({ cockpit: "hello", slug: ${scriptJson(job.slug)}, title: ${scriptJson(job.title)}, version: ${job.version},
-        target: ${scriptJson(target || null)} });
+        target: ${scriptJson(test.open || null)} });
     } else if (message.cockpit === "error") {
       window.__appErrors.push(String(message.message || "") + (message.detail ? "\\n" + message.detail : ""));
     } else if (message.cockpit === "request") {
@@ -126,6 +154,18 @@ async function runStep(page, frame, step) {
   if ("select" in step) return frame.locator(step.select).first().selectOption(String(step.value), options);
   if ("check" in step) return frame.locator(step.check).first().setChecked(step.value !== false, options);
   if ("wait" in step) return new Promise((resolve) => setTimeout(resolve, Math.min(Number(step.wait) || 0, 2000)));
+  if ("upload" in step) {
+    const buffer = step.base64 !== undefined ? Buffer.from(step.base64, "base64") : Buffer.from(step.text ?? "", "utf8");
+    return frame.locator(step.upload).first().setInputFiles(
+      { name: step.name, mimeType: step.content_type || "text/plain", buffer }, options);
+  }
+  if ("expect_files" in step) {
+    const { count, prefix = "" } = step.expect_files;
+    return poll(async () => {
+      const found = (await page.evaluate(() => window.__files())).filter((name) => name.startsWith(prefix));
+      return found.length === count || `found ${found.length}: ${JSON.stringify(found.slice(0, 10))}`;
+    }, `Expected ${count} files starting with ${JSON.stringify(prefix)}`);
+  }
   if ("expect_text" in step) {
     const scope = frame.locator(step.selector || "body").first();
     return poll(async () => {
@@ -164,7 +204,7 @@ async function runTest(browser, test, index) {
       problems.push(`blocked request to ${url.origin}: apps cannot use the network`);
       return route.abort();
     }
-    if (url.pathname === "/host.html") return route.fulfill({ status: 200, contentType: "text/html", body: hostPage(test.records || {}, test.open) });
+    if (url.pathname === "/host.html") return route.fulfill({ status: 200, contentType: "text/html", body: hostPage(test) });
     if (url.pathname === "/api/app-host/_sdk/cockpit-app.js") return serveFile(route, job.sdkFile);
     if (url.pathname.startsWith("/app/")) {
       const relative = decodeURIComponent(url.pathname.slice("/app/".length)) || "index.html";

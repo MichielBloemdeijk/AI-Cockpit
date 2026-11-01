@@ -9,7 +9,8 @@ it names. The result must work on a phone screen and on a desktop.
    errors the app reported. Fix the cause of those errors when asked to repair.
    **New app:** create ./app yourself, starting at version 1. Pick a short,
    lowercase slug (letters, digits, hyphens) and a plain title.
-2. Write the package, including UI tests in ./app/tests/ui.json.
+2. Write the package, including UI tests in ./app/tests/ui.json and, when it
+   has functions, function tests in ./app/tests/functions.json.
 3. Call app_check, then fix every problem it reports until it passes. Read its
    rendered text and look at its screenshots (./.app-check/*.png) to confirm
    the UI looks right, not only that it runs.
@@ -21,10 +22,11 @@ it names. The result must work on a phone screen and on a desktop.
 
 Ask task_question only when the request is too vague to build anything useful.
 Otherwise choose sensible defaults and mention them in the body. If the request
-can't be done on this platform (it needs server code, scheduled jobs, files or
-another app's data, which come later), build the useful part if there is one,
-or task_finish with status failed and explain. Work that needs research or the
-phone's screen belongs in a workflow the app provides (see below).
+can't be done on this platform (it needs another app's data, which comes later,
+or a long-running server), build the useful part if there is one, or
+task_finish with status failed and explain. Work that needs AI, research or the
+phone's screen belongs in a workflow the app provides (see below); plain code
+that runs on request, on a schedule or when data changes is a function.
 
 ## Package format (cockpit-app.v1)
 
@@ -34,12 +36,14 @@ app/
   schemas/<name>.json  JSON Schema (2020-12) per collection
   ui/index.html      the UI entry; other ui/ files are served next to it
   tests/ui.json      declarative UI tests
+  tests/functions.json  tests of the functions, when there are any
   README.md          what the app does and how its data is shaped
+  functions/<name>.py   optional server code (see Functions)
   workflows/<id>/    optional Jarvis workflows that add records (see below)
 ```
 
-Manifest, every field shown (only `description`, `collections`, `jarvis` and
-`workflows` are optional):
+Manifest, the required fields (`description`, `collections`, `files`,
+`functions`, `grants`, `jarvis` and `workflows` are optional):
 
 ```json
 {"schema": "cockpit-app.v1", "slug": "plants", "title": "Plants", "version": 1,
@@ -52,8 +56,6 @@ Manifest, every field shown (only `description`, `collections`, `jarvis` and
 - Collection names are lowercase identifiers. Indexes must be top-level
   properties used for filtering or sorting. Schemas are objects; prefer
   `"additionalProperties": false` and bounded strings.
-- No other manifest sections exist yet (`functions`, `files` and `triggers` are
-  rejected).
 - A new version must have a higher `version` and stay compatible with stored
   data: add optional fields only. Never remove, rename or retype a field, never
   make an existing optional field required, and never drop a collection.
@@ -77,6 +79,12 @@ Manifest, every field shown (only `description`, `collections`, `jarvis` and
   await cockpit.data.delete("plant", key, { expectedRevision });
   cockpit.onTarget((target) => { /* show that record */ });
   cockpit.viewing("plant", key);                         // the record now on screen
+  await cockpit.files.list({ prefix: "photos/" });       // [{ name, size, content_type, updated_at }]
+  await cockpit.files.put("photos/fern.jpg", fileInput.files[0]);   // a File, Blob or string
+  const blob = await cockpit.files.get("photos/fern.jpg");          // Blob or null
+  image.src = URL.createObjectURL(blob);
+  await cockpit.files.delete("photos/fern.jpg");
+  await cockpit.functions.call("import_url", { url });   // the function's output; rejects with its error
   ```
 
   `target` is `{ collection, key }` when Cockpit opens the app on one record
@@ -113,16 +121,108 @@ data is shown. Each test starts with an empty store plus its own `records`.
 ```
 
 A test may start the app on a record with `"open": {"collection": "plant",
-"key": "p1"}`. Confirmation dialogs (`confirm()`) are accepted.
+"key": "p1"}`. Confirmation dialogs (`confirm()`) are accepted. `"files"` seeds
+the file store (`{"photos/a.txt": {"text": "hi", "content_type": "text/plain"}}`,
+or `"base64"` instead of `"text"`). UI tests never run functions: `"functions":
+{"import_url": {"output": {"title": "Soup"}}}` (or `{"error": "..."}`) is what
+the UI's call returns; the functions get their own tests below.
 
 Steps: `fill`+`value`, `click`, `press`+`key`, `select`+`value`, `check`+`value`
-(boolean), `wait` (ms, at most 2000), `expect_text` (optional `selector`),
-`expect_count`+`count`, and `expect_records` with `collection`, `count` and an
-optional `where`. Selectors are CSS selectors (Playwright syntax). An app
-always also gets a "loads" test that fails on console errors.
+(boolean), `wait` (ms, at most 2000), `upload`+`name` with `text` or `base64`
+and `content_type` (chooses a file in an `<input type=file>`), `expect_text`
+(optional `selector`), `expect_count`+`count`, `expect_records` with
+`collection`, `count` and an optional `where`, and `expect_files` with `count`
+and an optional `prefix`. Selectors are CSS selectors (Playwright syntax). An
+app always also gets a "loads" test that fails on console errors.
 
 You may run your own quick checks in the workspace, but app_check is what
 counts: it runs the UI under the real sandbox.
+
+## Files
+
+Declare `"files": {"quota_mb": 100}` to give the app a file store (at most
+2048 MB; 25 MiB per file). Names are paths such as `photos/2026/fern.jpg`:
+letters, digits, `_ . -`, spaces and `/` folders. Keep what describes a file
+(caption, date, which record it belongs to) in a record that names the file.
+
+## Functions
+
+Functions are Python 3.12 code the platform runs on request, on a schedule or
+when the app's data changes. Use them for work the UI can't do: fetching from
+the internet, processing uploaded files, periodic jobs.
+
+```json
+"functions": {
+  "import_url": {"file": "functions/import_url.py", "trigger": {"http": "POST"},
+                 "description": "Import a recipe from a web page.", "timeout_seconds": 30},
+  "daily_digest": {"file": "functions/daily_digest.py", "trigger": {"schedule": "0 8 * * *"}},
+  "index_upload": {"file": "functions/index_upload.py", "trigger": {"event": "file_changed", "prefix": "photos/"}},
+  "on_plant": {"file": "functions/on_plant.py", "trigger": {"event": "record_changed", "collection": "plant"}}
+},
+"grants": {"network": ["*.example.org", "api.weather.example"]}
+```
+
+- Triggers: `{"http": "POST"}` lets the UI call it with
+  `cockpit.functions.call`. `{"schedule": "<cron>"}` runs it on a five-field
+  cron schedule (minute hour day month weekday, owner's time zone; `@daily`
+  and `@hourly` work too). `{"event": "record_changed", "collection": ...}` or
+  `{"event": "file_changed", "prefix": ...}` runs it after a change. Without a
+  trigger only Jarvis can call it. Jarvis can call any function.
+- Each file defines `def handle(input, cockpit):` (a plain def, not async) and
+  returns JSON-serializable output (at most 256 KiB). Its input is what the
+  caller passed; a schedule passes `{"event": "schedule", "scheduled_for"}`, a
+  record change `{"event": "record_changed", "collection", "key", "change":
+  "put" or "delete", "revision", "value"}` and a file change `{"event":
+  "file_changed", "name", "change", "size", "content_type"}`. Make event
+  functions safe to run twice, and don't let one trigger itself endlessly
+  (chains stop after three levels).
+- `cockpit` gives the platform, nothing else:
+
+  ```python
+  cockpit.app                                   # {"slug", "title", "version"}
+  cockpit.data.get("plant", key)                # {"key", "value", "revision"} or None
+  cockpit.data.put("plant", key, value, expected_revision=None)
+  cockpit.data.delete("plant", key)
+  cockpit.data.query("plant", where={"room": "hall"}, order="-updated_at", limit=50)
+  cockpit.files.list(prefix="photos/")  ;  cockpit.files.read(name)  # bytes or None
+  cockpit.files.read_text(name)  ;  cockpit.files.write(name, data, content_type=None)  ;  cockpit.files.delete(name)
+  response = cockpit.fetch(url, method="GET", headers=None, body=None, json=None, timeout=20)
+  response.status, response.ok, response.headers, response.text, response.content, response.json()
+  print(...)                                    # kept in the run's log
+  ```
+
+  A failed call raises `CockpitError` with the reason.
+- Use only the standard library and other files in `functions/` (import them
+  by module name). Functions run in a separate process with a time limit (30 s
+  by default, at most 300), 512 MiB of memory and no direct network, process
+  or file access: `cockpit.fetch` reaches only the hosts in `grants.network`
+  (`*.example.org` covers example.org and its subdomains), and data and files
+  go through `cockpit`. Run summaries and errors are kept; failures show up as
+  app errors Jarvis can repair.
+
+## Function tests (tests/functions.json)
+
+Every function needs at least one test. Each runs the real code in the
+function host against an in-memory store seeded with `records` and `files`;
+every fetch needs a mock, and its URL must be in `grants.network`.
+
+```json
+{"tests": [
+  {"name": "imports a page", "function": "import_url", "input": {"url": "https://www.example.org/soup"},
+   "fetch": [{"url": "https://www.example.org/soup", "body": "<h1>Soup</h1>"}],
+   "expect": {"output": {"title": "Soup"}, "records": [{"collection": "recipe", "count": 1}]}},
+  {"name": "rejects a bad page", "function": "import_url", "input": {"url": "https://www.example.org/x"},
+   "fetch": [{"url": "https://www.example.org/x", "status": 404}], "expect": {"error": "404"}},
+  {"name": "writes the digest", "function": "daily_digest", "input": {"event": "schedule"},
+   "records": {"plant": [{"key": "p1", "value": {"name": "Ivy", "room": "hall"}}]},
+   "expect": {"files": {"count": 1, "prefix": "digests/"}}}
+]}
+```
+
+A mock may give `method`, `status`, `headers` and `body` or `json`.
+`expect.output` matches when every expected key is equal (extra keys are
+fine); `expect.error` is text the error must contain; `expect.records` and
+`expect.files` count what the store holds afterwards.
 
 ## Workflows: records Jarvis adds
 

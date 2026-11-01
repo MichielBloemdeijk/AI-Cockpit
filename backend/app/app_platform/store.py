@@ -90,6 +90,75 @@ class AppView(AppsBase):
     viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
 
 
+class AppFile(AppsBase):
+    """A file in an app's file store; its bytes live in `app_files_dir/<slug>/<id>`."""
+    __tablename__ = "app_files"
+    __table_args__ = (UniqueConstraint("app_slug", "name", name="uq_app_files_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class AppFunctionRun(AppsBase):
+    """One run of an app function, kept with its input, output and errors (the latest per app)."""
+    __tablename__ = "app_function_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    function: Mapped[str] = mapped_column(String(64), nullable=False)
+    # call (UI or Jarvis), schedule or event
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    # ok, error or timeout
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_json: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    output_json: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    error: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    logs: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class AppSchedule(AppsBase):
+    """When a scheduled function runs next. The cron text detects a changed schedule."""
+    __tablename__ = "app_schedules"
+
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), primary_key=True)
+    function: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cron: Mapped[str] = mapped_column(String(120), nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AppEvent(AppsBase):
+    """A pending record or file change for the app's event functions.
+
+    It is written in the same transaction as the change, so a restart loses no event.
+    """
+    __tablename__ = "app_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # How many event-triggered runs led to this change; chains stop at a limit.
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class AppRepair(AppsBase):
+    """The last repair Cockpit started on its own for an app."""
+    __tablename__ = "app_repairs"
+
+    app_slug: Mapped[str] = mapped_column(String(48), ForeignKey("installed_apps.slug", ondelete="CASCADE"), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 _engine: AsyncEngine | None = None
 _engine_url: str | None = None
 _factory: async_sessionmaker[AsyncSession] | None = None

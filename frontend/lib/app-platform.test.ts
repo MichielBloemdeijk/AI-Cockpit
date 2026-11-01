@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { appTarget, bridgeHttpRequest, createAppBridge, type AppSession } from "./app-platform";
 
 const session: AppSession = {
-  slug: "notes", title: "Notes", version: 1, description: "", collections: ["note"], jarvis_summary: "",
+  slug: "notes", title: "Notes", version: 1, description: "", collections: ["note"], functions: ["summarize"],
+  files: true, jarvis_summary: "",
   url: "/apps/notes", token: "token-1", frame_url: "/api/app-host/notes/1/index.html",
 };
 
@@ -26,6 +27,38 @@ describe("app bridge", () => {
     const query = bridgeHttpRequest("notes", { cockpit: "request", id: 2, method: "data.query",
       params: { collection: "note", where: { pinned: true }, order: "-updated_at", limit: 5 } });
     expect(query.url).toBe("/api/app-platform/data/notes/note?where=%7B%22pinned%22%3Atrue%7D&order=-updated_at&limit=5");
+  });
+
+  it("maps file and function calls onto their routes", () => {
+    const put = bridgeHttpRequest("notes", { cockpit: "request", id: 1, method: "files.put",
+      params: { name: "photos/a b.png", data: new Blob(["x"], { type: "image/png" }) } });
+    expect(put.url).toBe("/api/app-platform/files/notes/photos/a%20b.png");
+    expect(put.init.method).toBe("PUT");
+    expect((put.init.headers as Record<string, string>)["Content-Type"]).toBe("image/png");
+
+    const get = bridgeHttpRequest("notes", { cockpit: "request", id: 2, method: "files.get", params: { name: "a.txt" } });
+    expect(get).toMatchObject({ url: "/api/app-platform/files/notes/a.txt", blob: true, nullOn404: true });
+    expect(bridgeHttpRequest("notes", { cockpit: "request", id: 3, method: "files.list", params: { prefix: "photos/" } }).url)
+      .toBe("/api/app-platform/files/notes?prefix=photos%2F");
+
+    const call = bridgeHttpRequest("notes", { cockpit: "request", id: 4, method: "functions.call",
+      params: { name: "summarize", input: { days: 7 } } });
+    expect(call.url).toBe("/api/app-platform/functions/notes/summarize");
+    expect(JSON.parse(String(call.init.body))).toEqual({ input: { days: 7 } });
+    expect(call.result({ ok: true, output: { n: 1 } })).toEqual({ n: 1 });
+    expect(() => call.result({ ok: false, error: "ValueError: no notes" })).toThrow("ValueError: no notes");
+  });
+
+  it("returns downloaded files as Blobs", async () => {
+    const frame = fakeFrame();
+    const fetcher = vi.fn().mockResolvedValue(new Response("hello", { status: 200, headers: { "Content-Type": "text/plain" } }));
+    const handler = createAppBridge({ session, frame: () => frame.window, renewSession: vi.fn(), fetcher }).onMessage;
+
+    handler(message(frame.window, { cockpit: "request", id: 1, method: "files.get", params: { name: "a.txt" } }));
+    await vi.waitFor(() => expect(frame.posted).toHaveLength(1));
+    const reply = frame.posted[0] as { ok: boolean; result: Blob };
+    expect(reply.ok).toBe(true);
+    expect(await reply.result.text()).toBe("hello");
   });
 
   it("answers only its own frame, uses the app token and renews it once on 401", async () => {

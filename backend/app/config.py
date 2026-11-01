@@ -153,6 +153,12 @@ class Settings(BaseSettings):
     # Install the packages in backend/apps (Recipes, Documents) on start.
     app_builtin_install: bool = True
     app_builds_dir: str = "data/app-builds"
+    # Apps' file stores, one folder per app.
+    app_files_dir: str = "data/app-files"
+    # Run scheduled and event functions and start repairs (in the API process).
+    app_runtime_enabled: bool = True
+    # Start a fix on its own when an app reports new errors (at most once a day per app).
+    app_auto_repair: bool = True
     # Folder whose node_modules provide Playwright for the app package UI check.
     app_check_playwright_dir: str = "../frontend"
     worker_heartbeat_interval_seconds: float = 5.0
@@ -265,6 +271,11 @@ class Settings(BaseSettings):
     @property
     def app_builds_path(self) -> Path:
         configured_path = Path(self.app_builds_dir)
+        return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+
+    @property
+    def app_files_path(self) -> Path:
+        configured_path = Path(self.app_files_dir)
         return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
 
     @property

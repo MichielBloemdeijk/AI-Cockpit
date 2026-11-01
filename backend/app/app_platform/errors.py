@@ -44,6 +44,14 @@ async def recent_errors(slug: str, limit: int = 10) -> list[dict[str, Any]]:
                  "last_seen_at": row.last_seen_at.isoformat()} for row in rows]
 
 
+def repair_goal(app, errors: list[dict[str, Any]], problem: str = "") -> str:
+    """The builder's goal for fixing an app, from what the owner said and what it reported."""
+    current = f"the installed app {app.title} (slug {app.slug}, version {app.version})"
+    reported = "; ".join(f"v{error['version']}: {error['message']} (x{error['count']})" for error in errors)
+    return (f"Fix {current}. Problem: {problem or 'it reported errors'}."
+            + (f" Errors it reported: {reported}" if reported else ""))
+
+
 async def clear_errors(slug: str) -> None:
     async with apps_session() as session:
         await session.execute(delete(AppError).where(AppError.app_slug == slug))
