@@ -172,9 +172,14 @@ def start_frontend(port: int, backend_url: str, evidence: Path, *, production: b
     next_bin = ROOT / "frontend" / "node_modules" / "next" / "dist" / "bin" / "next"
     if node is None or not next_bin.is_file():
         raise RuntimeError("Install frontend dependencies before running the mobile result fixture")
+    dist = ".next-android-acceptance" if production else ".next-jarvis-agent-test-m2"
+    # Next records its build folder in the tsconfig it is given; a copy keeps tsconfig.json clean.
+    tsconfig = f"{dist}-tsconfig.json"
+    (ROOT / "frontend" / tsconfig).write_text((ROOT / "frontend" / "tsconfig.json").read_text(encoding="utf-8"),
+                                              encoding="utf-8")
     env = {**os.environ, "AI_COCKPIT_API_PROXY_URL": backend_url,
            "AI_COCKPIT_BACKEND_URL": backend_url,
-           "AI_COCKPIT_NEXT_DIST_DIR": ".next-android-acceptance" if production else ".next-jarvis-agent-test-m2"}
+           "AI_COCKPIT_NEXT_DIST_DIR": dist, "AI_COCKPIT_TSCONFIG_PATH": tsconfig}
     log = (evidence / "frontend.log").open("wb")
     try:
         if production:

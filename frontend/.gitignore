@@ -18,6 +18,7 @@
 /.next-verify-*
 /.next-jarvis-agent-test*/
 /.next-android-acceptance/
+/.next-*-tsconfig.json
 /out/
 
 # production
