@@ -602,3 +602,20 @@ Deliberate simplifications to revisit:
   (`verify-screen-workflow`, `verify-mobile-result`, `verify-audio-controls`,
   `verify-phone-browser-capture`, `verify-announcements`) are updated but were
   not run.
+- **Acceptance: Recipes from its README** (the second half of step 3's
+  acceptance). Jarvis's `build_app` got only the Recipes README and a request
+  for an equivalent app (`recipe-book`, workflow `recipe_book_from_screen`).
+  - First attempt: the data and UI were equivalent, but the workflow folder was
+    not listed in the manifest, so the platform ignored it, and its
+    `workflow.yaml` was incomplete. The builder's instructions pointed at
+    `app_checkout`, which cannot read another app's package. Fixed: the
+    instructions show a complete `workflow.yaml` (a test loads it as written),
+    and a package with an unlisted `workflows/` folder is refused.
+  - Second attempt: passed. The workflow was complete and enabled; the UI
+    passed its three tests and, in the real host, opened on a record from a
+    link, listed and searched by ingredient, showed sources as outside links
+    and deleted after a confirmation, with no errors. Where the README is
+    silent it chose differently from Recipes: `prep_time` and `cook_time`
+    instead of `timing`, and optional sources. Its empty-search message reads
+    "No recipes yet". The copy was uninstalled after the check so Jarvis keeps
+    one recipe workflow.

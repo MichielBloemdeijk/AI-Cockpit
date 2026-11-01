@@ -92,6 +92,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 2: council/picker models; dead LLM helpers (part of I06) | Done | `9d7e692` |
 | Generated apps → app platform, steps 1–6 (see below; closes C05, removes the old generated-app subsystem and part of I05) | Done | `e597ac8` … `fa7066f` |
 | Phase 3 (X02, part): frontend lint scope excludes build outputs of test and audit runs; the source lint errors fixed | Done | `f089bdb` |
+| App platform gaps: app workflows from functions/UI, `write_app_data`, Recipes-from-README acceptance, Android scripts on app records (model-free emulator runs pass) | Done | `8abb796` … |
 | Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Not started | — |
 | Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Not started | — |
 | Phase 4: task lifecycle, conversation runs, execution contracts, live transitions, provider transport | Not started | — |
