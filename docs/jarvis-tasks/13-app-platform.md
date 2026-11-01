@@ -467,6 +467,14 @@ Deliberate simplifications to revisit:
   scheduled function.
 - **Builder:** `build_app@1`'s instructions cover functions, triggers, files,
   grants and function tests.
+- **Live pilot:** one Codex task through Jarvis's `build_app` built "Plant
+  Journal" (plants, photo uploads with a note, and an 08:00 check for plants
+  without a photo for seven days). It passed its own check and installed. In
+  the real host a photo upload landed in the file store, and the live runtime
+  ran the scheduled function when it fell due (155 ms) and filled the
+  check-on list. Two gaps it showed: the app never shows the photos it stores,
+  and its UI tests don't cover the upload; neither is required by the check
+  or the instructions yet.
 
 Deliberate simplifications to revisit:
 
