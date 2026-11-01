@@ -23,7 +23,6 @@ const errors = [];
 page.on("pageerror", e => errors.push(e.message));
 let pendingSpeech = null;
 let caseDeadline = Date.now() + 160_000 + (spec.case.observation_tail_ms || 0);
-let currentState;
 const drainPlayback = playbackQuietObserver(() => page.evaluate(() => window.__announcementEval.activity()),
   {maxMs: spec.case.observation_tail_ms || 0});
 
@@ -69,7 +68,7 @@ async function mark(type, detail = {}) {
   await backend("action", { action: "marker", ...stamp });
   return stamp.epoch_ms;
 }
-async function state() { return currentState = await backend("state"); }
+async function state() { return backend("state"); }
 async function poll(description, predicate, seconds = 25) {
   const deadline = Math.min(caseDeadline, Date.now() + seconds * 1000);
   while (Date.now() < deadline) {

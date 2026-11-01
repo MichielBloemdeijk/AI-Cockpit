@@ -1,19 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
+
+function subscribeToHash(onChange: () => void): () => void {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+
+/** The app link for a pairing code in this page's fragment, or "" when it is missing or for another host. */
+function readDeepLink(): string {
+  const fields = new URLSearchParams(window.location.hash.slice(1));
+  const code = fields.get("code") || "";
+  const server = fields.get("server") || "";
+  // Accept links generated for this host only. Codes remain in the fragment,
+  // outside HTTP requests, access logs and referrers.
+  return /^\d{6}$/.test(code) && server === window.location.origin
+    ? `jarvis://pair?${new URLSearchParams({ server, code })}` : "";
+}
 
 export default function LinkPhonePage() {
-  const [deepLink, setDeepLink] = useState("");
-  useEffect(() => {
-    const fields = new URLSearchParams(window.location.hash.slice(1));
-    const code = fields.get("code") || "";
-    const server = fields.get("server") || "";
-    // Accept links generated for this host only. Codes remain in the fragment,
-    // outside HTTP requests, access logs and referrers.
-    if (/^\d{6}$/.test(code) && server === window.location.origin) {
-      setDeepLink(`jarvis://pair?${new URLSearchParams({ server, code })}`);
-    }
-  }, []);
+  const deepLink = useSyncExternalStore(subscribeToHash, readDeepLink, () => "");
   return <main className="mx-auto max-w-md space-y-5 p-8">
     <h1 className="text-2xl font-semibold">Link this phone to Jarvis</h1>
     <p>Keep Tailscale connected. Install the app if needed, then open your link. Jarvis links automatically and guides you through Android’s permission prompts.</p>

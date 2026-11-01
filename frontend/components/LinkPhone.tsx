@@ -37,6 +37,8 @@ export function LinkPhone() {
     <a className="block text-blue-400 underline" href="/api/jarvis/devices/android.apk">Download Android app</a>
     <button disabled={busy} className="rounded-lg bg-blue-600 px-4 py-2 disabled:opacity-50" onClick={generate}>{busy ? "Creating link…" : "Link phone"}</button>
     {link && !expired && <div className="space-y-2">
+      {/* An inline SVG data URL: next/image has nothing to optimize here. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
       {link.qr_svg && <img alt="Scan to link Jarvis" width={240} height={240} src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(link.qr_svg)}`} className="bg-white p-2" />}
       {link.link ? <a className="block text-blue-400 underline" href={link.link} target="_blank" rel="noreferrer">Open on phone</a> : <p>Set JARVIS_PUBLIC_URL in the private configuration to show a QR link.</p>}
       <p className="break-all text-sm">Address: {link.server_url || "Your Jarvis address"}</p>
