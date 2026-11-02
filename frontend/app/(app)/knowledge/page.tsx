@@ -4,17 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
 import { BookOpen, Check, FileText, RefreshCw, Search, Trash2, X } from "lucide-react";
-import {
-  approveKnowledgeItem,
-  deleteKnowledgeItem,
-  extractConversationMemoryItems,
-  KnowledgeDocumentView,
-  KnowledgeReviewItemView,
-  listConversations,
-  listKnowledgeDocuments,
-  listKnowledgeReviewItems,
-  rejectKnowledgeItem,
-} from "@/lib/api";
+import { listConversations } from "@/lib/api/conversations";
+import { approveKnowledgeItem, deleteKnowledgeItem, extractConversationMemoryItems, KnowledgeDocumentView, KnowledgeReviewItemView, listKnowledgeDocuments, listKnowledgeReviewItems, rejectKnowledgeItem } from "@/lib/api/knowledge";
 
 export default function KnowledgePage() {
   const [conversations, setConversations] = useState<{ id: string; title: string | null }[]>([]);

@@ -3,8 +3,8 @@
 import { Clock3, FileStack, FolderOpen, GitBranch, Layers3 } from "lucide-react";
 import clsx from "clsx";
 
-import type { ConversationArtifactView, ConversationDetail, ConversationEventView } from "../../lib/api";
-import { summarizeAgentEvent } from "../../lib/agent-event-presenter";
+import type { ConversationArtifactView, ConversationDetail, ConversationEventView } from "../../lib/api/conversations";
+import { summarizeAgentEvent } from "../../lib/conversations/agent-event-presenter";
 import { formatTokenCount, formatUsageCost, summarizeConversationUsage } from "../../lib/usage";
 
 import { formatConversationLabel, formatTraceLabel } from "./formatters";

@@ -20,7 +20,7 @@ import java.io.ByteArrayOutputStream
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput
+import nl.sander.aicockpit.jarvis.live.Acceptance
 
 /** Process-memory-only screenshot handoff. No pixel reaches the network before a run-bound request. */
 class ScreenCaptureManager(private val context: Context) {
@@ -59,7 +59,7 @@ class ScreenCaptureManager(private val context: Context) {
         val capture = Capture(activationId, captureId, 1, "pending", Instant.now().plusSeconds(90))
         synchronized(lock) { retained.values.forEach { it.jpeg?.fill(0) }; active = capture; retained.clear(); retained[captureId] = capture }
         expire(capture)
-        AcceptanceAudioInput.observeCapture("requested", captureId, JSONObject().put("mode", "activation"))
+        Acceptance.hooks.capture("requested", captureId, JSONObject().put("mode", "activation"))
         scope.launch { report(capture) }
     }
 
@@ -90,7 +90,7 @@ class ScreenCaptureManager(private val context: Context) {
                 captureMode = "fresh").also { active = it; retained[captureId] = it }
         }
         expire(capture)
-        AcceptanceAudioInput.observeCapture("requested", captureId, JSONObject().put("mode", "fresh"))
+        Acceptance.hooks.capture("requested", captureId, JSONObject().put("mode", "fresh"))
         scope.launch { report(capture) }
         return true
     }
@@ -150,7 +150,7 @@ class ScreenCaptureManager(private val context: Context) {
                 return@launch
             }
             val jpeg = runCatching { withContext(Dispatchers.Default) { encodeJpeg(bitmap) } }.getOrNull()
-            AcceptanceAudioInput.observeCapture("encoding_finished", original.captureId, JSONObject()
+            Acceptance.hooks.capture("encoding_finished", original.captureId, JSONObject()
                 .put("mode", original.captureMode).put("callback_ns", synchronousStarted)
                 .put("encoded", jpeg != null))
             if (jpeg == null) {
@@ -159,7 +159,7 @@ class ScreenCaptureManager(private val context: Context) {
                 transition(original, "captured", callbackAt, callbackMs, jpeg, null)
             }
         }
-        AcceptanceAudioInput.observeCapture("callback", original.captureId, JSONObject()
+        Acceptance.hooks.capture("callback", original.captureId, JSONObject()
             .put("mode", original.captureMode).put("callback_ns", synchronousStarted)
             .put("synchronous_duration_ns", SystemClock.elapsedRealtimeNanos() - synchronousStarted)
             .put("bitmap_present", bitmap != null).put("locked", locked))
@@ -198,13 +198,13 @@ class ScreenCaptureManager(private val context: Context) {
             val jpeg = capture.jpeg ?: return@async
             val capturedAt = capture.capturedAt ?: return@async
             val callbackMs = capture.callbackMonotonicMs ?: return@async
-            AcceptanceAudioInput.observeCapture("upload_started", capture.captureId, JSONObject()
+            Acceptance.hooks.capture("upload_started", capture.captureId, JSONObject()
                 .put("request_id", requestId).put("context_delivered_ns", contextDeliveredNs)
                 .put("upload_started_ns", SystemClock.elapsedRealtimeNanos()))
             val uploadStarted = SystemClock.elapsedRealtimeNanos()
             val upload = runCatching { api.uploadContext(request, jpeg, capturedAt, callbackMs) }
                 .onFailure { runCatching { api.failContext(requestId, "upload_failed") } }
-            AcceptanceAudioInput.observeCapture("upload_finished", capture.captureId, JSONObject()
+            Acceptance.hooks.capture("upload_finished", capture.captureId, JSONObject()
                 .put("request_id", requestId).put("succeeded", upload.isSuccess)
                 .put("duration_ms", (SystemClock.elapsedRealtimeNanos() - uploadStarted) / 1_000_000.0))
             jpeg.fill(0)
@@ -249,11 +249,11 @@ class ScreenCaptureManager(private val context: Context) {
         capture.sessionId?.let { payload.put("session_id", it) }
         capture.generation?.let { payload.put("generation", it) }
         val started = SystemClock.elapsedRealtimeNanos()
-        AcceptanceAudioInput.observeCapture("status_report_started", capture.captureId,
+        Acceptance.hooks.capture("status_report_started", capture.captureId,
             JSONObject().put("status", capture.status).put("revision", capture.revision))
         val result = runCatching { api.reportCapture(capture.captureId, payload) }
             .onFailure { Log.w("JarvisScreenCapture", "Capture status report failed: ${capture.status}", it) }
-        AcceptanceAudioInput.observeCapture("status_report_finished", capture.captureId,
+        Acceptance.hooks.capture("status_report_finished", capture.captureId,
             JSONObject().put("status", capture.status).put("revision", capture.revision)
                 .put("succeeded", result.isSuccess)
                 .put("duration_ms", (SystemClock.elapsedRealtimeNanos() - started) / 1_000_000.0))

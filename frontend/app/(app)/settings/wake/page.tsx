@@ -11,7 +11,7 @@ import {
   saveCalibrationSample,
   type CalibrationCategory,
   type CalibrationSample,
-} from "@/lib/jarvis-calibration-store";
+} from "@/lib/jarvis/calibration-store";
 
 const CATEGORIES: Array<{ id: CalibrationCategory; label: string; prompt: string }> = [
   { id: "normal", label: "Normal", prompt: "Say “Jarvis” in your usual voice." },

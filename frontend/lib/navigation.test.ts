@@ -9,7 +9,7 @@ describe("login return navigation", () => {
   });
   it("preserves the original local path, query and fragment", () => {
     const path = "/apps/recipes?delivery=123&label=a%20b#body";
-    expect(safeNextPath(path)).toBe(path);
+    expect(safeNextPath(path, "/chat")).toBe(path);
     vi.stubGlobal("window", { location: { pathname: "/apps/recipes", search: "?delivery=123&label=a%20b", hash: "#body" } });
     expect(new URLSearchParams(loginReturnUrl().split("?")[1]).get("next")).toBe(path);
   });

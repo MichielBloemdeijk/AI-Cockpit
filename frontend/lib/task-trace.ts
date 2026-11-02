@@ -1,5 +1,5 @@
-import type { ChatMessage } from "./chat-state-types";
-import type { TaskEvent } from "./api";
+import type { ChatMessage } from "./conversations/state-types";
+import type { TaskEvent } from "./api/tasks";
 
 function text(payload: Record<string, unknown> | null, key: string): string {
   const value = payload?.[key];

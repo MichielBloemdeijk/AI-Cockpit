@@ -54,7 +54,7 @@ internal class WakeMicrophone(private val context: Context,
                 ) {
                     val count = recorder.read(pcm, 0, pcm.size, AudioRecord.READ_BLOCKING)
                     if (count <= 0) continue
-                    nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput.replaceWakeFrame(pcm, count)
+                    nl.sander.aicockpit.jarvis.live.Acceptance.hooks.replaceWakeFrame(pcm, count)
                     val activeHandoff = liveActivationId
                     if (activeHandoff != null) {
                         val retained = LiveActivationAudioHandoff.append(activeHandoff, pcm, count)
@@ -76,7 +76,7 @@ internal class WakeMicrophone(private val context: Context,
                     val acceptedWakeScore = gate.evaluate(result)
                     if (acceptedWakeScore != null) {
                         val activationId = UUID.randomUUID().toString()
-                        nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput.observeDiagnostic("wake_detected",
+                        nl.sander.aicockpit.jarvis.live.Acceptance.hooks.diagnostic("wake_detected",
                             org.json.JSONObject().put("activation_id", activationId))
                         val startup = ShortArray(window.size) { index ->
                             (window[index].coerceIn(-1f, 1f) * Short.MAX_VALUE).toInt().toShort()

@@ -5,15 +5,15 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { checkAuth } from "./api";
-import type { ConversationSelection } from "./conversation-selection";
-import { useConversationActions } from "./use-conversation-actions";
-import { useConversationDetail } from "./use-conversation-detail";
-import { useConversationList } from "./use-conversation-list";
-import type { ConversationKindFilter } from "./use-conversation-list";
-import { useConversationPolling } from "./use-conversation-polling";
+import { checkAuth } from "./api/auth";
+import type { ConversationSelection } from "./conversations/selection";
+import { useConversationActions } from "./conversations/use-actions";
+import { useConversationDetail } from "./conversations/use-detail";
+import { useConversationList } from "./conversations/use-list";
+import type { ConversationKindFilter } from "./conversations/use-list";
+import { useConversationPolling } from "./conversations/use-polling";
 
-export type { AgentStatus, ChatActionError, ChatMessage } from "./chat-state-types";
+export type { AgentStatus, ChatActionError, ChatMessage } from "./conversations/state-types";
 
 // ─── useAuth ──────────────────────────────────────────────────────────────────
 

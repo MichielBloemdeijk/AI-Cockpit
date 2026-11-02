@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createJarvisPairingCode, getLinkedDevices, unlinkDevice, type JarvisPairingCode, type LinkedDevice } from "@/lib/api";
+import { createJarvisPairingCode, getLinkedDevices, unlinkDevice, type JarvisPairingCode, type LinkedDevice } from "@/lib/api/jarvis";
 
 export function LinkPhone() {
   const [link, setLink] = useState<JarvisPairingCode | null>(null);

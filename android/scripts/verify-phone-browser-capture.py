@@ -170,7 +170,8 @@ def main():
             r, g, b = image.getpixel((image.width // 2, image.height // 2))
             assert (b > 180 and r < 60 and g < 60) if color == "blue" else (r > 180 and b < 60 and g < 60), (r, g, b)
             # This upload-only probe must not occupy the recipe worker's queue.
-            client.post(f"/api/tasks/{result['task_id']}/cancel", json={"idempotency_key": "upload-probe-done"}).raise_for_status()
+            client.post(f"/api/tasks/{result['task_id']}/control",
+                        json={"action": "cancel", "idempotency_key": "upload-probe-done"}).raise_for_status()
             return sha256(Path(uploaded["storage_path"]).read_bytes()).hexdigest()
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=15) as client:
             screen.wait_for("backend", lambda: client.get("/api/auth/status").status_code == 401)

@@ -62,20 +62,17 @@ class LiveController(
         }
         .setAudioBufferCallback { buffer, audioFormat, channels, sampleRate, byteCount, captureTimeNs ->
             capturedFrames.incrementAndGet()
-            AcceptanceAudioInput.replaceWebRtcFrame(buffer, audioFormat, channels, sampleRate, byteCount)
+            Acceptance.hooks.replaceWebRtcFrame(buffer, audioFormat, channels, sampleRate, byteCount)
             LiveActivationAudioHandoff.processWebRtcBuffer(
                 buffer, audioFormat, channels, sampleRate, byteCount,
             )
-            AcceptancePlaybackRecording.input(buffer, byteCount, sampleRate, channels, audioFormat)
+            Acceptance.hooks.webRtcInput(buffer, byteCount, sampleRate, channels, audioFormat)
             captureTimeNs
         }
         .setPlaybackSamplesReadyCallback { samples ->
             playbackEvidence.lastCallback = android.os.SystemClock.elapsedRealtime()
             if (samples.data.any { it != 0.toByte() }) playedFrames.incrementAndGet()
-            AcceptanceAudioInput.observePlayback(samples.data)
-            AcceptancePlaybackRecording.append(samples.data, samples.sampleRate, samples.channelCount,
-                samples.audioFormat, audioModule)
-            AcceptanceAudioStream.output(samples.data, samples.sampleRate, samples.channelCount)
+            Acceptance.hooks.playback(samples.data, samples.sampleRate, samples.channelCount, samples.audioFormat, audioModule)
         }
         .createAudioDeviceModule()
     private val factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory()
@@ -95,16 +92,19 @@ class LiveController(
         val current = call ?: return false
         if (readyCall != current || eventsChannel?.state() != DataChannel.State.OPEN ||
             peer?.connectionState() != PeerConnection.PeerConnectionState.CONNECTED) return false
-        AcceptanceAudioInput.observeReady(current.sessionId, current.generation)
+        Acceptance.hooks.ready(current.sessionId, current.generation)
         observeAcceptanceTransport()
         return true
     }
+    /** Acceptance runs only: transport stats and runtime health. A release build skips this entirely. */
     fun observeAcceptanceTransport(checkpoint: Boolean = false) {
-        diagnosticScope.launch { AcceptanceAudioInput.observeHealth(context, audioModule, checkpoint) }
+        val hooks = Acceptance.hooks
+        if (!hooks.active) return
+        diagnosticScope.launch { hooks.health(context, audioModule, checkpoint) }
         peer?.getStats { report ->
             val audio = report.statsMap.values.filter { it.type == "outbound-rtp" &&
                 (it.members["kind"] == "audio" || it.members["mediaType"] == "audio") }
-            AcceptanceAudioInput.observeRtp(audio.sumOf { (it.members["bytesSent"] as? Number)?.toLong() ?: 0 },
+            hooks.rtp(audio.sumOf { (it.members["bytesSent"] as? Number)?.toLong() ?: 0 },
                 audio.sumOf { (it.members["packetsSent"] as? Number)?.toLong() ?: 0 })
         }
     }
@@ -312,7 +312,7 @@ class LiveController(
             ensureCurrent()
             onState("connected")
             readyCall = established
-            AcceptanceAudioInput.observeReady(established.sessionId, established.generation)
+            Acceptance.hooks.ready(established.sessionId, established.generation)
             established
         } catch (cause: Throwable) {
             val snapshot = readiness?.current()
@@ -426,7 +426,7 @@ class LiveController(
         detail: JSONObject = JSONObject(),
     ) {
         val traceId = activationId ?: activeCall?.sessionId ?: "android-live-attempt-$attempt"
-        AcceptanceAudioInput.observeDiagnostic(event, JSONObject(detail.toString()).put("attempt", attempt))
+        Acceptance.hooks.diagnostic(event, JSONObject(detail.toString()).put("attempt", attempt))
         diagnosticScope.launch {
             runCatching {
                 api.submitLiveDiagnostic(

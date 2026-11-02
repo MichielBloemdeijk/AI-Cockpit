@@ -6,9 +6,7 @@
  * bridge below performs them with a token scoped to that one app and posts the
  * result back.
  */
-import { resolveApiBase } from "./api";
-
-const BASE = resolveApiBase();
+import { API_BASE as BASE, ApiError, apiRequest, readJsonResponse } from "./api/http";
 
 export interface PlatformApp {
   slug: string;
@@ -28,35 +26,12 @@ export interface AppSession extends PlatformApp {
   frame_url: string;
 }
 
-export class AppPlatformError extends Error {
-  constructor(message: string, readonly status: number) {
-    super(message);
-  }
+export function listPlatformApps(): Promise<PlatformApp[]> {
+  return apiRequest("/api/app-platform/apps");
 }
 
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const body = await response.json();
-      if (typeof body?.detail === "string") detail = body.detail;
-    } catch {
-      // Keep the status text when the body is not JSON.
-    }
-    throw new AppPlatformError(detail, response.status);
-  }
-  return response.json() as Promise<T>;
-}
-
-export async function listPlatformApps(): Promise<PlatformApp[]> {
-  return readJson(await fetch(`${BASE}/api/app-platform/apps`, { credentials: "include", cache: "no-store" }));
-}
-
-export async function openAppSession(slug: string): Promise<AppSession> {
-  return readJson(await fetch(`${BASE}/api/app-platform/apps/${encodeURIComponent(slug)}/session`, {
-    method: "POST",
-    credentials: "include",
-  }));
+export function openAppSession(slug: string): Promise<AppSession> {
+  return apiRequest(`/api/app-platform/apps/${encodeURIComponent(slug)}/session`, { method: "POST" });
 }
 
 type BridgeRequest = {
@@ -96,13 +71,13 @@ export interface BridgeHttpRequest {
 }
 
 function segment(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value) throw new AppPlatformError(`${name} is required`, 400);
+  if (typeof value !== "string" || !value) throw new ApiError("http", `${name} is required`, { status: 400 });
   return encodeURIComponent(value);
 }
 
 /** A file name such as "photos/a.jpg", encoded per path segment. */
 function filePath(value: unknown): string {
-  if (typeof value !== "string" || !value) throw new AppPlatformError("name is required", 400);
+  if (typeof value !== "string" || !value) throw new ApiError("http", "name is required", { status: 400 });
   return value.split("/").map(encodeURIComponent).join("/");
 }
 
@@ -122,7 +97,7 @@ export function bridgeHttpRequest(slug: string, request: BridgeRequest): BridgeH
         return json(`${files}${query}`, { method: "GET" }, (body) => body.files);
       }
       case "files.put": {
-        if (!(params.data instanceof Blob)) throw new AppPlatformError("files.put needs a Blob, File or string", 400);
+        if (!(params.data instanceof Blob)) throw new ApiError("http", "files.put needs a Blob, File or string", { status: 400 });
         const type = typeof params.contentType === "string" && params.contentType ? params.contentType
           : params.data.type || "application/octet-stream";
         return json(`${files}/${filePath(params.name)}`, { method: "PUT", headers: { "Content-Type": type }, body: params.data });
@@ -139,7 +114,7 @@ export function bridgeHttpRequest(slug: string, request: BridgeRequest): BridgeH
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input: params.input ?? null }),
     }, (body) => {
-      if (!body.ok) throw new AppPlatformError(String(body.error || "The function failed"), 500);
+      if (!body.ok) throw new ApiError("http", String(body.error || "The function failed"), { status: 500 });
       return body.output;
     });
   }
@@ -173,7 +148,7 @@ export function bridgeHttpRequest(slug: string, request: BridgeRequest): BridgeH
       return json(query ? `${base}?${query}` : base, { method: "GET" }, (body) => body.records);
     }
     default:
-      throw new AppPlatformError(`Unknown method ${(request as { method: string }).method}`, 400);
+      throw new ApiError("http", `Unknown method ${(request as { method: string }).method}`, { status: 400 });
   }
 }
 
@@ -241,7 +216,7 @@ export function createAppBridge({ session, frame, renewSession, target = null, f
     const response = await authorized(url, init);
     if (nullOn404 && response.status === 404) return null;
     if (blob && response.ok) return response.blob();
-    return result(await readJson<Record<string, unknown>>(response));
+    return result(await readJsonResponse<Record<string, unknown>>(response));
   }
 
   function onMessage(event: MessageEvent) {
@@ -272,7 +247,7 @@ export function createAppBridge({ session, frame, renewSession, target = null, f
         cockpit: "response",
         id: request.id,
         ok: false,
-        status: error instanceof AppPlatformError ? error.status : 0,
+        status: error instanceof ApiError ? error.status ?? 0 : 0,
         error: error instanceof Error ? error.message : "Request failed",
       }, "*"),
     );

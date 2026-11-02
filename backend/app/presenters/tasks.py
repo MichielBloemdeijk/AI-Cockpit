@@ -1,5 +1,6 @@
 """Shared task projection for direct APIs and Live state."""
 from app.db.tables import Task
+from app.services.tasks.vocabulary import RESOURCE_CHANGED_REASON
 from app.models.tasks import TaskSummaryView
 
 
@@ -34,4 +35,5 @@ def present_task_summary(task: Task, queue_position: int | None) -> TaskSummaryV
         created_at=task.created_at,
         updated_at=task.updated_at,
         finished_at=task.finished_at,
+        retry_requires_change_acknowledgement=task.status_reason == RESOURCE_CHANGED_REASON,
     )

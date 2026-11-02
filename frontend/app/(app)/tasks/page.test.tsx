@@ -14,7 +14,12 @@ const api = vi.hoisted(() => ({
   dispatchTask: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api/auth", () => api);
+vi.mock("@/lib/api/conversations", () => api);
+vi.mock("@/lib/api/jarvis", () => api);
+vi.mock("@/lib/api/knowledge", () => api);
+vi.mock("@/lib/api/push", () => api);
+vi.mock("@/lib/api/tasks", () => api);
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={String(href)} {...props}>{children}</a>

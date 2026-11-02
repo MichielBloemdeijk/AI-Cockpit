@@ -83,7 +83,7 @@ class JarvisEventStream(private val context: Context, private val onConnected: (
         val streamEventKind = event.optString("event_type")
         if (streamEventKind in setOf("provider.delegation_received", "provider.delegation_origin_resolved", "provider.admission_stage")) {
             val payload = event.optJSONObject("payload") ?: JSONObject()
-            nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput.observeDiagnostic("stage_received",
+            nl.sander.aicockpit.jarvis.live.Acceptance.hooks.diagnostic("stage_received",
                 JSONObject().put("stage", payload.optString("stage", streamEventKind))
                     .put("session_id", payload.optString("session_id"))
                     .put("generation", payload.optInt("generation"))

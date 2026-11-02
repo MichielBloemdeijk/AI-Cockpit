@@ -71,6 +71,11 @@ WAITING_TO_RUN_STATUSES = frozenset({TaskStatus.queued, TaskStatus.waiting_for_w
 TERMINAL_RUN_STATUSES = frozenset({RunStatus.completed, RunStatus.failed, RunStatus.interrupted, RunStatus.cancelled})
 
 TASK_IMPORTANCE = ("low", "normal", "high")
+# Why an attempt stopped before reacquiring a shared target (task.status_reason).
+# A changed target may be retried once the owner accepts the change; one that
+# cannot be observed is never accepted blindly.
+RESOURCE_CHANGED_REASON = "shared_resource_changed"
+RESOURCE_UNOBSERVABLE_REASON = "shared_resource_unobservable"
 # Controls that stop a running attempt; they confirm once its writers stopped.
 STOPPING_CONTROLS = frozenset({
     ControlAction.yield_, ControlAction.suspend, ControlAction.cancel,

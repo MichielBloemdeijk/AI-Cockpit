@@ -9,7 +9,12 @@ const api = vi.hoisted(() => ({
   updateChatSettings: vi.fn(), updateJarvisPreferences: vi.fn(),
 }));
 const push = vi.hoisted(() => ({ inspectPushNotifications: vi.fn(), enablePushNotifications: vi.fn() }));
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api/auth", () => api);
+vi.mock("@/lib/api/conversations", () => api);
+vi.mock("@/lib/api/jarvis", () => api);
+vi.mock("@/lib/api/knowledge", () => api);
+vi.mock("@/lib/api/push", () => api);
+vi.mock("@/lib/api/tasks", () => api);
 vi.mock("@/lib/push-notifications", () => push);
 vi.mock("@/components/LinkPhone", () => ({ LinkPhone: () => <div>Owner pairing controls</div> }));
 vi.mock("@/components/WorkerToolSettings", () => ({ WorkerToolSettings: () => <div>Owner worker tools</div> }));

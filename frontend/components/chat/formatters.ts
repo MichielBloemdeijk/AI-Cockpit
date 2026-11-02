@@ -1,4 +1,4 @@
-import type { ConversationSessionMetadata } from "../../lib/api";
+import type { ConversationSessionMetadata } from "../../lib/api/conversations";
 
 export function formatConversationModeLabel(mode: ConversationSessionMetadata["mode"] | string | null | undefined): string {
   if (mode === "council") {

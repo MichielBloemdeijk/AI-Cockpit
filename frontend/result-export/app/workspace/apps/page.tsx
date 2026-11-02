@@ -1,4 +1,4 @@
-import AppsPage from "../../../../app/(app)/workspace/apps/page";
+import { AppsScreen } from "@/components/screens/AppsScreen";
 import AuthenticatedShell from "../../AuthenticatedShell";
 
-export default function Page() { return <AuthenticatedShell><AppsPage /></AuthenticatedShell>; }
+export default function Page() { return <AuthenticatedShell><AppsScreen appsAvailable={false} /></AuthenticatedShell>; }

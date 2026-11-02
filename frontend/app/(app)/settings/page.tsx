@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Settings, Bell, Cpu, Save, AudioLines } from "lucide-react";
-import { ConversationSessionMetadata, getChatSettings, getJarvisPreferences, updateChatSettings, updateJarvisPreferences, getAccessSession, type AccessSession, type JarvisPreferences } from "@/lib/api";
+import { getAccessSession, type AccessSession } from "@/lib/api/auth";
+import { ConversationSessionMetadata, getChatSettings, updateChatSettings } from "@/lib/api/conversations";
+import { getJarvisPreferences, updateJarvisPreferences, type JarvisPreferences } from "@/lib/api/jarvis";
 import { enablePushNotifications, inspectPushNotifications, type PushNotificationState } from "@/lib/push-notifications";
 import { LinkPhone } from "@/components/LinkPhone";
 import { WorkerToolSettings } from "@/components/WorkerToolSettings";

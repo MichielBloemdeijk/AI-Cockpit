@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { checkAuth } from "@/lib/api";
+import { checkAuth } from "@/lib/api/auth";
 
 export default function AppsLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();

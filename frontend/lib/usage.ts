@@ -1,8 +1,4 @@
-import type {
-  ConversationArtifactView,
-  ConversationEventView,
-  UsageStats,
-} from "./api";
+import type { ConversationArtifactView, ConversationEventView, UsageStats } from "./api/conversations";
 
 const SINGLE_RESPONSE_EVENT_TYPES = new Set([
   "conversation.assistant.message.completed",

@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
-import TaskDetailPage from "../../../app/(app)/tasks/[taskId]/page";
+import { useSyncExternalStore } from "react";
+import { TaskDetailScreen } from "@/components/screens/TaskDetailScreen";
 import AuthenticatedShell from "../AuthenticatedShell";
 
 const unchanging = () => () => undefined;
@@ -16,6 +16,5 @@ function readTaskId(): string | null {
 
 export default function Page() {
   const taskId = useSyncExternalStore(unchanging, readTaskId, () => null);
-  const params = useMemo(() => (taskId === null ? null : Promise.resolve({ taskId })), [taskId]);
-  return <AuthenticatedShell>{params ? <TaskDetailPage params={params} /> : <p className="p-6">Loading task…</p>}</AuthenticatedShell>;
+  return <AuthenticatedShell>{taskId !== null ? <TaskDetailScreen taskId={taskId} /> : <p className="p-6">Loading task…</p>}</AuthenticatedShell>;
 }

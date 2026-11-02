@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { TaskEvent } from "./api";
+import type { TaskEvent } from "./api/tasks";
 import { taskEventToChatMessage } from "./task-trace";
 
 function event(overrides: Partial<TaskEvent>): TaskEvent {

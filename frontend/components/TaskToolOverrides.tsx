@@ -1,6 +1,6 @@
 "use client";
 
-import type { NativeToolGroup, ToolOverrides } from "@/lib/api";
+import type { NativeToolGroup, ToolOverrides } from "@/lib/api/tasks";
 
 const groups: [NativeToolGroup, string][] = [
   ["native.local", "Local coding"], ["native.research", "Web research"],

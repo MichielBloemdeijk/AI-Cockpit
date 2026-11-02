@@ -2,7 +2,7 @@
 
 import { ChevronDown, ChevronRight } from "lucide-react";
 
-import type { CouncilResponse } from "../../lib/api";
+import type { CouncilResponse } from "../../lib/api/conversations";
 import { formatTokenCount, formatUsageCost } from "../../lib/usage";
 
 interface Props {

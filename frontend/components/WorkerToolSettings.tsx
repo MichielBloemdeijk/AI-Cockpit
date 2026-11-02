@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getWorkerToolSettings, saveWorkerToolSettings, type NativeToolGroup, type WorkerToolSettings as Settings } from "@/lib/api";
+import { getWorkerToolSettings, saveWorkerToolSettings, type NativeToolGroup, type WorkerToolSettings as Settings } from "@/lib/api/tasks";
 
 const labels: Record<NativeToolGroup, string> = {
   "native.local": "Files, commands and tests",

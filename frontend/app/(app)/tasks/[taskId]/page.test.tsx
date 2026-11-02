@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 
 import TaskDetailPage from "./page";
-import type { TaskDetail } from "@/lib/api";
+import type { TaskDetail } from "@/lib/api/tasks";
 
 const api = vi.hoisted(() => ({
   getTask: vi.fn(),
@@ -15,7 +15,12 @@ const api = vi.hoisted(() => ({
   acknowledgePushDelivery: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api/auth", () => api);
+vi.mock("@/lib/api/conversations", () => api);
+vi.mock("@/lib/api/jarvis", () => api);
+vi.mock("@/lib/api/knowledge", () => api);
+vi.mock("@/lib/api/push", () => api);
+vi.mock("@/lib/api/tasks", () => api);
 vi.mock("@/components/ChatMessage", () => ({ ChatMessage: () => null }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
@@ -87,7 +92,10 @@ it("requires an audited reason before accepting a changed shared directory", asy
   api.getTask.mockResolvedValue({
     ...retainedTask,
     status: "interrupted",
-    terminal_summary: "A shared target changed while this task did not hold its lease.",
+    status_reason: "shared_resource_changed",
+    // The wording is presentation only; the projected prerequisite decides the request.
+    terminal_summary: "Reworded: this cannot be checked",
+    retry_requires_change_acknowledgement: true,
     attempts: [{ id: "attempt-1", attempt_number: 1, terminal_reason: "resource_changed" }],
   });
   api.controlTask.mockResolvedValue({});
@@ -186,8 +194,31 @@ it.each(["answer", "update", "new"] as const)("submits explicit %s association w
   container.remove();
 });
 
-it("does not offer answer-only completion for a legacy publishing-only workflow", async () => {
+it("retries without an acknowledgement when the projection does not require one", async () => {
+  api.getTask.mockResolvedValue({
+    ...retainedTask,
+    status: "interrupted",
+    status_reason: "shared_resource_unobservable",
+    terminal_summary: "A shared target changed while this task did not hold its lease.",
+    retry_requires_change_acknowledgement: false,
+  });
+  api.controlTask.mockResolvedValue({});
+  const prompt = vi.spyOn(window, "prompt");
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => { root.render(<Suspense fallback={null}><TaskDetailPage params={Promise.resolve({ taskId: "task-1" })} /></Suspense>); });
+  const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Retry"));
+  await act(async () => { retry?.click(); });
+  expect(prompt).not.toHaveBeenCalled();
+  expect(api.controlTask).toHaveBeenCalledWith("task-1", "retry", {}, "run-1", 0, undefined);
+  await act(async () => { root.unmount(); });
+  container.remove();
+});
+
+it("does not offer answer-only completion when the run cannot finish with an answer", async () => {
   api.getTask.mockResolvedValue({ ...retainedTask,
+    follow_up_answer_supported: false,
     runs: [{ id: "run-1", execution_kind: "workflow", configuration: { workflow: { capabilities: ["task.result.publish@1"] } } }],
     results: [{ result_id: "result-1", title: "First", url: "/apps/documents?collection=document&key=a" }],
   });

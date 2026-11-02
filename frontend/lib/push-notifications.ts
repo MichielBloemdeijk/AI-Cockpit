@@ -1,4 +1,4 @@
-import { getVapidPublicKey, savePushSubscription } from "./api";
+import { getVapidPublicKey, savePushSubscription } from "./api/push";
 
 export type PushNotificationState =
   | "checking"

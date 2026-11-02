@@ -20,7 +20,13 @@ vi.mock("next/link", () => ({
     <a href={String(href)} {...props}>{children}</a>
   ),
 }));
-vi.mock("@/lib/api", () => ({ logout: vi.fn().mockResolvedValue(undefined) }));
+const apiModule = vi.hoisted(() => ({ logout: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@/lib/api/auth", () => apiModule);
+vi.mock("@/lib/api/conversations", () => apiModule);
+vi.mock("@/lib/api/jarvis", () => apiModule);
+vi.mock("@/lib/api/knowledge", () => apiModule);
+vi.mock("@/lib/api/push", () => apiModule);
+vi.mock("@/lib/api/tasks", () => apiModule);
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 

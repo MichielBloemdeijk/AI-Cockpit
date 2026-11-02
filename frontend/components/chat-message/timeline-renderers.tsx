@@ -4,7 +4,7 @@ import { useState } from "react";
 import { AlertTriangle, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Loader2, Sparkles, User, Wrench } from "lucide-react";
 import clsx from "clsx";
 
-import type { ChatMessage } from "../../lib/chat-state-types";
+import type { ChatMessage } from "../../lib/conversations/state-types";
 import { MarkdownContent } from "./MarkdownContent";
 
 function toneClasses(message: ChatMessage) {

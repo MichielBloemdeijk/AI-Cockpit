@@ -1,4 +1,4 @@
-import TasksPage from "../../../app/(app)/tasks/page";
+import { TasksScreen } from "@/components/screens/TasksScreen";
 import AuthenticatedShell from "../AuthenticatedShell";
 
-export default function Page() { return <AuthenticatedShell><TasksPage /></AuthenticatedShell>; }
+export default function Page() { return <AuthenticatedShell><TasksScreen /></AuthenticatedShell>; }

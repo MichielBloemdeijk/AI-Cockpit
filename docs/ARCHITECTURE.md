@@ -109,22 +109,38 @@ workspace and phone UI), `tasks` (and task detail), `knowledge` (review queue;
 `wiki` shows the same page), `settings` (including wake calibration),
 `workspace/apps` and `apps/[slug]` (an installed app in a sandboxed frame).
 `background` and `voice` only redirect. `app/login` and `app/link-phone` are
-public.
+public. Route files are thin adapters: the task, task-list, apps and login
+screens live in `components/screens/` and take ordinary props, so the static
+companion (`result-export/`) renders the same screens with its own adapters
+(the task ID from the path, a page load after sign-in, no app host).
 
-`frontend/lib/` holds the logic: the typed API client (`api.ts`), conversation
-hooks (`hooks.ts`, `use-conversation-*.ts`, `conversation-feed.ts`), the Jarvis
-live client and state (`jarvis-live*.ts`, `jarvis-voice-client.ts`), the
-browser wake pipeline (`jarvis-wake-*.ts`, `jarvis-hey-buddy-inference.ts`)
-and the app host bridge (`app-platform.ts`).
+`frontend/lib/` holds the logic, grouped like the backend:
+- `api/`: the backend client by domain (`auth`, `conversations`, `jarvis`,
+  `tasks`, `knowledge`, `push`) over one finite-request transport (`http.ts`:
+  a deadline on every request, the caller's abort kept apart from a timeout,
+  failures as `ApiError` with status and backend detail). Streams (chat, SSE)
+  keep their own long-lived handling.
+- `jarvis/`: `feed.ts` (state projection, domain replay, the durable live
+  stream and provisional transcripts), `voice-session.ts` (who owns voice: the
+  browser's wake and Live transport, or Android, which the page only observes),
+  `use-jarvis.ts` composing both for the route, and the browser Live, wake and
+  transcript modules.
+- `conversations/`: chat feed, history, hooks and selection.
+- `app-platform.ts` (the app host bridge), `task-status.ts`, `navigation.ts`.
 
 ## Android
 
 `android/app/src/main/java/nl/sander/aicockpit/jarvis/`: `assistant/` (the
-assistant role and session overlay), `audio/` (the foreground service that owns
-wake recording and native WebRTC), `wake/` (local ONNX wake inference),
+assistant role and session overlay; each show is one sealed mode: context
+refresh, phone capture, shared-Live capture or conversation), `audio/` (the
+foreground service that owns wake recording and native WebRTC; everyone else
+reads `JarvisAudioControls.state`, including the call identity, and sends
+commands), `wake/` (local ONNX wake inference),
 `live/`, `data/` (API client and live event stream), `notifications/`,
 `web/` (the WebView phone UI), `update/` (self-update) and `appfunctions/`.
-See [android/README.md](../android/README.md).
+Acceptance harness code (test audio input, playback recording, relay, evidence
+logs) lives in `src/debug` behind `live/AcceptanceHooks`; release builds keep
+the no-op hooks. See [android/README.md](../android/README.md).
 
 ## Invariants worth knowing before a change
 

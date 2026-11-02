@@ -23,8 +23,13 @@ const apiMocks = vi.hoisted(() => ({
   unarchiveConversation: vi.fn(),
 }));
 
-vi.mock("./api", () => apiMocks);
-vi.mock("./chat-history", () => ({
+vi.mock("./api/auth", () => apiMocks);
+vi.mock("./api/conversations", () => apiMocks);
+vi.mock("./api/jarvis", () => apiMocks);
+vi.mock("./api/knowledge", () => apiMocks);
+vi.mock("./api/push", () => apiMocks);
+vi.mock("./api/tasks", () => apiMocks);
+vi.mock("./conversations/history", () => ({
   mapConversationMessages: vi.fn(() => []),
   mapConversationEventMessages: vi.fn(() => []),
 }));

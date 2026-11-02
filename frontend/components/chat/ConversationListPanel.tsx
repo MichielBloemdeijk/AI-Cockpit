@@ -3,10 +3,10 @@
 import { AudioLines, History, Plus } from "lucide-react";
 import clsx from "clsx";
 
-import type { ConversationSummary } from "../../lib/api";
+import type { ConversationSummary } from "../../lib/api/conversations";
 
 import { formatConversationLabel, formatConversationModeLabel } from "./formatters";
-import type { ConversationKindFilter } from "../../lib/use-conversation-list";
+import type { ConversationKindFilter } from "../../lib/conversations/use-list";
 
 interface Props {
   conversations: ConversationSummary[];

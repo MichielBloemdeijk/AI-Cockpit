@@ -11,7 +11,7 @@ import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { formatConversationModeLabel } from "@/components/chat/formatters";
 import { useChat } from "@/lib/hooks";
-import { ConversationSessionMetadata, getChatSettings, getConversation } from "@/lib/api";
+import { ConversationSessionMetadata, getChatSettings, getConversation } from "@/lib/api/conversations";
 import { formatUsageCost, summarizeConversationUsage } from "@/lib/usage";
 
 function buildNewConversationMetadata(defaults: ConversationSessionMetadata): ConversationSessionMetadata {

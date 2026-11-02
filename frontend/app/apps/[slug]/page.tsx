@@ -4,7 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
-import { acknowledgePushDelivery } from "@/lib/api";
+import { acknowledgePushDelivery } from "@/lib/api/push";
 import { appTarget, createAppBridge, openAppSession, type AppBridge, type AppSession } from "@/lib/app-platform";
 
 /** Hosts an installed app in a sandboxed frame and serves its SDK requests. */

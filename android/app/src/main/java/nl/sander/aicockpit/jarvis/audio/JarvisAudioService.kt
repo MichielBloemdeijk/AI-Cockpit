@@ -44,7 +44,7 @@ class JarvisAudioService : Service() {
                 "provider.disconnected", "session.superseded" -> idle(machine.wakePreferred)
                 "provider.provider_error", "session.connection_failed" -> failLive(machine.epoch)
                 "brain.tool.result" -> {
-                    nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput.observeAdmission(
+                    nl.sander.aicockpit.jarvis.live.Acceptance.hooks.admission(
                         event.optJSONObject("payload")?.optJSONObject("output") ?: JSONObject(), event)
                     live?.observeAcceptanceTransport()
                 }
@@ -57,8 +57,7 @@ class JarvisAudioService : Service() {
         super.onCreate()
         store = CredentialStore(this)
         machine = AudioControlMachine(!store.sleep)
-        previousRelease = JarvisAudioControls.previousRelease
-        JarvisAudioControls.owner = this
+        previousRelease = JarvisAudioControls.attach(this)
         application.eventStream.addListener(eventListener)
     }
 
@@ -96,7 +95,7 @@ class JarvisAudioService : Service() {
     }
 
     private fun publish() {
-        JarvisAudioControls.state.value = machine.state
+        JarvisAudioControls.publish(machine.state)
         JarvisAudioControls.showIdle(this)
         Log.i("JarvisAudio", "mode=${machine.state.mode.name.lowercase()} activation=${machine.state.activationId}")
     }
@@ -218,7 +217,6 @@ class JarvisAudioService : Service() {
         } }
     }
 
-    internal fun currentCall() = live?.currentCall()
     internal fun audioMetrics() = live?.audioMetrics()
     internal fun observeHealth() = live?.observeAcceptanceTransport(checkpoint = true)
     internal fun continueAudio(): Boolean = live?.observeAcceptanceContinuation() == true
@@ -229,13 +227,12 @@ class JarvisAudioService : Service() {
         stopSelf()
     }
     override fun onDestroy() {
-        if (JarvisAudioControls.owner === this) JarvisAudioControls.owner = null
         application.eventStream.removeListener(eventListener)
         live?.stopAudio()
         wakeJob?.cancel(); connectionJob?.cancel()
         val controller = live
         val released = CompletableDeferred<Unit>()
-        JarvisAudioControls.previousRelease = released
+        JarvisAudioControls.detach(this, released)
         scope.launch { withContext(NonCancellable) {
             try {
                 previousRelease?.await()

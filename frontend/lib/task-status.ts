@@ -1,4 +1,4 @@
-import type { TaskSummary } from "@/lib/api";
+import type { TaskSummary } from "@/lib/api/tasks";
 
 
 export const ACTIVE_TASK_STATUSES = new Set<TaskSummary["status"]>([
@@ -9,6 +9,9 @@ export const ACTIVE_TASK_STATUSES = new Set<TaskSummary["status"]>([
   "waiting_until",
   "paused",
 ]);
+
+/** Mirrors the backend's retryable statuses; the server still validates every command. */
+export const RETRYABLE_TASK_STATUSES = new Set<TaskSummary["status"]>(["failed", "interrupted", "cancelled"]);
 
 export function isOverdueReminder(task: TaskSummary, now = Date.now()): boolean {
   const kind = task.scheduled_delivery?.kind;

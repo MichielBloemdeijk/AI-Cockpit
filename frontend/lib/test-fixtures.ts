@@ -1,9 +1,4 @@
-import type {
-  ConversationDetail,
-  ConversationEventsResponse,
-  ConversationSessionMetadata,
-  ConversationSummary,
-} from "./api";
+import type { ConversationDetail, ConversationEventsResponse, ConversationSessionMetadata, ConversationSummary } from "./api/conversations";
 
 export const DEFAULT_SESSION_METADATA: ConversationSessionMetadata = {
   mode: "single",

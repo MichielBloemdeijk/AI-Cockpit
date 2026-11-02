@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { TaskSummary } from "./api";
+import type { TaskSummary } from "./api/tasks";
 import { ACTIVE_TASK_STATUSES, isOverdueReminder, taskStatusLabel } from "./task-status";
 
 
@@ -20,6 +20,7 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
     pending_control_id: null,
     goal_revision: 1,
     control_revision: 0,
+    retry_requires_change_acknowledgement: false,
     workspace_generation: 1,
     queue_entered_at: "2026-09-03T07:00:00Z",
     cancellation_requested_at: null,

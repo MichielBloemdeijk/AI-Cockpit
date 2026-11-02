@@ -18,7 +18,6 @@ from app.db.tables import (
     TaskTurn,
 )
 from app.models.tasks import (
-    TaskActionRequest,
     TaskArtifactView,
     TaskAttemptView,
     TaskControlRequest,
@@ -229,9 +228,18 @@ def _presentation(presentation: TaskPresentation) -> TaskPresentationView:
     )
 
 
+def _answer_supported(snapshot: TaskDetailSnapshot) -> bool:
+    run = next((run for run in snapshot.runs if run.id == snapshot.task.current_run_id), None)
+    if run is None or run.execution_kind != "workflow":
+        return True
+    workflow = (run.configuration_json or {}).get("workflow") or {}
+    return "task.finish@1" in (workflow.get("capabilities") or [])
+
+
 def _detail(snapshot: TaskDetailSnapshot) -> TaskDetailView:
     base = present_task_summary(snapshot.task, snapshot.queue_position)
     return TaskDetailView(
+        follow_up_answer_supported=_answer_supported(snapshot),
         **base.model_dump(),
         attempts=[_attempt(item) for item in snapshot.attempts],
         turns=[_turn(item) for item in snapshot.turns],
@@ -423,15 +431,6 @@ async def control_task(task_id: str, request: TaskControlRequest) -> TaskControl
         task=present_task_summary(controlled.task, controlled.queue_position),
         command=_control(controlled.command),
     )
-
-
-@router.post("/{task_id}/cancel", response_model=TaskSummaryView)
-async def cancel_task(task_id: str, request: TaskActionRequest) -> TaskSummaryView:
-    try:
-        snapshot = await task_service.cancel(task_id, idempotency_key=request.idempotency_key)
-    except ValueError as exc:
-        raise _bad_request(exc) from exc
-    return present_task_summary(snapshot.task, snapshot.queue_position)
 
 
 @router.post("/{task_id}/questions", response_model=TaskQuestionView, status_code=201)

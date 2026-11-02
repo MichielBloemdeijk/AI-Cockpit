@@ -40,7 +40,7 @@ def offline(args) -> int:
     env = {**os.environ, **TEST_ENV}
     checks = [
         ("backend", [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *(args.tests or JARVIS_TESTS)], h.BACKEND),
-        ("frontend", ["npx", "vitest", "run", "lib/jarvis-live.test.ts", "lib/jarvis-playback-evidence.test.ts"], h.FRONTEND),
+        ("frontend", ["npx", "vitest", "run", "lib/jarvis/live.test.ts", "lib/jarvis/playback-evidence.test.ts"], h.FRONTEND),
         ("drivers", ["node", "--check", "e2e/announcement-eval.mjs"], h.FRONTEND),
         ("media", ["node", "e2e/announcement-offline.mjs"], h.FRONTEND),
         ("android", [str(h.ROOT / "android" / ("gradlew.bat" if os.name == "nt" else "gradlew")),

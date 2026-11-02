@@ -28,8 +28,8 @@ class AudioControlsProbeReceiver : BroadcastReceiver() {
         val notifications = context.getSystemService(NotificationManager::class.java).activeNotifications
         val notification = notifications.firstOrNull { it.id == JarvisNotifications.CONTROL_NOTIFICATION_ID }
         Log.i("JarvisLocalAudio", JSONObject().put("probe", intent.getStringExtra("probe"))
-            .put("state", JarvisAudioControls.json()).put("owner", JarvisAudioControls.owner != null)
-            .put("metrics", JarvisAudioControls.owner?.audioMetrics())
+            .put("state", JarvisAudioControls.json()).put("owner", JarvisAudioControls.running)
+            .put("metrics", JarvisAudioControls.acceptanceMetrics())
             .put("recorders", context.getSystemService(AudioManager::class.java).activeRecordingConfigurations.size)
             .put("notification", notification != null).put("sleep", CredentialStore(context).sleep).toString())
     }

@@ -4,9 +4,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import nl.sander.aicockpit.jarvis.live.Acceptance
 import nl.sander.aicockpit.jarvis.live.AcceptanceAudioInput
 import nl.sander.aicockpit.jarvis.live.AcceptanceAudioStream
 import nl.sander.aicockpit.jarvis.live.AcceptancePlaybackRecording
+import nl.sander.aicockpit.jarvis.live.DebugAcceptanceHooks
 import nl.sander.aicockpit.jarvis.audio.JarvisAudioService
 import java.io.File
 import java.nio.ByteBuffer
@@ -16,6 +18,7 @@ import java.nio.ByteOrder
 class AudioAcceptanceReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         runCatching {
+            Acceptance.install(context, DebugAcceptanceHooks)
             intent.getStringExtra("recording_id")?.let {
                 AcceptancePlaybackRecording.start(context, it)
                 return

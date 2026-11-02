@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { AudioLines, MessageSquare, ListTodo, BookOpen, Settings, LogOut, Cpu, Blocks, MoreHorizontal, X } from "lucide-react";
 import clsx from "clsx";
-import { logout } from "@/lib/api";
+import { logout } from "@/lib/api/auth";
 import { useRouter } from "next/navigation";
 
 const NAV = [

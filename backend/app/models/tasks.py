@@ -46,6 +46,9 @@ class TaskSummaryView(BaseModel):
     updated_at: datetime
     finished_at: datetime | None = None
     result_url: str | None = None
+    # Control prerequisites, projected so no client infers them from summary wording.
+    # A retry must carry the owner's reason and `accept_resource_changes`.
+    retry_requires_change_acknowledgement: bool = False
 
 
 class TaskAttemptView(BaseModel):
@@ -258,6 +261,9 @@ class TaskDetailView(TaskSummaryView):
     targets: list[TaskTargetView] = Field(default_factory=list)
     presentations: list[TaskPresentationView] = Field(default_factory=list)
     worker_health: WorkerHealthView
+    # A follow-up may ask for an answer only (no result change): every agent run,
+    # and workflow runs that can finish with a plain answer.
+    follow_up_answer_supported: bool = True
 
 
 class TaskDispatchRequest(BaseModel):

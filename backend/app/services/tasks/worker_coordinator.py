@@ -33,7 +33,7 @@ from app.services.windows_job import process_creation_stamp, process_has_exited
 from app.services.resource_state import directory_snapshot
 from app.services.tasks.operation_recovery import confirmed_file_write
 from app.services.tasks import lifecycle
-from app.services.tasks.vocabulary import TaskStatus
+from app.services.tasks.vocabulary import RESOURCE_CHANGED_REASON, RESOURCE_UNOBSERVABLE_REASON, TaskStatus
 
 
 ACTIVE_WORKER_STATES = {"starting", "idle", "busy"}
@@ -373,6 +373,7 @@ class WorkerCoordinator:
                         "A shared target changed while this task did not hold its lease."
                     ),
                     now=timestamp,
+                    reason=RESOURCE_UNOBSERVABLE_REASON if unobservable else RESOURCE_CHANGED_REASON,
                 )
             task.updated_at = timestamp
             await TaskRepository(session).append_event(
@@ -381,7 +382,7 @@ class WorkerCoordinator:
                 execution_run_id=claim.execution_run_id,
                 event_type="task.resource.changed_acknowledged" if permitted else "task.recovery.needed",
                 payload_json={
-                    "reason": "shared_resource_unobservable" if unobservable else "shared_resource_changed",
+                    "reason": RESOURCE_UNOBSERVABLE_REASON if unobservable else RESOURCE_CHANGED_REASON,
                     "accepted": permitted,
                     "targets": changes,
                 },

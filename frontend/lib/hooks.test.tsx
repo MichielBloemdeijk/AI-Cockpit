@@ -13,7 +13,6 @@ import {
 const apiMocks = vi.hoisted(() => ({
   answerTaskQuestion: vi.fn(),
   archiveConversation: vi.fn(),
-  cancelTask: vi.fn(),
   checkAuth: vi.fn(async () => true),
   createConversation: vi.fn(),
   createConversationMessage: vi.fn(),
@@ -34,8 +33,13 @@ const chatHistoryMocks = vi.hoisted(() => ({
   mapConversationEventMessages: vi.fn(),
 }));
 
-vi.mock("./api", () => apiMocks);
-vi.mock("./chat-history", () => ({
+vi.mock("./api/auth", () => apiMocks);
+vi.mock("./api/conversations", () => apiMocks);
+vi.mock("./api/jarvis", () => apiMocks);
+vi.mock("./api/knowledge", () => apiMocks);
+vi.mock("./api/push", () => apiMocks);
+vi.mock("./api/tasks", () => apiMocks);
+vi.mock("./conversations/history", () => ({
   mapConversationMessages: chatHistoryMocks.mapConversationMessages,
   mapConversationEventMessages: chatHistoryMocks.mapConversationEventMessages,
 }));

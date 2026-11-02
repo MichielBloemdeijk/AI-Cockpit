@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 import os
 
 import pytest
+
+from app.presenters.tasks import present_task_summary
 from sqlalchemy import delete, select
 
 from app.db.session import session_scope
@@ -224,6 +226,8 @@ async def test_reacquired_shared_directory_is_checked_before_runtime(tmp_path) -
     assert detail is not None and detail.task.status == "interrupted"
     assert detail.attempts[-1].terminal_reason == "resource_changed"
     assert any(event.event_type == "task.recovery.needed" for event in detail.events)
+    # Every surface reads the prerequisite from the projection, never from the summary text.
+    assert present_task_summary(detail.task, None).retry_requires_change_acknowledgement
     await worker_coordinator.worker_exited(
         second.worker_id, process_identity="shared-second", exit_code=0,
     )
@@ -265,7 +269,9 @@ async def test_unobservable_external_resource_cannot_be_silently_reacquired() ->
     assert changes[0]["current_state"] == "unknown"
     detail = await task_service.get_task(created.task.id)
     assert detail is not None
-    assert "cannot be checked" in (detail.task.terminal_summary or "")
+    assert detail.task.status_reason == "shared_resource_unobservable"
+    # An unobservable target is never accepted blindly, so no acknowledgement is offered.
+    assert not present_task_summary(detail.task, None).retry_requires_change_acknowledgement
 
 
 @pytest.mark.asyncio

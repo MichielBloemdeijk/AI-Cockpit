@@ -4,16 +4,46 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.CompletableDeferred
 import nl.sander.aicockpit.jarvis.MainActivity
 import nl.sander.aicockpit.jarvis.data.CredentialStore
 import nl.sander.aicockpit.jarvis.notifications.JarvisNotifications
 import org.json.JSONObject
 
+/**
+ * The public face of Jarvis audio. `JarvisAudioService` alone owns the microphone,
+ * wake and WebRTC; everyone else reads [state] (including the live call identity)
+ * and sends commands through intents. Nothing else can write the state or reach
+ * the service.
+ */
 object JarvisAudioControls {
-    val state = MutableStateFlow(AudioControlState())
-    internal var owner: JarvisAudioService? = null
-    internal var previousRelease: CompletableDeferred<Unit>? = null
+    private val mutableState = MutableStateFlow(AudioControlState())
+    val state: StateFlow<AudioControlState> = mutableState.asStateFlow()
+    private var owner: JarvisAudioService? = null
+    // A replacement service waits for its predecessor to release audio first.
+    private var previousRelease: CompletableDeferred<Unit>? = null
+
+    /** Only `JarvisAudioService` attaches; it receives its predecessor's release to wait for. */
+    internal fun attach(service: JarvisAudioService): CompletableDeferred<Unit>? {
+        owner = service
+        return previousRelease
+    }
+
+    internal fun detach(service: JarvisAudioService, released: CompletableDeferred<Unit>) {
+        if (owner === service) owner = null
+        previousRelease = released
+    }
+
+    internal fun publish(value: AudioControlState) { mutableState.value = value }
+
+    val running: Boolean get() = owner != null
+
+    /** Acceptance runs only (gated by `Acceptance.hooks.active`): transport and health evidence. */
+    internal fun observeAcceptanceHealth() { owner?.observeHealth() }
+    internal fun continueAcceptanceAudio(): Boolean = owner?.continueAudio() == true
+    internal fun acceptanceMetrics(): JSONObject? = owner?.audioMetrics()
     fun json(): JSONObject = state.value.let { value -> JSONObject()
         .put("type", "audio_state").put("mode", value.mode.name.lowercase())
         .put("text", value.text).put("activation_id", value.activationId)
@@ -28,13 +58,13 @@ object JarvisAudioControls {
         CredentialStore(context).controlsDismissed = false
         if (action == AudioAction.STOP && owner == null) {
             CredentialStore(context).sleep = true
-            state.value = AudioControlState()
+            mutableState.value = AudioControlState()
             showIdle(context)
             return
         }
         runCatching { ContextCompat.startForegroundService(context, intent(context, action, snapshot)) }
             .onFailure {
-                state.value = AudioControlState(AudioMode.ERROR, error = "Microphone permission needed")
+                mutableState.value = AudioControlState(AudioMode.ERROR, error = "Microphone permission needed")
                 showIdle(context)
             }
     }
@@ -45,23 +75,23 @@ object JarvisAudioControls {
         store.controlsDismissed = false
         if (owner != null) { showIdle(context); return }
         if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            state.value = AudioControlState(AudioMode.ERROR, error = "Microphone permission needed")
+            mutableState.value = AudioControlState(AudioMode.ERROR, error = "Microphone permission needed")
             showIdle(context)
             return
         }
-        if (store.sleep) { state.value = AudioControlState(); showIdle(context) }
+        if (store.sleep) { mutableState.value = AudioControlState(); showIdle(context) }
         else command(context, AudioAction.WAKE)
     }
 
     fun pause(context: Context) {
         CredentialStore(context).sleep = true
-        owner?.pause() ?: run { state.value = AudioControlState(); showIdle(context) }
+        owner?.pause() ?: run { mutableState.value = AudioControlState(); showIdle(context) }
     }
 
     fun unlink(context: Context) {
         owner?.shutdown()
         (context.applicationContext as nl.sander.aicockpit.jarvis.JarvisApplication).screenCapture.clear()
-        state.value = AudioControlState()
+        mutableState.value = AudioControlState()
         context.getSystemService(android.app.NotificationManager::class.java)
             .cancel(JarvisNotifications.CONTROL_NOTIFICATION_ID)
     }

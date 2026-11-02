@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { checkAuth } from "@/lib/api";
+import { checkAuth } from "@/lib/api/auth";
 import { loginReturnUrl } from "@/lib/navigation";
 import Link from "@/components/CockpitLink";
 
