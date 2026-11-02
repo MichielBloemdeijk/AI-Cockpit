@@ -94,7 +94,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 3 (X02, part): frontend lint scope excludes build outputs of test and audit runs; the source lint errors fixed | Done | `f089bdb` |
 | App platform gaps: app workflows from functions/UI, `write_app_data`, Recipes-from-README acceptance, Android scripts on app records (model-free emulator runs pass) | Done | `8abb796` … |
 | Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Done, one regression test per finding (see below) | `d615719` |
-| Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Done (see below); the type checker waits for the phase-4 seams | uncommitted |
+| Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Done (see below); the type checker waits for the phase-4 seams | `134a896` |
 | Phase 4: task lifecycle, conversation runs, execution contracts, live transitions, provider transport | Not started | — |
 | Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02) | Not started | — |
 | Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02 scripts) | Not started | — |
