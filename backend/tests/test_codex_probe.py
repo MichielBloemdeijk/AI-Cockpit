@@ -1,9 +1,10 @@
 from __future__ import annotations
+import os
+
 from app.config import settings
 
 from app.jarvis_tasks.codex_probe import (
     AssertionResult,
-    _base_config_overrides,
     _overall_status,
     classify_provider_error,
 )
@@ -42,10 +43,11 @@ def test_probe_requires_live_evidence_for_a_pass() -> None:
     )
 
 
-def test_windows_probe_selects_a_native_sandbox() -> None:
-    overrides = _base_config_overrides()
-    if overrides:
-        assert overrides == (f'windows.sandbox="{settings.task_windows_sandbox}"',)
+def test_windows_clients_select_the_configured_native_sandbox(tmp_path) -> None:
+    from app.services.codex_native import client_config
+    overrides = client_config(tmp_path, client_name="test", overrides=("features.apps=false",)).config_overrides
+    sandbox = (f'windows.sandbox="{settings.task_windows_sandbox}"',) if os.name == "nt" else ()
+    assert overrides == ("features.apps=false", *sandbox)
 
 
 def test_mcp_fixture_commits_before_returning_success(tmp_path) -> None:

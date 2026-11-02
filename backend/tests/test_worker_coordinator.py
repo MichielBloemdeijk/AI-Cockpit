@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, Task, TaskAttempt, WorkerInstance
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.tasks.delegation import delegate_background_task
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
@@ -344,11 +344,7 @@ async def test_api_restart_does_not_change_worker_owned_task() -> None:
         goal="survive API",
         idempotency_key="api-restart",
     )
-    await conversation_store.transition_run_status(
-        parent.id,
-        expected_statuses={"running"},
-        status="completed",
-    )
+    await conversation_store.end_run(parent.id, "completed")
     created = await task_service.get_task(delegated.task.id)
     assert created is not None
     worker = await worker_coordinator.activate(process_identity="api", worker_id="api-worker", now=NOW)

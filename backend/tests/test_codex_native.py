@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import pytest
 
-from app.services.native_worker import approved_skill_config, start_turn, verify_native_workload
+from app.services.codex_native import approved_skill_config, start_turn, verify_native_workload
 from app.services.tasks.service import task_service
 from test_worker_tool_policy import claimed
 
@@ -39,19 +39,19 @@ def test_turn_preserves_exact_writable_roots_and_never_approval(tmp_path):
 
 
 def test_workload_failure_does_not_start_unrestricted_command(tmp_path, monkeypatch):
-    import app.jarvis_tasks.codex_probe as probe
+    import app.services.codex_native as native
     policies = []
     def fail(client, params):
         policies.append(params["sandboxPolicy"])
         raise RuntimeError("permission denied")
-    monkeypatch.setattr(probe, "_command_exec", fail)
+    monkeypatch.setattr(native, "command_exec", fail)
     with pytest.raises(RuntimeError, match="No unrestricted retry"):
         verify_native_workload(None, tmp_path)
     assert len(policies) == 1 and policies[0]["type"] == "workspaceWrite"
 
 
 def test_native_observations_do_not_embed_history_or_image_receipts():
-    from app.services.native_worker import observation_payload
+    from app.services.codex_native import observation_payload
     raw = {"item": {"type": "mcpToolCall", "tool": "task_context_images", "result": {
         "content": [{"type": "image", "data": "private-base64-image"}]}}}
     clean = observation_payload(raw)
@@ -61,16 +61,16 @@ def test_native_observations_do_not_embed_history_or_image_receipts():
 
 
 def test_tool_receipt_evidence_is_not_mistaken_for_a_new_native_action():
-    from app.services.codex_task_runtime import _walk_items
+    from app.services.codex_native import walk_items
     search = {"type": "webSearch", "id": "earlier-search"}
     receipt = {"type": "mcpToolCall", "id": "history", "result": {"native_research": [search]}}
-    assert _walk_items({"item": receipt}) == [receipt]
-    assert _walk_items({"turn": {"items": [receipt, search]}}) == [receipt, search]
+    assert walk_items({"item": receipt}) == [receipt]
+    assert walk_items({"turn": {"items": [receipt, search]}}) == [receipt, search]
 
 
 @pytest.mark.asyncio
 async def test_subagent_history_recurses_and_only_interrupts_at_parent_stop():
-    from app.services.native_worker import subagent_observations
+    from app.services.codex_native import subagent_observations
     interrupted = []
     class Client:
         def thread_read(self, child, *, include_turns):
@@ -102,3 +102,33 @@ async def test_trailing_native_observation_survives_publication_without_writer_a
         await task_service.record_native_observation(context.task_id, event_type="task.completed", payload={}, idempotency_key="wrong", **fence)
     with pytest.raises(ValueError, match="authority"):
         await task_service.record_native_observation(context.task_id, event_type="agent.native.item", payload={}, idempotency_key="forged", **(fence | {"claim_token": "forged"}))
+
+
+def test_sandbox_gate_fails_closed_when_the_host_ignores_the_policy(tmp_path):
+    import subprocess
+    from app.services.codex_native import SandboxBoundaryUnavailable, require_sandbox_boundary
+
+    class UnsandboxedClient:
+        """Runs every command without any sandbox, as a broken host would."""
+        def _request_raw(self, method, params):
+            assert method == "command/exec"
+            completed = subprocess.run(params["command"], cwd=params["cwd"], capture_output=True, text=True)
+            return {"exitCode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(SandboxBoundaryUnavailable, match="sandbox.read_only.*sandbox.workspace_escape"):
+        require_sandbox_boundary(SimpleNamespace(_client=UnsandboxedClient()), workspace)
+    assert list(workspace.iterdir()) == [] and not list(tmp_path.glob(".jarvis-sandbox-*"))
+
+
+def test_tool_inventory_is_sorted_server_tool_names():
+    from app.services.codex_native import mcp_tool_inventory
+
+    class Client:
+        def _request_raw(self, method, params):
+            assert (method, params["threadId"]) == ("mcpServerStatus/list", "thread")
+            return {"data": [{"name": "jarvis_task", "tools": {"task_finish": {}, "task_history": {}}}]}
+
+    assert mcp_tool_inventory(SimpleNamespace(_client=Client()), "thread") == [
+        "jarvis_task.task_finish", "jarvis_task.task_history"]

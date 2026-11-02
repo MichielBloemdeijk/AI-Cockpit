@@ -18,7 +18,7 @@ from app.db.tables import (
     JarvisState,
     MemoryItem,
     LiveSession,
-    RunStatus,
+    ConversationRunStatus,
 )
 
 
@@ -206,7 +206,6 @@ class ConversationRepository:
         *,
         conversation_id: str,
         kind: str,
-        status: str = RunStatus.running.value,
         parent_run_id: str | None = None,
         metadata_json: dict | None = None,
     ) -> ConversationRun:
@@ -214,7 +213,7 @@ class ConversationRepository:
         run = ConversationRun(
             conversation_id=conversation_id,
             kind=kind,
-            status=status,
+            status=ConversationRunStatus.running,
             parent_run_id=parent_run_id,
             metadata_json=metadata_json,
         )
@@ -256,21 +255,6 @@ class ConversationRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def update_run_status(
-        self,
-        run_id: str,
-        *,
-        status: str,
-        error: str | None = None,
-        finished_at: datetime | None = None,
-    ) -> None:
-        stmt = (
-            update(ConversationRun)
-            .where(ConversationRun.id == run_id)
-            .values(status=status, error=error, finished_at=finished_at)
-        )
-        await self.session.execute(stmt)
-
     async def close_conversation(self, conversation_id: str, *, closed_at: datetime) -> None:
         stmt = (
             update(Conversation)
@@ -282,32 +266,22 @@ class ConversationRepository:
         if result.rowcount != 1:
             raise ValueError(f"Open conversation not found: {conversation_id}")
 
-    async def transition_run_status(
+    async def end_run(
         self,
         run_id: str,
         *,
-        expected_statuses: set[str],
-        status: str,
-        error: str | None = None,
-        finished_at: datetime | None = None,
+        status: ConversationRunStatus,
+        error: str | None,
+        finished_at: datetime,
     ) -> bool:
-        if not expected_statuses:
-            return False
+        """End a running run; False when it already ended, so the first outcome wins."""
+        if status == ConversationRunStatus.running:
+            raise ValueError("A run can only end in a terminal status")
         stmt = (
             update(ConversationRun)
             .where(ConversationRun.id == run_id)
-            .where(ConversationRun.status.in_(sorted(expected_statuses)))
+            .where(ConversationRun.status == ConversationRunStatus.running)
             .values(status=status, error=error, finished_at=finished_at)
-        )
-        result = await self.session.execute(stmt)
-        return bool(result.rowcount)
-
-    async def cancel_queued_run(self, run_id: str) -> bool:
-        stmt = (
-            update(ConversationRun)
-            .where(ConversationRun.id == run_id)
-            .where(ConversationRun.status == RunStatus.queued.value)
-            .values(status=RunStatus.cancelled.value, error="Task cancelled by user", finished_at=utc_now())
         )
         result = await self.session.execute(stmt)
         return bool(result.rowcount)
@@ -322,16 +296,6 @@ class ConversationRepository:
 
     async def delete_run(self, run_id: str) -> int:
         stmt = delete(ConversationRun).where(ConversationRun.id == run_id)
-        result = await self.session.execute(stmt)
-        return result.rowcount or 0
-
-    async def mark_running_runs_interrupted(self) -> int:
-        finished_at = utc_now()
-        stmt = (
-            update(ConversationRun)
-            .where(ConversationRun.status.in_([RunStatus.running.value, RunStatus.queued.value, RunStatus.paused.value]))
-            .values(status=RunStatus.interrupted.value, finished_at=finished_at)
-        )
         result = await self.session.execute(stmt)
         return result.rowcount or 0
 
@@ -518,10 +482,10 @@ class ConversationRepository:
         result = await self.session.execute(stmt)
         return int(result.scalar_one_or_none() or 0)
 
-    async def list_unfinished_runs(self) -> Sequence[ConversationRun]:
+    async def list_running_runs(self) -> Sequence[ConversationRun]:
         stmt = (
             select(ConversationRun)
-            .where(ConversationRun.status.in_([RunStatus.running.value, RunStatus.queued.value, RunStatus.paused.value]))
+            .where(ConversationRun.status == ConversationRunStatus.running)
             .order_by(ConversationRun.started_at.asc(), ConversationRun.id.asc())
         )
         result = await self.session.execute(stmt)

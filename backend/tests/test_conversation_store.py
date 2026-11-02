@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from app.db.session import initialize_engine
-from app.services import conversation_store as conversation_store_module
-from app.services.conversation_read_model import conversation_read_model
-from app.services.conversation_store import conversation_store
-from app.services.conversation_timeline import build_tool_result_timeline_item
+from app.services.conversations import store as conversation_store_module
+from app.services.conversations.read_model import conversation_read_model
+from app.services.conversations.store import conversation_store
+from app.services.conversations.timeline import build_tool_result_timeline_item
 from app.services.tasks.delegation import delegate_background_task
 
 
@@ -138,7 +138,7 @@ async def test_conversation_store_writes_messages_events_and_artifacts():
         mime_type="application/json",
         content_json={"messages": 2},
     )
-    await conversation_store.mark_run_completed(run.id)
+    await conversation_store.end_run(run.id, "completed")
 
     messages = await conversation_store.list_messages(conversation.id)
     events = await conversation_store.list_events(conversation.id)

@@ -543,7 +543,7 @@ the interleaved capture cohort and run the fixed final ready07 once at the end.
 Run focused offline checks before provider calls:
 
 ```powershell
-.venv/Scripts/python.exe -m pytest tests/test_worker_tool_policy.py tests/test_native_worker.py tests/test_reference_workflows.py tests/test_task_mcp.py tests/test_migration_recovery.py -q
+.venv/Scripts/python.exe -m pytest tests/test_worker_tool_policy.py tests/test_codex_native.py tests/test_reference_workflows.py tests/test_task_mcp.py tests/test_migration_recovery.py -q
 ```
 
 The development migration adds persisted global policy, connector grants and exact permission questions without resetting application data. Native boundary diagnostics make no model calls; a basic boundary pass does not override the Python/Node workload gate. Set command mode during setup, never as an automatic retry. Trusted mode inherits user access and must be labeled in reports.

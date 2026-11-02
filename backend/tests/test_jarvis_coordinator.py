@@ -21,9 +21,10 @@ from app.db.tables import (
 )
 from app.main import app
 from app.services import task_notifications
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.jarvis_coordinator import (
     StaleSessionError,
+    _BargeInIntent,
     _ResponseAttempt,
     _ResponseGate,
     jarvis_coordinator,
@@ -1661,6 +1662,40 @@ async def test_barge_in_requires_the_observed_response_identity() -> None:
         jarvis_coordinator._barge_in_keys = {
             item for item in jarvis_coordinator._barge_in_keys if item[:2] != key
         }
+
+
+@pytest.mark.asyncio
+async def test_backend_barge_in_cancels_the_current_response(monkeypatch) -> None:
+    from types import SimpleNamespace
+    import app.services.jarvis_coordinator as coordinator_module
+
+    key = ("barge-cancel-session", 4)
+    now = time.monotonic()
+    gate = _ResponseGate()
+    gate.attempt = _ResponseAttempt(
+        request_id="request-1", reason="user_turn", presentation_ids=(), state="speaking",
+        started_monotonic=now, last_activity_monotonic=now, provider_response_id="response-current",
+    )
+    cancelled = []
+
+    class Adapter:
+        async def cancel_response(self, **kwargs):
+            cancelled.append(kwargs)
+
+    async def current_session(session_id):
+        return SimpleNamespace(generation=key[1], provider_adapter="fake")
+
+    monkeypatch.setattr(jarvis_coordinator, "get_session", current_session)
+    monkeypatch.setattr(coordinator_module, "get_voice_session_adapter", lambda name: Adapter())
+    jarvis_coordinator._response_gates[key] = gate
+    try:
+        intent = _BargeInIntent(speech_event_id="speech-1", speech_item_id="item-2", request_id="request-1",
+                                response_id_at_onset="response-current", scheduled_monotonic=now)
+        assert await jarvis_coordinator._cancel_if_same_attempt(session_id=key[0], generation=key[1], intent=intent)
+        assert cancelled == [{"session_id": key[0], "generation": key[1], "response_id": "response-current"}]
+        assert gate.attempt.state == "cancelling"
+    finally:
+        jarvis_coordinator._response_gates.pop(key, None)
 
 
 def test_activation_identity_is_active_until_session_close_then_tombstoned() -> None:

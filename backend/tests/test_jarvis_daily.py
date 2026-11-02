@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.main import app
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.jarvis_daily import jarvis_daily_service, operational_day_key
 
 

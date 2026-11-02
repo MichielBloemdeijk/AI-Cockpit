@@ -99,9 +99,9 @@ async def test_blocked_background_host_does_not_block_saturated_pool_services():
 async def test_restricted_codex_runtime_is_independent_of_eight_busy_workers(tmp_path: Path):
     from openai_codex import Codex
     from app.jarvis_tasks.codex_probe import (
-        _codex_config, _probe_api_key, _workflow_boundary_checks, TARGET_MODEL, TARGET_EFFORT,
+        probe_api_key, probe_client_config, _workflow_boundary_checks, TARGET_MODEL, TARGET_EFFORT,
     )
-    api_key = _probe_api_key()
+    api_key = probe_api_key()
     if not api_key:
         pytest.skip("No authorized API credential")
     occupied = await saturate_pool()
@@ -111,7 +111,7 @@ async def test_restricted_codex_runtime_is_independent_of_eight_busy_workers(tmp
 
     def restricted_runtime():
         # Dedicated API profile; never reads or mutates desktop subscription auth.
-        with Codex(_codex_config(profile=profile, workspace=workspace)) as client:
+        with Codex(probe_client_config(profile=profile, workspace=workspace)) as client:
             client.login_api_key(api_key)
         return _workflow_boundary_checks(profile=profile, workspace=workspace)
 

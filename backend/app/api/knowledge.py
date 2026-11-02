@@ -16,7 +16,7 @@ from app.models.knowledge import (
 from app.presenters.conversations import present_memory_item
 from app.presenters.knowledge import present_knowledge_review_item
 from app.services.auth import require_auth
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.knowledge_memory import list_knowledge_documents
 from app.services.memory_review_store import MemoryItemNotFound, MemoryTransitionRejected, memory_review_store
 

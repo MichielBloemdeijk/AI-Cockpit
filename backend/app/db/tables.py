@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -39,10 +39,10 @@ class RunKind(str, Enum):
     memory_extraction = "memory_extraction"
 
 
-class RunStatus(str, Enum):
-    queued = "queued"
+class ConversationRunStatus(StrEnum):
+    """A conversation run starts running and ends exactly once, only from running."""
+
     running = "running"
-    paused = "paused"
     completed = "completed"
     failed = "failed"
     interrupted = "interrupted"
@@ -184,7 +184,7 @@ class ConversationRun(Base):
         String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default=RunStatus.running.value)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=ConversationRunStatus.running)
     parent_run_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("conversation_runs.id", ondelete="SET NULL"), nullable=True
     )

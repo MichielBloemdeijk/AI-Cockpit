@@ -29,11 +29,11 @@ from app.presenters.conversations import (
     present_memory_item,
 )
 from app.services.auth import require_auth
-from app.services.chat_settings import chat_settings_service
-from app.services.chat_orchestrator import chat_orchestrator
-from app.services.conversation_read_model import conversation_read_model
-from app.services.conversation_store import conversation_store
-from app.services.conversation_workspace import MAIN_BRANCH_KEY
+from app.services.conversations.chat_settings import chat_settings_service
+from app.services.conversations.chat_orchestrator import chat_orchestrator
+from app.services.conversations.read_model import conversation_read_model
+from app.services.conversations.store import conversation_store
+from app.services.conversations.workspace import MAIN_BRANCH_KEY
 from app.services.knowledge_extractor import extract_memory_proposals
 from app.services.memory_review_store import memory_review_store
 
@@ -68,7 +68,7 @@ async def list_conversations(
 async def create_conversation(req: ConversationCreateRequest) -> ConversationCreateResponse:
     if req.initial_message:
         initial_messages = [Message(role="user", content=req.initial_message)]
-        _, resolved_session_metadata = await chat_orchestrator._resolve_session_metadata(
+        _, resolved_session_metadata = await chat_orchestrator.resolve_session_metadata(
             conversation_id=None,
             session_metadata=req.session_metadata,
             council_mode=False,
@@ -206,7 +206,7 @@ async def create_conversation_message(conversation_id: str, req: ConversationMes
         )
 
     user_messages = [Message(role="user", content=req.content)]
-    _, session_metadata = await chat_orchestrator._resolve_session_metadata(
+    _, session_metadata = await chat_orchestrator.resolve_session_metadata(
         conversation_id=conversation_id,
         session_metadata=req.session_metadata,
         council_mode=False,
@@ -363,7 +363,7 @@ async def branch_resend(conversation_id: str, req: ConversationBranchResendReque
     ]
     history.append(Message(role="user", content=req.content))
 
-    _, session_metadata = await chat_orchestrator._resolve_session_metadata(
+    _, session_metadata = await chat_orchestrator.resolve_session_metadata(
         conversation_id=conversation_id,
         session_metadata=None,
         council_mode=False,

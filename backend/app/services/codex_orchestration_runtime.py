@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import OrchestrationDecision
+from app.services.codex_native import CODEX_RUNTIME_PIN
 from app.services.task_orchestration import DecisionClaim, DecisionTools, RuntimeUnavailable
 from app.services.windows_job import process_creation_stamp
 from app.services.orchestration_telemetry import record, token_usage
@@ -45,7 +46,7 @@ class CodexOrchestrationRuntime:
         self.native_started.clear()
         binding = {"host_pid": process.pid, "host_creation_stamp": process_creation_stamp(process.pid),
                    "host_hostname": socket.gethostname(),
-                   "runtime_version": "0.155.1"}
+                   "runtime_version": CODEX_RUNTIME_PIN}
         payload = {"decision_id": claim.id, "generation": claim.generation, "owner": claim.owner,
                    "parent_pid": os.getpid(), "database_url": settings.resolved_database_url,
                    "profile": str(Path(profile).resolve()), "model": model, "effort": effort,

@@ -40,10 +40,10 @@ fs.rmSync(folder,{recursive:true});console.log('node-ok');"""
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows command boundary")
 def test_native_never_retries_as_trusted(tmp_path, monkeypatch):
-    from app.services.tasks.project_tools import SandboxBoundaryUnavailable
-    import app.jarvis_tasks.codex_probe as probe
-    from types import SimpleNamespace
-    monkeypatch.setattr(probe, "_sandbox_checks", lambda *a, **kw: [SimpleNamespace(id="denied", status="fail")])
+    from app.services.codex_native import SandboxBoundaryUnavailable
+    import app.services.codex_native as native
+    denied = native.SandboxCheck(id="sandbox.workspace_escape", status="fail", summary="escaped", evidence={}, elapsed_ms=0)
+    monkeypatch.setattr(native, "sandbox_checks", lambda *a, **kw: [denied])
     marker = tmp_path / "marker"
     with pytest.raises(SandboxBoundaryUnavailable):
         execute_sandboxed([sys.executable, "-c", f"from pathlib import Path;Path({str(marker)!r}).write_text('wrong')"],

@@ -8,8 +8,8 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.models.chat import ChatResponse, ModelResponse
-import app.services.chat_orchestrator as orchestrator_module
-from app.services.conversation_store import conversation_store
+import app.services.conversations.chat_orchestrator as orchestrator_module
+from app.services.conversations.store import conversation_store
 
 
 def _streamed_reply(text: str):
@@ -120,7 +120,6 @@ async def test_conversation_events_expose_active_run_live_item_snapshot():
             },
         },
     )
-    await conversation_store.update_run_status(run.id, status="running", error=None, finished_at=None)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -307,6 +306,33 @@ async def test_council_failure_after_run_start_fails_the_run(monkeypatch):
         )
     runs = await conversation_store.list_runs(conversation.id)
     assert [(run.kind, run.status, run.error) for run in runs] == [("council", "failed", "provider exploded")]
+
+
+@pytest.mark.asyncio
+async def test_council_synthesis_error_ends_the_run_once(monkeypatch):
+    async def _completion(messages, model, *args, **kwargs):
+        if model == "model/synth":
+            return ModelResponse(model=model, content="", error="synthesis unavailable")
+        return ModelResponse(model=model, content=f"{model} answer")
+
+    monkeypatch.setattr(orchestrator_module, "chat_completion", _completion)
+    conversation = await conversation_store.create_conversation(mode_hint="council")
+    result = await orchestrator_module.chat_orchestrator.run_council_response(
+        messages=[orchestrator_module.Message(role="user", content="Council question")],
+        conversation_id=conversation.id,
+        session_metadata=None,
+        temperature=0.5,
+        max_tokens=64,
+        models=["model/a"],
+        synthesizer_model="model/synth",
+    )
+    assert result["error"] == "synthesis unavailable"
+    run_id = result["run_id"]
+    # The first outcome wins: a late completion or cancellation cannot rewrite an ended run.
+    assert await conversation_store.end_run(run_id, "completed") is None
+    assert await conversation_store.end_run(run_id, "cancelled") is None
+    run = await conversation_store.get_run(run_id)
+    assert run is not None and (run.status, run.error) == ("failed", "synthesis unavailable")
 
 
 @pytest.mark.asyncio

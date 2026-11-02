@@ -41,7 +41,7 @@ from app.presenters.conversations import present_conversation_message
 from app.presenters.conversations import present_conversation_event
 from app.services.jarvis_devices import require_jarvis_auth, jarvis_device_service
 from app.services.auth import SESSION_COOKIE_NAME, verify_session_token, authorization_scheme
-from app.services.conversation_read_model import conversation_read_model
+from app.services.conversations.read_model import conversation_read_model
 from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.jarvis_live import jarvis_live_service

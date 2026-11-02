@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.db.tables import MemoryStatus
-from app.services.conversation_store import MemoryItemRecord, conversation_store
+from app.services.conversations.store import MemoryItemRecord, conversation_store
 from app.services.knowledge_memory import delete_approved_memory, write_approved_memory
 
 

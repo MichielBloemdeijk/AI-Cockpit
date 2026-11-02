@@ -18,8 +18,8 @@ from app.api.private import PRIVATE_HEADERS
 from app.api import conversations, knowledge, worker_tools
 from app.app_platform import app_runtime, close_apps_engine, ensure_apps_database, install_builtin_apps
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
-from app.services.conversation_store import conversation_store
-from app.services.run_supervisor import run_supervisor
+from app.services.conversations.store import conversation_store
+from app.services.conversations.run_supervisor import run_supervisor
 from app.services.task_notifications import recover_pending_task_notifications
 from app.services.tasks.reminder_scheduler import reminder_scheduler
 from app.services.jarvis_coordinator import jarvis_coordinator

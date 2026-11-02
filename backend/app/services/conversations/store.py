@@ -8,14 +8,14 @@ from uuid import uuid4
 
 from app.db.repositories.conversations import ConversationRepository
 from app.db.session import session_scope
-from app.db.tables import ActorKind, MemoryStatus, MessageRole, RunStatus
-from app.services.conversation_title_service import conversation_title_service
-from app.services.conversation_timeline import (
+from app.db.tables import ActorKind, ConversationRunStatus, MemoryStatus, MessageRole
+from app.services.conversations.titles import conversation_title_service
+from app.services.conversations.timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
     build_assistant_message_timeline_item,
     build_user_message_timeline_item,
 )
-from app.services.conversation_workspace import (
+from app.services.conversations.workspace import (
     MAIN_BRANCH_KEY,
     ensure_conversation_workspace,
     list_workspace_files,
@@ -580,7 +580,6 @@ class ConversationStore:
         conversation_id: str,
         *,
         kind: str,
-        status: str = RunStatus.running.value,
         parent_run_id: str | None = None,
         metadata_json: dict | None = None,
     ) -> RunRecord:
@@ -589,7 +588,6 @@ class ConversationStore:
             run = await repo.create_run(
                 conversation_id=conversation_id,
                 kind=kind,
-                status=status,
                 parent_run_id=parent_run_id,
                 metadata_json=metadata_json,
             )
@@ -830,100 +828,39 @@ class ConversationStore:
             await repo.touch_conversation(conversation_id)
             return _artifact_record(artifact)
 
-    async def mark_run_completed(self, run_id: str) -> None:
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            await repo.update_run_status(run_id, status=RunStatus.completed.value, finished_at=utc_now())
-
-    async def update_run_status(
+    async def end_run(
         self,
         run_id: str,
+        status: ConversationRunStatus,
         *,
-        status: str,
         error: str | None = None,
-        finished_at: datetime | None = None,
-    ) -> RunRecord:
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            await repo.update_run_status(run_id, status=status, error=error, finished_at=finished_at)
-            run = await repo.get_run(run_id)
-            if run is None:
-                raise ValueError(f"Run not found: {run_id}")
-            await repo.touch_conversation(run.conversation_id)
-            return _run_record(run)
-
-    async def cancel_queued_run(self, run_id: str) -> bool:
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            run = await repo.get_run(run_id)
-            if run is None:
-                return False
-            cancelled = await repo.cancel_queued_run(run_id)
-            if cancelled:
-                await repo.touch_conversation(run.conversation_id)
-            return cancelled
-
-    async def transition_run_status(
-        self,
-        run_id: str,
-        *,
-        expected_statuses: set[str],
-        status: str,
-        error: str | None = None,
-        finished_at: datetime | None = None,
     ) -> RunRecord | None:
+        """The only way a conversation run ends: guarded on running, so the first outcome wins."""
         async with session_scope() as session:
             repo = ConversationRepository(session)
-            transitioned = await repo.transition_run_status(
-                run_id,
-                expected_statuses=expected_statuses,
-                status=status,
-                error=error,
-                finished_at=finished_at,
-            )
+            ended = await repo.end_run(run_id, status=status, error=error, finished_at=utc_now())
             run = await repo.get_run(run_id)
-            if run is None or not transitioned:
+            if run is None or not ended:
                 return None
             await repo.touch_conversation(run.conversation_id)
             return _run_record(run)
 
-    async def mark_run_failed(self, run_id: str, error: str) -> EventRecord:
-        async with session_scope() as session:
-            repo = ConversationRepository(session)
-            run = await repo.get_run(run_id)
-            if run is None:
-                raise ValueError(f"Run not found: {run_id}")
-            await repo.update_run_status(
-                run_id,
-                status=RunStatus.failed.value,
-                error=error,
-                finished_at=utc_now(),
-            )
-            event = await repo.append_event(
-                conversation_id=run.conversation_id,
-                run_id=run.id,
-                actor_kind=ActorKind.system.value,
-                event_type="run.failed",
-                payload_json={"run_id": run.id, "error": error},
-            )
-            await repo.touch_conversation(run.conversation_id)
-            return _event_record(event)
-
     async def mark_running_runs_interrupted(self) -> int:
         async with session_scope() as session:
             repo = ConversationRepository(session)
-            runs = list(await repo.list_unfinished_runs())
+            runs = list(await repo.list_running_runs())
             interrupted_count = 0
             for run in runs:
                 metadata = run.metadata_json if isinstance(run.metadata_json, dict) else {}
                 branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
-                interrupted_count += 1
-                await repo.update_run_status(
+                if not await repo.end_run(
                     run.id,
-                    status=RunStatus.interrupted.value,
+                    status=ConversationRunStatus.interrupted,
                     error="AI-Cockpit restarted before this run completed",
                     finished_at=utc_now(),
-                )
+                ):
+                    continue
+                interrupted_count += 1
                 await repo.append_event(
                     conversation_id=run.conversation_id,
                     run_id=run.id,
@@ -931,7 +868,7 @@ class ConversationStore:
                     event_type="run.interrupted",
                     payload_json={
                         "run_id": run.id,
-                        "status": RunStatus.interrupted.value,
+                        "status": ConversationRunStatus.interrupted,
                         "summary": "AI-Cockpit restarted before this run completed.",
                     },
                     branch_key=branch_key,

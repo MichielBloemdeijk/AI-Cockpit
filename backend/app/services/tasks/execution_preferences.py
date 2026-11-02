@@ -2,7 +2,11 @@
 from typing import Any
 
 from app.config import settings
+from app.services.tasks.worker_tool_policy import NATIVE_GROUPS
 from pydantic import BaseModel, ConfigDict
+
+
+REASONING_EFFORTS = ("low", "medium", "high")
 
 
 class ExecutionPreferences(BaseModel):
@@ -16,11 +20,11 @@ class ExecutionPreferences(BaseModel):
 def preferences_schema() -> dict:
     return {"type": "object", "properties": {
         "model": {"type": "string", "enum": list(permitted_models())},
-        "reasoning_effort": {"type": "string", "enum": ["low", "medium", "high"]},
+        "reasoning_effort": {"type": "string", "enum": list(REASONING_EFFORTS)},
         "override_reason": {"type": "string", "minLength": 1},
         "tools": {"type": "object", "properties": {
-            "add": {"type": "array", "items": {"type": "string", "enum": ["native.local", "native.research", "native.subagents", "native.skills"]}},
-            "remove": {"type": "array", "items": {"type": "string", "enum": ["native.local", "native.research", "native.subagents", "native.skills"]}}},
+            "add": {"type": "array", "items": {"type": "string", "enum": sorted(NATIVE_GROUPS)}},
+            "remove": {"type": "array", "items": {"type": "string", "enum": sorted(NATIVE_GROUPS)}}},
             "additionalProperties": False}}, "additionalProperties": False}
 
 
@@ -44,7 +48,7 @@ def normalize_agent_preferences(config: dict | None, *, inherited: dict | None =
     effort = request.get("reasoning_effort", baseline["reasoning_effort"])
     if not isinstance(model, str) or model.strip() not in permitted_models():
         raise ValueError("Execution model is not in the backend allowlist")
-    if not isinstance(effort, str) or effort not in {"low", "medium", "high"}:
+    if not isinstance(effort, str) or effort not in REASONING_EFFORTS:
         raise ValueError("Execution reasoning effort must be low, medium or high")
     reason = request.get("override_reason")
     if (model.strip() != baseline["model"] or effort != baseline["reasoning_effort"]) and (not reason or not reason.strip()):

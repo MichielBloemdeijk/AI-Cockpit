@@ -8,7 +8,7 @@ import re
 import yaml
 
 from app.config import settings
-from app.services.conversation_store import MemoryItemRecord
+from app.services.conversations.store import MemoryItemRecord
 
 
 def _slugify(value: str) -> str:

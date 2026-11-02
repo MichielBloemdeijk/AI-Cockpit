@@ -75,7 +75,7 @@ async def test_local_chat_completion_routes_through_compatible_server(monkeypatc
                 json={"choices": [{"message": {"content": "ready"}}]},
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     response = await llm_module.chat_completion(
         [Message(role="user", content="hello")],
@@ -91,14 +91,12 @@ async def test_local_chat_completion_routes_through_compatible_server(monkeypatc
 def test_local_client_uses_loopback_base_url_and_local_auth(monkeypatch) -> None:
     monkeypatch.setattr(settings, "local_llm_base_url", "http://127.0.0.1:9090/v1")
     monkeypatch.setattr(settings, "local_llm_api_key", "test-local-key")
-    token = llm_module._CURRENT_REQUEST_MODEL.set(settings.local_llm_alias)
+    client = _build_client(settings.local_llm_alias)
     try:
-        client = _build_client()
         assert str(client.base_url).rstrip("/") == "http://127.0.0.1:9090/v1"
         assert client.headers["Authorization"] == "Bearer test-local-key"
         assert "HTTP-Referer" not in client.headers
     finally:
-        llm_module._CURRENT_REQUEST_MODEL.reset(token)
         # The client has no requests in this unit test, but still owns a
         # connection pool that should be released explicitly.
         import asyncio
@@ -109,14 +107,12 @@ def test_local_client_uses_loopback_base_url_and_local_auth(monkeypatch) -> None
 def test_cloud_client_remains_openrouter(monkeypatch) -> None:
     monkeypatch.setattr(settings, "openrouter_base_url", "https://router.example/v1")
     monkeypatch.setattr(settings, "openrouter_api_key", "test-cloud-key")
-    token = llm_module._CURRENT_REQUEST_MODEL.set("openai/gpt-5.6-luna")
+    client = _build_client("openai/gpt-5.6-luna")
     try:
-        client = _build_client()
         assert str(client.base_url).rstrip("/") == "https://router.example/v1"
         assert client.headers["Authorization"] == "Bearer test-cloud-key"
         assert client.headers["HTTP-Referer"] == "https://ai-cockpit.local"
     finally:
-        llm_module._CURRENT_REQUEST_MODEL.reset(token)
         import asyncio
 
         asyncio.run(client.aclose())

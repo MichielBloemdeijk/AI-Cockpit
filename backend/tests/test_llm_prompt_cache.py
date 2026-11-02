@@ -7,7 +7,7 @@ import pytest
 
 import app.services.llm as llm_module
 from app.models.chat import Message, ModelResponse
-from app.services.chat_orchestrator import ChatOrchestrator
+from app.services.conversations.chat_orchestrator import ChatOrchestrator
 from app.services.llm import (
     PromptSegment,
     render_prompt_messages,
@@ -114,7 +114,7 @@ async def test_chat_completion_uses_top_level_cache_control_for_anthropic_automa
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     response = await llm_module.chat_completion(
         [Message(role="user", content="Hello")],
@@ -151,7 +151,7 @@ async def test_chat_completion_omits_top_level_cache_control_when_using_explicit
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     response = await llm_module.chat_completion(
         [Message(role="user", content=stable_block + "\nQuestion")],
@@ -271,7 +271,7 @@ async def test_chat_completion_retries_retryable_http_errors(monkeypatch):
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
     monkeypatch.setattr(llm_module.settings, "llm_transport_retry_attempts", 1)
     monkeypatch.setattr(llm_module.settings, "llm_transport_retry_base_delay_ms", 1)
 
@@ -321,7 +321,7 @@ async def test_chat_completion_retries_empty_message_content(monkeypatch):
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
     monkeypatch.setattr(llm_module.settings, "llm_transport_retry_attempts", 1)
     monkeypatch.setattr(llm_module.settings, "llm_transport_retry_base_delay_ms", 1)
 
@@ -378,7 +378,7 @@ async def test_chat_completion_sends_tools_and_accepts_tool_only_response(monkey
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     tools = [
         {
@@ -446,7 +446,7 @@ async def test_chat_completion_structured_falls_back_when_provider_rejects_json_
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     payload, response = await llm_module.chat_completion_structured(
         [Message(role="user", content="Return a final response")],
@@ -505,7 +505,7 @@ async def test_chat_completion_structured_falls_back_when_provider_rejects_schem
                 },
             )
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     payload, response = await llm_module.chat_completion_structured(
         [Message(role="user", content="Return a question as JSON")],
@@ -587,7 +587,7 @@ async def test_chat_completion_stream_response_handles_unread_http_error_respons
         def stream(self, method, url, json):
             return FakeStreamContext()
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
     monkeypatch.setattr(llm_module.settings, "llm_transport_retry_attempts", 0)
 
     response = await llm_module.chat_completion_stream_response(
@@ -635,7 +635,7 @@ async def test_chat_completion_stream_response_emits_partial_tool_call_deltas(mo
     async def _capture_tool_call(tool_call):
         observed_calls.append((tool_call.function.name, tool_call.function.arguments))
 
-    monkeypatch.setattr(llm_module, "_build_client", lambda: FakeClient())
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
 
     response = await llm_module.chat_completion_stream_response(
         [Message(role="user", content="Write the file")],
@@ -652,3 +652,54 @@ async def test_chat_completion_stream_response_emits_partial_tool_call_deltas(mo
     assert len(response.tool_calls) == 1
     assert response.tool_calls[0].function.name == "file_write"
     assert response.tool_calls[0].function.arguments == '{"path":"demo.txt","content":"Hello world"}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_after_output", [False, True])
+async def test_stream_retries_transport_errors_only_before_any_output(monkeypatch, fail_after_output):
+    attempts = {"count": 0}
+
+    class FakeStreamContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_lines(self):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                if fail_after_output:
+                    yield 'data: {"choices":[{"delta":{"content":"Hel"}}]}'
+                raise httpx.ReadError("connection dropped")
+            yield 'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            yield "data: [DONE]"
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, json):
+            return FakeStreamContext()
+
+    monkeypatch.setattr(llm_module, "_build_client", lambda model: FakeClient())
+    monkeypatch.setattr(llm_module.settings, "llm_transport_retry_attempts", 1)
+    monkeypatch.setattr(llm_module, "_retry_delay_seconds", lambda attempt: 0)
+
+    response = await llm_module.chat_completion_stream_response(
+        [Message(role="user", content="Say hello")],
+        model="openai/gpt-5.6-luna",
+    )
+
+    if fail_after_output:
+        # Output already reached the caller: a replay would duplicate it.
+        assert attempts["count"] == 1 and response.error == "connection dropped"
+    else:
+        assert attempts["count"] == 2 and response.content == "Hello"
+        assert response.prompt_metrics is not None and response.prompt_metrics.retry_count == 1

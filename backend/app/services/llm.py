@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -26,14 +25,27 @@ OPENROUTER_HEADERS = {
     "X-Title": "AI Cockpit",
 }
 
-IMPLICIT_CACHE_PROVIDER_PREFIXES = {
-    "openai",
-    "deepseek",
-    "google",
-    "x-ai",
-    "moonshot",
-    "groq",
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderProfile:
+    """How one OpenRouter provider family caches prompts."""
+
+    cache_strategy: str
+    explicit_segment_cache: bool = False
+
+
+# Keyed by the model's provider prefix (`anthropic/...`). Unlisted providers keep their defaults.
+PROVIDER_PROFILES = {
+    "anthropic": ProviderProfile("anthropic_explicit_top_level", explicit_segment_cache=True),
+    "google": ProviderProfile("implicit_prefix_stability", explicit_segment_cache=True),
+    "openai": ProviderProfile("implicit_prefix_stability"),
+    "deepseek": ProviderProfile("implicit_prefix_stability"),
+    "x-ai": ProviderProfile("implicit_prefix_stability"),
+    "moonshot": ProviderProfile("implicit_prefix_stability"),
+    "groq": ProviderProfile("implicit_prefix_stability"),
 }
+DEFAULT_PROVIDER_PROFILE = ProviderProfile("provider_default")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +80,6 @@ class _PromptSessionState:
 
 _PROMPT_SESSION_STATES: dict[str, _PromptSessionState] = {}
 _PROMPT_SESSION_STATE_LIMIT = 256
-_CURRENT_REQUEST_MODEL: ContextVar[str | None] = ContextVar("current_llm_request_model", default=None)
 
 
 class LocalLLMPriorityGate:
@@ -407,7 +418,7 @@ def _extract_finish_reason(data: dict[str, Any]) -> str | None:
 
 
 def supports_explicit_segment_cache(model: str) -> bool:
-    return model_provider_prefix(model) in {"anthropic", "google"}
+    return provider_profile(model).explicit_segment_cache
 
 
 def _segment_cache_control() -> dict[str, Any]:
@@ -595,6 +606,10 @@ def resolve_upstream_model(model: str) -> str:
     return model
 
 
+def provider_profile(model: str) -> ProviderProfile:
+    return PROVIDER_PROFILES.get(model_provider_prefix(model), DEFAULT_PROVIDER_PROFILE)
+
+
 def provider_label(model: str) -> str:
     return "local model server" if is_local_model(model) else "OpenRouter"
 
@@ -605,25 +620,14 @@ def resolve_prompt_cache_policy(model: str) -> PromptCachePolicy:
     if not settings.openrouter_prompt_caching_enabled:
         return PromptCachePolicy(strategy="disabled")
 
-    provider_prefix = model_provider_prefix(model)
-    if provider_prefix == "anthropic":
-        cache_control: dict[str, Any] = {"type": "ephemeral"}
-        if settings.openrouter_prompt_cache_ttl == "1h":
-            cache_control["ttl"] = "1h"
-        return PromptCachePolicy(
-            strategy="anthropic_explicit_top_level",
-            top_level_cache_control=cache_control,
-        )
-
-    if provider_prefix in IMPLICIT_CACHE_PROVIDER_PREFIXES:
-        return PromptCachePolicy(strategy="implicit_prefix_stability")
-
-    return PromptCachePolicy(strategy="provider_default")
+    strategy = provider_profile(model).cache_strategy
+    if strategy == "anthropic_explicit_top_level":
+        return PromptCachePolicy(strategy=strategy, top_level_cache_control=_segment_cache_control())
+    return PromptCachePolicy(strategy=strategy)
 
 
-def _build_client() -> httpx.AsyncClient:
-    model = _CURRENT_REQUEST_MODEL.get()
-    if model and is_local_model(model):
+def _build_client(model: str) -> httpx.AsyncClient:
+    if is_local_model(model):
         if not settings.local_llm_enabled:
             raise RuntimeError("The local LLM provider is disabled")
         return httpx.AsyncClient(
@@ -647,17 +651,13 @@ def _build_client() -> httpx.AsyncClient:
 
 @asynccontextmanager
 async def _model_client(model: str, *, priority: str = "interactive"):
-    token = _CURRENT_REQUEST_MODEL.set(model)
-    try:
-        if is_local_model(model):
-            async with _LOCAL_LLM_PRIORITY_GATE.slot(priority):
-                async with _build_client() as client:
-                    yield client
-        else:
-            async with _build_client() as client:
+    if is_local_model(model):
+        async with _LOCAL_LLM_PRIORITY_GATE.slot(priority):
+            async with _build_client(model) as client:
                 yield client
-    finally:
-        _CURRENT_REQUEST_MODEL.reset(token)
+    else:
+        async with _build_client(model) as client:
+            yield client
 
 
 def aggregate_usage(usages: list[dict[str, Any] | None]) -> dict[str, Any] | None:
@@ -912,6 +912,97 @@ def _materialize_stream_tool_calls(tool_call_state: list[dict[str, Any]]) -> lis
     return tool_calls
 
 
+class _EmptyResponse(Exception):
+    """The provider answered with no content, reasoning or tool call."""
+
+
+@dataclass(slots=True)
+class _ModelRequest:
+    """One logical request: its rendered prompt, metrics inputs and retry state."""
+
+    messages: List[Message]
+    model: str
+    cache_policy: PromptCachePolicy
+    response_format: dict[str, Any] | None
+    session_id: str | None
+    rendered_messages: list[dict[str, Any]]
+    retry_count: int = 0
+    # A streamed attempt that already produced output is never retried.
+    observed_output: bool = False
+
+    def metrics(self, usage: dict[str, Any] | None = None) -> PromptMetrics:
+        return build_prompt_metrics(
+            messages=self.messages,
+            model=self.model,
+            cache_policy=self.cache_policy,
+            response_format=self.response_format,
+            session_id=self.session_id,
+            usage=usage,
+            rendered_messages=self.rendered_messages,
+            retry_count=self.retry_count,
+        )
+
+    def failure(self, error: str) -> ModelResponse:
+        return ModelResponse(model=self.model, content="", error=error, prompt_metrics=self.metrics())
+
+
+async def _http_error_text(error: httpx.HTTPStatusError) -> str:
+    try:
+        response_text = (await error.response.aread()).decode("utf-8", errors="replace").strip()
+    except Exception:
+        response_text = _safe_response_text(error.response).strip()
+    return f"{error}: {response_text}" if response_text else str(error)
+
+
+async def _with_retries(
+    request: _ModelRequest,
+    attempt_once: Callable[[], Awaitable[ModelResponse]],
+    *,
+    kind: str,
+) -> ModelResponse:
+    """The one retry and error policy for every transport: retry empty answers, retryable
+    HTTP statuses and transport errors with backoff; anything else becomes an error response."""
+    label = provider_label(request.model)
+    attempts = settings.llm_transport_retry_attempts
+    for attempt in range(attempts + 1):
+        request.observed_output = False
+        can_retry = attempt < attempts
+        try:
+            return await attempt_once()
+        except _EmptyResponse:
+            if can_retry:
+                logger.warning("Retrying %s empty %s for model %s", label, kind, request.model)
+            else:
+                return request.failure(f"{label} returned empty {kind} content")
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if can_retry and not request.observed_output and _is_retryable_http_status(status):
+                logger.warning("Retrying %s %s HTTP error %s for model %s", label, kind, status, request.model)
+            else:
+                error_text = await _http_error_text(e)
+                logger.error("%s %s HTTP error %s for model %s: %s", label, kind, status, request.model, error_text)
+                return request.failure(error_text)
+        except (httpx.TransportError, httpx.TimeoutException) as e:
+            if can_retry and not request.observed_output:
+                logger.warning("Retrying %s %s transport error for model %s: %s", label, kind, request.model, e)
+            else:
+                logger.error("%s %s transport error for model %s: %s", label, kind, request.model, e)
+                return request.failure(str(e))
+        except Exception as e:
+            logger.error("%s %s error for model %s: %s", label, kind, request.model, e)
+            return request.failure(str(e))
+        request.retry_count += 1
+        await asyncio.sleep(_retry_delay_seconds(attempt))
+    raise AssertionError("unreachable: the last attempt always returns")
+
+
+async def _notify(callback: Callable[[Any], Awaitable[None] | None] | None, value: Any) -> None:
+    if callback is not None:
+        maybe_awaitable = callback(value)
+        if inspect.isawaitable(maybe_awaitable):
+            await maybe_awaitable
+
+
 async def chat_completion(
     messages: List[Message],
     model: str,
@@ -940,119 +1031,31 @@ async def chat_completion(
         session_id=session_id,
         request_overrides=request_overrides,
     )
-    retry_count = 0
+    request = _ModelRequest(messages, model, cache_policy, response_format, session_id, rendered_messages)
     async with _model_client(model, priority=priority) as client:
-        for attempt in range(settings.llm_transport_retry_attempts + 1):
-            try:
-                resp = await client.post("/chat/completions", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                content = _extract_message_content(data)
-                reasoning, reasoning_details = _extract_message_reasoning(data)
-                tool_calls = _extract_tool_calls(data)
-                finish_reason = _extract_finish_reason(data)
-                if not content and not tool_calls and not reasoning:
-                    if attempt < settings.llm_transport_retry_attempts:
-                        retry_count += 1
-                        logger.warning("Retrying %s empty-content response for model %s", provider_label(model), model)
-                        await asyncio.sleep(_retry_delay_seconds(attempt))
-                        continue
-                    return ModelResponse(
-                        model=model,
-                        content="",
-                        error=f"{provider_label(model)} returned empty message content",
-                        prompt_metrics=build_prompt_metrics(
-                            messages=messages,
-                            model=model,
-                            cache_policy=cache_policy,
-                            response_format=response_format,
-                            session_id=session_id,
-                            rendered_messages=rendered_messages,
-                            retry_count=retry_count,
-                        ),
-                    )
-                usage = data.get("usage")
-                return ModelResponse(
-                    model=model,
-                    content=content or "",
-                    reasoning=reasoning,
-                    reasoning_details=reasoning_details,
-                    usage=usage,
-                    tool_calls=tool_calls,
-                    finish_reason=finish_reason,
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        usage=usage,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
-            except httpx.HTTPStatusError as e:
-                if attempt < settings.llm_transport_retry_attempts and _is_retryable_http_status(e.response.status_code):
-                    retry_count += 1
-                    logger.warning("Retrying %s HTTP error %s for model %s", provider_label(model), e.response.status_code, model)
-                    await asyncio.sleep(_retry_delay_seconds(attempt))
-                    continue
-                logger.error("%s HTTP error %s: %s", provider_label(model), e.response.status_code, e.response.text)
-                error_text = str(e)
-                response_text = (e.response.text or "").strip()
-                if response_text:
-                    error_text = f"{error_text}: {response_text}"
-                return ModelResponse(
-                    model=model,
-                    content="",
-                    error=error_text,
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
-            except (httpx.TransportError, httpx.TimeoutException) as e:
-                if attempt < settings.llm_transport_retry_attempts:
-                    retry_count += 1
-                    logger.warning("Retrying transport error for model %s: %s", model, e)
-                    await asyncio.sleep(_retry_delay_seconds(attempt))
-                    continue
-                logger.error("%s transport error for model %s: %s", provider_label(model), model, e)
-                return ModelResponse(
-                    model=model,
-                    content="",
-                    error=str(e),
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
-            except Exception as e:
-                logger.error("%s error for model %s: %s", provider_label(model), model, e)
-                return ModelResponse(
-                    model=model,
-                    content="",
-                    error=str(e),
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
+
+        async def attempt_once() -> ModelResponse:
+            resp = await client.post("/chat/completions", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            content = _extract_message_content(data)
+            reasoning, reasoning_details = _extract_message_reasoning(data)
+            tool_calls = _extract_tool_calls(data)
+            if not content and not tool_calls and not reasoning:
+                raise _EmptyResponse
+            usage = data.get("usage")
+            return ModelResponse(
+                model=model,
+                content=content or "",
+                reasoning=reasoning,
+                reasoning_details=reasoning_details,
+                usage=usage,
+                tool_calls=tool_calls,
+                finish_reason=_extract_finish_reason(data),
+                prompt_metrics=request.metrics(usage),
+            )
+
+        return await _with_retries(request, attempt_once, kind="message")
 
 
 async def chat_completion_stream_response(
@@ -1087,184 +1090,81 @@ async def chat_completion_stream_response(
         request_overrides=request_overrides,
         stream=True,
     )
-    retry_count = 0
+    request = _ModelRequest(messages, model, cache_policy, response_format, session_id, rendered_messages)
     async with _model_client(model, priority=priority) as client:
-        for attempt in range(settings.llm_transport_retry_attempts + 1):
-            observed_any = False
+
+        async def attempt_once() -> ModelResponse:
             content_parts: list[str] = []
             reasoning_state: list[dict[str, Any]] = []
             reasoning_content_parts: list[str] = []
             tool_call_state: list[dict[str, Any]] = []
             finish_reason: str | None = None
             usage: dict[str, Any] | None = None
-            try:
-                async with client.stream("POST", "/chat/completions", json=payload) as resp:
-                    resp.raise_for_status()
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        raw = line[6:]
-                        if raw.strip() == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        choice = _extract_first_choice(chunk)
-                        delta = choice.get("delta") if isinstance(choice, dict) else None
-                        if isinstance(delta, dict):
-                            reasoning_observed, reasoning_deltas = _append_reasoning_detail_blocks(
-                                reasoning_state,
-                                delta.get("reasoning_details"),
-                            )
-                            if reasoning_observed:
-                                observed_any = True
-                            for reasoning_delta in reasoning_deltas:
-                                if on_reasoning_delta is not None:
-                                    maybe_awaitable = on_reasoning_delta(reasoning_delta)
-                                    if inspect.isawaitable(maybe_awaitable):
-                                        await maybe_awaitable
-                            raw_reasoning_delta = delta.get("reasoning")
-                            if not isinstance(raw_reasoning_delta, str) or not raw_reasoning_delta:
-                                raw_reasoning_delta = delta.get("reasoning_content")
-                            if isinstance(raw_reasoning_delta, str) and raw_reasoning_delta:
-                                reasoning_content_parts.append(raw_reasoning_delta)
-                                observed_any = True
-                                if on_reasoning_delta is not None and not reasoning_deltas:
-                                    maybe_awaitable = on_reasoning_delta(raw_reasoning_delta)
-                                    if inspect.isawaitable(maybe_awaitable):
-                                        await maybe_awaitable
-                            content_parts_delta = _extract_stream_content_parts(delta.get("content"))
-                            for content_delta in content_parts_delta:
-                                content_parts.append(content_delta)
-                                observed_any = True
-                                if on_content_delta is not None:
-                                    maybe_awaitable = on_content_delta(content_delta)
-                                    if inspect.isawaitable(maybe_awaitable):
-                                        await maybe_awaitable
-                            tool_calls_observed, streamed_tool_calls = _collect_stream_tool_calls(
-                                tool_call_state,
-                                delta.get("tool_calls"),
-                            )
-                            if tool_calls_observed:
-                                observed_any = True
-                            for streamed_tool_call in streamed_tool_calls:
-                                if on_tool_call_delta is not None:
-                                    maybe_awaitable = on_tool_call_delta(streamed_tool_call)
-                                    if inspect.isawaitable(maybe_awaitable):
-                                        await maybe_awaitable
-                        if isinstance(choice, dict):
-                            raw_finish_reason = choice.get("finish_reason")
-                            if isinstance(raw_finish_reason, str) and raw_finish_reason:
-                                finish_reason = raw_finish_reason
-                        usage = _extract_stream_usage(chunk, choice) or usage
-                content = "".join(content_parts)
-                reasoning = "".join(reasoning_content_parts).strip() or _reasoning_text_from_details(reasoning_state)
-                tool_calls = _materialize_stream_tool_calls(tool_call_state)
-                if not content and not tool_calls and not reasoning:
-                    if attempt < settings.llm_transport_retry_attempts:
-                        retry_count += 1
-                        logger.warning("Retrying %s empty streaming response for model %s", provider_label(model), model)
-                        await asyncio.sleep(_retry_delay_seconds(attempt))
+            async with client.stream("POST", "/chat/completions", json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
                         continue
-                    return ModelResponse(
-                        model=model,
-                        content="",
-                        error=f"{provider_label(model)} returned empty streaming message content",
-                        prompt_metrics=build_prompt_metrics(
-                            messages=messages,
-                            model=model,
-                            cache_policy=cache_policy,
-                            response_format=response_format,
-                            session_id=session_id,
-                            rendered_messages=rendered_messages,
-                            retry_count=retry_count,
-                        ),
-                    )
-                return ModelResponse(
-                    model=model,
-                    content=content,
-                    reasoning=reasoning,
-                    reasoning_details=[dict(item) for item in reasoning_state],
-                    usage=usage,
-                    tool_calls=tool_calls,
-                    finish_reason=finish_reason,
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        usage=usage,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
-            except httpx.HTTPStatusError as e:
-                if not observed_any and attempt < settings.llm_transport_retry_attempts and _is_retryable_http_status(e.response.status_code):
-                    retry_count += 1
-                    logger.warning("Retrying streaming response HTTP error %s for model %s", e.response.status_code, model)
-                    await asyncio.sleep(_retry_delay_seconds(attempt))
-                    continue
-                error_text = str(e)
-                try:
-                    response_text = (await e.response.aread()).decode("utf-8", errors="replace").strip()
-                except Exception:
-                    response_text = _safe_response_text(e.response).strip()
-                logger.error("%s streaming response HTTP error %s: %s", provider_label(model), e.response.status_code, response_text)
-                if response_text:
-                    error_text = f"{error_text}: {response_text}"
-                return ModelResponse(
-                    model=model,
-                    content="",
-                    error=error_text,
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
-            except (httpx.TransportError, httpx.TimeoutException) as e:
-                if not observed_any and attempt < settings.llm_transport_retry_attempts:
-                    retry_count += 1
-                    logger.warning("Retrying streaming response transport error for model %s: %s", model, e)
-                    await asyncio.sleep(_retry_delay_seconds(attempt))
-                    continue
-                logger.error("%s streaming response transport error for model %s: %s", provider_label(model), model, e)
-                return ModelResponse(
-                    model=model,
-                    content="",
-                    error=str(e),
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
-            except Exception as e:
-                logger.error("%s streaming response error for model %s: %s", provider_label(model), model, e)
-                return ModelResponse(
-                    model=model,
-                    content="",
-                    error=str(e),
-                    prompt_metrics=build_prompt_metrics(
-                        messages=messages,
-                        model=model,
-                        cache_policy=cache_policy,
-                        response_format=response_format,
-                        session_id=session_id,
-                        rendered_messages=rendered_messages,
-                        retry_count=retry_count,
-                    ),
-                )
+                    raw = line[6:]
+                    if raw.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    choice = _extract_first_choice(chunk)
+                    delta = choice.get("delta") if isinstance(choice, dict) else None
+                    if isinstance(delta, dict):
+                        reasoning_observed, reasoning_deltas = _append_reasoning_detail_blocks(
+                            reasoning_state,
+                            delta.get("reasoning_details"),
+                        )
+                        if reasoning_observed:
+                            request.observed_output = True
+                        for reasoning_delta in reasoning_deltas:
+                            await _notify(on_reasoning_delta, reasoning_delta)
+                        raw_reasoning_delta = delta.get("reasoning")
+                        if not isinstance(raw_reasoning_delta, str) or not raw_reasoning_delta:
+                            raw_reasoning_delta = delta.get("reasoning_content")
+                        if isinstance(raw_reasoning_delta, str) and raw_reasoning_delta:
+                            reasoning_content_parts.append(raw_reasoning_delta)
+                            request.observed_output = True
+                            if not reasoning_deltas:
+                                await _notify(on_reasoning_delta, raw_reasoning_delta)
+                        for content_delta in _extract_stream_content_parts(delta.get("content")):
+                            content_parts.append(content_delta)
+                            request.observed_output = True
+                            await _notify(on_content_delta, content_delta)
+                        tool_calls_observed, streamed_tool_calls = _collect_stream_tool_calls(
+                            tool_call_state,
+                            delta.get("tool_calls"),
+                        )
+                        if tool_calls_observed:
+                            request.observed_output = True
+                        for streamed_tool_call in streamed_tool_calls:
+                            await _notify(on_tool_call_delta, streamed_tool_call)
+                    if isinstance(choice, dict):
+                        raw_finish_reason = choice.get("finish_reason")
+                        if isinstance(raw_finish_reason, str) and raw_finish_reason:
+                            finish_reason = raw_finish_reason
+                    usage = _extract_stream_usage(chunk, choice) or usage
+            content = "".join(content_parts)
+            reasoning = "".join(reasoning_content_parts).strip() or _reasoning_text_from_details(reasoning_state)
+            tool_calls = _materialize_stream_tool_calls(tool_call_state)
+            if not content and not tool_calls and not reasoning:
+                raise _EmptyResponse
+            return ModelResponse(
+                model=model,
+                content=content,
+                reasoning=reasoning,
+                reasoning_details=[dict(item) for item in reasoning_state],
+                usage=usage,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+                prompt_metrics=request.metrics(usage),
+            )
+
+        return await _with_retries(request, attempt_once, kind="streaming message")
 
 
 async def chat_completion_structured(

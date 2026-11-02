@@ -1,14 +1,22 @@
 """Contained synchronous Codex host; API event loop never runs SDK work."""
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import os
 from pathlib import Path
 import sys
 
 from app.config import settings
-from app.services.codex_task_runtime import CODEX_RUNTIME_PIN, _json_value, _message_text, _walk_items
+from app.services.codex_native import (
+    TOOLLESS,
+    client_config,
+    json_value,
+    mcp_tool_inventory,
+    message_text,
+    read_thread,
+    require_pinned_runtime,
+    walk_items,
+)
 from app.services.windows_job import contain_current_process_tree, exit_when_parent_exits
 
 
@@ -18,7 +26,7 @@ def emit(value: dict) -> None:
 
 def inspect_thread(client, payload: dict) -> dict:
     """Only thread/read: no resume/start, tool server or credential mutation."""
-    response = _json_value(client._client.thread_read(payload["thread_id"], include_turns=True))
+    response = read_thread(client, payload["thread_id"])
     thread = response.get("thread") or {}
     if thread.get("id") != payload["thread_id"]:
         raise ValueError("Stored thread identity mismatch")
@@ -35,11 +43,10 @@ def inspect_thread(client, payload: dict) -> dict:
 
 
 def run(payload: dict) -> None:
-    from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
+    from openai_codex import ApprovalMode, Codex, Sandbox
     from app.jarvis_tasks.orchestration_mcp import catalog
 
-    if importlib.metadata.version("openai-codex") != CODEX_RUNTIME_PIN:
-        raise RuntimeError("Pinned Codex runtime version is required")
+    require_pinned_runtime()
     if os.name != "nt":
         raise RuntimeError("Native orchestration containment has only been verified on Windows")
     contain_current_process_tree()
@@ -53,8 +60,7 @@ def run(payload: dict) -> None:
     if payload.get("mode") == "inspect" and not (profile / "auth.json").is_file():
         raise RuntimeError("Dedicated orchestration authentication profile is unavailable")
     if payload.get("mode") == "inspect":
-        with Codex(CodexConfig(env={"CODEX_HOME": str(profile)}, experimental_api=False,
-                               client_name="jarvis_orchestration_inspection")) as client:
+        with Codex(client_config(profile, client_name="jarvis_orchestration_inspection")) as client:
             emit(inspect_thread(client, payload))
         return
     workspace = Path(payload["workspace"]).resolve()
@@ -64,23 +70,21 @@ def run(payload: dict) -> None:
     args = [str(bridge), "--database-url", payload["database_url"], "--decision-id", payload["decision_id"],
             "--generation", str(payload["generation"]), "--owner", payload["owner"]]
     overrides = [
-        f'windows.sandbox="{settings.task_windows_sandbox}"', "features.shell_tool=false", "features.unified_exec=false",
-        "features.skill_mcp_dependency_install=false", "agents.enabled=false", "features.apps=false", "features.plugins=false", "features.remote_plugin=false", 'web_search="disabled"',
+        *TOOLLESS,
         f"mcp_servers.jarvis_orchestration.command={json.dumps(sys.executable)}",
         f"mcp_servers.jarvis_orchestration.args={json.dumps(args)}",
         f"mcp_servers.jarvis_orchestration.enabled_tools={json.dumps(names)}",
         "mcp_servers.jarvis_orchestration.required=true", "mcp_servers.jarvis_orchestration.startup_timeout_sec=10.0",
     ]
     overrides.extend(f'mcp_servers.jarvis_orchestration.tools.{name}.approval_mode="approve"' for name in names)
-    client = Codex(CodexConfig(env={"CODEX_HOME": str(profile)}, cwd=str(workspace),
-                               config_overrides=tuple(overrides), experimental_api=False,
-                               client_name="jarvis_orchestration", client_title="Jarvis background decisions"))
+    client = Codex(client_config(profile, workspace=workspace, overrides=overrides,
+                                 client_name="jarvis_orchestration", client_title="Jarvis background decisions"))
     try:
-        account = _json_value(client.account(refresh_token=False))
+        account = json_value(client.account(refresh_token=False))
         if not account.get("account") and payload.get("auth_route") == "api":
             if settings.openai_api_key:
                 client.login_api_key(settings.openai_api_key)
-                account = _json_value(client.account(refresh_token=False))
+                account = json_value(client.account(refresh_token=False))
         account_type = (account.get("account") or {}).get("type")
         expected = {"chatgpt"} if payload.get("auth_route") == "subscription" else {"apiKey", "apikey"}
         if account_type not in expected:
@@ -107,22 +111,20 @@ def run(payload: dict) -> None:
                 "Make a durable tool action; a text response alone does not resolve the issue."
             ),
         )
-        inventory = client._client._request_raw("mcpServerStatus/list", {"threadId": thread.id, "detail": "full", "limit": 100})
-        servers = _json_value(inventory).get("data", [])
-        actual = {f"{server['name']}.{name}" for server in servers for name in (server.get("tools") or {})}
-        if actual != {f"jarvis_orchestration.{name}" for name in names}:
+        actual = mcp_tool_inventory(client, thread.id)
+        if actual != sorted(f"jarvis_orchestration.{name}" for name in names):
             raise RuntimeError("Orchestration MCP inventory differs from the exact allowlist")
-        emit({"type": "connected", "thread_id": thread.id, "tools": sorted(actual)})
+        emit({"type": "connected", "thread_id": thread.id, "tools": actual})
         turn = thread.turn("Decide the next appropriate action for this issue:\n" + json.dumps(payload["context"], ensure_ascii=False),
                            effort=payload["effort"], sandbox=Sandbox.read_only)
         emit({"type": "binding", "thread_id": thread.id, "turn_id": turn.id})
         completed, messages = None, []
         for event in turn.stream():
-            converted = _json_value(event.payload)
+            converted = json_value(event.payload)
             if event.method == "turn/completed":
                 completed = converted.get("turn") or {}
             if event.method == "item/completed":
-                messages.extend(text for item in _walk_items(converted) if (text := _message_text(item)))
+                messages.extend(text for item in walk_items(converted) if (text := message_text(item)))
             # Persist original structured events through the supervised parent;
             # no credentials are included in this protocol.
             emit({"type": "event", "event_type": str(event.method), "payload": converted})
@@ -142,9 +144,8 @@ def main() -> None:
         run(json.loads(sys.stdin.readline()))
     except Exception as exc:
         # Provider errors must remain classifiable; never include key values.
-        from app.jarvis_tasks.codex_probe import _probe_api_key
         detail = str(exc)
-        secret = _probe_api_key()
+        secret = settings.openai_api_key
         if secret:
             detail = detail.replace(secret, "[redacted]")
         emit({"type": "error", "error": type(exc).__name__, "detail": detail[:1500]})

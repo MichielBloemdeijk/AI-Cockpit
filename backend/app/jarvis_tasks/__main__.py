@@ -94,16 +94,16 @@ def main() -> int:
         print(json.dumps({key: report[key] for key in ("status", "implementation_ready", "reasons")}, indent=2))
         return 0 if report["status"] == "passed" else 2
     if args.command == "subscription-login":
-        from openai_codex import Codex, CodexConfig
+        from openai_codex import Codex
+        from app.services.codex_native import client_config
         from app.services.runtime_auth_routes import subscription_profile
         profile = subscription_profile()
         desktop = (Path.home() / ".codex").resolve()
         if profile == desktop or profile.is_relative_to(desktop) or desktop.is_relative_to(profile):
             raise ValueError("Subscription login requires a separate Jarvis profile")
         profile.mkdir(parents=True, exist_ok=True)
-        with Codex(CodexConfig(env={"CODEX_HOME": str(profile)}, experimental_api=False,
-            config_overrides=('cli_auth_credentials_store="file"', 'forced_login_method="chatgpt"'),
-            client_name="jarvis_subscription_login")) as client:
+        with Codex(client_config(profile, client_name="jarvis_subscription_login",
+            overrides=('cli_auth_credentials_store="file"', 'forced_login_method="chatgpt"'))) as client:
             handle = client.login_chatgpt_device_code() if args.device_code else client.login_chatgpt()
             instructions = ({"verification_url": handle.verification_url, "user_code": handle.user_code}
                 if args.device_code else {"auth_url": handle.auth_url})

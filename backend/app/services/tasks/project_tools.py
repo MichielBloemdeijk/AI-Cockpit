@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from hashlib import sha256
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -15,11 +14,15 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, TaskTarget, TaskAttempt
+from app.services.codex_native import (
+    DISABLED_EXTENSIONS,
+    SandboxBoundaryUnavailable,
+    client_config,
+    command_exec,
+    require_pinned_runtime,
+    require_sandbox_boundary,
+)
 from app.services.tasks.service import task_service
-
-
-class SandboxBoundaryUnavailable(RuntimeError):
-    """No user command started; the host boundary did not pass its probes."""
 
 
 def project_tool_catalog() -> list[dict]:
@@ -87,30 +90,14 @@ def inside(root: Path, relative, *, directory: bool = False) -> Path:
 
 
 def execute_sandboxed(argv: list[str], cwd: Path, root: Path, profile: Path) -> dict:
-    from openai_codex import Codex, CodexConfig
-    from app.jarvis_tasks.codex_probe import _command_exec, _sandbox_checks
-    if importlib.metadata.version("openai-codex") != "0.155.1":
-        raise RuntimeError("Project commands require pinned Codex 0.155.1")
+    from openai_codex import Codex
+    require_pinned_runtime()
     # Commands need no provider credential. They use a private per-command host
     # inside the attempt's kill-on-close tree, never a shared credential cache.
-    overrides = ("features.apps=false", "features.plugins=false", "features.remote_plugin=false",
-        *((f'windows.sandbox="{settings.task_windows_sandbox}"',) if os.name == "nt" else ()))
     profile.mkdir(parents=True, exist_ok=True)
-    client = Codex(CodexConfig(env={"CODEX_HOME": str(profile)}, cwd=str(cwd),
-        config_overrides=overrides, experimental_api=False, client_name="jarvis_project_command"))
+    client = Codex(client_config(profile, workspace=cwd, overrides=DISABLED_EXTENSIONS, client_name="jarvis_project_command"))
     try:
-        probe = root / f"jarvis-command-probe-{uuid4()}"
-        escape = root.parent / f".jarvis-command-escape-{uuid4()}"
-        probe.mkdir()
-        try:
-            checks = _sandbox_checks(client, workspace=probe, escape_target=escape)
-            failed = [check.id for check in checks if check.status != "pass"]
-            if failed:
-                raise SandboxBoundaryUnavailable(f"Project command sandbox preflight failed closed: {', '.join(failed)}")
-        finally:
-            import shutil
-            shutil.rmtree(probe, ignore_errors=True)
-            escape.unlink(missing_ok=True)
+        require_sandbox_boundary(client, root)
         # The pinned Windows sandbox can report a nonzero child exit as an
         # RPC error, losing its structured exit code. This wrapper always exits
         # zero after recording the actual child result; killed hosts never return
@@ -133,7 +120,7 @@ try:
 finally:
     shutil.rmtree(folder)
 """
-        response = _command_exec(client, {"command": [sys.executable, "-c", wrapper, json.dumps(argv)], "cwd": str(cwd),
+        response = command_exec(client, {"command": [sys.executable, "-c", wrapper, json.dumps(argv)], "cwd": str(cwd),
             "sandboxPolicy": {"type": "workspaceWrite", "writableRoots": [str(root)],
                               "networkAccess": False, "excludeTmpdirEnvVar": True,
                               "excludeSlashTmp": True}, "timeoutMs": None})

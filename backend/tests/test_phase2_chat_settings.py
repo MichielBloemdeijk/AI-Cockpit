@@ -6,9 +6,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-import app.services.chat_orchestrator as orchestrator_module
+import app.services.conversations.chat_orchestrator as orchestrator_module
 from app.models.chat import ChatResponse, ModelResponse
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 
 
 def _streamed_reply(text: str):

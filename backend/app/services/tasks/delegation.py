@@ -1,8 +1,8 @@
 """Conversation-to-task delegation without compatibility child runs."""
 from __future__ import annotations
 
-from app.services.conversation_store import EventRecord, conversation_store
-from app.services.conversation_timeline import build_background_task_timeline_item
+from app.services.conversations.store import EventRecord, conversation_store
+from app.services.conversations.timeline import build_background_task_timeline_item
 from app.services.tasks.service import TaskSnapshot, task_service
 from app.services.tasks.update_policy import CRITICAL_ONLY, FOLLOW_PROGRESS, SILENT
 

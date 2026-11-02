@@ -47,8 +47,8 @@ async def test_bridge_catalog_has_only_declared_backend_bound_capabilities(monke
 @pytest.mark.parametrize("scenario", ["answer", "presentation"])
 async def test_actual_restricted_codex_host_answers_question(tmp_path: Path, monkeypatch, scenario):
     from openai_codex import Codex
-    from app.jarvis_tasks.codex_probe import _codex_config, _probe_api_key
-    api_key = _probe_api_key()
+    from app.jarvis_tasks.codex_probe import probe_api_key, probe_client_config
+    api_key = probe_api_key()
     if not api_key:
         pytest.skip("No authorized API credential")
     monkeypatch.setattr(settings, "task_orchestration_enabled", True)
@@ -60,7 +60,7 @@ async def test_actual_restricted_codex_host_answers_question(tmp_path: Path, mon
     monkeypatch.setattr(settings, "task_orchestration_context_dir", str(tmp_path / "context"))
 
     def login():
-        with Codex(_codex_config(profile=profile, workspace=workspace)) as client:
+        with Codex(probe_client_config(profile=profile, workspace=workspace)) as client:
             client.login_api_key(api_key)
 
     await asyncio.to_thread(login)

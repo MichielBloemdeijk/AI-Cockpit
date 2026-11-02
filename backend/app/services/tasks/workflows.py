@@ -202,11 +202,11 @@ def resolve_workflow_config(config: dict[str, Any] | None, *, inherited: dict | 
         raise ValueError("Workflow version and digest are not enabled")
     if "research.native@1" in loaded.capabilities and not settings.task_research_enabled:
         raise ValueError("Workflow research capability is not enabled")
+    from app.services.tasks.execution_preferences import REASONING_EFFORTS, normalize_agent_preferences
     model = request.get("model") or settings.codex_task_model
     effort = request.get("reasoning_effort") or settings.codex_task_reasoning_effort
-    if not isinstance(model, str) or not model.strip() or effort not in {"low", "medium", "high"}:
+    if not isinstance(model, str) or not model.strip() or effort not in REASONING_EFFORTS:
         raise ValueError("Workflow model or reasoning effort is invalid")
-    from app.services.tasks.execution_preferences import normalize_agent_preferences
     preferences = normalize_agent_preferences({key: value for key, value in request.items() if key != "definition"}, inherited={key: value for key, value in (inherited or {}).items() if key in {"model", "reasoning_effort", "override_reason", "tools"}})
     return {
         "definition": definition, "model": model.strip(), "reasoning_effort": effort,

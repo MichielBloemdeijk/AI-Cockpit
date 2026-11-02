@@ -7,7 +7,7 @@ from typing import Any
 
 from app.db.repositories.conversations import ConversationRepository
 from app.db.session import session_scope
-from app.models.chat import Message
+from app.models.chat import Message, Role
 from app.services.llm import PromptSegment, chat_completion_structured
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class ConversationTitleService:
         if not normalized_prompt:
             return None
 
-        from app.services.chat_settings import chat_settings_service
+        from app.services.conversations.chat_settings import chat_settings_service
 
         model = await chat_settings_service.get_task_agent_model()
         system_prompt = (
@@ -47,8 +47,8 @@ class ConversationTitleService:
 
         payload, _response = await chat_completion_structured(
             [
-                Message(role="system", content=system_prompt),
-                Message(role="user", content=user_prompt),
+                Message(role=Role.system, content=system_prompt),
+                Message(role=Role.user, content=user_prompt),
             ],
             model,
             schema_name="conversation_title",

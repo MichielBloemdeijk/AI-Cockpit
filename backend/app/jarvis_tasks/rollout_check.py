@@ -20,6 +20,7 @@ from alembic.script import ScriptDirectory
 from app.config import Settings
 from app.api.result_static import SHELL_FILES
 from app.jarvis_tasks.sqlite_backup import snapshot_database
+from app.services.codex_native import CODEX_RUNTIME_PIN
 
 
 TABLES = ("tasks", "task_turns", "task_execution_runs", "task_attempts", "task_events",
@@ -210,8 +211,8 @@ def inspect_rollout(config: Settings, *, export_root: Path | None = None, accept
         sdk_version = version("openai-codex")
     except PackageNotFoundError:
         sdk_version = None
-    add("pinned_runtime_package", sdk_version == "0.155.1", "The tested runtime package must match the pinned version.",
-        installed=sdk_version, expected="0.155.1", native_execution_verified=False)
+    add("pinned_runtime_package", sdk_version == CODEX_RUNTIME_PIN, "The tested runtime package must match the pinned version.",
+        installed=sdk_version, expected=CODEX_RUNTIME_PIN, native_execution_verified=False)
 
     export = export_root or config.backend_root.parent / "frontend/result-export/out"
     missing = [name for name, filename in SHELL_FILES.items() if not (export / filename).is_file()]

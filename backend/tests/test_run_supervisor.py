@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.services.run_supervisor import RunSupervisor
+from app.services.conversations.run_supervisor import RunSupervisor
 
 
 @pytest.mark.asyncio

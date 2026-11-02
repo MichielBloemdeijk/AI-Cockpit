@@ -7,8 +7,8 @@ import sys
 import time
 from dataclasses import asdict
 
-from openai_codex import Codex, CodexConfig
-from app.jarvis_tasks.codex_probe import _sandbox_checks
+from openai_codex import Codex
+from app.services.codex_native import CODEX_RUNTIME_PIN, DISABLED_EXTENSIONS, client_config, sandbox_checks
 
 
 def main() -> None:
@@ -25,20 +25,18 @@ def main() -> None:
     for iteration in range(2):
         work = root / f"task-{iteration}"
         work.mkdir(exist_ok=True)
-        client = Codex(CodexConfig(env={"CODEX_HOME": str(profile)}, cwd=str(work),
-            config_overrides=(f'windows.sandbox="{args.mode}"', "features.apps=false",
-                              "features.plugins=false", "features.remote_plugin=false"),
-            experimental_api=False, client_name="jarvis_native_boundary"))
+        client = Codex(client_config(profile, workspace=work, overrides=DISABLED_EXTENSIONS,
+            windows_sandbox=args.mode, client_name="jarvis_native_boundary"))
         try:
             started = time.perf_counter()
-            checks = _sandbox_checks(client, workspace=work, escape_target=root / f"escape-{iteration}")
+            checks = sandbox_checks(client, workspace=work, escape_target=root / f"escape-{iteration}")
             reports.append({"iteration": iteration, "duration_ms": (time.perf_counter()-started)*1000,
                 "checks": [asdict(check) for check in checks]})
         finally:
             client.close()
         if any(check.status != "pass" for check in checks):
             break
-    report = {"runtime": "0.155.1", "mode": args.mode, "provider_requests": 0,
+    report = {"runtime": CODEX_RUNTIME_PIN, "mode": args.mode, "provider_requests": 0,
               "passed": len(reports) == 2 and all(c["status"] == "pass" for r in reports for c in r["checks"]),
               "iterations": reports}
     (root / "boundary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

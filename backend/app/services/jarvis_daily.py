@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.conversations import ConversationRepository
 from app.db.session import session_scope
 from app.db.tables import Conversation, ConversationEvent, JarvisState
-from app.services.conversation_store import ConversationRecord, MessageRecord, _conversation_record, _message_record
-from app.services.conversation_workspace import MAIN_BRANCH_KEY, ensure_conversation_workspace, workspace_relative_path
+from app.services.conversations.store import ConversationRecord, MessageRecord, _conversation_record, _message_record
+from app.services.conversations.workspace import MAIN_BRANCH_KEY, ensure_conversation_workspace, workspace_relative_path
 
 
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")

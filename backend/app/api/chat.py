@@ -11,9 +11,9 @@ from fastapi.responses import StreamingResponse
 from app.models.chat import ChatRequest, ChatResponse, CouncilResponse
 from app.models.settings import ChatSettingsUpdateRequest
 from app.services.auth import require_auth
-from app.services.chat_settings import chat_settings_service
-from app.services.chat_orchestrator import chat_orchestrator
-from app.services.conversation_store import conversation_store
+from app.services.conversations.chat_settings import chat_settings_service
+from app.services.conversations.chat_orchestrator import chat_orchestrator
+from app.services.conversations.store import conversation_store
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ async def chat(req: ChatRequest):
 
     model = req.model
 
-    existing_conversation_id, resolved_session_metadata = await chat_orchestrator._resolve_session_metadata(
+    existing_conversation_id, resolved_session_metadata = await chat_orchestrator.resolve_session_metadata(
         conversation_id=req.conversation_id,
         session_metadata=req.session_metadata,
         council_mode=False,

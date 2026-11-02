@@ -8,16 +8,16 @@ import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.config import settings
-from app.models.chat import ChatResponse, Message, ModelResponse, PromptMetrics
+from app.models.chat import ChatResponse, Message, ModelResponse, PromptMetrics, Role
 from app.models.settings import ConversationSessionMetadata
-from app.services.chat_settings import chat_settings_service
-from app.services.conversation_compaction import build_conversation_prompt_context
-from app.services.conversation_read_model import conversation_read_model
-from app.db.repositories.conversations import utc_now
-from app.services.conversation_store import EventRecord, RunRecord, conversation_store
-from app.services.conversation_timeline import TIMELINE_ITEM_EVENT_TYPE
-from app.services.conversation_workspace import MAIN_BRANCH_KEY
-from app.services.run_supervisor import run_supervisor
+from app.services.conversations.chat_settings import chat_settings_service
+from app.services.conversations.compaction import build_conversation_prompt_context
+from app.services.conversations.read_model import conversation_read_model
+from app.db.tables import ConversationRunStatus
+from app.services.conversations.store import EventRecord, RunRecord, conversation_store
+from app.services.conversations.timeline import TIMELINE_ITEM_EVENT_TYPE
+from app.services.conversations.workspace import MAIN_BRANCH_KEY
+from app.services.conversations.run_supervisor import run_supervisor
 from app.services.llm import (
     PromptSegment,
     aggregate_usage,
@@ -40,15 +40,12 @@ async def _owned_run(run_id: str, label: str) -> AsyncIterator[None]:
     try:
         yield
     except asyncio.CancelledError:
-        await asyncio.shield(conversation_store.transition_run_status(
-            run_id, expected_statuses={"running"}, status="cancelled", error=None, finished_at=utc_now(),
-        ))
+        await asyncio.shield(conversation_store.end_run(run_id, ConversationRunStatus.cancelled))
         raise
     except Exception as exc:
         logger.exception("%s run %s failed", label, run_id)
-        await conversation_store.transition_run_status(
-            run_id, expected_statuses={"running"}, status="failed",
-            error=str(exc) or f"The {label.lower()} reply failed.", finished_at=utc_now(),
+        await conversation_store.end_run(
+            run_id, ConversationRunStatus.failed, error=str(exc) or f"The {label.lower()} reply failed.",
         )
         raise
 
@@ -141,7 +138,7 @@ class ChatOrchestrator:
         branch_key: str = MAIN_BRANCH_KEY,
         parent_event_id: str | None = None,
     ) -> tuple[PreparedTurn, str]:
-        _, resolved_session_metadata = await self._resolve_session_metadata(
+        _, resolved_session_metadata = await self.resolve_session_metadata(
             conversation_id=conversation_id,
             session_metadata=session_metadata,
             council_mode=False,
@@ -212,7 +209,7 @@ class ChatOrchestrator:
         run = await conversation_store.get_run(prepared.run.id)
         if assistant_message is None:
             fallback = "The model returned no reply."
-            if run is not None and str(run.status or "").lower() == "failed":
+            if run is not None and run.status == ConversationRunStatus.failed:
                 fallback = str(run.error or "The chat reply failed.")
             _, created_message = await conversation_store.complete_message(
                 prepared.conversation_id,
@@ -361,7 +358,6 @@ class ChatOrchestrator:
         metadata_json: dict | None = None,
         branch_key: str = MAIN_BRANCH_KEY,
         parent_event_id: str | None = None,
-        status: str = "running",
     ) -> PreparedTurn:
         conversation = await conversation_store.get_conversation(conversation_id) if conversation_id else None
         if conversation is None:
@@ -373,7 +369,6 @@ class ChatOrchestrator:
         run = await conversation_store.start_run(
             conversation.id,
             kind=run_kind,
-            status=status,
             metadata_json={**(metadata_json or {}), "branch_key": branch_key},
         )
         async with _owned_run(run.id, "Turn preparation"):
@@ -395,7 +390,7 @@ class ChatOrchestrator:
                            stream_callback: StreamCallback | None = None) -> None:
         """Produce the assistant reply for a prepared single-model run (run_supervisor entry)."""
         run = await conversation_store.get_run(run_id)
-        if run is None or run.status != "running":
+        if run is None or run.status != ConversationRunStatus.running:
             return
         metadata = dict(run.metadata_json or {})
         branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
@@ -443,11 +438,9 @@ class ChatOrchestrator:
                 payload_json={"model": model, "content": response.content, "usage": response.usage},
                 branch_key=branch_key,
             )
-            await conversation_store.transition_run_status(
-                run_id, expected_statuses={"running"}, status="completed", error=None, finished_at=utc_now(),
-            )
+            await conversation_store.end_run(run_id, ConversationRunStatus.completed)
 
-    async def _resolve_session_metadata(
+    async def resolve_session_metadata(
         self,
         *,
         conversation_id: str | None,
@@ -634,7 +627,7 @@ class ChatOrchestrator:
         branch_key: str = MAIN_BRANCH_KEY,
         parent_event_id: str | None = None,
     ) -> dict:
-        _, resolved_session_metadata = await self._resolve_session_metadata(
+        _, resolved_session_metadata = await self.resolve_session_metadata(
             conversation_id=conversation_id,
             session_metadata=session_metadata,
             council_mode=True,
@@ -763,14 +756,14 @@ class ChatOrchestrator:
             content_text=synthesis_prompt,
         )
         synthesized = await chat_completion(
-            [Message(role="user", content=synthesis_prompt)],
+            [Message(role=Role.user, content=synthesis_prompt)],
             synth_model,
             0.5,
             max_tokens,
             session_id=_message_session_id(prepared.conversation_id, branch_key),
         )
         synthesis_prompt_metrics = ensure_prompt_metrics(
-            messages=[Message(role="user", content=synthesis_prompt)],
+            messages=[Message(role=Role.user, content=synthesis_prompt)],
             model=synth_model,
             session_id=_message_session_id(prepared.conversation_id, branch_key),
             usage=getattr(synthesized, "usage", None),
@@ -789,7 +782,7 @@ class ChatOrchestrator:
             synthesized.usage,
         ])
         if synthesized.error:
-            await conversation_store.mark_run_failed(prepared.run.id, synthesized.error)
+            await conversation_store.end_run(prepared.run.id, ConversationRunStatus.failed, error=synthesized.error)
             return {
                 "conversation_id": prepared.conversation_id,
                 "run_id": prepared.run.id,
@@ -838,7 +831,7 @@ class ChatOrchestrator:
                 "usage": synthesized.usage,
             },
         )
-        await conversation_store.mark_run_completed(prepared.run.id)
+        await conversation_store.end_run(prepared.run.id, ConversationRunStatus.completed)
         return {
             "conversation_id": prepared.conversation_id,
             "run_id": prepared.run.id,

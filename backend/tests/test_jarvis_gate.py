@@ -7,7 +7,7 @@ from sqlalchemy import select
 import app.services.jarvis_coordinator as coordinator_module
 from app.db.session import session_scope
 from app.db.tables import LiveSessionEvent
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services.voice_session_adapter import VoiceProviderEvent, fake_voice_session_adapter
 

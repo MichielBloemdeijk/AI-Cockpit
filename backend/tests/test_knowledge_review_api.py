@@ -5,7 +5,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.services.brain_retrieval import search_wiki
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.knowledge_memory import list_knowledge_documents
 from app.services.memory_review_store import memory_review_store
 
@@ -27,7 +27,7 @@ async def test_knowledge_review_queue_and_documents_flow():
         actor_kind="assistant",
         event_type="conversation.assistant.message.completed",
     )
-    await conversation_store.mark_run_completed(run.id)
+    await conversation_store.end_run(run.id, "completed")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

@@ -4,9 +4,9 @@ from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Sequence, TypeVar
 
 from app.config import settings
-from app.models.chat import Message
-from app.services.conversation_read_model import conversation_read_model
-from app.services.conversation_store import MessageRecord, conversation_store
+from app.models.chat import Message, Role
+from app.services.conversations.read_model import conversation_read_model
+from app.services.conversations.store import MessageRecord, conversation_store
 from app.services.llm import PromptSegment, chat_completion, ensure_prompt_metrics, get_session_prompt_cache_status
 
 
@@ -95,7 +95,7 @@ def microcompact_message_records(messages: list[MessageRecord], *, aggressive: b
         replace_content=lambda message, content: replace(message, content=content),
         tombstone=CONTEXT_COMPACTION_TOOL_TOMBSTONE,
     )
-    return [Message(role=message.role, content=message.content) for message in compacted_records]
+    return [Message(role=Role(message.role), content=message.content) for message in compacted_records]
 
 
 def _format_compaction_source(messages: list[MessageRecord]) -> str:
@@ -159,8 +159,8 @@ async def _generate_compaction_summary(
     )
     session_id = f"conversation:{conversation_id}:{branch_key}:compact"
     summary_messages = [
-        Message(role="system", content=system_prompt),
-        Message(role="user", content=user_prompt),
+        Message(role=Role.system, content=system_prompt),
+        Message(role=Role.user, content=user_prompt),
     ]
     response = await completion_fn(
         summary_messages,
@@ -301,7 +301,7 @@ async def build_conversation_prompt_context(
         if summary:
             tail_messages = microcompact_message_records(tail_records)
             return ConversationPromptContext(
-                messages=[Message(role="system", content=CONVERSATION_SUMMARY_PREFIX + summary), *tail_messages],
+                messages=[Message(role=Role.system, content=CONVERSATION_SUMMARY_PREFIX + summary), *tail_messages],
             )
 
     persisted_messages = microcompact_message_records(persisted_records)

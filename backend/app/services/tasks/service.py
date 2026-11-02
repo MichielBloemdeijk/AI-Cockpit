@@ -994,7 +994,7 @@ class TaskService:
         """Retain trailing native observations after publication; grants no writer authority."""
         if event_type not in {"agent.native.item", "agent.native.event", "agent.native.action.started", "agent.native.subagent.item"}:
             raise ValueError("Only native observations may outlive the active writer fence")
-        from app.services.native_worker import observation_payload
+        from app.services.codex_native import observation_payload
         payload = observation_payload(payload)
         async with session_scope() as session:
             task = await lifecycle.lock_task(session, task_id)

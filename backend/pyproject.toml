@@ -92,7 +92,15 @@ ignore = ["E701", "E702"]
 [tool.pyright]
 # Basic mode on the seams the phase-4 refactor creates; the scope widens as
 # modules move into feature packages. Not a whole-repo gate.
-include = ["app/services/tasks"]
+include = [
+    "app/services/tasks",
+    "app/services/conversations",
+    "app/services/agent_execution.py",
+    "app/services/codex_native.py",
+    "app/services/codex_task_runtime.py",
+    "app/services/jarvis_coordinator.py",
+    "app/services/llm.py",
+]
 typeCheckingMode = "basic"
 pythonVersion = "3.12"
 venvPath = "."

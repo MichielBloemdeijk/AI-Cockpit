@@ -5,13 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.services.conversation_compaction as conversation_compaction
+import app.services.conversations.compaction as conversation_compaction
 from app.models.chat import ModelResponse
-from app.services.conversation_store import MessageRecord
+from app.services.conversations.store import MessageRecord
 
 from dataclasses import dataclass
 
-from app.services.conversation_compaction import build_conversation_prompt_context, microcompact_entries, truncate_compacted_text
+from app.services.conversations.compaction import build_conversation_prompt_context, microcompact_entries, truncate_compacted_text
 
 
 @dataclass(slots=True)

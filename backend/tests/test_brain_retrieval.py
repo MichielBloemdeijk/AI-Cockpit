@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.services.brain_retrieval import search_conversations, search_wiki
-from app.services.conversation_store import conversation_store
+from app.services.conversations.store import conversation_store
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS, restricted_brain_gateway
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.memory_review_store import memory_review_store

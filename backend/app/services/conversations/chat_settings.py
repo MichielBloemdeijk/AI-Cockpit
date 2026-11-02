@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import settings
 from app.models.settings import ChatSettingsResponse, ConversationSessionMetadata
-from app.services.conversation_store import ConversationRecord, conversation_store
+from app.services.conversations.store import ConversationRecord, conversation_store
 
 
 class ChatSettingsService:

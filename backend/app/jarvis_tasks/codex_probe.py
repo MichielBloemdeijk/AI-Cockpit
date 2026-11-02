@@ -17,10 +17,17 @@ from typing import Any, Literal
 import uuid
 
 from app.config import settings
+from app.services.codex_native import (
+    CODEX_RUNTIME_PIN,
+    TOOLLESS,
+    client_config,
+    command_exec,
+    json_value,
+    sandbox_checks,
+)
 
 
 PROBE_SCHEMA = "jarvis-codex-probe.v2"
-SDK_PIN = "0.155.1"
 TARGET_MODEL = "gpt-5.6-luna"
 TARGET_EFFORT = "low"
 
@@ -78,7 +85,7 @@ def _desktop_sensitive_state() -> dict[str, dict[str, Any]]:
     }
 
 
-def _probe_api_key() -> str | None:
+def probe_api_key() -> str | None:
     direct = os.environ.get("OPENAI_API_KEY") or os.environ.get("CODEX_API_KEY")
     if direct:
         return direct
@@ -107,44 +114,17 @@ def _model_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
-def _json_value(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json", by_alias=True)
-    if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    return _model_value(value)
-
-
 def _toml_string(value: str | Path) -> str:
     return json.dumps(str(value))
 
 
-def _base_config_overrides() -> tuple[str, ...]:
-    if os.name == "nt":
-        return (f'windows.sandbox="{settings.task_windows_sandbox}"',)
-    return ()
-
-
-def _codex_config(*, profile: Path, workspace: Path) -> Any:
-    from openai_codex import CodexConfig
-
-    return CodexConfig(
-        env={"CODEX_HOME": str(profile)},
-        cwd=str(workspace),
-        config_overrides=_base_config_overrides(),
-        experimental_api=False,
-        client_name="jarvis_m0_probe",
-        client_title="Jarvis M0 Probe",
-    )
+def probe_client_config(*, profile: Path, workspace: Path) -> Any:
+    return client_config(profile, workspace=workspace, client_name="jarvis_m0_probe", client_title="Jarvis M0 Probe")
 
 
 def _workflow_config(
     *, profile: Path, workspace: Path, journal: Path, operation_id: str
 ) -> Any:
-    from openai_codex import CodexConfig
-
     fixture = Path(__file__).with_name("mcp_fixture.py").resolve()
     args = [
         str(fixture),
@@ -154,12 +134,7 @@ def _workflow_config(
         operation_id,
     ]
     overrides = [
-        *_base_config_overrides(),
-        "features.shell_tool=false",
-        "features.unified_exec=false",
-        "features.skill_mcp_dependency_install=false",
-        "agents.enabled=false", "features.apps=false", "features.plugins=false", "features.remote_plugin=false",
-        'web_search="disabled"',
+        *TOOLLESS,
         f"mcp_servers.jarvis_probe.command={_toml_string(sys.executable)}",
         f"mcp_servers.jarvis_probe.args={json.dumps(args)}",
         'mcp_servers.jarvis_probe.enabled_tools=["journal_commit"]',
@@ -167,116 +142,8 @@ def _workflow_config(
         "mcp_servers.jarvis_probe.required=true",
         "mcp_servers.jarvis_probe.startup_timeout_sec=10",
     ]
-    return CodexConfig(
-        env={"CODEX_HOME": str(profile)},
-        cwd=str(workspace),
-        config_overrides=tuple(overrides),
-        experimental_api=False,
-        client_name="jarvis_m0_workflow_probe",
-        client_title="Jarvis M0 Workflow Probe",
-    )
-
-
-def _command_exec(client: Any, params: dict[str, Any]) -> dict[str, Any]:
-    # The stable Python SDK does not yet wrap command/exec. M0 deliberately
-    # exercises the pinned App Server method behind the same local facade.
-    result = client._client._request_raw("command/exec", params)
-    if not isinstance(result, dict):
-        raise TypeError("command/exec returned a non-object response")
-    return result
-
-
-def _sandbox_checks(
-    client: Any, *, workspace: Path, escape_target: Path
-) -> list[AssertionResult]:
-    checks: list[AssertionResult] = []
-    work = workspace / "sandbox-workspace"
-    work.mkdir(parents=True, exist_ok=True)
-    cases = [
-        ("read_only", work / "read-only.txt", {"type": "readOnly"}, False),
-        (
-            "workspace_inside",
-            work / "inside.txt",
-            {
-                "type": "workspaceWrite",
-                "writableRoots": [str(work)],
-                "networkAccess": False,
-                "excludeTmpdirEnvVar": True,
-                "excludeSlashTmp": True,
-            },
-            True,
-        ),
-        (
-            "workspace_escape",
-            escape_target,
-            {
-                "type": "workspaceWrite",
-                "writableRoots": [str(work)],
-                "networkAccess": False,
-                "excludeTmpdirEnvVar": True,
-                "excludeSlashTmp": True,
-            },
-            False,
-        ),
-    ]
-    for name, target, policy, should_exist in cases:
-        started = time.perf_counter()
-        target.unlink(missing_ok=True)
-        code = (
-            "from pathlib import Path; "
-            f"Path({str(target)!r}).write_text('m0', encoding='utf-8')"
-        )
-        try:
-            response = _command_exec(
-                client,
-                {
-                    "command": [sys.executable, "-c", code],
-                    "cwd": str(work),
-                    "sandboxPolicy": policy,
-                    "timeoutMs": 10_000,
-                },
-            )
-            exists = target.exists()
-            passed = exists is should_exist
-            checks.append(
-                _assertion(
-                    f"sandbox.{name}",
-                    "pass" if passed else "fail",
-                    (
-                        "Filesystem behavior matched the requested sandbox policy."
-                        if passed
-                        else "The runtime wrote outside the requested sandbox policy."
-                    ),
-                    started,
-                    policy=policy,
-                    expected_file_exists=should_exist,
-                    actual_file_exists=exists,
-                    exit_code=response.get("exitCode"),
-                    stderr_present=bool(response.get("stderr")),
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - denial is expected for negative cases
-            exists = target.exists()
-            passed = not should_exist and not exists
-            checks.append(
-                _assertion(
-                    f"sandbox.{name}",
-                    "pass" if passed else "fail",
-                    (
-                        "The runtime denied the prohibited filesystem write."
-                        if passed
-                        else "The App Server sandbox check could not complete as expected."
-                    ),
-                    started,
-                    policy=policy,
-                    expected_file_exists=should_exist,
-                    actual_file_exists=exists,
-                    denied=True,
-                    error_type=type(exc).__name__,
-                    error_summary=str(exc)[-400:],
-                )
-            )
-    return checks
+    return client_config(profile, workspace=workspace, overrides=overrides,
+                         client_name="jarvis_m0_workflow_probe", client_title="Jarvis M0 Workflow Probe")
 
 
 def _wait_for_growth(path: Path, timeout: float = 5.0) -> bool:
@@ -323,7 +190,7 @@ def _native_descendant_stop_check(client: Any, workspace_root: Path) -> Assertio
 
     def run_writer() -> None:
         try:
-            holder["result"] = _command_exec(
+            holder["result"] = command_exec(
                 client,
                 {
                     "command": [
@@ -386,7 +253,7 @@ def _native_descendant_stop_check(client: Any, workspace_root: Path) -> Assertio
             process_id=process_id,
             child_pid_observed=child_pid is not None,
             host_pid_observed=host_pid is not None,
-            terminate_response=_json_value(terminate_response),
+            terminate_response=json_value(terminate_response),
             request_finished=not request_thread.is_alive(),
             post_stop_write_observed=not stopped,
         )
@@ -577,7 +444,7 @@ def _credential_owner_check(profile: Path) -> AssertionResult:
 
 
 def _extract_item_ids(payload: Any) -> list[str]:
-    data = _json_value(payload)
+    data = json_value(payload)
     found: list[str] = []
 
     def walk(value: Any) -> None:
@@ -596,7 +463,7 @@ def _extract_item_ids(payload: Any) -> list[str]:
 
 
 def _extract_items(payload: Any) -> list[dict[str, Any]]:
-    data = _json_value(payload)
+    data = json_value(payload)
     found: list[dict[str, Any]] = []
 
     def walk(value: Any) -> None:
@@ -649,7 +516,7 @@ def _workflow_boundary_checks(
             "mcpServerStatus/list",
             {"threadId": thread.id, "detail": "full", "limit": 100},
         )
-        inventory = _json_value(inventory_raw)
+        inventory = json_value(inventory_raw)
         servers = inventory.get("data") or [] if isinstance(inventory, dict) else []
         enabled_tools: list[str] = []
         server_states: dict[str, Any] = {}
@@ -819,7 +686,7 @@ def _live_session_checks(
 
     checks: list[AssertionResult] = []
     details: dict[str, Any] = {}
-    config = _codex_config(profile=profile, workspace=workspace)
+    config = probe_client_config(profile=profile, workspace=workspace)
     started = time.perf_counter()
     client = Codex(config)
     try:
@@ -827,7 +694,7 @@ def _live_session_checks(
         if account.account is None and api_key:
             client.login_api_key(api_key)
             account = client.account(refresh_token=False)
-        account_data = _json_value(account)
+        account_data = json_value(account)
         account_type = (account_data.get("account") or {}).get("type")
         details["account_type"] = account_type
         authenticated = account_type is not None
@@ -868,10 +735,10 @@ def _live_session_checks(
             event_methods.append(event.method)
             item_ids.extend(_extract_item_ids(event.payload))
             if event.method == "turn/completed":
-                payload = _json_value(event.payload)
+                payload = json_value(event.payload)
                 completed_status = (payload.get("turn") or {}).get("status")
         history = thread.read(include_turns=True)
-        first_history = _json_value(history)
+        first_history = json_value(history)
         first_turn_count = len((first_history.get("thread") or {}).get("turns") or [])
         thread_id = thread.id
         checks.append(
@@ -909,7 +776,7 @@ def _live_session_checks(
             "This is a follow-up in the same thread. Reply with exactly JARVIS_M0_FOLLOWUP.",
             effort=TARGET_EFFORT,
         )
-        history = _json_value(thread.read(include_turns=True))
+        history = json_value(thread.read(include_turns=True))
         turn_count = len((history.get("thread") or {}).get("turns") or [])
         same_thread = thread.id == details["thread_id"]
         checks.append(
@@ -959,7 +826,7 @@ def _live_session_checks(
         completion_status: str | None = None
         for event in interrupt_events:
             if event.method == "turn/completed":
-                payload = _json_value(event.payload)
+                payload = json_value(event.payload)
                 completion_status = (payload.get("turn") or {}).get("status")
         interrupted = completion_status == "interrupted" and not consumer.is_alive()
         checks.append(
@@ -1141,7 +1008,7 @@ def run_codex_probe(
             }
         )
         started = time.perf_counter()
-        pinned = sdk_version == SDK_PIN and runtime_package_version == SDK_PIN
+        pinned = sdk_version == CODEX_RUNTIME_PIN and runtime_package_version == CODEX_RUNTIME_PIN
         assertions.append(
             _assertion(
                 "runtime.version_pin",
@@ -1150,17 +1017,17 @@ def run_codex_probe(
                 started,
                 sdk_version=sdk_version,
                 runtime_package_version=runtime_package_version,
-                expected=SDK_PIN,
+                expected=CODEX_RUNTIME_PIN,
             )
         )
 
-        config = _codex_config(profile=profile, workspace=workspace)
+        config = probe_client_config(profile=profile, workspace=workspace)
         started = time.perf_counter()
         client = Codex(config)
         try:
-            metadata = _json_value(client.metadata)
+            metadata = json_value(client.metadata)
             runtime["app_server"] = metadata
-            account_response = _json_value(client.account(refresh_token=False))
+            account_response = json_value(client.account(refresh_token=False))
             account_value = account_response.get("account") or {}
             auth.update(
                 {
@@ -1217,11 +1084,8 @@ def run_codex_probe(
                 )
             )
             assertions.extend(
-                _sandbox_checks(
-                    client=client,
-                    workspace=workspace,
-                    escape_target=run_root / "outside-workspace.txt",
-                )
+                AssertionResult(**asdict(check))
+                for check in sandbox_checks(client, workspace=workspace, escape_target=run_root / "outside-workspace.txt")
             )
             protocol["observed_methods"].append("command/exec")
             assertions.append(_native_descendant_stop_check(client, workspace))
@@ -1237,7 +1101,7 @@ def run_codex_probe(
         assertions.append(_billing_fixture_check())
         assertions.append(_action_crash_recovery_check(workspace))
 
-        api_key = _probe_api_key() if live else None
+        api_key = probe_api_key() if live else None
         if live:
             live_checks, live_details = _live_session_checks(
                 profile=profile,

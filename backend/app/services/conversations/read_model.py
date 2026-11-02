@@ -5,14 +5,14 @@ from app.presenters.conversations import (
     present_conversation_events,
     present_conversation_summary,
 )
-from app.services.chat_settings import chat_settings_service
-from app.services.conversation_store import ArtifactRecord, BranchRecord, EventRecord, MessageRecord, RunRecord, conversation_store
-from app.services.conversation_timeline import (
+from app.services.conversations.chat_settings import chat_settings_service
+from app.services.conversations.store import ArtifactRecord, BranchRecord, EventRecord, MessageRecord, RunRecord, conversation_store
+from app.services.conversations.timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
     extract_timeline_item_payload,
     normalize_live_item,
 )
-from app.services.conversation_workspace import MAIN_BRANCH_KEY
+from app.services.conversations.workspace import MAIN_BRANCH_KEY
 
 
 class ConversationReadModel:

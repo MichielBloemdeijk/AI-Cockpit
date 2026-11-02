@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.metadata
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 from typing import Any
-from uuid import uuid4
 
 from app.config import settings
 from app.services.agent_execution import (
@@ -21,9 +18,16 @@ from app.services.agent_execution import (
 from app.services.tasks.service import task_service, workflow_attempt_outcome
 from app.services.tasks.workflows import validate_pinned_workflow
 from app.services.tasks.capabilities import workflow_tools
-
-
-CODEX_RUNTIME_PIN = "0.155.1"
+from app.services.codex_native import (
+    CODEX_RUNTIME_PIN,
+    TOOLLESS,
+    client_config,
+    json_value,
+    mcp_tool_inventory,
+    message_text,
+    require_pinned_runtime,
+    walk_items,
+)
 
 
 async def suspend_for_policy_revocation(context: AgentExecutionContext, revision: int) -> None:
@@ -31,57 +35,6 @@ async def suspend_for_policy_revocation(context: AgentExecutionContext, revision
     await task_service.control(context.task_id, action="suspend", requester="worker_policy",
         reason="Worker tool policy revoked a tool this run uses.", parameters={"immediate": True},
         idempotency_key=f"tool-policy-revoked:{context.execution_run_id}:{revision}")
-
-
-def _json_value(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json", by_alias=True)
-    if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    return getattr(value, "value", value)
-
-
-def _walk_items(value: Any) -> list[dict[str, Any]]:
-    converted = _json_value(value)
-    found: list[dict[str, Any]] = []
-
-    def visit(item: Any) -> None:
-        if isinstance(item, dict):
-            if isinstance(item.get("type"), str) and (
-                "id" in item or item.get("type") in {"agentMessage", "reasoning"}
-            ):
-                found.append(item)
-                # A tool receipt can contain prior native items as evidence.
-                # Those are data, not fresh protocol actions from this turn.
-                return
-            for child in item.values():
-                visit(child)
-        elif isinstance(item, list):
-            for child in item:
-                visit(child)
-
-    visit(converted)
-    return found
-
-
-def _message_text(item: dict[str, Any]) -> str | None:
-    if item.get("type") != "agentMessage":
-        return None
-    for key in ("text", "content", "message"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if isinstance(value, list):
-            parts = [
-                str(part.get("text") or "")
-                for part in value
-                if isinstance(part, dict) and part.get("text")
-            ]
-            if parts:
-                return "\n".join(parts).strip()
-    return None
 
 
 def _completion_text(messages: list[str], *, require_document: bool = False) -> str:
@@ -148,12 +101,12 @@ class CodexTaskRuntime:
             enabled_tools += [tool["name"] for tool in project_tool_catalog()]
         if answer_only:
             enabled_tools = [name for name in enabled_tools if name != "result_publish"]
-        if importlib.metadata.version("openai-codex") != CODEX_RUNTIME_PIN:
-            raise RuntimeError(f"Codex runtime must be pinned to {CODEX_RUNTIME_PIN}")
+        require_pinned_runtime()
         if await cancellation_requested():
             return AgentExecutionResult(status="control_requested", summary="Task control requested.")
 
-        from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
+        from openai_codex import ApprovalMode, Codex, Sandbox
+        from openai_codex.generated.v2_all import ReasoningEffort
         from app.services.tasks.context import current_run_delta, portable_context
         from app.services.tasks.semantic_compaction import ensure_semantic_compaction
 
@@ -192,20 +145,12 @@ class CodexTaskRuntime:
             run_id=context.execution_run_id, attempt_id=context.attempt_id,
             claim_token=context.claim_token, workspace=workspace))).values())
         overrides.append(f"sandbox_workspace_write.writable_roots={json.dumps([str(root) for root in roots])}")
-        if os.name == "nt":
-            overrides.append(f'windows.sandbox="{settings.task_windows_sandbox}"')
-        config = CodexConfig(
-            env={"CODEX_HOME": str(profile)},
-            cwd=str(workspace),
-            config_overrides=tuple(overrides),
-            experimental_api=False,
-            client_name="jarvis_task_runtime",
-            client_title="Jarvis Task Runtime",
-        )
+        config = client_config(profile, workspace=workspace, overrides=overrides,
+                               client_name="jarvis_task_runtime", client_title="Jarvis Task Runtime")
         client = Codex(config)
         try:
             account = await asyncio.to_thread(client.account, refresh_token=False)
-            account_type = str((_json_value(account).get("account") or {}).get("type") or "")
+            account_type = str((json_value(account).get("account") or {}).get("type") or "")
             if auth.route == "subscription" and (account.account is None or account_type != "chatgpt"):
                 # No turn has started. Stop the subscription host before opening
                 # the isolated API route; native restoration below checks profile.
@@ -224,7 +169,7 @@ class CodexTaskRuntime:
                 account = await asyncio.to_thread(client.account, refresh_token=False)
             if account.account is None:
                 raise RuntimeError("Selected Jarvis authentication route is unavailable")
-            account_type = str((_json_value(account).get("account") or {}).get("type") or "")
+            account_type = str((json_value(account).get("account") or {}).get("type") or "")
             if (auth.route == "api" and account_type not in {"apiKey", "apikey"}) or (
                 auth.route == "subscription" and account_type != "chatgpt"):
                 raise RuntimeError("Selected Jarvis profile has an incompatible authentication type")
@@ -232,40 +177,11 @@ class CodexTaskRuntime:
             # one-time development report.  Probe a disposable work root and
             # refuse to run if read-only, in-root write, or escape behavior
             # differs on this machine/runtime combination.
-            from app.jarvis_tasks.codex_probe import _sandbox_checks
-
             if local_enabled:
-                escape = workspace.parent / f".jarvis-codex-escape-{uuid4()}"
-                probe_root = workspace / f".jarvis-sandbox-{uuid4()}"
-                probe_root.mkdir()
-                try:
-                    checks = await asyncio.to_thread(
-                        _sandbox_checks,
-                        client,
-                        workspace=probe_root,
-                        escape_target=escape,
-                    )
-                    failed = [
-                        f"{check.id}(exit={check.evidence.get('exit_code')}, "
-                        f"exists={check.evidence.get('actual_file_exists')}, "
-                        f"denied={check.evidence.get('denied', False)}, "
-                        f"error={check.evidence.get('error_type')}:"
-                        f"{check.evidence.get('error_summary')})"
-                        for check in checks if check.status != "pass"
-                    ]
-                    if failed:
-                        raise RuntimeError(
-                            "Codex sandbox preflight failed closed: " + ", ".join(failed)
-                        )
-                finally:
-                    escape.unlink(missing_ok=True)
-                    if probe_root.parent == workspace:
-                        shutil.rmtree(probe_root, ignore_errors=True)
-
-            if local_enabled:
-                from app.services.native_worker import verify_native_workload
+                from app.services.codex_native import require_sandbox_boundary, verify_native_workload
+                await asyncio.to_thread(require_sandbox_boundary, client, workspace)
                 await asyncio.to_thread(verify_native_workload, client, workspace)
-            from app.services.native_worker import approved_skill_config
+            from app.services.codex_native import approved_skill_config
             skill_config = await asyncio.to_thread(approved_skill_config, client, workspace, resolved)
 
             configured_model = str(context.execution_config.get("model") or settings.codex_task_model)
@@ -275,18 +191,8 @@ class CodexTaskRuntime:
             )
 
             async def summarize_older_turns(prompt: str) -> str:
-                compact_overrides = [
-                    "agents.enabled=false", "features.apps=false", "features.plugins=false", "features.remote_plugin=false", 'web_search="disabled"',
-                    "features.shell_tool=false", "features.unified_exec=false",
-                ]
-                if os.name == "nt":
-                    compact_overrides.append(f'windows.sandbox="{settings.task_windows_sandbox}"')
-                compact_client = Codex(CodexConfig(
-                    env={"CODEX_HOME": str(profile)}, cwd=str(workspace),
-                    config_overrides=tuple(compact_overrides),
-                    experimental_api=False,
-                    client_name="jarvis_task_compactor", client_title="Jarvis Task Compactor",
-                ))
+                compact_client = Codex(client_config(profile, workspace=workspace, overrides=TOOLLESS,
+                    client_name="jarvis_task_compactor", client_title="Jarvis Task Compactor"))
                 try:
                     compact_thread = await asyncio.to_thread(
                         compact_client.thread_start,
@@ -300,7 +206,7 @@ class CodexTaskRuntime:
                         ),
                     )
                     result = await asyncio.to_thread(
-                        compact_thread.run, prompt, effort="low", sandbox=Sandbox.read_only,
+                        compact_thread.run, prompt, effort=ReasoningEffort.low, sandbox=Sandbox.read_only,
                     )
                     return str(result.final_response or "")
                 finally:
@@ -322,10 +228,11 @@ class CodexTaskRuntime:
                 and prior.storage_reference == str(profile)
             )
             sandbox_mode = Sandbox.workspace_write if local_enabled else Sandbox.read_only
-            if resumed:
+            resumed_thread_id = prior.native_thread_id if resumed and prior else None
+            if resumed_thread_id:
                 thread = await asyncio.to_thread(
                     client.thread_resume,
-                    prior.native_thread_id,
+                    resumed_thread_id,
                     include_turns=True,
                     cwd=str(workspace),
                     model=configured_model,
@@ -360,11 +267,7 @@ class CodexTaskRuntime:
                            if workflow else "Finish with a concise result grounded in observed work.")
                     ),
                 )
-            inventory_raw = await asyncio.to_thread(client._client._request_raw,
-                "mcpServerStatus/list", {"threadId": thread.id, "detail": "full", "limit": 100})
-            inventory = _json_value(inventory_raw)
-            enabled = sorted(f"{server.get('name')}.{tool}"
-                for server in (inventory.get("data") or []) for tool in (server.get("tools") or {}))
+            enabled = await asyncio.to_thread(mcp_tool_inventory, client, thread.id)
             if enabled != sorted(f"jarvis_task.{name}" for name in enabled_tools):
                 raise RuntimeError(f"Codex lifecycle inventory failed closed: {enabled}")
             await task_service.bind_native_thread(
@@ -433,7 +336,7 @@ class CodexTaskRuntime:
                     "Inspect their current state before relying on prior observations or making edits: "
                     + json.dumps(resource_changes, ensure_ascii=False)
                 )
-            from app.services.native_worker import start_turn
+            from app.services.codex_native import start_turn
             from app.services.tasks.worker_tool_policy import sandbox_policy
             handle = await asyncio.to_thread(start_turn, thread, prompt, effort=effort,
                 policy=sandbox_policy(roots, local=local_enabled, network=resolved["command_network"]))
@@ -477,7 +380,7 @@ class CodexTaskRuntime:
                     workflow_terminal = workflow_attempt_outcome(detail, context.execution_run_id, context.attempt_id) is not None
 
             async def retain_descendants(*, stop_active: bool = False) -> None:
-                from app.services.native_worker import subagent_observations
+                from app.services.codex_native import subagent_observations
                 observations = await subagent_observations(client, thread.id, descendants, stop_active=stop_active)
                 for observation in observations:
                     await record_before_publication(attempt_id=context.attempt_id,
@@ -507,7 +410,7 @@ class CodexTaskRuntime:
                 if isinstance(event, BaseException):
                     raise event
                 event_counter += 1
-                payload = _json_value(event.payload)
+                payload = json_value(event.payload)
                 if event.method == "thread/tokenUsage/updated" and isinstance(payload, dict):
                     from app.services.orchestration_telemetry import token_usage
                     usage = token_usage(payload, thread_id=thread.id, turn_id=handle.id)
@@ -529,11 +432,11 @@ class CodexTaskRuntime:
                             await sink.event("task.auth.unavailable", {"reason": reason,
                                 "profile_revision": profile_revision(), "native_turn_id": handle.id,
                                 "next_boundary_only": True, "automatic_replay": False})
-                items = _walk_items(payload)
+                items = walk_items(payload)
                 for item in items:
                     descendants.update(str(value) for value in item.get("receiverThreadIds", [])
                         if value and value != thread.id)
-                    text = _message_text(item)
+                    text = message_text(item)
                     if text:
                         final_messages.append(text)
                     native_item_id = str(item.get("id") or "") or None
@@ -577,7 +480,7 @@ class CodexTaskRuntime:
                             if item.id == context.execution_run_id), None) if detail else None
                 outcome = workflow_attempt_outcome(detail, context.execution_run_id, context.attempt_id)
                 if outcome is not None:
-                    return AgentExecutionResult(status=outcome, summary=run.terminal_summary)
+                    return AgentExecutionResult(status=outcome, summary=run.terminal_summary if run else None)
                 if completed_status == "completed":
                     raise RuntimeError("Workflow turn ended without a typed result publication")
             if workflow is None:
@@ -585,7 +488,7 @@ class CodexTaskRuntime:
                 detail = await task_service.get_task(context.task_id)
                 outcome = execution_attempt_outcome(detail, context.execution_run_id, context.attempt_id)
                 if outcome is not None:
-                    return AgentExecutionResult(status=outcome, summary=detail.task.terminal_summary)
+                    return AgentExecutionResult(status=outcome, summary=detail.task.terminal_summary if detail else None)
             if interrupted or completed_status == "interrupted":
                 return AgentExecutionResult(status="control_requested", summary="Task control requested.")
             if completed_status != "completed":

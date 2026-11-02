@@ -57,8 +57,6 @@ knowledge/preferences.yaml
 
 # Local verifier and scratch harness files
 backend/.tmp/
-backend/scripts/verify_agent_model.py
-backend/tests/test_agent_model_verifier.py
 .tmp_*.py
 
 

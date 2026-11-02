@@ -493,14 +493,14 @@ def main() -> None:
         })
         if args.orchestration:
             from openai_codex import Codex
-            from app.jarvis_tasks.codex_probe import _codex_config, _probe_api_key
-            api_key = _probe_api_key()
+            from app.jarvis_tasks.codex_probe import probe_api_key, probe_client_config
+            api_key = probe_api_key()
             if not api_key:
                 raise RuntimeError("Authorized API credential required for the opt-in M3 harness")
             profile, login_workspace = evidence / "orchestration-profile", evidence / "login-workspace"
             profile.mkdir()
             login_workspace.mkdir()
-            with Codex(_codex_config(profile=profile, workspace=login_workspace)) as codex:
+            with Codex(probe_client_config(profile=profile, workspace=login_workspace)) as codex:
                 codex.login_api_key(api_key)
             env.update({"TASK_ORCHESTRATION_ENABLED": "true", "TASK_ORCHESTRATION_LIVE_ENABLED": "true",
                         "TASK_ORCHESTRATION_PROFILE": str(profile),

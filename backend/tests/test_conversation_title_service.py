@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.db.session import initialize_engine
-from app.services.conversation_store import conversation_store
-from app.services.conversation_title_service import conversation_title_service
-import app.services.conversation_title_service as conversation_title_service_module
-from app.services.chat_settings import chat_settings_service
+from app.services.conversations.store import conversation_store
+from app.services.conversations.titles import conversation_title_service
+import app.services.conversations.titles as conversation_title_service_module
+from app.services.conversations.chat_settings import chat_settings_service
 
 
 @pytest.mark.asyncio

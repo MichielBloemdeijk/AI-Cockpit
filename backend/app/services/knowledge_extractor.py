@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from app.services.conversation_store import MessageRecord
+from app.services.conversations.store import MessageRecord
 
 
 @dataclass(slots=True)

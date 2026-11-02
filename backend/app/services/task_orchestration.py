@@ -352,7 +352,7 @@ class TaskOrchestrationService:
 
     async def _context(self, session, task, question, event, state, repair_event) -> dict:
         from app.services.orchestration_context import bound_context, instructions, prior_actions
-        from app.services.tasks.execution_preferences import permitted_models
+        from app.services.tasks.execution_preferences import REASONING_EFFORTS, permitted_models
         from app.services.jarvis_situation import jarvis_situation_projector
         current_run = await session.get(TaskExecutionRun, task.current_run_id) if task.current_run_id else None
         turns = list((await session.execute(select(TaskTurn).where(TaskTurn.task_id == task.id)
@@ -370,7 +370,7 @@ class TaskOrchestrationService:
                 "current_run": {key: value for key, value in (current_run.configuration_json or {}).items()
                                 if key in {"model", "reasoning_effort"}} if current_run else {},
                 "preferences_supported": True,
-                "permitted_models": list(permitted_models()), "permitted_efforts": ["low", "medium", "high"],
+                "permitted_models": list(permitted_models()), "permitted_efforts": list(REASONING_EFFORTS),
                 "scope": "New agent runs only; does not change existing run, permissions or authentication",
             },
             "question": question.question[:4000] if question else None,
