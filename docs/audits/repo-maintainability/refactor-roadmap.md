@@ -102,7 +102,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Done, one regression test per finding (see below) | `d615719` |
 | Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Done (see below); the type checker waits for the phase-4 seams | `134a896` |
 | Phase 4.1: task lifecycle module (T01, T02, B04; pyright added; `services/tasks/` package) | Done (see below) | `d074243` |
-| Phase 4.2–4.5: conversation runs (rest of I03), execution contracts (B05, B07), live transitions (B06), provider transport (I06); `services/conversations/` package | Done (see below) | uncommitted |
+| Phase 4.2–4.5: conversation runs (rest of I03), execution contracts (B05, B07), live transitions (B06), provider transport (I06); `services/conversations/` package | Done (see below) | `4c59991` |
 | Re-baseline before phase 4: scans re-run, stale phase 4–6 items updated, decisions 6–8 (see below) | Done | `a793d7a` |
 | Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02) | Not started | — |
 | Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02 scripts) | Not started | — |
