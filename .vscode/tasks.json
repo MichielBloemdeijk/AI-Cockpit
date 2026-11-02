@@ -36,41 +36,6 @@
       }
     },
 
-    // ─── Task Worker ────────────────────────────────────────────────────────
-    {
-      "label": "Start Task Worker",
-      "type": "shell",
-      "command": "uv run python -m app.worker",
-      "options": {
-        "cwd": "${workspaceFolder}/backend"
-      },
-      "isBackground": true,
-      "problemMatcher": {
-        "pattern": {
-          "regexp": "^ERROR.*$",
-          "file": 1,
-          "line": 2,
-          "message": 3
-        },
-        "background": {
-          "activeOnStart": true,
-          "beginsPattern": "Task worker active",
-          "endsPattern": "Task worker active"
-        }
-      },
-      "presentation": {
-        "label": "Task Worker",
-        "group": "cockpit",
-        "reveal": "always",
-        "panel": "dedicated",
-        "showReuseMessage": false,
-        "clear": true
-      },
-      "runOptions": {
-        "instanceLimit": 1
-      }
-    },
-
     // ─── Frontend ────────────────────────────────────────────────────────────
     {
       "label": "Start Frontend",
@@ -109,7 +74,7 @@
     // ─── Start All ───────────────────────────────────────────────────────────
     {
       "label": "Start All",
-      "dependsOn": ["Start Backend", "Start Task Worker", "Start Frontend"],
+      "dependsOn": ["Start Backend", "Start Frontend"],
       "dependsOrder": "sequence",
       "group": {
         "kind": "build",
@@ -160,21 +125,6 @@
     },
 
     // ─── Utilities ───────────────────────────────────────────────────────────
-    {
-      "label": "Generate Password Hash",
-      "type": "shell",
-      "command": "uv run python -c \"from passlib.hash import bcrypt; import getpass; pw=getpass.getpass('Password: '); print('\\nAUTH_PASSWORD_HASH=' + bcrypt.hash(pw))\"",
-      "options": {
-        "cwd": "${workspaceFolder}/backend"
-      },
-      "presentation": {
-        "label": "Password Hash",
-        "panel": "dedicated",
-        "reveal": "always",
-        "clear": true
-      },
-      "problemMatcher": []
-    },
     {
       "label": "Open API Docs",
       "type": "shell",

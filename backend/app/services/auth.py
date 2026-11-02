@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-from fastapi import Cookie, HTTPException, Request, status
+from fastapi import HTTPException, Request, status
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 import secrets
 

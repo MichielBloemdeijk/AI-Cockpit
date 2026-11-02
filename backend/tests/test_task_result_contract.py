@@ -146,7 +146,7 @@ async def test_queued_new_result_does_not_rebind_the_old_result():
 
 @pytest.mark.asyncio
 async def test_workflow_answer_cannot_publish_and_does_not_mutate_existing_record(monkeypatch):
-    from test_m4_workflows import admit, content, researched
+    from test_reference_workflows import admit, content, researched
     args, worker = await admit(monkeypatch, "research_screen@1")
     _, source = await researched(args)
     await _call("result_publish", content(args, source) | {"operation_key": "first"}, args)
@@ -287,7 +287,7 @@ async def test_publication_delivery_failure_rolls_back_task_writes_and_silent_st
 async def test_workflow_outcome_and_replay_survive_promotion_to_a_general_result(monkeypatch):
     from app.services.task_service import workflow_attempt_outcome
     from app.services.task_result_contract import admission_result_url
-    from test_m4_workflows import admit, researched, content
+    from test_reference_workflows import admit, researched, content
     args, worker = await admit(monkeypatch, "research_screen@1")
     detail = await task_service.get_task(args.task_id)
     initial_identity = detail.turns[0].request_identity

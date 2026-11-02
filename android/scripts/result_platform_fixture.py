@@ -29,7 +29,7 @@ worker = None
 
 @external_app.get("/source", response_class=HTMLResponse)
 async def source():
-    return "<html><head><title>M5 external source</title></head><body><h1>M5-EXTERNAL-BROWSER-ONLY</h1></body></html>"
+    return "<html><head><title>Result fixture external source</title></head><body><h1>RESULT-EXTERNAL-BROWSER-ONLY</h1></body></html>"
 
 
 @app.post("/_fixture/publish/{task_id}", dependencies=[Depends(require_auth)])
@@ -41,9 +41,9 @@ async def publish(task_id: str):
     if claimed.task is None or claimed.task.task_id != task_id:
         raise HTTPException(409, "Fixture did not claim requested task")
     task = claimed.task
-    await task_service.complete(task_id, summary="M5 native document", final_text=(
-        "M5-NATIVE-DOCUMENT-READY\n\n"
-        f"[External fixture source]({os.environ['M5_EXTERNAL_URL']})"), idempotency_key="m5-emulator-publish",
+    await task_service.complete(task_id, summary="Result fixture native document", final_text=(
+        "RESULT-NATIVE-DOCUMENT-READY\n\n"
+        f"[External fixture source]({os.environ['RESULT_FIXTURE_EXTERNAL_URL']})"), idempotency_key="m5-emulator-publish",
         attempt_id=task.attempt_id, execution_run_id=task.execution_run_id, claim_token=task.claim_token)
     await worker_coordinator.release_claim(worker.worker_id, task.attempt_id,
         claim_token=task.claim_token, writers_stopped=True)

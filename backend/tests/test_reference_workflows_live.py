@@ -14,18 +14,18 @@ import pytest
 pytestmark = pytest.mark.provider
 
 from app.config import settings
-from test_m4_workflows import result_snapshot
+from test_reference_workflows import result_snapshot
 from app.services.codex_task_runtime import codex_task_runtime
 from app.services.task_service import task_service
 from app.services.task_worker import TaskWorker
-from test_m4_workflows import admit
+from test_reference_workflows import admit
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(os.environ.get("JARVIS_M4_LIVE") != "1", reason="Paid native/research test is opt-in")
+@pytest.mark.skipif(os.environ.get("JARVIS_WORKFLOWS_LIVE") != "1", reason="Paid native/research test is opt-in")
 @pytest.mark.parametrize("definition", ["recipe_from_screen@1", "research_screen@1"])
 @pytest.mark.parametrize("sample", range(int(os.environ.get("JARVIS_M4_SAMPLES", "1"))))
-async def test_m4_actual_native_research_publication(monkeypatch, tmp_path, definition, sample):
+async def test_actual_native_research_publication(monkeypatch, tmp_path, definition, sample):
     if not settings.openai_api_key:
         pytest.skip("No authorized API credential")
     live_root = settings.backend_root / "data" / f"m4-live-{uuid4()}"

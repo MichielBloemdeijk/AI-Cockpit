@@ -14,20 +14,22 @@ from app.jarvis_tasks.acceptance import SCHEMA, candidate_identity, resolve_test
 from app.services.task_pool_supervisor import TaskPoolSupervisor
 from app.services.task_service import task_service
 
+pytestmark = pytest.mark.provider
+
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(os.environ.get("JARVIS_LIVE_M6") != "1", reason="authorized live M6 provider check is opt-in")
+@pytest.mark.skipif(os.environ.get("JARVIS_LIVE_CODING") != "1", reason="authorized live coding provider check is opt-in")
 async def test_supervised_project_failure_repair_and_host_restart(tmp_path, monkeypatch):
     candidate = candidate_identity()
     configuration = None
-    report_path = Path(os.environ["JARVIS_M6_REPORT"])
+    report_path = Path(os.environ["JARVIS_CODING_REPORT"])
     evidence = {"supervised": True, "journaled": True, "command_boundary_passed": False}
     passed = False
     stop, running = None, None
     task_id = None
     try:
         if os.name != "nt" or not settings.openai_api_key:
-            pytest.fail("M6 requires the prepared Windows host and authorized API profile")
+            pytest.fail("The coding gate requires the prepared Windows host and authorized API profile")
         project = tmp_path / "project"
         project.mkdir()
         (project / "addition.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
@@ -111,6 +113,6 @@ async def test_supervised_project_failure_repair_and_host_restart(tmp_path, monk
             evidence["terminal_status"] = detail.task.status
             evidence["terminal_summary"] = detail.task.terminal_summary
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps({"schema": SCHEMA, "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "M10"),
+        report_path.write_text(json.dumps({"schema": SCHEMA, "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "release"),
             "candidate": candidate, "test_configuration": configuration, "finished_at": datetime.now(timezone.utc).isoformat(),
             "checks": [{"id": "coding_provider", "status": "passed" if passed else "failed", "evidence": evidence}]}, indent=2), encoding="utf-8")

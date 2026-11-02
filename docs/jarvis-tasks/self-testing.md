@@ -2,10 +2,13 @@
 
 Jarvis is tested by agents first; manual phone checks are a short final step.
 Everything lives in `backend/app/selftest/`. Production code never imports it.
+This guide covers the Jarvis voice layers; [VERIFICATION.md](../VERIFICATION.md)
+lists every check in the repository and when to run it.
 
 ```powershell
 cd backend
 $env:PYTHONUTF8 = "1"
+uv run python -m app.selftest doctor                                    # free diagnosis
 uv run python -m app.selftest offline                                   # L0
 uv run python -m app.selftest run --suite core --name <run> --live      # L2 browser
 uv run python -m app.selftest run --suite core --name <run> --live --android   # L4 emulator
@@ -15,11 +18,31 @@ uv run python -m app.selftest run --suite core --name <run> --live --android   #
 
 | Layer | What runs | Cost |
 |---|---|---|
-| L0 | Network-blocked backend, frontend and Android unit checks, the browser media self-check and the driver syntax check | free |
+| L0 | A network-blocked Jarvis smoke slice: 14 backend test modules, two frontend modules, the browser media self-check, the driver syntax check, and the Android build and unit tests. Not the full suite. A run with `--skip` prints `"complete": false` | free |
 | L1 | Replay of saved real conversations through the bookkeeper (`app.selftest.replay`) | Responses calls only |
 | L2 | Scripted voice scenarios through the real browser/WebRTC client | paid voice |
 | L3 | Adaptive simulated user (a second GPT-Live session) talking to Jarvis | paid voice |
 | L4 | The same through the Android emulator client | paid voice |
+
+## Diagnose before paying
+
+`python -m app.selftest doctor` is free and read-only. It inspects the configured
+database (or `--database <file>`, or a recorded run with `--run <folder>`) and
+prints findings: symptom, component, evidence and a proposed fix. It exits 1 when
+a finding is high severity. For a run folder it also writes `diagnosis.json`
+there. It changes no application state. Run it before rerunning a paid scenario.
+
+Evidence lives under `backend/data/selftest/<run>/` (one folder per case:
+`events.jsonl`, the case database, `caller.wav`/`assistant.wav`, logs and the
+request ledger).
+
+## Replay inputs
+
+L1 replays real recorded conversations listed in
+`backend/app/selftest/replay_labels.yaml` with their agreed truth. The
+recordings are private and kept outside Git under `backend/data/` (paths in the
+labels file). A case whose recording is absent reports `missing_recording`; on
+a fresh clone every case does, and that is not a regression.
 
 ## How a voice run works
 

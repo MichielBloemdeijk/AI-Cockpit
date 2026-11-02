@@ -10,6 +10,8 @@ Updates are spaced past Android's 30-second silent-update throttle.
 """
 from __future__ import annotations
 
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
+
 import argparse
 import asyncio
 import importlib.util

@@ -50,12 +50,10 @@ dev = [
     "pytest-cov>=5.0.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.6.0",
+    "ruff>=0.17.3",
 ]
 notifications = [
     "pywebpush>=2.0.0",
-]
-benchmark = [
-    "jsonschema>=4.23.0",
 ]
 codex-probe = [
     "openai-codex==0.155.1",
@@ -73,7 +71,19 @@ norecursedirs = ["data", ".cockpit", ".venv", "node_modules"]
 # tests take well under a minute.
 timeout = 300
 markers = [
-    "browser: external production browser/build acceptance, required by M10",
+    "browser: external production browser/build acceptance, required by the release gate",
     "diagnostic: optional performance experiment, outside required contract acceptance",
     "provider: billed provider integration; dedicated gates select their own provider seams",
 ]
+
+[tool.ruff]
+# Correctness only for now (undefined names, unused imports/variables, syntax
+# errors); widen the rule set deliberately rather than by default upgrades.
+src = ["app"]
+target-version = "py312"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+# The codebase deliberately uses compact one-line statements.
+ignore = ["E701", "E702"]

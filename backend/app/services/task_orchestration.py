@@ -333,7 +333,7 @@ class TaskOrchestrationService:
             source_sequence=source_sequence, observed_json=state, status="pending", due_at=now(),
             claim_generation=0, context_json=context, context_digest=digest(context),
             model=settings.task_orchestration_model, effort=settings.task_orchestration_effort,
-            auth_profile=settings.task_orchestration_profile,
+            auth_profile=str(settings.task_orchestration_profile_path),
         ))
 
     async def _queue_repair_result(self, session, event: TaskEvent, source_sequence: int) -> None:

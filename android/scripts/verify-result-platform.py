@@ -12,6 +12,8 @@ Run from backend with: uv run python ../android/scripts/verify-result-platform.p
 """
 from __future__ import annotations
 
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
+
 import argparse
 import importlib.util
 import json
@@ -172,7 +174,7 @@ def main():
         env = {**os.environ, "DATABASE_URL": f"sqlite+aiosqlite:///{db_path.as_posix()}",
             "AUTH_PASSWORD": PASSWORD, "JARVIS_ACCESS_MODE": "password", "JARVIS_PUBLIC_URL": f"http://10.0.2.2:{web_port}",
             "SESSION_SECRET_KEY": uuid4().hex, "SESSION_COOKIE_SECURE": "false",
-            "M5_EXTERNAL_URL": external_url, "TASK_POOL_ENABLED": "false", "TASK_EXECUTOR": "codex",
+            "RESULT_FIXTURE_EXTERNAL_URL": external_url, "TASK_POOL_ENABLED": "false",
             "TASK_ORCHESTRATION_ENABLED": "false", "TASK_ORCHESTRATION_LIVE_ENABLED": "false",
             "TASK_RESEARCH_ENABLED": "false", "TASK_WORKFLOW_ALLOWLIST": "", "LOCAL_LLM_ENABLED": "false",
             "OPENAI_API_KEY": "", "CODEX_API_KEY": "", "OPENROUTER_API_KEY": "", "WEB_PUSH_ENABLED": "false",
@@ -182,9 +184,9 @@ def main():
             "CODEX_PROFILES_DIR": str(evidence / "profiles"),
             "TASK_ORCHESTRATION_CONTEXT_DIR": str(evidence / "orchestration")}
         app_dir = str(Path(__file__).parent)
-        server = screen.start_service(["-m", "uvicorn", "m5_result_fixture:app", "--app-dir", app_dir,
+        server = screen.start_service(["-m", "uvicorn", "result_platform_fixture:app", "--app-dir", app_dir,
             "--host", "127.0.0.1", "--port", str(port)], env, evidence / "server.log")
-        external = screen.start_service(["-m", "uvicorn", "m5_result_fixture:external_app", "--app-dir", app_dir,
+        external = screen.start_service(["-m", "uvicorn", "result_platform_fixture:external_app", "--app-dir", app_dir,
             "--host", "127.0.0.1", "--port", str(external_port)], env, evidence / "external.log")
         # The phone talks to the frontend, which hosts /apps/<slug> and forwards /api, as Tailscale serves it.
         frontend = screen.start_frontend(web_port, f"http://127.0.0.1:{port}", evidence, production=True)
@@ -195,7 +197,7 @@ def main():
                 seconds=240)
             client.post("/api/auth/login", json={"password": PASSWORD}).raise_for_status()
             started = time.monotonic()
-            created = client.post("/api/tasks", json={"goal": "M5 Android result fixture", "idempotency_key": uuid4().hex,
+            created = client.post("/api/tasks", json={"goal": "Android result fixture", "idempotency_key": uuid4().hex,
                 "result": {"mode": "new"}})
             created.raise_for_status()
             task_id = created.json()["id"]
@@ -241,27 +243,27 @@ def main():
             action = screen.wait_for("expanded notification Open result action", lambda: notification_action(serial, evidence), seconds=30)
             screen.tap_node(serial, action)
             screen.wait_for("notification result content", lambda: visible(serial, evidence,
-                "M5-NATIVE-DOCUMENT-READY", "ready"), seconds=30)
+                "RESULT-NATIVE-DOCUMENT-READY", "ready"), seconds=30)
             report["publication_to_visible_ms"] = round((time.monotonic() - started) * 1000)
             record = client.get(f"/api/app-platform/data/documents/document/{run_id}").json()
             assert record["revision"] == 1
             # Process death: the record shows again and nothing reruns.
             screen.adb(serial, "shell", "am", "force-stop", screen.PACKAGE)
             open_result(serial, path)
-            screen.wait_for("reopened record", lambda: visible(serial, evidence, "M5-NATIVE-DOCUMENT-READY", "reopened"), seconds=60)
+            screen.wait_for("reopened record", lambda: visible(serial, evidence, "RESULT-NATIVE-DOCUMENT-READY", "reopened"), seconds=60)
             assert client.get(f"/api/app-platform/data/documents/document/{run_id}").json() == record
             tap_text(serial, evidence, "External fixture source")
             activity = screen.wait_for("external browser activity", lambda: external_activity(serial, external_url, browser_package), seconds=30)
             # Chrome first resumes a no-display intent dispatcher. Reopening
             # Jarvis during that handoff lets the pending Chrome launch win.
             screen.wait_for("external browser page", lambda: browser_page_visible(serial, evidence,
-                "M5-EXTERNAL-BROWSER-ONLY"), seconds=45)
+                "RESULT-EXTERNAL-BROWSER-ONLY"), seconds=45)
             (evidence / "android-external-activity.txt").write_text(activity, encoding="utf-8")
             # Return to the unchanged result rather than using browser Back as
             # a surrogate proof; force-stop/reopen already verified persistence.
             open_result(serial, path)
             screen.wait_for("record after external navigation", lambda: visible(serial, evidence,
-                "M5-NATIVE-DOCUMENT-READY", "external-return"), seconds=60)
+                "RESULT-NATIVE-DOCUMENT-READY", "external-return"), seconds=60)
             with sqlite3.connect(db_path) as db:
                 assert db.execute("SELECT count(*) FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()[0] == 1
                 deep_link = db.execute("SELECT deep_link FROM notification_outbox WHERE task_id=?", (task_id,)).fetchone()[0]

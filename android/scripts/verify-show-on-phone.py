@@ -12,6 +12,8 @@ paid calls.
 """
 from __future__ import annotations
 
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
+
 import argparse
 import asyncio
 import importlib.util

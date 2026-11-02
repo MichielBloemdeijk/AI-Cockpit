@@ -6,6 +6,8 @@ provider, physical phone or main application database is involved.
 """
 from __future__ import annotations
 
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
+
 import argparse
 import asyncio
 from datetime import datetime, timezone

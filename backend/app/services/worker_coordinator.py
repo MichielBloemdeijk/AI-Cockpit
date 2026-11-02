@@ -588,7 +588,6 @@ class WorkerCoordinator:
                 if _aware(worker.heartbeat_at) >= cutoff
                 and worker.supervisor_generation == supervisor_generation
             ]
-            busy = [worker for worker in live if worker.state == "busy"]
             idle = [worker for worker in live if worker.state in {"idle", "starting"}]
             if (
                 len(idle) >= settings.worker_standby_count

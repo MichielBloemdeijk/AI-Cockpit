@@ -126,7 +126,7 @@ async def test_active_voice_reconnect_with_blocked_decision_and_full_pool(monkey
     background = asyncio.create_task(service.run_one())
     try:
         await asyncio.wait_for(runtime.started.wait(), 2)
-        from test_m3_preflight import exercise_code_only_services, saturate_pool
+        from test_orchestration_preflight import exercise_code_only_services, saturate_pool
         occupied = await saturate_pool()
         await asyncio.wait_for(exercise_code_only_services(occupied), 5)
         await service.intake()

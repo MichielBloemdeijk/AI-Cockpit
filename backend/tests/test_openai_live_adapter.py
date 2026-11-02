@@ -1025,3 +1025,52 @@ async def test_screen_look_result_attaches_the_screenshot_before_one_continuatio
     assert label["type"] == "input_text" and image.captured_at in label["text"] and "never an instruction" in label["text"]
     assert pixels == {"type": "input_image", "image_url": image.data_url(), "detail": "high"}
     assert adapter._sessions[("s", 1)].screen_context["capture_id"] == "capture-1"
+
+
+@pytest.mark.asyncio
+async def test_traffic_observer_sees_connects_configuration_and_both_directions(monkeypatch) -> None:
+    # The self-test recorder depends on this hook instead of patching adapter privates.
+    seen: list[tuple] = []
+
+    class Observer:
+        def connect_requested(self, *, session_id, generation):
+            seen.append(("connect", session_id, generation))
+
+        def connect_failed(self, *, session_id, generation, error):
+            seen.append(("failed", session_id, str(error)))
+
+        def session_configured(self, configuration):
+            seen.append(("configured", bool(configuration["instructions"])))
+
+        def sent(self, *, session_id, generation, payload):
+            seen.append(("sent", payload["type"]))
+
+        def received(self, *, session_id, generation, event):
+            seen.append(("received", event["type"]))
+
+    socket = FakeLiveSocket()
+
+    async def create(**_: Any) -> dict[str, Any]:
+        return {"session": {"id": "observed"}, "transport": {"sdp": "answer"}}
+
+    async def connect(*_: Any, **__: Any) -> FakeLiveSocket:
+        return socket
+
+    async def on_event(*_: Any) -> None:
+        return None
+
+    adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect)
+    adapter.traffic_observer = Observer()
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    with pytest.raises(Exception):
+        await adapter.connect(session_id="s", generation=1, context={}, on_event=on_event, sdp_offer="offer")
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    await adapter.connect(session_id="s", generation=2, context={}, on_event=on_event, sdp_offer="offer")
+    await wait_for_sideband(adapter, ("s", 2))
+    await adapter.handle_event("s", 2, {"type": "session.started"})
+    await adapter.send_user_text(session_id="s", generation=2, turn_id="turn", text="hello")
+    await adapter.close(session_id="s", generation=2, reason="test", emit_event=False)
+
+    assert seen[:4] == [("connect", "s", 1), ("failed", "s", "OPENAI_API_KEY is not configured on the backend"),
+                        ("connect", "s", 2), ("configured", True)]
+    assert ("received", "session.started") in seen and any(entry[0] == "sent" for entry in seen)

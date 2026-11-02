@@ -1,4 +1,5 @@
 """Recorded autonomous announcement scenarios on the owned API37 emulator."""
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
 from hashlib import sha256
 import importlib.util
 import json

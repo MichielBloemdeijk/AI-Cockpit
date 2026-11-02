@@ -2,7 +2,7 @@
 
 Jarvis targets Android 17/API 37. The native companion owns system-assistant invocation, local wake detection, GPT-Live audio, task/reminder notifications, and the phone WebView. AI Cockpit remains the durable source of truth.
 
-Personal phone use is **accepted as of 2026-10-11**, including working tasks and screenshot-based recipe creation. See the [completion ledger](../docs/jarvis-tasks/00-implementation-roadmap.md). The tests below are maintenance tools; accepted M8 and OEM/battery limits retain their recorded scope.
+Personal phone use is **accepted as of 2026-10-11**, including working tasks and screenshot-based recipe creation. See the [completion ledger](../docs/jarvis-tasks/00-implementation-roadmap.md). The tests below are maintenance tools; the accepted Android-gate and OEM/battery limits retain their recorded scope. [docs/VERIFICATION.md](../docs/VERIFICATION.md#android-emulator-harnesses) lists every harness and its cost. Each harness starts its own backend that never reads the personal `.env` ([harness_support.py](scripts/harness_support.py)); paid harnesses read only the `OPENAI_API_KEY` they use.
 
 ## Agent-run capture feasibility
 
@@ -96,7 +96,7 @@ tracked in the task roadmap. To rerun the older API-36 fixture, set
 `JARVIS_TEST_AVD=JarvisM2Full` and
 `JARVIS_TEST_IMAGE=system-images;android-36;default;x86_64`.
 
-Add `--orchestration` to the harness command to test M3 with the already-
+Add `--orchestration` to the harness command to test background orchestration with the already-
 authorized API credential. It starts a separate restricted decision profile on
 the disposable backend, verifies a context answer and a presentation-policy
 change that retains an unanswered question, opens both task histories in the
@@ -105,7 +105,7 @@ The harness also verifies token telemetry and preserves redacted evidence.
 This is an opt-in billed test, not production enablement or physical/audio
 acceptance. No interactive user input is required.
 
-M4 adds two selectable examples to the same fixture, without changing the
+Two selectable reference workflows use the same fixture, without changing the
 production capture protocol:
 
 ```powershell
@@ -120,7 +120,7 @@ notification/WebView/reconnect acceptance on 2026-10-01. Reports separate captur
 admission, upload, queue and execution timing. Fake Live admission is not physical
 audio/provider/custom-wake sign-off; production flags and data remain untouched.
 
-## Agent-run M5 production result acceptance
+## Result delivery acceptance
 
 ```powershell
 cd backend
@@ -148,7 +148,7 @@ it starts. `--keep-emulator` is available for iterative debugging; an already
 running test AVD is reused without being stopped. This is result-delivery
 acceptance, not new capture, provider, physical speech or OEM sign-off.
 
-## M8 prerecorded audio acceptance
+## Prerecorded audio acceptance (Android gate)
 
 The debug APK has an `AudioAcceptanceReceiver` input seam before production
 wake inference and WebRTC input buffers. It requires a debuggable app, private

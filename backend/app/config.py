@@ -30,6 +30,15 @@ class Settings(BaseSettings):
             raise ValueError("AUTH_PASSWORD_HASH is obsolete. Configure the optional AUTH_PASSWORD in the private .env file instead.")
         return values
 
+    @model_validator(mode="after")
+    def check_startup_preconditions(self):
+        """Configuration preconditions every launch path shares (API, worker, personal host).
+        Host-specific checks (session secret strength, Tailscale, listener ownership,
+        the task pool) stay in personal_host."""
+        if self.jarvis_access_mode == "password" and not self.auth_password.get_secret_value():
+            raise ValueError("Password mode requires AUTH_PASSWORD in the private .env file.")
+        return self
+
     # OpenRouter
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -121,7 +130,6 @@ class Settings(BaseSettings):
     allowed_dirs: str = ""
 
     # Notifications
-    ntfy_topic: str = ""
     web_push_enabled: bool = False
     vapid_public_key: str = ""
     vapid_private_key: str = ""
@@ -136,9 +144,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # Persistence
-    # Phase 1 intentionally starts from a clean Jarvis-era database. The
-    # pre-Jarvis database remains untouched as the reversible POC fallback.
+    # Persistence. Relative paths below are relative to backend/ (see backend_path).
     database_url: str = "sqlite+aiosqlite:///./data/ai_cockpit_jarvis.db"
     alembic_ini_path: str = "alembic.ini"
     conversation_workspaces_dir: str = "../.cockpit/conversations"
@@ -201,12 +207,62 @@ class Settings(BaseSettings):
     def backend_root(self) -> Path:
         return Path(__file__).resolve().parent.parent
 
+    def backend_path(self, configured: str) -> Path:
+        """Every relative path setting is relative to backend/, never the process cwd."""
+        path = Path(configured)
+        return (path if path.is_absolute() else self.backend_root / path).resolve()
+
     @property
     def alembic_config_path(self) -> Path:
-        configured_path = Path(self.alembic_ini_path)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
+        return self.backend_path(self.alembic_ini_path)
+
+    @property
+    def knowledge_notes_path(self) -> Path:
+        return self.backend_path(self.knowledge_notes_dir)
+
+    @property
+    def knowledge_preferences_path(self) -> Path:
+        return self.backend_path(self.knowledge_preferences_file)
+
+    @property
+    def conversation_workspaces_path(self) -> Path:
+        return self.backend_path(self.conversation_workspaces_dir)
+
+    @property
+    def task_workspaces_path(self) -> Path:
+        return self.backend_path(self.task_workspaces_dir)
+
+    @property
+    def task_context_blobs_path(self) -> Path:
+        return self.backend_path(self.task_context_blobs_dir)
+
+    @property
+    def android_releases_path(self) -> Path:
+        return self.backend_path(self.android_releases_dir)
+
+    @property
+    def codex_profiles_path(self) -> Path:
+        return self.backend_path(self.codex_profiles_dir)
+
+    @property
+    def codex_subscription_profile_path(self) -> Path:
+        return self.backend_path(self.codex_subscription_profile)
+
+    @property
+    def task_orchestration_profile_path(self) -> Path:
+        return self.backend_path(self.task_orchestration_profile)
+
+    @property
+    def task_orchestration_context_path(self) -> Path:
+        return self.backend_path(self.task_orchestration_context_dir)
+
+    @property
+    def app_check_playwright_path(self) -> Path:
+        return self.backend_path(self.app_check_playwright_dir)
+
+    @property
+    def openai_live_diagnostics_path(self) -> Path | None:
+        return self.backend_path(self.openai_live_diagnostics_dir) if self.openai_live_diagnostics_dir else None
 
     @property
     def database_path(self) -> Path | None:
@@ -233,51 +289,13 @@ class Settings(BaseSettings):
         return self.resolve_database_url(self.database_url)
 
     @property
-    def knowledge_notes_path(self) -> Path:
-        configured_path = Path(self.knowledge_notes_dir)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
-
-    @property
-    def conversation_workspaces_path(self) -> Path:
-        configured_path = Path(self.conversation_workspaces_dir)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
-
-    @property
-    def knowledge_preferences_path(self) -> Path:
-        configured_path = Path(self.knowledge_preferences_file)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
-
-    @property
-    def task_workspaces_path(self) -> Path:
-        configured_path = Path(self.task_workspaces_dir)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
-
-    @property
-    def android_releases_path(self) -> Path:
-        configured_path = Path(self.android_releases_dir)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
-
-    @property
     def app_data_root(self) -> Path:
         """Where app platform data goes unless configured: the core database's folder."""
         database = self.database_path
         return database.parent if database is not None else self.backend_root / "data"
 
     def _app_path(self, configured: str, default: str) -> Path:
-        if not configured:
-            return self.app_data_root / default
-        configured_path = Path(configured)
-        return configured_path if configured_path.is_absolute() else self.backend_root / configured_path
+        return self.backend_path(configured) if configured else self.app_data_root / default
 
     @property
     def apps_path(self) -> Path:
@@ -292,22 +310,10 @@ class Settings(BaseSettings):
         return self._app_path(self.app_files_dir, "app-files")
 
     @property
-    def app_check_playwright_path(self) -> Path:
-        configured_path = Path(self.app_check_playwright_dir)
-        return (configured_path if configured_path.is_absolute() else self.backend_root / configured_path).resolve()
-
-    @property
     def resolved_apps_database_url(self) -> str:
         if not self.apps_database_url:
             return f"sqlite+aiosqlite:///{(self.app_data_root / 'apps.db').resolve().as_posix()}"
         return self.resolve_database_url(self.apps_database_url)
-
-    @property
-    def codex_profiles_path(self) -> Path:
-        configured_path = Path(self.codex_profiles_dir)
-        if configured_path.is_absolute():
-            return configured_path
-        return self.backend_root / configured_path
 
     @property
     def allowed_dir_list(self) -> List[Path]:

@@ -38,9 +38,6 @@ out/
 .npm/
 frontend/playwright-report/
 frontend/test-results/
-frontend/.next-live-smoke/
-frontend/.next-selftest/
-frontend/.next-selftest-tsconfig.json
 
 # Logs and local reports
 *.log

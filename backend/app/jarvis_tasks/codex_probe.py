@@ -16,12 +16,13 @@ import time
 from typing import Any, Literal
 import uuid
 
+from app.config import settings
+
 
 PROBE_SCHEMA = "jarvis-codex-probe.v2"
 SDK_PIN = "0.155.1"
 TARGET_MODEL = "gpt-5.6-luna"
 TARGET_EFFORT = "low"
-from app.config import settings
 
 
 @dataclass(slots=True)

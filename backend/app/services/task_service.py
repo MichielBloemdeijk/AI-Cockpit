@@ -421,7 +421,6 @@ class TaskService:
 
     @timed("capture_binding_and_result_allocation")
     async def _bind_required_capture(self, session, task, run, attempt, collection, normalized_goal):
-        repo = TaskRepository(session)
         roles = [role for role, _ in collection.captures]
         if not roles or len(roles) != len(set(roles)) or set(roles) - {"invocation", "latest"}:
             raise ValueError("Capture collection roles are invalid")

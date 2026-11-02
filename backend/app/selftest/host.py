@@ -5,7 +5,7 @@ record provider traffic and configuration; they never change behavior. A
 deterministic fixture worker completes tasks at scenario-controlled moments,
 and a fixture screen stands in for the phone's screenshot capture and upload.
 """
-from contextlib import asynccontextmanager, ExitStack
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import asyncio
 import json
@@ -25,7 +25,7 @@ from app.db.tables import (Task, TaskEvent, TaskAttempt, TaskPresentation, LiveS
 from app.main import app as production_app, lifespan as production_lifespan
 from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services import screen_look
-from app.services.openai_live_adapter import OpenAILiveAdapter, openai_live_adapter
+from app.services.openai_live_adapter import openai_live_adapter
 from app.services.task_presentations import task_presentation_service
 from app.services.task_service import task_service
 from app.services.worker_coordinator import worker_coordinator
@@ -67,7 +67,7 @@ class FixtureScreen:
         from app.db.tables import TaskContextBlob
         jpeg = fixture_screen_jpeg(self.screen, self.subject)
         digest = sha256(jpeg).hexdigest()
-        folder = (settings.backend_root / settings.task_context_blobs_dir).resolve()
+        folder = settings.task_context_blobs_path
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{digest}.jpg"
         path.write_bytes(jpeg)
@@ -163,6 +163,35 @@ class Recorder:
         return result
 
 
+class _RecordingObserver:
+    """Writes Live provider traffic and response-gate decisions into the self-test record."""
+
+    def __init__(self, recorder: Recorder, root: Path) -> None:
+        self.recorder, self.root = recorder, root
+
+    def connect_requested(self, *, session_id, generation):
+        self.recorder.record("requests", {"type": "provider.connect.request"}, session_id=session_id, generation=generation)
+
+    def connect_failed(self, *, session_id, generation, error):
+        self.recorder.record("requests", {"type": "provider.connect.failed", "error": str(error)},
+            session_id=session_id, generation=generation)
+
+    def session_configured(self, configuration):
+        (self.root / "voice-prompt.txt").write_text(configuration["instructions"], encoding="utf-8")
+        (self.root / "session-configuration.json").write_text(json.dumps(configuration, indent=2), encoding="utf-8")
+
+    def sent(self, *, session_id, generation, payload):
+        self.recorder.record("outgoing", payload, session_id=session_id, generation=generation)
+
+    def received(self, *, session_id, generation, event):
+        if event.get("type") != "session.output_audio.delta":
+            self.recorder.record("incoming", event, session_id=session_id, generation=generation)
+
+    def response_gate(self, event_type, *, session_id, generation, reason, detail):
+        self.recorder.record("arbiter", {"type": event_type, "reason": reason, "detail": detail},
+            session_id=session_id, generation=generation)
+
+
 @asynccontextmanager
 async def selftest_lifespan(application):
     root = isolated_root(Path(os.environ["JARVIS_EVAL_ROOT"]), settings.database_path)
@@ -171,65 +200,31 @@ async def selftest_lifespan(application):
     recorder = Recorder(root)
     recorder.screen = FixtureScreen(recorder)
     application.state.selftest = recorder
-    original_send = openai_live_adapter._send
-    original_connect = openai_live_adapter.connect
-    original_handle = openai_live_adapter._handle_event
-    original_config = OpenAILiveAdapter._session_config
-    original_trace = jarvis_coordinator._trace_response_gate
+    observer = _RecordingObserver(recorder, root)
+    openai_live_adapter.traffic_observer = observer
+    jarvis_coordinator.traffic_observer = observer
+    try:
+        # The fixture screen replaces the real capture; recording needs no patching.
+        with patch.object(screen_look, "look", recorder.screen.look):
+            async with production_lifespan(application):
+                registration = None if settings.task_pool_enabled else await worker_coordinator.activate(process_identity="selftest")
+                if not settings.task_pool_enabled and registration is None:
+                    raise ValueError("Unable to start deterministic fixture worker")
+                recorder.worker_id = registration.worker_id if registration else None
+                heart = asyncio.create_task(recorder.heartbeat()) if registration else None
+                recorder.record("configuration", {"type": "selftest.started",
+                    "live_model": settings.openai_live_model, "voice": settings.openai_live_voice,
+                    "candidate": application.state.acceptance_runtime["candidate"]})
+                try:
+                    yield
+                finally:
+                    recorder.stop.set()
+                    if heart:
+                        await heart
 
-    async def connect(**kwargs):
-        recorder.record("requests", {"type": "provider.connect.request"},
-            session_id=kwargs["session_id"], generation=kwargs["generation"])
-        try:
-            return await original_connect(**kwargs)
-        except Exception as error:
-            recorder.record("requests", {"type": "provider.connect.failed", "error": str(error)},
-                session_id=kwargs["session_id"], generation=kwargs["generation"])
-            raise
-
-    async def send(provider_session, command):
-        recorder.record("outgoing", command, session_id=provider_session.session_id, generation=provider_session.generation)
-        await original_send(provider_session, command)
-
-    async def handle(provider_session, event):
-        if event.get("type") != "session.output_audio.delta":
-            recorder.record("incoming", event, session_id=provider_session.session_id, generation=provider_session.generation)
-        return await original_handle(provider_session, event)
-
-    def config(context):
-        value = original_config(context)
-        (root / "voice-prompt.txt").write_text(value["instructions"], encoding="utf-8")
-        (root / "session-configuration.json").write_text(json.dumps(value, indent=2), encoding="utf-8")
-        return value
-
-    def trace(event_type, **kwargs):
-        recorder.record("arbiter", {"type": event_type, "reason": kwargs.get("reason"), "detail": kwargs.get("detail")},
-            session_id=kwargs.get("session_id"), generation=kwargs.get("generation"))
-        return original_trace(event_type, **kwargs)
-
-    with ExitStack() as instrumentation:
-        for target, name, wrapper in [(openai_live_adapter, "_send", send),
-                (openai_live_adapter, "connect", connect), (openai_live_adapter, "_handle_event", handle),
-                (OpenAILiveAdapter, "_session_config", staticmethod(config)),
-                (jarvis_coordinator, "_trace_response_gate", trace),
-                (screen_look, "look", recorder.screen.look)]:
-            instrumentation.enter_context(patch.object(target, name, wrapper))
-        async with production_lifespan(application):
-            registration = None if settings.task_pool_enabled else await worker_coordinator.activate(process_identity="selftest")
-            if not settings.task_pool_enabled and registration is None:
-                raise ValueError("Unable to start deterministic fixture worker")
-            recorder.worker_id = registration.worker_id if registration else None
-            heart = asyncio.create_task(recorder.heartbeat()) if registration else None
-            recorder.record("configuration", {"type": "selftest.started",
-                "live_model": settings.openai_live_model, "voice": settings.openai_live_voice,
-                "candidate": application.state.acceptance_runtime["candidate"]})
-            try:
-                yield
-            finally:
-                recorder.stop.set()
-                if heart:
-                    await heart
-
+    finally:
+        openai_live_adapter.traffic_observer = None
+        jarvis_coordinator.traffic_observer = None
 
 app = FastAPI(lifespan=selftest_lifespan, middleware=production_app.user_middleware,
     exception_handlers=production_app.exception_handlers)

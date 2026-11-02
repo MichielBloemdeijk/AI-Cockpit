@@ -3,6 +3,8 @@
 Status: completed for the accepted personal-use scope on 2026-10-11. The
 [completion ledger](00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
+For which checks exist today and when to run them, use
+[VERIFICATION.md](../VERIFICATION.md).
 
 ## Completion
 
@@ -82,10 +84,10 @@ Use `python -m app.jarvis_tasks` from the backend environment. Current and plann
 - `fixtures <workflow-id>@<version> --report <path>` (implemented for both M4 examples): selected deterministic cases through real task/result services in isolated storage; no network or UI.
 - `eval <workflow-id>@<version> --live --samples 2 --report <directory>` (implemented for both M4 examples): fixed tomato-pasta/lentil-soup inputs, initial publication and retained-profile same-task revision, including worker/search usage. Each attempt starts an App Server. Use a fresh report directory; failed outcomes are not erased or automatically retried. Summaries identify small sample counts, median/p95 and unknown invoice cost. `total` native token usage is cumulative per thread, not additive across resumed attempts.
 - `android demo --workflow <definition> --report <path>` (implemented): forwards to the existing isolated API37 harness, including automatic dedicated-AVD startup, screenshot, notification navigation, WebView and reconnect.
-- `acceptance --gate M6|M7|M8|M9|M10 --report <directory> [--live] [--emulator SERIAL --audio-dir PATH --database PATH]`
+- `acceptance --gate coding|voice|android|subscription|release --report <directory> [--live] [--emulator SERIAL --audio-dir PATH --database PATH]`
   (implemented, closure evidence recorded): composes
-  the required suites and writes candidate-bound assertions. M10 includes all
-  M6–M9 checks and final cross-phase regression. Required disabled/unavailable
+  the required suites and writes candidate-bound assertions. `release` includes all
+  other gates' checks and final cross-phase regression. Required disabled/unavailable
   layers report `blocked`, never a successful reduced-scope completion.
 - `rollout-check --evidence <acceptance-report> --report <path>` (implemented): evaluates implementation evidence and local readiness, while
   separately reporting M11's physical/deployment state. Evidence cannot grant
@@ -241,7 +243,7 @@ device/production authorization. Rehearsal success alone cannot pass deployment.
 Full invocation after the emulator, corpus and account evidence are prepared:
 
 ```powershell
-python -m app.jarvis_tasks acceptance --gate M10 --live --emulator emulator-5554 --audio-dir <rendered-corpus> --database <isolated-backend.db> --backend-url http://127.0.0.1:<isolated-backend-port> --report <new-report-path>
+python -m app.jarvis_tasks acceptance --gate release --live --emulator emulator-5554 --audio-dir <rendered-corpus> --database <isolated-backend.db> --backend-url http://127.0.0.1:<isolated-backend-port> --report <new-report-path>
 ```
 
 Run layers against isolated fixtures/profiles; report required prerequisites

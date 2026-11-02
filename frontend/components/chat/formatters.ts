@@ -4,10 +4,10 @@ export function formatConversationModeLabel(mode: ConversationSessionMetadata["m
   if (mode === "council") {
     return "Council";
   }
-  if (mode === "single" || mode === "agent") {
-    return "Agent";
+  if (mode === "single") {
+    return "Chat";
   }
-  return String(mode || "Agent");
+  return String(mode || "Chat");
 }
 
 export function formatConversationLabel(isoTimestamp: string): string {

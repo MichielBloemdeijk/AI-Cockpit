@@ -652,6 +652,7 @@ class TaskExecutionRun(Base):
     __table_args__ = (
         UniqueConstraint("task_id", "ordinal", name="uq_task_execution_runs_task_ordinal"),
         CheckConstraint("ordinal > 0", name="ck_task_execution_runs_ordinal_positive"),
+        Index("ix_task_execution_runs_queue", "status", "queue_entered_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
@@ -1070,6 +1071,7 @@ class OrchestrationDecision(Base):
     """Durable issue-specific work; never a second copy of task status."""
 
     __tablename__ = "orchestration_decisions"
+    __table_args__ = (Index("ix_orchestration_due", "status", "due_at", "source_sequence"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
     issue_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)

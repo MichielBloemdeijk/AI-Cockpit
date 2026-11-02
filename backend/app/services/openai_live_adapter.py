@@ -18,6 +18,7 @@ import httpx
 from app.config import settings
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
 from app.services.live_model_diagnostics import LiveModelDiagnostics, tool_metadata
+from app.services.live_traffic import LiveTrafficObserver
 from app.services.voice_session_adapter import (
     ProviderEventHandler,
     VoiceProviderCapabilities,
@@ -180,6 +181,7 @@ class OpenAILiveAdapter:
         self._http_client_lock = asyncio.Lock()
         self._sessions: dict[tuple[str, int], _LiveSession] = {}
         self._pending_connections: dict[tuple[str, int], _PendingLiveConnection] = {}
+        self.traffic_observer: LiveTrafficObserver | None = None
 
     async def connect(
         self,
@@ -190,6 +192,26 @@ class OpenAILiveAdapter:
         on_event: ProviderEventHandler,
         sdp_offer: str | None = None,
     ) -> VoiceSessionConnection:
+        observer = self.traffic_observer
+        if observer:
+            observer.connect_requested(session_id=session_id, generation=generation)
+        try:
+            return await self._connect(session_id=session_id, generation=generation, context=context,
+                                       on_event=on_event, sdp_offer=sdp_offer)
+        except Exception as error:
+            if observer:
+                observer.connect_failed(session_id=session_id, generation=generation, error=error)
+            raise
+
+    async def _connect(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        context: dict[str, Any],
+        on_event: ProviderEventHandler,
+        sdp_offer: str | None,
+    ) -> VoiceSessionConnection:
         api_key = settings.openai_api_key.strip()
         if not api_key:
             raise OpenAILiveConfigurationError("OPENAI_API_KEY is not configured on the backend")
@@ -198,12 +220,14 @@ class OpenAILiveAdapter:
         connect_started = time.monotonic()
         provider_call_started = time.monotonic()
         session_configuration = self._session_config(context)
+        if self.traffic_observer:
+            self.traffic_observer.session_configured(session_configuration)
         tool_definitions = session_configuration["delegation"]["responses"]["tools"]
-        diagnostics = LiveModelDiagnostics(settings.openai_live_diagnostics_dir, session_id=session_id, generation=generation,
+        diagnostics = LiveModelDiagnostics(settings.openai_live_diagnostics_path, session_id=session_id, generation=generation,
             configuration={"voice_model": settings.openai_live_model, "selector_model": settings.openai_live_responses_model,
                 "delegation_mode": "responses", "reasoning_effort": settings.openai_live_reasoning_effort,
                 "reasoning_summary_requested": settings.openai_live_reasoning_summary,
-                "requested_tools": tool_metadata(tool_definitions)}) if settings.openai_live_diagnostics_dir else None
+                "requested_tools": tool_metadata(tool_definitions)}) if settings.openai_live_diagnostics_path else None
         created = await self._session_creator(
             api_key=api_key,
             sdp_offer=sdp_offer,
@@ -560,6 +584,9 @@ class OpenAILiveAdapter:
             logging.getLogger(__name__).warning("Live transport error report rejected (%s)", type(exc).__name__)
 
     async def _handle_event(self, provider_session: _LiveSession, outer: dict[str, Any]) -> None:
+        if self.traffic_observer:
+            self.traffic_observer.received(session_id=provider_session.session_id,
+                                           generation=provider_session.generation, event=outer)
         event_type = str(outer.get("type") or "")
         if provider_session.diagnostics:
             if event_type == "response.event" and isinstance(outer.get("event"), dict):
@@ -1183,6 +1210,9 @@ class OpenAILiveAdapter:
             return
 
     async def _send(self, provider_session: _LiveSession, payload: dict[str, Any]) -> None:
+        if self.traffic_observer:
+            self.traffic_observer.sent(session_id=provider_session.session_id,
+                                       generation=provider_session.generation, payload=payload)
         if provider_session.closing:
             raise ValueError("GPT-Live session is closing")
         await provider_session.socket.send(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))

@@ -8,28 +8,20 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sse_starlette.sse import EventSourceResponse
 
-from app.config import settings
 from app.models.chat import Message
 from app.models.conversations import (
-    ConversationArtifactView,
     ConversationBranchResendRequest,
     ConversationBranchResendResponse,
-    ConversationBranchView,
     ConversationCreateResponse,
     ConversationCreateRequest,
     ConversationDetail,
-    ConversationEventView,
     ConversationEventsResponse,
     ConversationMessageCreateRequest,
-    ConversationMessageView,
     ConversationSummary,
     ConversationTurnResponse,
-    ConversationWorkspaceView,
     MemoryExtractionRequest,
     MemoryItemView,
-    WorkspaceFileView,
 )
-from app.models.settings import ConversationSessionMetadata
 from app.presenters.conversations import (
     present_conversation_branch,
     present_conversation_event,

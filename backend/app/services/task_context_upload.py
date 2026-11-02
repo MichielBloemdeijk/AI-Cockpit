@@ -152,7 +152,7 @@ class TaskContextUploadService:
                 TaskContextBlob.sha256 == digest,
             ))).scalar_one_or_none()
             if blob is None:
-                folder = (settings.backend_root / settings.task_context_blobs_dir).resolve()
+                folder = settings.task_context_blobs_path
                 folder.mkdir(parents=True, exist_ok=True)
                 path = folder / f"{digest}.jpg"
                 try:

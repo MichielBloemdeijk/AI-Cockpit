@@ -49,7 +49,7 @@ class CodexOrchestrationRuntime:
         payload = {"decision_id": claim.id, "generation": claim.generation, "owner": claim.owner,
                    "parent_pid": os.getpid(), "database_url": settings.resolved_database_url,
                    "profile": str(Path(profile).resolve()), "model": model, "effort": effort,
-                   "workspace": str((Path(settings.task_orchestration_context_dir) / claim.id).resolve()),
+                   "workspace": str(settings.task_orchestration_context_path / claim.id),
                    "context": claim.context}
         connected, outcome, sequence = False, None, 0
         try:
@@ -167,8 +167,7 @@ class CodexOrchestrationRuntime:
             from app.services.runtime_auth_routes import subscription_profile, select_route
             if selected_profile == subscription_profile():
                 inspection_owner = f"inspection:{process.pid}:{binding['thread_id']}"
-                api_profile = Path(settings.task_orchestration_profile)
-                api_profile = (api_profile if api_profile.is_absolute() else settings.backend_root / api_profile).resolve()
+                api_profile = settings.task_orchestration_profile_path
                 auth = await select_route(owner_kind="background", owner_id=inspection_owner,
                     pid=process.pid, stamp=process_creation_stamp(process.pid) or 0,
                     api_profile=api_profile, contained=os.name == "nt")

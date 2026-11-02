@@ -4,6 +4,8 @@ Disposable emulator/database only. A loopback Chromium peer sends a synthetic
 tone and receives actual Android microphone RTP; the backend uses its fake adapter.
 """
 from __future__ import annotations
+
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
 import argparse
 import importlib.util
 import json

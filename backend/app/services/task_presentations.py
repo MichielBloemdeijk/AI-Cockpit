@@ -10,7 +10,7 @@ import hashlib
 import json
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import aliased
 from app.config import settings
@@ -278,41 +278,6 @@ class TaskPresentationService:
                 continue
             candidate_type = PRESENTABLE_EVENT_TYPES[event.event_type]
             existing = by_event.get(event.id)
-            if event.event_type == "task.reminder.due":
-                cutoff = int((await session.execute(
-                    text(
-                        "SELECT task_event_cutoff FROM attention_migration_state "
-                        "WHERE id = 'current'"
-                    )
-                )).scalar_one_or_none() or 0)
-                if cutoff and event.sequence <= cutoff:
-                    if existing is None:
-                        retired = TaskPresentation(
-                            id=str(uuid4()),
-                            task_id=task.id,
-                            candidate_type=candidate_type,
-                            coalescing_key=f"task:{task.id}:{candidate_type}",
-                            importance=task.importance,
-                            state="handled",
-                            source_task_event_id=event.id,
-                            required_facts_json=self._facts(event, task),
-                            handled_at=utc_now(),
-                            handled_by="migration_legacy_retired",
-                            last_error="legacy_attention_retired_at_migration",
-                            idempotency_key=f"task-event-presentation:{event.id}",
-                        )
-                        session.add(retired)
-                        retired.handled_event_id = await self._append_handled_audit(
-                            session,
-                            retired,
-                            handled_by="migration_legacy_retired",
-                            idempotency_key=f"attention-migration-retired:{retired.id}",
-                            payload={"reason": "projector_lag_cutoff"},
-                        )
-                        presentations.append(retired)
-                        by_event[event.id] = retired
-                        by_task.setdefault(task.id, []).append(retired)
-                    continue
             policy = normalize_task_update_policy(task.presentation_policy)
             if task.presentation_policy != policy:
                 task.presentation_policy = policy

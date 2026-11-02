@@ -1,4 +1,4 @@
-"""Candidate-bound M6–M10 acceptance. Evidence never authorizes deployment."""
+"""Candidate-bound acceptance gates. Evidence never authorizes deployment."""
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
@@ -25,25 +25,25 @@ SCHEMA = "jarvis-task-acceptance.v1"
 MAX_EVIDENCE_BYTES = 8_000_000
 ROOT = Path(__file__).resolve().parents[3]
 REQUIRED = {
-    "M6": {"backend", "coding_provider", "process_tree"},
-    "M7": {"backend", "voice_provider"},
-    "M8": {"android", "audio_corpus", "ready_latency", "cold_latency", "fresh_screen", "capture_performance", "capture_privacy", "mobile_result"},
-    "M9": {"backend", "subscription_provider"},
-    "M10": {"backend", "frontend_types", "frontend_tests", "frontend_build", "result_shell", "android",
+    "coding": {"backend", "coding_provider", "process_tree"},
+    "voice": {"backend", "voice_provider"},
+    "android": {"android", "audio_corpus", "ready_latency", "cold_latency", "fresh_screen", "capture_performance", "capture_privacy", "mobile_result"},
+    "subscription": {"backend", "subscription_provider"},
+    "release": {"backend", "frontend_types", "frontend_tests", "frontend_build", "result_shell", "android",
         "browser", "coding_provider", "process_tree", "voice_provider", "audio_corpus",
         "ready_latency", "cold_latency", "fresh_screen", "capture_performance", "capture_privacy", "mobile_result", "subscription_provider", "migration"},
 }
 
 
 def accepted_exceptions(gate: str) -> dict:
-    """Only the explicitly accepted M8 cohorts can be excepted, never safety checks."""
+    """Only the explicitly accepted Android-gate cohorts can be excepted, never safety checks."""
     policy = json.loads(Path(__file__).with_name("acceptance-profiles.json").read_text())["accepted_exceptions"]
     allowed = {"audio_corpus", "cold_latency", "fresh_screen", "capture_performance"}
     if (policy["decision"] != "m8-accepted-with-caveats-2026-10-07"
-            or set(policy["gates"]) != {"M8", "M10"}
+            or set(policy["gates"]) != {"android", "release"}
             or set(policy["assertions"]) != allowed
             or any(not isinstance(reason, str) or not reason.strip() for reason in policy["assertions"].values())):
-        raise ValueError("Invalid accepted M8 exceptions")
+        raise ValueError("Invalid accepted Android-gate exceptions")
     return {identifier: {"decision": policy["decision"], "reason": reason}
         for identifier, reason in policy["assertions"].items()} if gate in policy["gates"] else {}
 
@@ -202,7 +202,7 @@ def database_identity(path: Path | None) -> str | None:
     return None if path is None else sha256(os.path.normcase(str(path.resolve())).encode()).hexdigest()
 
 
-def evaluate(report: dict, candidate: dict, *, gate: str = "M10", now: datetime | None = None) -> dict:
+def evaluate(report: dict, candidate: dict, *, gate: str = "release", now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     reasons = []
     if report.get("schema") != SCHEMA or report.get("candidate") != candidate or report.get("gate") != gate:
@@ -465,14 +465,14 @@ def run_acceptance(*, gate: str, output: Path, evidence: dict[str, Path], live: 
         for identifier, proof in sorted(exceptions.items())]
     execution_failures = set()
     backend = ROOT / "backend"
-    provider_env = {"JARVIS_LIVE_CODEX": "1" if live else "0", "JARVIS_M4_LIVE": "1" if live else "0",
-        "RUN_M5_BROWSER": "1" if live else "0", "JARVIS_LIVE_M6": "0"}
+    provider_env = {"JARVIS_LIVE_CODEX": "1" if live else "0", "JARVIS_WORKFLOWS_LIVE": "1" if live else "0",
+        "RUN_RESULT_BROWSER": "1" if live else "0", "JARVIS_LIVE_CODING": "0"}
     provider_env.update(JARVIS_ACCEPTANCE_GATE=gate)
     # The same production seams used by standalone emulator acceptance run here.
     # The caller selects an already paired emulator and isolated backend; no opt-in is inferred.
     if emulator or audio_dir or database or backend_url:
-        if gate not in {"M8", "M10"}:
-            raise ValueError("Emulator audio is required only by M8/M10")
+        if gate not in {"android", "release"}:
+            raise ValueError("Emulator audio is required only by the android and release gates")
         if not (live and emulator and audio_dir):
             raise ValueError("Emulator acceptance requires --live, --emulator and --audio-dir")
         missing_audio = ({"audio_corpus", "ready_latency", "cold_latency", "fresh_screen", "capture_performance"} & required) - set(evidence)
@@ -521,9 +521,9 @@ def run_acceptance(*, gate: str, output: Path, evidence: dict[str, Path], live: 
             evidence.setdefault("capture_performance", capture_output / "acceptance.json")
     if live and "coding_provider" in required and "coding_provider" not in evidence:
         path = output / "coding-provider.json"
-        executed = _command("coding_execution", [sys.executable, "-m", "pytest", "tests/test_m6_coding_live.py", "-q", "--tb=short",
+        executed = _command("coding_execution", [sys.executable, "-m", "pytest", "tests/test_codex_coding_live.py", "-q", "--tb=short",
             f"--junitxml={output / 'coding_execution.xml'}"], backend, output, junit=output / "coding_execution.xml",
-            env={**provider_env, "JARVIS_LIVE_M6": "1", "JARVIS_M6_REPORT": str(path)})
+            env={**provider_env, "JARVIS_LIVE_CODING": "1", "JARVIS_CODING_REPORT": str(path)})
         if executed["status"] == "passed":
             evidence["coding_provider"] = path
         else:
@@ -552,7 +552,7 @@ def run_acceptance(*, gate: str, output: Path, evidence: dict[str, Path], live: 
     manifest = json.loads(Path(__file__).with_name("acceptance-profiles.json").read_text())
     backend_selection = manifest["backend_suites"][gate]
     commands = {
-        "backend": ([sys.executable, "-m", "pytest", "tests", "--ignore=tests/test_m6_coding_live.py", "--ignore=tests/test_subscription_provider_live.py", "-m", backend_selection, "-q", "--tb=short", f"--junitxml={output / 'backend.xml'}"], backend),
+        "backend": ([sys.executable, "-m", "pytest", "tests", "--ignore=tests/test_codex_coding_live.py", "--ignore=tests/test_subscription_provider_live.py", "-m", backend_selection, "-q", "--tb=short", f"--junitxml={output / 'backend.xml'}"], backend),
         "frontend_types": ([shutil.which("npm.cmd") or "npm", "run", "typecheck"], ROOT / "frontend"),
         "frontend_tests": ([shutil.which("npm.cmd") or "npm", "test", "--", "--reporter=junit", f"--outputFile={output / 'frontend_tests.xml'}"], ROOT / "frontend"),
         "frontend_build": ([shutil.which("npm.cmd") or "npm", "run", "build"], ROOT / "frontend"),

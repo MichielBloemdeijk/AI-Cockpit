@@ -63,7 +63,9 @@ general promises in unrelated small talk are not assessed (cost bound).
   transport failures still stop the observer.
 
 The L1 replay (`python -m app.selftest replay`) re-checks these rules against
-13 recorded real conversations with agreed truth (`app/selftest/replay_labels.yaml`).
+the recorded real conversations with agreed truth listed in
+`app/selftest/replay_labels.yaml` (private recordings; see
+[self-testing](self-testing.md#replay-inputs)).
 
 The observer is always on (default since 19 October 2026; the `off`/`shadow`
 modes and model-reported acknowledgment were removed afterwards). It alone

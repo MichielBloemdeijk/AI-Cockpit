@@ -3,7 +3,7 @@ from pydantic import SecretStr
 from httpx import ASGITransport, AsyncClient
 import pytest
 
-from app.config import settings
+from app.config import Settings, settings
 from app.main import app
 from app.services.auth import verify_password
 
@@ -18,6 +18,12 @@ def test_optional_password_and_explicit_mode(monkeypatch):
     assert not verify_password("random")
     monkeypatch.setattr(settings, "jarvis_access_mode", "password")
     assert not verify_password("")
+
+
+def test_password_mode_without_a_password_refuses_to_start(tmp_path):
+    with pytest.raises(ValueError, match="Password mode requires AUTH_PASSWORD"):
+        Settings(_env_file=None, jarvis_access_mode="password", auth_password=SecretStr(""))
+    assert Settings(_env_file=None, jarvis_access_mode="personal", auth_password=SecretStr("")).jarvis_access_mode == "personal"
 
 
 @pytest.mark.asyncio

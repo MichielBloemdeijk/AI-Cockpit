@@ -21,9 +21,9 @@ def _parser() -> argparse.ArgumentParser:
     login.add_argument("--device-code", action="store_true", help="Authorize from your usual browser using a one-time device code.")
     rollout = commands.add_parser("rollout-check", help="Read-only local preparation and explicit unresolved rollout gates (no provider calls).")
     rollout.add_argument("--report", type=Path, required=True)
-    rollout.add_argument("--evidence", type=Path, help="Current candidate M10 acceptance report")
-    acceptance = commands.add_parser("acceptance", help="Run candidate-bound M6–M10 closure checks; missing or skipped evidence blocks readiness.")
-    acceptance.add_argument("--gate", choices=["M6", "M7", "M8", "M9", "M10"], default="M10")
+    rollout.add_argument("--evidence", type=Path, help="Current candidate release-gate acceptance report")
+    acceptance = commands.add_parser("acceptance", help="Run candidate-bound acceptance gates (coding, voice, android, subscription, release); missing or skipped evidence blocks readiness.")
+    acceptance.add_argument("--gate", choices=["coding", "voice", "android", "subscription", "release"], default="release")
     acceptance.add_argument("--report", type=Path, required=True, help="Fresh report directory")
     acceptance.add_argument("--evidence", action="append", default=[], metavar="ASSERTION=PATH")
     acceptance.add_argument("--live", action="store_true", help="Run authorized billable provider suites")
@@ -54,7 +54,7 @@ def _parser() -> argparse.ArgumentParser:
 
     probe = commands.add_parser(
         "probe-codex",
-        help="Run the opt-in M0 Codex runtime contract probe.",
+        help="Run the opt-in Codex runtime contract probe.",
     )
     probe.add_argument("--report", type=Path, required=True)
     probe.add_argument(
@@ -145,9 +145,9 @@ def main() -> int:
         if list(folder.glob("*-*.json")):
             print("Use a fresh report directory to avoid mixing evaluation samples", file=sys.stderr)
             return 1
-        env = {**os.environ, "JARVIS_M4_LIVE": "1", "JARVIS_M4_SAMPLES": str(args.samples),
+        env = {**os.environ, "JARVIS_WORKFLOWS_LIVE": "1", "JARVIS_M4_SAMPLES": str(args.samples),
                "JARVIS_M4_REPORT_DIR": str(folder)}
-        completed = subprocess.run([sys.executable, "-m", "pytest", "tests/test_m4_workflows_live.py",
+        completed = subprocess.run([sys.executable, "-m", "pytest", "tests/test_reference_workflows_live.py",
             "-k", args.definition.split("@")[0], "-q", "--tb=short"],
             cwd=Path(__file__).resolve().parents[2], env=env)
         reports = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*-*.json"))]
@@ -184,7 +184,7 @@ def main() -> int:
         backend = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory(prefix="jarvis-fixture-report-") as folder:
             junit = Path(folder) / "results.xml"
-            completed = subprocess.run([sys.executable, "-m", "pytest", "tests/test_m4_workflows.py",
+            completed = subprocess.run([sys.executable, "-m", "pytest", "tests/test_reference_workflows.py",
                 "tests/test_worker_tool_policy.py", "-k", f"{loaded.id} or registry or selection or connector",
                 "-q", "--tb=short", f"--junitxml={junit}"], cwd=backend, capture_output=True, text=True)
             suites = ElementTree.parse(junit).getroot() if junit.exists() else None

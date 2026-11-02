@@ -30,10 +30,10 @@ from xml.etree import ElementTree
 import httpx
 from PIL import Image
 
+from harness_support import BACKEND, ROOT, personal_credential, start_owned_process, start_service
 
-ROOT = Path(__file__).resolve().parents[2]
+
 ANDROID = ROOT / "android"
-BACKEND = ROOT / "backend"
 SDK = Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk"
 ADB = SDK / "platform-tools" / "adb.exe"
 EMULATOR = SDK / "emulator" / "emulator.exe"
@@ -120,29 +120,6 @@ def unused_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
-
-
-def start_owned_process(args: list[str], *, cwd: Path = BACKEND,
-                        env: dict[str, str] | None = None, **streams) -> subprocess.Popen:
-    """Use the existing Windows Job Object host for harness-owned descendants."""
-    environment = {**os.environ, **(env or {})}
-    environment["PYTHONPATH"] = str(BACKEND) + os.pathsep + environment.get("PYTHONPATH", "")
-    process = subprocess.Popen(
-        [sys.executable, "-m", "app.jarvis_tasks.acceptance_command_host",
-         "--parent-pid", str(os.getpid()), "--", *args],
-        cwd=cwd, env=environment, creationflags=subprocess.CREATE_NO_WINDOW, **streams)
-    process._jarvis_job_contained = True
-    return process
-
-
-def start_service(args: list[str], env: dict[str, str], log_path: Path) -> subprocess.Popen:
-    log = log_path.open("wb")
-    try:
-        process = start_owned_process([sys.executable, *args], cwd=BACKEND, env=env,
-                                      stdout=log, stderr=subprocess.STDOUT)
-    finally:
-        log.close()
-    return process
 
 
 def task_result(client, task_id: str) -> dict | None:
@@ -497,8 +474,11 @@ def main() -> None:
             # The phone's WebView writes (such as the record it shows) come from the frontend's address.
             "JARVIS_PUBLIC_URL": f"http://10.0.2.2:{web_port}",
             "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal", "SESSION_SECRET_KEY": uuid4().hex,
+            # The Codex worker signs in its isolated profile with this API key (billed).
+            "OPENAI_API_KEY": personal_credential("OPENAI_API_KEY"),
+            # The deployed command boundary (native elevated mode waits for UAC on this host).
+            "TASK_COMMAND_MODE": "trusted", "TASK_WINDOWS_SANDBOX": "unelevated",
             # App workflows (Recipes, Documents) are enabled by their installed app; only core ones need the allowlist.
-            "TASK_EXECUTOR": "codex",
             "TASK_WORKFLOW_ALLOWLIST": "" if workflow.app else f"{args.workflow}:{workflow.digest}",
             "TASK_RESEARCH_ENABLED": "false" if args.workflow == "screen_document@1" else "true",
             # Codex's guarded workspace sandbox grants writes under the repo,

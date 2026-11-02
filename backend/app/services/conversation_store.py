@@ -13,7 +13,6 @@ from app.services.conversation_title_service import conversation_title_service
 from app.services.conversation_timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
     build_assistant_message_timeline_item,
-    build_tool_result_timeline_item,
     build_user_message_timeline_item,
 )
 from app.services.conversation_workspace import (

@@ -17,8 +17,8 @@ def load(name, filename):
 
 @pytest.mark.asyncio
 async def test_emulator_fixture_controls_require_auth_and_use_real_publication(monkeypatch):
-    fixture = load("m5_fixture_test", "m5_result_fixture.py")
-    monkeypatch.setenv("M5_EXTERNAL_URL", "http://10.0.2.2:12345/source")
+    fixture = load("m5_fixture_test", "result_platform_fixture.py")
+    monkeypatch.setenv("RESULT_FIXTURE_EXTERNAL_URL", "http://10.0.2.2:12345/source")
     assert not any(getattr(route, "path", "").startswith("/_fixture") for route in fixture.cockpit.routes)
     async with AsyncClient(transport=ASGITransport(app=fixture.app), base_url="http://testserver") as client:
         assert (await client.post("/_fixture/publish/unknown")).status_code == 401
@@ -30,7 +30,7 @@ async def test_emulator_fixture_controls_require_auth_and_use_real_publication(m
         assert published["revision"] == 1 and published["url"].startswith("/apps/documents?collection=document&key=")
         key = published["url"].rsplit("=", 1)[1]
         record = (await client.get(f"/api/app-platform/data/documents/document/{key}")).json()
-        assert "M5-NATIVE-DOCUMENT-READY" in record["value"]["body"]
+        assert "RESULT-NATIVE-DOCUMENT-READY" in record["value"]["body"]
         assert "http://10.0.2.2:12345/source" in record["value"]["body"]
         task = (await client.get(f"/api/tasks/{task_id}")).json()
         assert task["status"] == "completed" and len(task["attempts"]) == 1

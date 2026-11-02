@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.models.chat import ChatRequest, ChatResponse, CouncilResponse
-from app.models.settings import ChatSettingsUpdateRequest, ConversationSessionMetadata
+from app.models.settings import ChatSettingsUpdateRequest
 from app.services.auth import require_auth
 from app.services.chat_settings import chat_settings_service
 from app.services.chat_orchestrator import chat_orchestrator

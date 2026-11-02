@@ -143,9 +143,9 @@ def run_rehearsal() -> dict:
                "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal", "SESSION_SECRET_KEY": "isolated-rehearsal-secret-not-production",
                "TASK_POOL_ENABLED": "false", "TASK_ORCHESTRATION_ENABLED": "false",
                "TASK_ORCHESTRATION_LIVE_ENABLED": "false",
-               "TASK_EXECUTOR": "legacy", "TASK_WORKFLOW_ALLOWLIST": "", "TASK_RESEARCH_ENABLED": "false",
+               "TASK_WORKFLOW_ALLOWLIST": "", "TASK_RESEARCH_ENABLED": "false",
                "OPENAI_API_KEY": "",
-               "OPENROUTER_API_KEY": "", "WEB_PUSH_ENABLED": "false", "NTFY_TOPIC": "",
+               "OPENROUTER_API_KEY": "", "WEB_PUSH_ENABLED": "false",
                "CODEX_PROFILES_DIR": str(root / "profiles"), "TASK_ORCHESTRATION_PROFILE": str(root / "background"),
                "TASK_ORCHESTRATION_CONTEXT_DIR": str(root / "context"), "PYTEST_ADDOPTS": ""}
         junit = root / "checks.xml"
@@ -201,10 +201,8 @@ def inspect_rollout(config: Settings, *, export_root: Path | None = None, accept
         "Native local execution additionally requires workload and folder-boundary acceptance.")
 
     desktop = (Path.home() / ".codex").resolve()
-    workers = config.codex_profiles_path.resolve()
-    background = Path(config.task_orchestration_profile)
-    # The current runtime resolves this value against the backend working directory.
-    background = (background if background.is_absolute() else config.backend_root / background).resolve()
+    workers = config.codex_profiles_path
+    background = config.task_orchestration_profile_path
     add("profile_isolation", not _overlap(workers, desktop) and not _overlap(background, desktop)
         and not _overlap(workers, background),
         "Worker/background profile roots must be separate from each other and the desktop profile; credentials are not inspected.")
@@ -255,13 +253,13 @@ def inspect_rollout(config: Settings, *, export_root: Path | None = None, accept
         {"id": "physical_oem", "status": "blocked", "owner": "deferred_physical_device",
          "summary": "Physical acoustics, protected/locked context, OEM persistence and real-phone delivery remain deferred."},
         {"id": "subscription", "status": "blocked", "owner": "account_authorization",
-         "summary": "M9 requires a separately authorized private Jarvis subscription profile and shared-owner route evidence."},
+         "summary": "The subscription gate requires a separately authorized private Jarvis subscription profile and shared-owner route evidence."},
         {"id": "production_opt_in", "status": "blocked", "owner": "user_direction",
          "summary": "Explicitly approve the deployment transport, device and progressive enablement; no flags are changed here."},
         {"id": "complete_backup", "status": "optional", "owner": "agent_preparation",
          "summary": "A database-only fixture restore is not a full production backup: retain context blobs, artifacts, workspaces and native profiles together after confirmed writer stop."},
     ]
-    readiness = {"status": "blocked", "implementation_ready": False, "reasons": ["Current candidate M10 acceptance report missing"]}
+    readiness = {"status": "blocked", "implementation_ready": False, "reasons": ["Current candidate release-gate acceptance report missing"]}
     if acceptance_path is not None:
         from app.jarvis_tasks.acceptance import candidate_identity, evaluate
         try:
@@ -275,9 +273,9 @@ def inspect_rollout(config: Settings, *, export_root: Path | None = None, accept
         for gate in external:
             if gate["id"] in {"custom_wake_live_provider", "subscription"}:
                 gate["status"] = "passed"
-                gate["evidence"] = "Current candidate M10 acceptance"
+                gate["evidence"] = "Current candidate release-gate acceptance"
             elif gate["id"] in {"physical_oem", "production_opt_in"}:
-                gate["status"] = "deferred_M11"
+                gate["status"] = "deferred"
     return {"schema": "jarvis-rollout-check.v1", "observed_at": datetime.now(timezone.utc).isoformat(),
             "status": "passed" if preparation_passed and readiness["implementation_ready"] else "blocked",
             "implementation_readiness": readiness, "preparation_status": "passed" if preparation_passed else "blocked",

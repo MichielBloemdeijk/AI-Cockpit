@@ -6,11 +6,9 @@ import asyncio
 import base64
 from hashlib import sha256
 import json
-import os
 from pathlib import Path
 import sys
 from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -188,7 +186,7 @@ async def _image_result(arguments: dict[str, Any], args: argparse.Namespace) -> 
             blob = await session.get(TaskContextBlob, request.blob_id)
             if blob is None or blob.mime_type != "image/jpeg" or blob.byte_length > 5 * 1024 * 1024:
                 raise ValueError("Validated screen context is unavailable")
-            storage_root = (settings.backend_root / settings.task_context_blobs_dir).resolve()
+            storage_root = settings.task_context_blobs_path
             path = Path(blob.storage_path)
             if path.is_symlink() or not path.resolve().is_relative_to(storage_root):
                 raise ValueError("Screen context storage is outside the private root")

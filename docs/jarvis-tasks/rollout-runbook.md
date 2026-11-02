@@ -145,9 +145,9 @@ Reports distinguish implementation readiness from physical deployment readiness;
 missing, skipped, stale or mismatched evidence remains blocked.
 
 ```powershell
-.venv/Scripts/python.exe -m app.jarvis_tasks acceptance --gate M10 --report ../data/acceptance-current
+.venv/Scripts/python.exe -m app.jarvis_tasks acceptance --gate release --report ../data/acceptance-current
 # Authorized paid suites and an already prepared emulator/backend:
-.venv/Scripts/python.exe -m app.jarvis_tasks acceptance --gate M10 --live --emulator emulator-5554 --audio-dir ../data/rendered-corpus --database ../data/isolated-voice.db --report ../data/acceptance-live
+.venv/Scripts/python.exe -m app.jarvis_tasks acceptance --gate release --live --emulator emulator-5554 --audio-dir ../data/rendered-corpus --database ../data/isolated-voice.db --report ../data/acceptance-live
 .venv/Scripts/python.exe -m app.jarvis_tasks rollout-check --evidence ../data/acceptance-current/acceptance.json --report ../data/readiness-current.json
 ```
 
@@ -472,8 +472,8 @@ From the repository root, using fresh directories under project `data`:
 
 ```powershell
 backend/.venv/Scripts/python.exe android/scripts/verify-capture-feasibility.py --report data/m8-native-current
-backend/.venv/Scripts/python.exe android/scripts/verify-managed-admission.py --mobile-result --gate M8 --render-dir data/audio-corpus-api-v1 --report data/m8-mobile-current
-backend/.venv/Scripts/python.exe android/scripts/verify-managed-admission.py --acceptance --gate M8 --render-dir data/audio-corpus-api-v1 --report data/m8-current --evidence capture_privacy=data/m8-native-current/acceptance.json --evidence mobile_result=data/m8-mobile-current/acceptance.json
+backend/.venv/Scripts/python.exe android/scripts/verify-managed-admission.py --mobile-result --gate android --render-dir data/audio-corpus-api-v1 --report data/m8-mobile-current
+backend/.venv/Scripts/python.exe android/scripts/verify-managed-admission.py --acceptance --gate android --render-dir data/audio-corpus-api-v1 --report data/m8-current --evidence capture_privacy=data/m8-native-current/acceptance.json --evidence mobile_result=data/m8-mobile-current/acceptance.json
 ```
 
 The native privacy stage makes zero provider calls. The mobile stage uses one
@@ -543,7 +543,7 @@ the interleaved capture cohort and run the fixed final ready07 once at the end.
 Run focused offline checks before provider calls:
 
 ```powershell
-.venv/Scripts/python.exe -m pytest tests/test_worker_tool_policy.py tests/test_native_worker.py tests/test_m4_workflows.py tests/test_task_mcp.py tests/test_migration_recovery.py -q
+.venv/Scripts/python.exe -m pytest tests/test_worker_tool_policy.py tests/test_native_worker.py tests/test_reference_workflows.py tests/test_task_mcp.py tests/test_migration_recovery.py -q
 ```
 
 The development migration adds persisted global policy, connector grants and exact permission questions without resetting application data. Native boundary diagnostics make no model calls; a basic boundary pass does not override the Python/Node workload gate. Set command mode during setup, never as an automatic retry. Trusted mode inherits user access and must be labeled in reports.

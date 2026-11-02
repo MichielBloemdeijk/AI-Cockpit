@@ -27,11 +27,11 @@ from app.db.tables import (
     SpeechDelivery,
     Task,
     TaskPresentation,
-    TaskQuestion,
     LiveSessionEvent,
 )
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_live_telemetry import jarvis_live_telemetry
+from app.services.live_traffic import LiveTrafficObserver
 from app.services.task_error_messages import public_tool_error
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.jarvis_time import normalize_client_context
@@ -213,6 +213,7 @@ class JarvisCoordinator:
         self._attention_appended_ids: dict[tuple[str, int], set[str]] = {}
         self._delivery_task: asyncio.Task[None] | None = None
         self._delivery_stop: asyncio.Event | None = None
+        self.traffic_observer: LiveTrafficObserver | None = None
 
     def _trace_response_gate(
         self,
@@ -225,6 +226,9 @@ class JarvisCoordinator:
         duration_ms: float | None = None,
         detail: dict[str, Any] | None = None,
     ) -> None:
+        if self.traffic_observer:
+            self.traffic_observer.response_gate(event_type, session_id=session_id, generation=generation,
+                                                reason=reason, detail=detail)
         activation = self._wake_activations.get((session_id, generation))
         jarvis_live_telemetry.record({
             "trace_id": session_id,

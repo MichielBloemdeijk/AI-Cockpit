@@ -108,7 +108,7 @@ def task_mcp_arguments(context: AgentExecutionContext, *, workflow: dict | None 
         arguments.extend(("--workflow-schema", workflow["output_schema"],
             "--workflow-capabilities", json.dumps(workflow["capabilities"]),
             "--workflow-allowlist", settings.task_workflow_allowlist,
-            "--context-blobs-dir", str(settings.task_context_blobs_dir)))
+            "--context-blobs-dir", str(settings.task_context_blobs_path)))
         if answer_only:
             arguments.append("--answer-only")
     return arguments

@@ -18,6 +18,8 @@ from app.services.task_pool_supervisor import TaskPoolSupervisor
 from app.services.task_service import task_service
 from app.services.windows_job import process_creation_stamp, process_has_exited
 
+pytestmark = pytest.mark.provider
+
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.getenv("JARVIS_SUBSCRIPTION_LIVE") != "1", reason="dedicated Jarvis sign-in is required")
@@ -89,6 +91,6 @@ async def test_real_subscription_then_safe_api_boundary(tmp_path, monkeypatch):
         if running:
             await asyncio.wait_for(running, 30)
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps({"schema": SCHEMA, "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "M10"),
+        report_path.write_text(json.dumps({"schema": SCHEMA, "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "release"),
             "candidate": candidate, "test_configuration": configuration, "finished_at": datetime.now(timezone.utc).isoformat(),
             "checks": [{"id": "subscription_provider", "status": "passed" if passed else "failed", "evidence": evidence}]}, indent=2))

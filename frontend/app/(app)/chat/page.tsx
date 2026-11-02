@@ -330,7 +330,7 @@ export default function ChatPage() {
                           : "text-zinc-400"
                       )}
                     >
-                      {mode === "single" ? "Agent" : "Council"}
+                      {mode === "single" ? "Chat" : "Council"}
                     </button>
                   ))}
                 </div>
@@ -352,8 +352,8 @@ export default function ChatPage() {
               {activeSessionMetadata && (
                 <p className="text-sm text-zinc-500 max-w-xs">
                   {councilMode
-                    ? "Council mode is active for this conversation. This mode stays chat-only."
-                    : "Agent mode is active for this conversation. The assistant can take multi-step actions when the request needs it."}
+                    ? "Several models answer in this conversation, and one combines their answers."
+                    : "One model answers in this conversation."}
                 </p>
               )}
             </div>

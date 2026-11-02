@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.config import settings
 from app.presenters.tasks import present_task_summary
 from app.db.tables import (
-    Task,
     TaskArtifact,
     TaskAttempt,
     TaskControlCommand,
@@ -47,7 +46,7 @@ from app.models.tasks import (
     WorkerHealthView,
 )
 from app.services.jarvis_devices import require_task_access
-from app.services.task_service import TaskDetailSnapshot, TaskSnapshot, task_service
+from app.services.task_service import TaskDetailSnapshot, task_service
 from app.services.worker_coordinator import worker_coordinator
 from app.services.task_pool_supervisor import task_pool_manager
 from app.db.session import session_scope

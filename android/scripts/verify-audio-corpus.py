@@ -6,6 +6,8 @@ No transcript/function-call injection or screenshot fixtures satisfy this gate.
 """
 from __future__ import annotations
 
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
+
 import argparse
 import asyncio
 from datetime import datetime, timezone
@@ -714,7 +716,7 @@ def main() -> int:
     parser.add_argument("--database", type=Path, help="Prepared isolated backend database")
     parser.add_argument("--backend-url", help="Prepared loopback backend origin; authenticated startup identity must match this process and database")
     parser.add_argument("--live", action="store_true")
-    parser.add_argument("--gate", choices=["M8", "M10"], default="M10")
+    parser.add_argument("--gate", choices=["android", "release"], default="release")
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--prerequisites", type=Path, help="Prepared isolated scenario task/question/run identities")
     parser.add_argument("--prepare-scenarios", action="store_true", help="Create normal task-service prerequisites in the selected project-owned isolated DB")
@@ -836,7 +838,7 @@ def main() -> int:
                 "functional_ready_samples": ready_samples}
             error = validate_observation("ready_latency", final_proof)
             checks.append({"id": "ready_latency", "status": "passed" if error is None else "failed", "evidence": final_proof})
-            if args.gate == "M10":
+            if args.gate == "release":
                 checks.append(voice_provider_observation(args.database))
             (args.report / "prerequisites.json").write_text(json.dumps(prerequisites, indent=2), encoding="utf-8")
     except (OSError, ValueError, subprocess.SubprocessError, sqlite3.Error, httpx.HTTPError) as exc:

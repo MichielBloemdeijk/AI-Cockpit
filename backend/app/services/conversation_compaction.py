@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Sequence, TypeVar
 
 from app.config import settings
-from app.models.chat import Message, PromptMetrics
+from app.models.chat import Message
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import MessageRecord, conversation_store
 from app.services.llm import PromptSegment, chat_completion, ensure_prompt_metrics, get_session_prompt_cache_status

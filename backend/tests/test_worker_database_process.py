@@ -57,7 +57,7 @@ async def test_recipe_worker_reads_and_publishes_across_process_restarts(monkeyp
     from httpx import ASGITransport, AsyncClient
     from app.db.session import close_engine
     from app.main import app
-    from test_m4_workflows import admit
+    from test_reference_workflows import admit
     args, _ = await admit(monkeypatch, "recipe_from_screen@1", claim_task=False)
     relative = Path(os.path.relpath(settings.database_path, settings.backend_root)).as_posix()
     monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{relative}")

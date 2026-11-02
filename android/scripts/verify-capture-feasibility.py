@@ -5,6 +5,8 @@ No model, injected bitmap, platform bypass, or physical phone is used.
 """
 from __future__ import annotations
 
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
+
 from io import BytesIO
 import json
 import importlib.util
@@ -35,7 +37,7 @@ def main():
     from app.config import settings
     from app.jarvis_tasks.acceptance import ROOT, SCHEMA, candidate_identity, resolve_test_configuration, _command
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--report", type=Path, required=True, help="Fresh project-owned M8 privacy evidence directory")
+    parser.add_argument("--report", type=Path, required=True, help="Fresh project-owned Android-gate privacy evidence directory")
     args = parser.parse_args()
     evidence = args.report.resolve()
     if evidence.exists() or not evidence.is_relative_to(ROOT / "data"):
@@ -77,7 +79,7 @@ def main():
                "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal", "SESSION_SECRET_KEY": uuid4().hex,
                "TASK_WORKFLOW_ALLOWLIST": f"screen_document@1:{definition.digest}",
                "TASK_CONTEXT_BLOBS_DIR": str(evidence / "blobs"),
-               "TASK_EXECUTOR": "codex", "TASK_POOL_ENABLED": "false", "LOCAL_LLM_ENABLED": "false",
+               "TASK_POOL_ENABLED": "false", "LOCAL_LLM_ENABLED": "false",
                "OPENAI_API_KEY": "", "CODEX_API_KEY": "", "OPENROUTER_API_KEY": ""}
         server = start_service(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
                                 "--port", str(port)], env, evidence / "server.log")
@@ -221,7 +223,7 @@ def main():
             workflow.BACKEND, evidence, junit=evidence / "capture_contracts.xml",
             env={**{key.upper(): str(value).lower() if isinstance(value, bool) else str(value)
                  for key, value in configuration["settings"].items()},
-                 "JARVIS_LIVE_CODEX": "0", "JARVIS_M4_LIVE": "0", "OPENAI_API_KEY": "", "CODEX_API_KEY": ""})
+                 "JARVIS_LIVE_CODEX": "0", "JARVIS_WORKFLOWS_LIVE": "0", "OPENAI_API_KEY": "", "CODEX_API_KEY": ""})
         report["contracts"] = {**executed["evidence"], "skipped": executed["skipped"]}
         report["status"] = "passed" if all(report["checks"].values()) and executed["status"] == "passed" else "failed"
         print(json.dumps(report, indent=2), flush=True)
@@ -258,7 +260,7 @@ def main():
         (evidence / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         proof = {"api_level": 37, "provider_calls": 0, "native_checks": report["checks"], "contracts": report.get("contracts", {}),
             "report": str(evidence / "report.json")}
-        (evidence / "acceptance.json").write_text(json.dumps({"schema": SCHEMA, "gate": "M8", "candidate": candidate,
+        (evidence / "acceptance.json").write_text(json.dumps({"schema": SCHEMA, "gate": "android", "candidate": candidate,
             "test_configuration": configuration, "finished_at": datetime.now(timezone.utc).isoformat(),
             "checks": [{"id": "capture_privacy", "status": report.get("status", "failed"), "evidence": proof}]}, indent=2), encoding="utf-8")
         stop_tree(server)

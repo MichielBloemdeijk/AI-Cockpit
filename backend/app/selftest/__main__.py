@@ -24,7 +24,7 @@ from app.selftest.scenarios import load_suite, speech_texts
 ALLOWANCE = {"browser": 16, "android": 12}
 # Settings that must not leak from a personal .env into isolated checks.
 TEST_ENV = {"SESSION_COOKIE_SECURE": "false", "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal",
-    "JARVIS_EVAL_NETWORK_BLOCKED": "1", "TASK_POOL_ENABLED": "false", "TASK_ORCHESTRATION_ENABLED": "false",
+    "TASK_POOL_ENABLED": "false", "TASK_ORCHESTRATION_ENABLED": "false",
     "TASK_ORCHESTRATION_LIVE_ENABLED": "false", "PYTHONUTF8": "1"}
 JARVIS_TESTS = ["tests/test_conversation_observer.py", "tests/test_assistant_notes.py", "tests/test_selftest.py", "tests/test_jarvis_coordinator.py",
     "tests/test_live_admission_intents.py", "tests/test_task_attention.py", "tests/test_openai_live_adapter.py",
@@ -34,14 +34,17 @@ JARVIS_TESTS = ["tests/test_conversation_observer.py", "tests/test_assistant_not
 
 
 def offline(args) -> int:
-    """Layer L0: network-blocked backend, frontend and Android checks plus a host probe."""
+    """Layer L0: a network-blocked Jarvis smoke slice (selected backend and frontend modules,
+    driver checks, the Android build and unit tests). Not the full repository suite; see
+    docs/VERIFICATION.md for that."""
     env = {**os.environ, **TEST_ENV}
     checks = [
         ("backend", [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *(args.tests or JARVIS_TESTS)], h.BACKEND),
         ("frontend", ["npx", "vitest", "run", "lib/jarvis-live.test.ts", "lib/jarvis-playback-evidence.test.ts"], h.FRONTEND),
         ("drivers", ["node", "--check", "e2e/announcement-eval.mjs"], h.FRONTEND),
         ("media", ["node", "e2e/announcement-offline.mjs"], h.FRONTEND),
-        ("android", [str(h.ROOT / "android" / "gradlew.bat"), ":app:assembleDebug", ":app:testDebugUnitTest", "-q"], h.ROOT / "android"),
+        ("android", [str(h.ROOT / "android" / ("gradlew.bat" if os.name == "nt" else "gradlew")),
+                     ":app:assembleDebug", ":app:testDebugUnitTest", "-q"], h.ROOT / "android"),
     ]
     results = {}
     for name, command, cwd in checks:
@@ -50,7 +53,8 @@ def offline(args) -> int:
             continue
         completed = subprocess.run(command, cwd=cwd, env=env, shell=os.name == "nt" and command[0] == "npx")
         results[name] = "passed" if completed.returncode == 0 else f"failed ({completed.returncode})"
-    print(json.dumps(results, indent=2))
+    # A skipped layer passes the run but never makes it complete.
+    print(json.dumps({"complete": "skipped" not in results.values(), "checks": results}, indent=2))
     return 0 if all(v in {"passed", "skipped"} for v in results.values()) else 1
 
 

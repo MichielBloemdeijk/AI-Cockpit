@@ -74,7 +74,7 @@ async def test_actual_restricted_codex_host_answers_question(tmp_path: Path, mon
     service = TaskOrchestrationService(runtime)
     assert await service.acquire()
     await service.intake()
-    from test_m3_preflight import exercise_code_only_services, saturate_pool
+    from test_orchestration_preflight import exercise_code_only_services, saturate_pool
     occupied = await saturate_pool()
     background = asyncio.create_task(service.run_one())
     try:

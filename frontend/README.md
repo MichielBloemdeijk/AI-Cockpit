@@ -1,54 +1,50 @@
 # Frontend
 
-This folder contains the Next.js frontend for AI Cockpit. It is the authenticated web UI that talks to the FastAPI backend over cookie-authenticated requests and provides the chat, knowledge, settings, generated-app, and placeholder background surfaces.
+The Next.js web and phone UI of AI Cockpit / Jarvis. It talks to the FastAPI
+backend through same-origin `/api` requests that Next.js proxies to port 8000.
+Read [AGENTS.md](AGENTS.md) first: this Next.js version differs from older ones.
 
-## Development
-
-From this folder:
+## Commands
 
 ```bash
 npm ci
-npm run dev
+npm run dev          # http://localhost:3000
+npm test             # Vitest
+npm run lint
+npm run typecheck    # main app only
+npm run build        # production build used by the personal host
+npm run build:results  # the separate result-export app
 ```
 
-The dev server runs on `http://localhost:3000` and proxies API requests to the backend on `http://localhost:8000`.
+When and why to run each is in [docs/VERIFICATION.md](../docs/VERIFICATION.md).
+Test, smoke and acceptance builds write to their own `.next-<purpose>` folder;
+lint, typecheck and Git ignore all of them.
 
-Useful commands:
+## Routes
 
-- `npm run dev` to start the Next.js dev server
-- `npm run lint` to run ESLint
-- `npm run test` to run the Vitest suite
-- `npm run build` to run the production compilation and TypeScript checks
+- `app/(app)/chat`: conversations in single-model (Chat) or Council mode, with
+  branches and archive
+- `app/(app)/jarvis`: the Jarvis voice workspace and phone UI
+- `app/(app)/tasks` and `tasks/[taskId]`: background tasks and their trace
+- `app/(app)/knowledge`: reviewed memory queue and approved knowledge (`wiki`
+  shows the same page)
+- `app/(app)/settings`: model defaults, phone linking, worker tools, wake
+  calibration
+- `app/(app)/workspace/apps` and `apps/[slug]`: installed apps, each in a
+  sandboxed frame with the SDK bridge in `lib/app-platform.ts`
+- `app/login`, `app/link-phone`: sign-in and phone pairing
+- `background` and `voice` only redirect (to `/tasks` and `/jarvis`)
 
-## Main Surfaces
+## Key modules
 
-- `app/(app)/chat` — durable conversation UI with Agent and Council chat flows, inline agent execution, archive controls, branching, and limited tools
-- `app/(app)/background` — placeholder surface explaining that background runs are disabled
-- `app/(app)/knowledge` — reviewed memory queue and approved knowledge browser
-- `app/(app)/settings` — model defaults for future sessions and the default agent-loop model
-- `app/(app)/workspace/apps` — the list of installed apps
-- `app/apps/[slug]` — the host page that frames an installed app and serves its SDK bridge (`lib/app-platform.ts`)
-- `app/login` — authentication entrypoint
+- `lib/api.ts`: typed client for the backend APIs
+- `lib/hooks.ts`, `lib/use-conversation-*.ts`, `lib/conversation-feed.ts`:
+  conversation list, detail, streaming and the committed timeline
+- `lib/jarvis-live*.ts`, `lib/jarvis-voice-client.ts`: the Live session and its
+  replayable state
+- `lib/jarvis-wake-*.ts`, `lib/jarvis-hey-buddy-inference.ts`: browser wake
+  detection
+- `components/`: shared UI
 
-## Key Modules
-
-- `lib/api.ts` — typed browser client for the backend APIs
-- `lib/hooks.ts` — stateful hooks such as `useAuth` and `useChat`
-- `lib/chat-history.ts` — maps conversation artifacts and events into chat-ready message data
-- `components/` — shared UI building blocks for chat and navigation
-
-## Current UI Shape
-
-- New chat starts in Agent mode and exposes only an Agent / Council choice before the first turn.
-- Detailed model defaults live in Settings rather than on the chat start surface.
-- The background page is intentionally a placeholder while all agent work stays inside chat.
-
-## Testing Notes
-
-The frontend uses:
-
-- ESLint for static checks
-- Vitest for unit and hook tests
-- jsdom for component-oriented test execution
-
-When backend behavior changes, update the corresponding types in `lib/api.ts` and any focused tests under `lib/*.test.ts`.
+When backend responses change, update the types in `lib/api.ts` and the focused
+tests next to the module (`lib/*.test.ts`).

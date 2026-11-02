@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from sqlalchemy import and_, desc, exists, func, or_, select
+from sqlalchemy import desc, exists, func, or_, select
 from sqlalchemy.dialects.sqlite import insert
 
 from app.db.session import session_scope, read_session_scope

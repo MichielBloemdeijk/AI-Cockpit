@@ -1,8 +1,9 @@
-"""M8 real spoken research admission -> worker -> native result -> UI follow-up.
+"""Android gate: real spoken research admission -> worker -> native result -> UI follow-up.
 
 Called by verify-managed-admission --mobile-result in its owned API37 fixture.
 No transcript, model call, workflow output or screenshot is injected here.
 """
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
 from datetime import datetime, timezone
 import importlib.util
 import json

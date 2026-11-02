@@ -9,7 +9,6 @@ from app.services.auth import (
     SESSION_COOKIE_NAME,
     SESSION_MAX_AGE,
     create_session_token,
-    require_auth,
     verify_password,
     device_session_id,
     verify_session_token,

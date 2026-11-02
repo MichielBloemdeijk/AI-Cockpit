@@ -5,6 +5,7 @@ import tempfile
 import asyncio
 import os
 import socket
+import sys
 import time
 import shutil
 from uuid import uuid4
@@ -24,6 +25,8 @@ os.environ.setdefault("TASK_WINDOWS_SANDBOX", "unelevated")
 os.environ.setdefault("TASK_COMMAND_MODE", "trusted")
 # Tests drive the app runtime's steps directly instead of its background loop.
 os.environ.setdefault("APP_RUNTIME_ENABLED", "false")
+# Tests load Android harness scripts by path; they import their shared harness_support module.
+sys.path.append(str(Path(__file__).resolve().parents[2] / "android" / "scripts"))
 
 from app.config import settings
 from app.app_platform import close_apps_engine, ensure_apps_database, install_builtin_apps
@@ -32,8 +35,10 @@ from app.services.voice_session_adapter import fake_voice_session_adapter
 
 
 @pytest.fixture(autouse=True)
-def evaluation_network_boundary(monkeypatch):
-    if os.environ.get("JARVIS_EVAL_NETWORK_BLOCKED") != "1":
+def offline_network_boundary(request, monkeypatch):
+    # Only billed provider tests (marked `provider`, each also behind its own opt-in
+    # flag) may leave this machine; everything else fails on external networking.
+    if request.node.get_closest_marker("provider"):
         return
     connect = socket.socket.connect
     def local_only(instance, address):

@@ -4,7 +4,7 @@ from hashlib import sha256
 from pathlib import Path
 import socket
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 
 from app.config import settings
@@ -22,7 +22,7 @@ class AuthRoute:
 
 
 def subscription_profile() -> Path:
-    return (settings.backend_root / settings.codex_subscription_profile).resolve()
+    return settings.codex_subscription_profile_path
 
 
 async def select_route(*, owner_kind: str, owner_id: str, pid: int, stamp: int | str,

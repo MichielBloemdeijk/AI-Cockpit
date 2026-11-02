@@ -1,5 +1,7 @@
 """Run managed GPT-Live task admission against an isolated API37 backend."""
 from __future__ import annotations
+
+import harness_support  # noqa: F401  (isolates started backends from the personal .env)
 import argparse
 import importlib.util
 import json
@@ -28,8 +30,8 @@ def main():
     parser.add_argument("--performance-samples", type=int, choices=range(1, 21), default=20,
         help="Capture diagnostic count; full acceptance always requires twenty")
     parser.add_argument("--mobile-result", action="store_true", help="Real custom-wake workflow, result notification/reopen and UI follow-up")
-    parser.add_argument("--gate", choices=["M8", "M10"], default="M10")
-    parser.add_argument("--acceptance", action="store_true", help="Run combined M10 against a prepared isolated backend; managed delegation only.")
+    parser.add_argument("--gate", choices=["android", "release"], default="release")
+    parser.add_argument("--acceptance", action="store_true", help="Run the combined release gate against a prepared isolated backend; managed delegation only.")
     parser.add_argument("--evidence", action="append", default=[], metavar="ASSERTION=PATH")
     args = parser.parse_args()
     if args.model_diagnostics and not args.pilot:
@@ -73,6 +75,10 @@ def main():
         env = {**os.environ, **{key.upper(): str(value).lower() if isinstance(value, bool) else str(value)
             for key, value in configuration["settings"].items()}, "DATABASE_URL": f"sqlite+aiosqlite:///{database.as_posix()}",
             "AUTH_PASSWORD": "", "JARVIS_ACCESS_MODE": "personal", "SESSION_SECRET_KEY": uuid4().hex, "LOCAL_LLM_ENABLED": "false",
+            # GPT-Live admission and the Codex worker are billed; name the one credential they use.
+            "OPENAI_API_KEY": harness_support.personal_credential("OPENAI_API_KEY"),
+            # The deployed command boundary (native elevated mode waits for UAC on this host).
+            "TASK_COMMAND_MODE": "trusted", "TASK_WINDOWS_SANDBOX": "unelevated",
             "OPENAI_LIVE_DIAGNOSTICS_DIR": str(folder / "model-outputs") if args.model_diagnostics else "",
             "OPENAI_LIVE_REASONING_SUMMARY": str(args.reasoning_summary).lower(), "SESSION_COOKIE_SECURE": "false"}
         server = screen.start_service(["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)], env, folder / "server.log")

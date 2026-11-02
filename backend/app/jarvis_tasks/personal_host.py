@@ -121,8 +121,6 @@ def serve():
         transport = transport_check()
         if len(settings.session_secret_key) < 32 or settings.session_secret_key == "dev-secret-change-me":
             raise RuntimeError("Set a persistent private SESSION_SECRET_KEY before linking a phone.")
-        if settings.jarvis_access_mode == "password" and not settings.auth_password.get_secret_value():
-            raise RuntimeError("Password mode requires AUTH_PASSWORD in private configuration.")
         if not settings.task_pool_enabled:
             raise RuntimeError("Personal host requires TASK_POOL_ENABLED=true.")
         for port in (8000, 3000):

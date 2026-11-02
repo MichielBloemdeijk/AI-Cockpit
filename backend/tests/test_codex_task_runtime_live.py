@@ -28,7 +28,7 @@ from app.services.task_pool_supervisor import TaskPoolSupervisor
 from app.services.worker_coordinator import worker_coordinator
 from app.services.task_workflows import load_workflow
 from app.services.task_capture import CaptureCollection, task_capture_service
-from test_m4_workflows import result_snapshot
+from test_reference_workflows import result_snapshot
 
 
 @contextmanager
@@ -255,7 +255,6 @@ async def test_native_task_runs_across_supervised_worker_replacement(monkeypatch
         monkeypatch.setenv("ALEMBIC_INI_PATH", str(settings.alembic_config_path))
         monkeypatch.setenv("TASK_WORKSPACES_DIR", settings.task_workspaces_dir)
         monkeypatch.setenv("CODEX_PROFILES_DIR", settings.codex_profiles_dir)
-        monkeypatch.setenv("TASK_EXECUTOR", "codex")
         supervisor = TaskPoolSupervisor(coordinator=worker_coordinator)
         stop = asyncio.Event()
         running = asyncio.create_task(supervisor.run(stop))

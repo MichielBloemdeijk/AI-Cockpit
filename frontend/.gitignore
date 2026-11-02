@@ -15,10 +15,9 @@
 
 # next.js
 /.next/
-/.next-verify-*
-/.next-jarvis-agent-test*/
-/.next-android-acceptance/
-/.next-*-tsconfig.json
+# Every test, smoke, acceptance or audit build writes to its own .next-<purpose>
+# folder (and .next-<purpose>-tsconfig.json); lint and typecheck skip them too.
+/.next-*
 /out/
 
 # production

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 
 from app.db.session import session_scope
 from app.db.tables import TaskExecutionRun, WorkerToolPolicy

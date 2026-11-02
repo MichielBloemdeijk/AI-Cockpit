@@ -128,7 +128,7 @@ async def test_blocked_model_leaves_intake_shared_voice_actions_and_history_inde
     background = asyncio.create_task(service.run_one())
     try:
         await asyncio.wait_for(runtime.started.wait(), 2)
-        from test_m3_preflight import exercise_code_only_services, saturate_pool
+        from test_orchestration_preflight import exercise_code_only_services, saturate_pool
         occupied = await saturate_pool()
         await asyncio.wait_for(exercise_code_only_services(occupied), 5)
         await asyncio.wait_for(service.intake(), 2)

@@ -111,7 +111,7 @@ def test_candidate_does_not_follow_linked_source_directories(tmp_path, monkeypat
 
 
 def report():
-    return {"schema": SCHEMA, "gate": "M7", "candidate": {"id": "fixture"},
+    return {"schema": SCHEMA, "gate": "voice", "candidate": {"id": "fixture"},
         "finished_at": datetime.now(timezone.utc).isoformat(), "checks": [
             {"id": "backend", "status": "passed", "evidence": {"test_count": 1}},
             {"id": "voice_provider", "status": "passed", "evidence": {
@@ -120,8 +120,8 @@ def report():
 
 def test_readiness_requires_candidate_freshness_complete_unskipped_unique_assertions():
     valid = report()
-    assert evaluate(valid, {"id": "fixture"}, gate="M7")["implementation_ready"]
-    assert not evaluate(valid, {"id": "other"}, gate="M7")["implementation_ready"]
+    assert evaluate(valid, {"id": "fixture"}, gate="voice")["implementation_ready"]
+    assert not evaluate(valid, {"id": "other"}, gate="voice")["implementation_ready"]
     for mutate in (
         lambda r: r["checks"].pop(),
         lambda r: r["checks"][0].update(skipped=1),
@@ -132,7 +132,7 @@ def test_readiness_requires_candidate_freshness_complete_unskipped_unique_assert
     ):
         altered = deepcopy(valid)
         mutate(altered)
-        assert evaluate(altered, {"id": "fixture"}, gate="M7")["status"] == "blocked"
+        assert evaluate(altered, {"id": "fixture"}, gate="voice")["status"] == "blocked"
 
 
 def test_final_ready_sample_uses_client_interval_and_strict_4500_ms_limit():
@@ -154,9 +154,9 @@ def test_system_gesture_does_not_pass_capture_gate():
         "initial_screen_A": True, "fresh_screen_B": True, "clarification_before_B": True, "admitted_capture": "B"})
 
 
-def test_m8_requires_real_mobile_result_and_native_privacy_not_only_admission():
+def test_android_gate_requires_real_mobile_result_and_native_privacy_not_only_admission():
     from app.jarvis_tasks.acceptance import REQUIRED
-    assert {"mobile_result", "capture_privacy"} <= REQUIRED["M8"] & REQUIRED["M10"]
+    assert {"mobile_result", "capture_privacy"} <= REQUIRED["android"] & REQUIRED["release"]
     assert validate_observation("mobile_result", {"custom_wake": False})
     valid = {"adapter": "openai_live", "workflow": "research_screen@1", "custom_wake": True,
         "real_notification_delivered": True, "notification_action_tapped": True, "reopened_result": True,
@@ -175,27 +175,27 @@ def test_full_audio_sized_report_loads_without_waiving_identity_or_size_boundary
     proof["diagnostics"] = "x" * 2_600_000
     path = tmp_path / "full-cohort.json"
     path.write_text(json.dumps(proof), encoding="utf-8")
-    assert load_assertion(path, {"id": "fixture"}, gate="M6", identifier="backend")["status"] == "passed"
+    assert load_assertion(path, {"id": "fixture"}, gate="coding", identifier="backend")["status"] == "passed"
     with pytest.raises(ValueError, match="candidate"):
-        load_assertion(path, {"id": "other"}, gate="M6", identifier="backend")
+        load_assertion(path, {"id": "other"}, gate="coding", identifier="backend")
     path.write_text(" " * (acceptance.MAX_EVIDENCE_BYTES + 1), encoding="utf-8")
     with pytest.raises(ValueError, match="bounded regular"):
-        load_assertion(path, {"id": "fixture"}, gate="M6", identifier="backend")
+        load_assertion(path, {"id": "fixture"}, gate="coding", identifier="backend")
 
 
 def test_manifest_reuses_only_equivalent_backend_gates_and_live_voice_proof(tmp_path):
     import app.jarvis_tasks.acceptance as acceptance
     manifest = json.loads(acceptance.Path(acceptance.__file__).with_name("acceptance-profiles.json").read_text())
-    assert manifest["backend_suites"]["M6"] == manifest["backend_suites"]["M7"] == "not diagnostic and not provider and not browser"
-    assert manifest["backend_suites"]["M10"] == "not diagnostic"
+    assert manifest["backend_suites"]["coding"] == manifest["backend_suites"]["voice"] == "not diagnostic and not provider and not browser"
+    assert manifest["backend_suites"]["release"] == "not diagnostic"
     assert manifest["command_timeouts_seconds"]["backend"] == 2400
     proof = report()
     path = tmp_path / "proof.json"
     path.write_text(json.dumps(proof))
-    assert load_assertion(path, {"id": "fixture"}, gate="M6", identifier="backend")["status"] == "passed"
+    assert load_assertion(path, {"id": "fixture"}, gate="coding", identifier="backend")["status"] == "passed"
     with pytest.raises(ValueError, match="gate"):
-        load_assertion(path, {"id": "fixture"}, gate="M10", identifier="backend")
-    assert load_assertion(path, {"id": "fixture"}, gate="M10", identifier="voice_provider")["status"] == "passed"
+        load_assertion(path, {"id": "fixture"}, gate="release", identifier="backend")
+    assert load_assertion(path, {"id": "fixture"}, gate="release", identifier="voice_provider")["status"] == "passed"
 
 
 def test_capture_performance_rejects_negative_intervals_booleans_and_nonfinite_samples():
@@ -220,7 +220,7 @@ def test_imported_assertion_rejects_malformed_duplicate_skipped_and_old_candidat
     path = tmp_path / "proof.json"
     valid = report()
     path.write_text(json.dumps(valid))
-    assert load_assertion(path, {"id": "fixture"}, gate="M7", identifier="voice_provider")["status"] == "passed"
+    assert load_assertion(path, {"id": "fixture"}, gate="voice", identifier="voice_provider")["status"] == "passed"
     for mutate in (lambda r: r.update(checks=None), lambda r: r.update(finished_at=None),
             lambda r: r["checks"][1].update(skipped=1), lambda r: r.update(candidate={"id": "old"}),
             lambda r: r["checks"].append(deepcopy(r["checks"][1]))):
@@ -228,7 +228,7 @@ def test_imported_assertion_rejects_malformed_duplicate_skipped_and_old_candidat
         mutate(changed)
         path.write_text(json.dumps(changed))
         with pytest.raises((ValueError, TypeError)):
-            load_assertion(path, {"id": "fixture"}, gate="M7", identifier="voice_provider")
+            load_assertion(path, {"id": "fixture"}, gate="voice", identifier="voice_provider")
 
 
 
@@ -282,17 +282,17 @@ def test_process_tree_report_accepts_only_its_declared_isolated_directories(tmp_
         "task_workspaces_dir", "task_context_blobs_dir", "conversation_workspaces_dir")})
     for key, value in configuration["settings"].items():
         monkeypatch.setattr(settings, key, value)
-    report = {"schema": SCHEMA, "gate": "M10", "candidate": candidate_identity(),
+    report = {"schema": SCHEMA, "gate": "release", "candidate": candidate_identity(),
         "test_configuration": configuration, "finished_at": datetime.now(timezone.utc).isoformat(),
         "checks": [{"id": "process_tree", "status": "passed", "evidence": {
             "exact_pid_creation_stamp": True, "descendants_stopped": True, "writer_growth_after_stop": 0}}]}
     path = tmp_path / "process-tree.json"
     path.write_text(json.dumps(report), encoding="utf-8")
-    assert load_assertion(path, expected, gate="M10", identifier="process_tree")["status"] == "passed"
+    assert load_assertion(path, expected, gate="release", identifier="process_tree")["status"] == "passed"
     report.pop("test_configuration")
     path.write_text(json.dumps(report), encoding="utf-8")
     with pytest.raises(ValueError, match="candidate mismatch"):
-        load_assertion(path, expected, gate="M10", identifier="process_tree")
+        load_assertion(path, expected, gate="release", identifier="process_tree")
 
 
 def test_runner_executes_audio_and_capture_stages_with_declared_configuration(tmp_path, monkeypatch):
@@ -307,7 +307,7 @@ def test_runner_executes_audio_and_capture_stages_with_declared_configuration(tm
     configuration = acceptance.resolve_test_configuration("emulator", paths={
         "codex_profiles_dir": str(tmp_path / "profiles"), "task_workspaces_dir": str(tmp_path / "workspaces"),
         "task_context_blobs_dir": str(tmp_path / "blobs"), "conversation_workspaces_dir": str(tmp_path / "conversations")}, browser_origin="http://10.0.2.2:8123")
-    report = acceptance.run_acceptance(gate="M8", output=tmp_path / "report", evidence={}, live=True,
+    report = acceptance.run_acceptance(gate="android", output=tmp_path / "report", evidence={}, live=True,
         emulator="emulator-5554", audio_dir=tmp_path, database=tmp_path / "fixture.db", backend_url="http://127.0.0.1:8001",
         emulator_configuration=configuration)
     audio = next(row for row in commands if row[0] == "audio_execution")
@@ -326,7 +326,7 @@ def test_runner_respects_accepted_cohorts_without_waiving_privacy_or_mobile_resu
         commands.append((identifier, command))
         return {"id": identifier, "status": "passed", "evidence": {"mock": True}}
     monkeypatch.setattr(acceptance, "_command", execute)
-    result = acceptance.run_acceptance(gate="M8", output=tmp_path / "report", evidence={}, live=True,
+    result = acceptance.run_acceptance(gate="android", output=tmp_path / "report", evidence={}, live=True,
         emulator="emulator-5554", audio_dir=tmp_path, database=tmp_path / "fixture.db", backend_url="http://127.0.0.1:8001")
     audio = next(command for identifier, command in commands if identifier == "audio_execution")
     assert "--pilot" in audio and audio[-2:] == ["--case", "ready07"]
@@ -344,13 +344,13 @@ def test_runner_respects_accepted_cohorts_without_waiving_privacy_or_mobile_resu
 
 def test_accepted_decision_cannot_be_forged_or_used_to_waive_other_assertions(monkeypatch):
     import app.jarvis_tasks.acceptance as acceptance
-    valid = {**report(), "gate": "M8", "checks": [
+    valid = {**report(), "gate": "android", "checks": [
         {"id": identifier, "status": "accepted_with_caveats", "evidence": proof}
-        for identifier, proof in acceptance.accepted_exceptions("M8").items()]}
+        for identifier, proof in acceptance.accepted_exceptions("android").items()]}
     monkeypatch.setattr(acceptance, "validate_observation", lambda identifier, evidence: None)
     valid["checks"].extend({"id": identifier, "status": "passed", "evidence": {"fixture": True}}
-        for identifier in acceptance.REQUIRED["M8"] - acceptance.accepted_exceptions("M8").keys())
-    assert acceptance.evaluate(valid, valid["candidate"], gate="M8")["implementation_ready"]
+        for identifier in acceptance.REQUIRED["android"] - acceptance.accepted_exceptions("android").keys())
+    assert acceptance.evaluate(valid, valid["candidate"], gate="android")["implementation_ready"]
     for mutate in (
         lambda r: r["checks"][0].update(status="passed"),
         lambda r: r["checks"][0]["evidence"].update(decision="invented"),
@@ -359,5 +359,5 @@ def test_accepted_decision_cannot_be_forged_or_used_to_waive_other_assertions(mo
     ):
         altered = deepcopy(valid)
         mutate(altered)
-        assert not acceptance.evaluate(altered, valid["candidate"], gate="M8")["implementation_ready"]
-    assert not acceptance.accepted_exceptions("M9")
+        assert not acceptance.evaluate(altered, valid["candidate"], gate="android")["implementation_ready"]
+    assert not acceptance.accepted_exceptions("subscription")

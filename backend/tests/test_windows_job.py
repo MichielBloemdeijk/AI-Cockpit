@@ -69,7 +69,7 @@ def test_worker_job_closes_descendant_writer_after_parent_crash(tmp_path: Path) 
         if destination := os.getenv("JARVIS_PROCESS_TREE_REPORT"):
             from app.jarvis_tasks.acceptance import SCHEMA, candidate_identity
             Path(destination).write_text(json.dumps({"schema": SCHEMA,
-                "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "M10"), "candidate": candidate_identity(),
+                "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "release"), "candidate": candidate_identity(),
                 "test_configuration": process_tree_configuration(),
                 "finished_at": datetime.now(timezone.utc).isoformat(), "checks": [{"id": "process_tree",
                     "status": "passed", "evidence": {"exact_pid_creation_stamp": False,
@@ -137,7 +137,7 @@ def test_child_exits_when_its_exact_supervisor_process_dies(tmp_path: Path) -> N
         if destination := os.getenv("JARVIS_PROCESS_TREE_REPORT"):
             from app.jarvis_tasks.acceptance import SCHEMA, candidate_identity
             Path(destination).write_text(json.dumps({"schema": SCHEMA,
-                "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "M10"), "candidate": candidate_identity(),
+                "gate": os.getenv("JARVIS_ACCEPTANCE_GATE", "release"), "candidate": candidate_identity(),
                 "test_configuration": process_tree_configuration(),
                 "finished_at": datetime.now(timezone.utc).isoformat(), "checks": [{"id": "process_tree",
                     "status": "passed", "evidence": {"exact_pid_creation_stamp": True,
