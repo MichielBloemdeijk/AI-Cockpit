@@ -105,7 +105,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 4.2–4.5: conversation runs (rest of I03), execution contracts (B05, B07), live transitions (B06), provider transport (I06); `services/conversations/` package | Done (see below) | `4c59991` |
 | Phase 4.6: remaining backend packages (`jarvis/`, `orchestration/`, `results/`, `updates/`); presentation helpers public (O01, B04) | Done (see below) | `7d990e7` |
 | Re-baseline before phase 4: scans re-run, stale phase 4–6 items updated, decisions 6–8 (see below) | Done | `a793d7a` |
-| Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02); `frontend/lib` grouped by domain | Done (see below) | uncommitted |
+| Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02); `frontend/lib` grouped by domain | Done (see below) | `f22b06c` |
 | Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02 scripts) | Not started | — |
 | Final assessment with a fresh-context agent | Not run | — |
 
