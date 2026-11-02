@@ -9,10 +9,10 @@ The target is unchanged from the first pass, and the systematic batches confirme
 The batches made three ownership gaps concrete. Each has one named owner to create:
 
 1. **Task lifecycle** (T01, T02, T03, B01, B04, B07): one module owns every task/run/attempt transition and its vocabulary, always under the task lock. `task_service`, `worker_coordinator`, the reminder scheduler and the API become callers that supply evidence.
-2. **Conversation run lifecycle** (B02, I03): one owner for start, guarded completion/failure/cancellation and the matching events, used by agent, tool, chat and council runs.
-3. **Startup preconditions** (S01, E01, P02): one check that both launch paths run: secret strength, access mode versus bind address, executor/pool pairing.
+2. **Conversation run lifecycle** (B02, I03): one owner for start, guarded completion/failure/cancellation and the matching events, used by chat and council runs (the agent and tool runs were removed in phase 2). Largely in place since phase 1 (`_owned_run`); the rest is in phase 4.
+3. **Startup preconditions** (S01, E01, P02): `Settings.check_startup_preconditions` runs on every launch path and enforces only what does not break the development path (password mode needs a password); secret strength, loopback binding and the pool stay personal-host checks (owner decision, 2026-11-02, per decision 5). Done in phase 3.
 
-Elsewhere the direction stays as before: narrow execution/native-runtime contracts (B05, B07), reusable web feature screens (C02, C07), typed result and control contracts shared by backend and clients (C05, C06, C14), and acceptance code behind debug seams (C04).
+Elsewhere the direction stays as before: narrow execution/native-runtime contracts (B05, B07), reusable web feature screens (C02, C07), typed control contracts shared by backend and clients (C06, C14; results became app records, see C05), and acceptance code behind debug seams (C04).
 
 Do not extract every query into a repository, require an interface per class, generate all cross-language models, or split files to meet size targets. Each extraction must remove a concrete reason for unrelated code to change together.
 
@@ -22,10 +22,10 @@ Do not extract every query into a repository, require an interface per class, ge
 
 | ID | Priority | Evidence | Summary | Phase |
 |---|---|---|---|---|
-| S01 | P3 (documented; decision 5) | R | Default dev config: any network peer gets an owner session and code execution | 0 (optional) |
+| S01 | P3 (documented; decisions 5, 7) | R | Default dev config: any network peer gets an owner session and code execution | — (documented only) |
 | I04 | closed by decision 1 | R | Legacy agent's Python/shell confinement is advisory but reported as a sandbox | 2 (removal) |
 | C11 | P1 | R | Browser Stop keeps mic and WebRTC open until an unbounded DELETE returns | 0 |
-| O01 | P2 | D (mechanical) | Flat `services/` (105 modules) and `frontend/lib` (43) folders; ownership only in filename prefixes | 4–5 (incremental) |
+| O01 | P2 | D (mechanical) | Flat `services/` (105 modules; 92 on 2026-11-02) and `frontend/lib` (43) folders; ownership only in filename prefixes | 4–5 (incremental) |
 | B01 | P2 | R | Policy revocation sends unsupported `pause` | 1 |
 | B02 | P2 | R | Failure after run claim leaves it `running` with no owner or log | 1 |
 | B03 | P2 | R | Partial API startup skips cleanup of started components | 1 |
@@ -43,10 +43,10 @@ Do not extract every query into a repository, require an interface per class, ge
 | X02 | P2 | S | Lint/typecheck scope crosses generated acceptance artifacts | 3 |
 | ONB-01–06 | P2–P3 | S/D | Contributor docs, setup commands and verification guidance | 3 |
 | P02 | P3 | S | Path settings resolved three ways; secret check only in launchers | 0 (secret), 3 |
-| E03 | P3 | D (mechanical) | No Python lint/type check; 21 routes without a client | 3 (tooling), 6 (routes) |
+| E03 | P3 | D (mechanical) | No Python lint/type check; 21 routes without a client (12 on 2026-11-02, see the re-baseline) | 3 (ruff), 4 (type checker), 6 (routes) |
 | B04 | P2 | D | Hidden projections and private cross-service transaction helpers | 4 |
 | T02 | P2 | D | Control/attempt transitions duplicated across modules | 4 |
-| I03 | P2 | S | Non-agent run lifecycles use unguarded writes across separate commits | 4 |
+| I03 | P2 | S | Non-agent run lifecycles use unguarded writes across separate commits | 1 (mostly, with B02), 4 (rest) |
 | B05 | P2 | D | Native runtime facade split across production and probe CLI | 4 |
 | B06 | P2 | D | Live event transitions encoded in flags inside one 542-line handler | 4 |
 | I01 | closed by decision 1 | D | Legacy runner split over five files sharing ~50 private names | 2 (removal) |
@@ -57,7 +57,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | C02 | P2 | D | Jarvis route owns protocol and lifecycle orchestration | 5 |
 | C03 | P2 | D | Native audio ownership exposed through a writable global | 5 |
 | C04 | P2 | D | Acceptance code compiled into production audio/capture paths | 5 |
-| C05 | P2 | D | Result renderer registry is a partial extension point | 5 |
+| C05 | closed by the app platform | D | Result renderer registry is a partial extension point | — (registry removed 2026-11-01) |
 | C06 | P2 | S | Task controls inferred from English summary text | 5 |
 | C07 | P2 | D | Static companion imports route pages | 5 |
 | C09 | P2 | S | Request lifetime and error semantics differ per endpoint | 5 |
@@ -81,12 +81,18 @@ Do not extract every query into a repository, require an interface per class, ge
    - **C11:** stays a phase-0 fix. It is a correctness bug (the microphone stays live after Stop), not only a security item.
    - **Placeholder session secret (P02), LAN-wide CORS, harness `.env` inheritance (A03, kept for its isolation/reproducibility value):** documentation only.
 
+**Owner answers, 2026-11-02 (before phase 4):**
+
+6. **Full scope for phases 4–6.** The refactor also exists to make Jarvis intuitive and easy to maintain, so maintainability-only items (B06, I06, O01) stay in. An item is dropped only if it does not help with that and adds complexity.
+7. **Security items: keep only if simple and neutral for testing and running.** S01 fails that test and is removed from the plan (stays documented). Every browser and phone request reaches the backend through the Next.js proxy (`next.config.ts` rewrites to `127.0.0.1:8000`), and the personal host sits behind Tailscale Serve, so the backend sees a loopback client address for all of them. The five-line client-address check would therefore restrict nothing; a working version would need trusted forwarded-for handling across both proxies, which is not simple.
+8. **Emulator runs at progress gates.** Model-free emulator harnesses are fine as gate checks (before phase 5 starts and at the end of each Android-affecting step), not after every minor change.
+
 ## Implementation status
 
 | Step | Status | Commit |
 |---|---|---|
 | Phase 0: C11 browser Stop ordering | Done, regression test added | `d4438b1` |
-| Phase 0: S01 optional loopback/Tailscale login restriction | Not done (documented only, per decision 5) | — |
+| Phase 0: S01 optional loopback/Tailscale login restriction | Removed from the plan (decision 7); documented only | — |
 | Phase 2: retire legacy executor and Chat agent (closes I01, I02, I04; supervisor now logs run failures, part of B02) | Done | `bd68c27` |
 | Phase 2: remove unused routes (17) | Done; kept `/api/jarvis/diagnostics` and `/api/jarvis/live/observer` | `354e8cf` |
 | Phase 2: council/picker models; dead LLM helpers (part of I06) | Done | `9d7e692` |
@@ -96,6 +102,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Done, one regression test per finding (see below) | `d615719` |
 | Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Done (see below); the type checker waits for the phase-4 seams | `134a896` |
 | Phase 4: task lifecycle, conversation runs, execution contracts, live transitions, provider transport | Not started | — |
+| Re-baseline before phase 4: scans re-run, stale phase 4–6 items updated, decisions 6–8 (see below) | Done | this commit |
 | Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02) | Not started | — |
 | Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02 scripts) | Not started | — |
 | Final assessment with a fresh-context agent | Not run | — |
@@ -105,7 +112,7 @@ Generated apps (owner decision, 2026-10-30): app creation stays part of Jarvis, 
 ## Phase 0 — Small immediate fixes
 
 - **C11:** in `jarvis-live.ts` `dispose`, stop tracks and close the peer/data channel before the backend close, and bound the close request. Acceptance: the C11 probe shows tracks stopped while the close is pending.
-- **S01 (optional, per decision 5):** accept the empty-password login only from loopback/Tailscale client addresses. Otherwise S01 stays documented.
+- **S01:** removed from the plan (decision 7); the backend only sees the proxies' loopback address, so a client-address check would not restrict anything. Stays documented.
 
 I04 needs no mitigation step: decision 1 removes the code.
 
@@ -158,13 +165,36 @@ Acceptance: setup runs from a clean checkout with isolated config; lint complete
 - **E03:** ruff (correctness rules) for `backend/app`, clean. mypy/pyright is deferred to phase 4, whose seams it is meant to cover.
 - **ONB-01–05:** a new current `docs/ARCHITECTURE.md` with a reading map (the old one moved to `reports/architecture-before-2026-11.md`); the README separates the development setup from the personal host and its preconditions; the frontend and Android READMEs and `.env.example` match current code; `setup-jarvis.ps1` (wrong prerequisites, unreferenced) is removed with its VAPID step kept as a README command. The self-test guide documents `doctor`, replay inputs and L0's real scope; L0 reports `"complete": false` when a layer is skipped and picks the platform's Gradle wrapper. All billed tests carry the `provider` marker, and every other test is network-blocked by default. The chat UI no longer calls single-model mode "Agent".
 
+## Re-baseline before phase 4 (2026-11-02)
+
+The scans were re-run on `134a896` (output in `evidence/rescan-2026-11-02/`) because phases 1–3, the phase-2 removals and the app platform had changed the code since `0ab419d`. They are trend measures, not targets.
+
+| Measure | `0ab419d` | 2026-11-02 |
+|---|---:|---:|
+| Private names imported across modules (importing modules) | 67 (20) | 15 (9) |
+| `task_service` privates used elsewhere (modules, uses) | 5 (5, 13) | 5 (5, 14) |
+| Other singletons with privates used elsewhere | 4 | 2 (`chat_orchestrator._resolve_session_metadata` from two routes; three `task_presentation_service` projection helpers) |
+| Functions of 150+ lines | 28 | 24 (largest still `jarvis_coordinator.handle_provider_event`, 542) |
+| API routes (without a client) | 110 (21) | 94 (12) |
+| Modules in `app/services/` | 105 | 92 |
+
+Findings for the remaining phases:
+
+- `task_service` privates (`_lock_task`, `_current_run`, `_assert_fence`, `_assign_worker_eligibility`, `_worker_health`) are still used from the reminder scheduler, `task_context`, `task_context_upload`, `task_semantic_compaction` and `worker_tool_policy`; direct status writes remain in `task_service`, `worker_coordinator`, the reminder scheduler and `task_context_upload`. Phase 4.1 is unchanged.
+- I03 is mostly closed by B02's `_owned_run`; `mark_run_interrupted` is gone. Phase 4.2 shrinks to the remaining council writers.
+- I01, I02 and C05 are closed; phase 4.3 keeps only B05/B07, and phase 5 no longer lists C05.
+- The 12 routes without a web-client caller: the two kept debugging endpoints (decision 3); six app-platform routes that installed apps and the SDK call from the app frame (files, errors, views, the app host), which the scan does not see; and `apps/install`, `{slug}/status`, `{slug}/rollback` and `{slug}/reset`, whose operations Jarvis reaches through its tools directly (`rollback` has no test). Decision 3's removals were done in phase 2; phase 6 decides whether those four HTTP routes stay.
+- Type checker: **pyright** (basic mode), added at the start of phase 4 and scoped to the modules each phase-4 step creates or rewrites, so every new seam lands checked. The scope widens as modules move into feature packages; it is not a whole-repo gate.
+- Scope stays complete (decision 6), including B06, I06 and the incremental O01 package moves.
+- Before phase 5, run the model-free emulator harnesses once as the Android baseline (decision 8); the phone needs relinking after the phase-3 database reset.
+
 ## Phase 4 — Backend ownership seams
 
-Order matters: lifecycle first, because B04, T01 and C06 all depend on it. Each new owner becomes a feature package (O01): `services/tasks/` for the lifecycle module and the `task_*` services it absorbs, then `conversations/`, `jarvis/`, `orchestration/`, `results/`. Move modules into a package when its owner is created, not in a separate big-bang move, and keep `frontend/lib` in step (`lib/jarvis/`, `lib/conversations/`, …) during phase 5.
+Start by adding pyright (basic mode) to `backend/pyproject.toml` and `docs/VERIFICATION.md`, scoped to the files the next step touches. Order matters: lifecycle first, because B04, T01 and C06 all depend on it. Each new owner becomes a feature package (O01): `services/tasks/` for the lifecycle module and the `task_*` services it absorbs, then `conversations/`, `jarvis/`, `orchestration/`, `results/`. Move modules into a package when its owner is created, not in a separate big-bang move, and keep `frontend/lib` in step (`lib/jarvis/`, `lib/conversations/`, …) during phase 5.
 
 1. **Task lifecycle module** (T02, T01, B07, B04): typed status/action vocabularies per state machine; `apply_control`, `confirm_stop(evidence)`, `create_attempt`, `resume_after_wait`, `complete`/`fail`, each under `_lock_task` and writing task, run, attempt and events together. Callers stop using `task_service` privates. Projections become explicit named steps of these operations rather than a side effect of `append_event`. Keep fence checks, idempotency and atomic result publication unchanged.
-2. **Conversation run lifecycle** (I03, B02 class): one owner for all run kinds; delete the unguarded writers and the dead `mark_run_interrupted`.
-3. **Execution contracts** (B05, B07, I01, I02): a small production facade for the pinned native runtime used by both runtime and probes; the execution protocol next to its context and sink types; typed run state if the legacy executor stays.
+2. **Conversation run lifecycle** (rest of I03): the council path still ends its run through the unguarded `conversation_store.mark_run_failed`/`mark_run_completed` (`chat_orchestrator._council_turn`); route it through `_owned_run`'s guarded transitions, then delete the unguarded writers (`mark_run_completed`, `update_run_status`, and `cancel_queued_run` if still uncalled). `mark_run_interrupted` is already gone. Small.
+3. **Execution contracts** (B05, B07): a small production facade for the pinned native runtime used by both `codex_task_runtime` and the probes (`codex_probe`, `native_boundary`; `codex_probe` is still the largest source of imported privates); the execution protocol next to its context and sink types. I01/I02 closed with the legacy executor.
 4. **Live coordinator transitions** (B06): named transition outcomes and actions for provider events, extracted into coherent wake and response routines. Keep provider calls outside DB transactions; duplicate/reordered/stale-generation tests anchor each step.
 5. **Provider transport** (I06): one retry/error helper, a model-profile table, explicit model parameter.
 
@@ -172,14 +202,14 @@ Acceptance: targeted regressions plus the full offline suite. `private-attribute
 
 ## Phase 5 — Client feature ownership
 
-- Web: reusable task/app/login screens with thin Next and static adapters (C07). Jarvis feed/replay owner and voice composition owner separated from the route (C02). Discriminated result model with per-kind render/copy (C05). Task controls driven by the structured control projection from phase 4 (C06). Shared finite-request transport with abort and structured errors (C09).
+- Web: reusable task/app/login screens with thin Next and static adapters (C07). Jarvis feed/replay owner and voice composition owner separated from the route (C02). Task controls driven by the structured control projection from phase 4 (C06). Shared finite-request transport with abort and structured errors (C09).
 - Android: read-only audio state plus commands, with the service kept private (C03). Acceptance audio/capture behind a debug-source-set seam with a trivial release implementation (C04). A sealed show-mode for the assistant session (A02).
 
-Acceptance follows the per-finding acceptance in the client review. Offline tests come first, then model-free browser/emulator acceptance for affected seams. Physical-device checks remain deferred and are named as such.
+Acceptance follows the per-finding acceptance in the client review. Offline tests come first, then model-free browser/emulator acceptance for affected seams at the end of each step, not after every minor change (decision 8). Physical-device checks remain deferred and are named as such.
 
 ## Phase 6 — Remove verified leftovers
 
-After their replacements are in place: unused wake gates, legacy inference mode and `AgentStatusCard` (C08); the old wake handoff protocol (C13); the pre-timeline reconstruction and most of `agent-event-presenter.ts`, after C14 (I05); app-path remapping (I05); rollout aliases and tombstones (B08); persistence leftovers (P03); unused routes per decision 3 (E03); root experiment scripts and `verify-personal-link.mjs` (E02). Each removal checks callers again at that time and updates tests and docs in the same change.
+After their replacements are in place: unused wake gates, legacy inference mode and `AgentStatusCard` (C08); the old wake handoff protocol (C13); the pre-timeline reconstruction and most of `agent-event-presenter.ts`, after C14 (I05); app-path remapping (I05); rollout aliases and tombstones (B08); persistence leftovers (P03); a final route-usage check (decision 3's removals were done in phase 2; see the re-baseline for the 12 client-less routes) (E03); root experiment scripts and `verify-personal-link.mjs` (E02). Each removal checks callers again at that time and updates tests and docs in the same change.
 
 ## Preservation rules (apply in every phase)
 

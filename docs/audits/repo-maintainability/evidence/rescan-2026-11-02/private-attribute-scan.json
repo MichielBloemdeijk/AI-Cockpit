@@ -1,0 +1,50 @@
+{
+ "targets": {
+  "app.services.task_service.task_service": {
+   "distinct_private_members": 5,
+   "importing_modules": 5,
+   "uses": 14,
+   "members": [
+    "_assert_fence",
+    "_assign_worker_eligibility",
+    "_current_run",
+    "_lock_task",
+    "_worker_health"
+   ],
+   "modules": [
+    "app/services/reminder_scheduler.py",
+    "app/services/task_context.py",
+    "app/services/task_context_upload.py",
+    "app/services/task_semantic_compaction.py",
+    "app/services/worker_tool_policy.py"
+   ]
+  },
+  "app.services.chat_orchestrator.chat_orchestrator": {
+   "distinct_private_members": 1,
+   "importing_modules": 2,
+   "uses": 4,
+   "members": [
+    "_resolve_session_metadata"
+   ],
+   "modules": [
+    "app/api/chat.py",
+    "app/api/conversations.py"
+   ]
+  },
+  "app.services.task_presentations.task_presentation_service": {
+   "distinct_private_members": 3,
+   "importing_modules": 3,
+   "uses": 4,
+   "members": [
+    "_append_handled_audit",
+    "_project_batch",
+    "_supersede_notification"
+   ],
+   "modules": [
+    "app/services/conversation_observer.py",
+    "app/services/orchestration_attention.py",
+    "app/services/task_orchestration.py"
+   ]
+  }
+ }
+}

@@ -1,0 +1,113 @@
+{
+ "importing_modules": 9,
+ "private_names_imported": 15,
+ "top_sources": [
+  [
+   "app.jarvis_tasks.codex_probe",
+   6
+  ],
+  [
+   "app.services.codex_task_runtime",
+   4
+  ],
+  [
+   "app.services.conversation_store",
+   2
+  ],
+  [
+   "app.app_platform.records",
+   1
+  ],
+  [
+   "app.services.task_semantic_compaction",
+   1
+  ],
+  [
+   "app.services.worker_coordinator",
+   1
+  ]
+ ],
+ "edges": [
+  {
+   "importer": "app.app_platform.views",
+   "source": "app.app_platform.records",
+   "names": [
+    "_check_key"
+   ]
+  },
+  {
+   "importer": "app.jarvis_tasks.native_boundary",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_sandbox_checks"
+   ]
+  },
+  {
+   "importer": "app.jarvis_tasks.orchestration_host",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_probe_api_key"
+   ]
+  },
+  {
+   "importer": "app.jarvis_tasks.orchestration_host",
+   "source": "app.services.codex_task_runtime",
+   "names": [
+    "_json_value",
+    "_message_text",
+    "_walk_items"
+   ]
+  },
+  {
+   "importer": "app.services.codex_task_runtime",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_sandbox_checks"
+   ]
+  },
+  {
+   "importer": "app.services.jarvis_daily",
+   "source": "app.services.conversation_store",
+   "names": [
+    "_conversation_record",
+    "_message_record"
+   ]
+  },
+  {
+   "importer": "app.services.native_worker",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_command_exec"
+   ]
+  },
+  {
+   "importer": "app.services.native_worker",
+   "source": "app.services.codex_task_runtime",
+   "names": [
+    "_json_value"
+   ]
+  },
+  {
+   "importer": "app.services.task_context",
+   "source": "app.services.task_semantic_compaction",
+   "names": [
+    "_summary_payload"
+   ]
+  },
+  {
+   "importer": "app.services.task_orchestration",
+   "source": "app.services.worker_coordinator",
+   "names": [
+    "_supervisor_owner_has_exited"
+   ]
+  },
+  {
+   "importer": "app.services.task_project_tools",
+   "source": "app.jarvis_tasks.codex_probe",
+   "names": [
+    "_command_exec",
+    "_sandbox_checks"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,103 @@
+{
+ "routes": 94,
+ "without_client": 12,
+ "without_client_or_test": 3,
+ "unused": [
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/jarvis/live/observer",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/jarvis/diagnostics",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-platform/apps/install",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-platform/apps/{slug}/rollback",
+   "client": false,
+   "test": false
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/app-platform/apps/{slug}/status",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-platform/apps/{slug}/reset",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-platform/apps/{slug}/errors",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "POST"
+   ],
+   "path": "/api/app-platform/apps/{slug}/views",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "PUT"
+   ],
+   "path": "/api/app-platform/files/{slug}/{name:path}",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/app-platform/files/{slug}/{name:path}",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "DELETE"
+   ],
+   "path": "/api/app-platform/files/{slug}/{name:path}",
+   "client": false,
+   "test": true
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/app-host/{slug}/{version}/{path:path}",
+   "client": false,
+   "test": true
+  }
+ ]
+}
