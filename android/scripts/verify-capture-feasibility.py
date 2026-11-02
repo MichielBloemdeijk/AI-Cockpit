@@ -181,10 +181,12 @@ def main():
                 else:
                     adb(serial, "shell", "am", "broadcast", "-a", f"{FIXTURE_PACKAGE}.CHANGE",
                         "-p", FIXTURE_PACKAGE, "--ez", "secure", "false")
-                    adb(serial, "shell", "settings", "put", "secure", "assist_screenshot_enabled",
-                        "0" if name == "android_disabled" else "1")
+                    # App-op first: on Android 17 changing READ_SCREEN_CONTEXT re-syncs the
+                    # assist settings, which would undo a screenshot setting written before it.
                     adb(serial, "shell", "cmd", "appops", "set", PACKAGE, "READ_SCREEN_CONTEXT",
                         "default" if name == "android_disabled" else "ignore")
+                    adb(serial, "shell", "settings", "put", "secure", "assist_screenshot_enabled",
+                        "0" if name == "android_disabled" else "1")
                 time.sleep(0.5)
                 capture_id = str(uuid4())
                 command("refresh", capture_id)
