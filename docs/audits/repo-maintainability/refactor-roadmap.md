@@ -231,7 +231,7 @@ Acceptance follows the per-finding acceptance in the client review. Offline test
 
 ## Phase 6 — Remove verified leftovers
 
-After their replacements are in place: unused wake gates, legacy inference mode and `AgentStatusCard` (C08); the old wake handoff protocol (C13); the pre-timeline reconstruction and most of `agent-event-presenter.ts`, after C14 (I05); app-path remapping (I05); rollout aliases and tombstones (B08); persistence leftovers (P03); a final route-usage check (decision 3's removals were done in phase 2; see the re-baseline for the 12 client-less routes) (E03); root experiment scripts and `verify-personal-link.mjs` (E02). Each removal checks callers again at that time and updates tests and docs in the same change.
+After their replacements are in place: unused wake gates, legacy inference mode and `AgentStatusCard` (C08); the old wake handoff protocol (C13); the pre-timeline reconstruction and most of `agent-event-presenter.ts`, after C14 (I05); app-path remapping (I05); rollout aliases and tombstones (B08); persistence leftovers (P03); the 162 pyright findings in `jarvis/` and `orchestration/` (owner decision, 2026-11-02), after which both packages join the type check; a final route-usage check (decision 3's removals were done in phase 2; see the re-baseline for the 12 client-less routes) (E03); root experiment scripts and `verify-personal-link.mjs` (E02). Each removal checks callers again at that time and updates tests and docs in the same change.
 
 ## Preservation rules (apply in every phase)
 

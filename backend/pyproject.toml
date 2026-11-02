@@ -60,6 +60,10 @@ codex-probe = [
     "openai-codex==0.155.1",
 ]
 
+[tool.uv]
+# Web Push is part of the normal install; the Codex probe pin stays opt-in.
+default-groups = ["dev", "notifications"]
+
 [tool.pytest.ini_options]
 # data/ holds runtime state (including third-party plugin checkouts with their own
 # tests); only the project suite may be collected.

@@ -323,7 +323,7 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
     successes = 0
     transient_errors: list[str] = []
     stale_ids: list[str] = []
-    from pywebpush import webpush  # pyright: ignore[reportMissingImports]  (optional `notifications` group)
+    from pywebpush import webpush
 
     for subscription in subscriptions:
         try:

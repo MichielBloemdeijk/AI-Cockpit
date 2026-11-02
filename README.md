@@ -66,8 +66,6 @@ cd backend; uv sync; cd ..
 cd frontend; npm ci; cd ..
 ```
 
-Add `--group notifications` to `uv sync` if you enable Web Push.
-
 Then, in two terminals from the repository root:
 
 ```powershell
@@ -155,7 +153,7 @@ To create Web Push keys:
 
 ```powershell
 cd backend
-uv run --group notifications python -c "import base64;from cryptography.hazmat.primitives.asymmetric import ec;from cryptography.hazmat.primitives.serialization import Encoding,PublicFormat;k=ec.generate_private_key(ec.SECP256R1());b=lambda v:base64.urlsafe_b64encode(v).rstrip(b'=').decode();print('VAPID_PRIVATE_KEY='+b(k.private_numbers().private_value.to_bytes(32,'big')));print('VAPID_PUBLIC_KEY='+b(k.public_key().public_bytes(Encoding.X962,PublicFormat.UncompressedPoint)))"
+uv run python -c "import base64;from cryptography.hazmat.primitives.asymmetric import ec;from cryptography.hazmat.primitives.serialization import Encoding,PublicFormat;k=ec.generate_private_key(ec.SECP256R1());b=lambda v:base64.urlsafe_b64encode(v).rstrip(b'=').decode();print('VAPID_PRIVATE_KEY='+b(k.private_numbers().private_value.to_bytes(32,'big')));print('VAPID_PUBLIC_KEY='+b(k.public_key().public_bytes(Encoding.X962,PublicFormat.UncompressedPoint)))"
 ```
 
 ## Jarvis voice
