@@ -106,7 +106,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Phase 4.6: remaining backend packages (`jarvis/`, `orchestration/`, `results/`, `updates/`); presentation helpers public (O01, B04) | Done (see below) | `7d990e7` |
 | Re-baseline before phase 4: scans re-run, stale phase 4–6 items updated, decisions 6–8 (see below) | Done | `a793d7a` |
 | Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02); `frontend/lib` grouped by domain | Done (see below) | `f22b06c` |
-| Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02, E03, pyright, capture fixtures) | Done (see below) | — |
+| Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02, E03, pyright, capture fixtures) | Done (see below) | `8ca04fe` |
 | Final assessment with a fresh-context agent | Not run | — |
 
 Generated apps (owner decision, 2026-10-30): app creation stays part of Jarvis, rebuilt as an installable app platform; see [13-app-platform.md](../../jarvis-tasks/13-app-platform.md). **Done (2026-11-01):** all six platform steps are implemented, and the old generated-app subsystem (registry, `/api/apps`, `/api/app-catalog`, the storage SDK, the generated-app tables and the `generated_app` task target) is removed. Results are records in installed apps, so the result renderer registry (C05) is gone; the static companion still imports the task route page (C07 remains for that). Tool-event presenters in `agent-event-presenter.ts`/`conversation_timeline.py` and the `live_item` read path now only render historical events; they go with the C14/I05 work.
