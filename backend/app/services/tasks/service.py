@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.admission_timing import timed
+from app.services.jarvis.admission_timing import timed
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import (
@@ -43,12 +43,12 @@ from app.services.tasks.update_policy import (
     normalize_task_update_policy,
 )
 from app.services.tasks.workflows import current_definition, resolve_workflow_config, validate_pinned_workflow, workflow_enabled
-from app.services.task_result_types import DOCUMENT_OUTPUT, collection_output, validate_result
+from app.services.results.types import DOCUMENT_OUTPUT, collection_output, validate_result
 from app.services.tasks.capture import CaptureCollection
-from app.services.orchestration_authority import DecisionAuthority, begin_action
+from app.services.orchestration.authority import DecisionAuthority, begin_action
 from app.services.tasks.execution_preferences import normalize_agent_preferences
-from app.services.task_results import current_record, write_result
-from app.services.task_result_contract import resolve_result_request, publication_profile
+from app.services.results.records import current_record, write_result
+from app.services.results.contract import resolve_result_request, publication_profile
 from app.services.tasks import lifecycle
 from app.services.tasks.lifecycle import WorkerHealth
 from app.services.tasks.vocabulary import (
@@ -308,7 +308,7 @@ class TaskService:
             raise ValueError("Screen context requires a workflow execution")
         if normalized_kind == "agent":
             execution_config = normalize_agent_preferences(execution_config)
-        from app.services.task_notification_preferences import normalize, save
+        from app.services.updates.notification_preferences import normalize, save
         normalized_policy, preference = normalize(presentation_policy, notification_intent, notification_reason)
         async with session_scope() as session:
             if result_request is not None:
@@ -542,7 +542,7 @@ class TaskService:
                 if existing:
                     # Replay compares the original contract, not today's head.
                     original = ((previous.configuration_json if previous else None) or {}).get("result")
-                    from app.services.task_result_contract import ResultRequest
+                    from app.services.results.contract import ResultRequest
                     requested = ResultRequest.model_validate(result_request).model_dump(exclude_none=True)
                     if original is None or requested != {key: value for key, value in original.items()
                         if key in requested} or ("kind" in requested and requested["kind"] != original.get("kind")):
@@ -633,7 +633,7 @@ class TaskService:
                 )
                 if receipt is not None and decision_authority is not None:
                     from app.db.tables import OrchestrationDecision
-                    from app.services.orchestration_attention import retain_attention
+                    from app.services.orchestration.attention import retain_attention
                     decision = await session.get(OrchestrationDecision, decision_authority.decision_id)
                     retained = await retain_attention(session, decision, idempotency_key)
                     receipt.outcome_json = {**(receipt.outcome_json or {}), "retained": retained}
@@ -804,7 +804,7 @@ class TaskService:
                                 decision_authority: DecisionAuthority | None = None,
                                 notification_intent: str | None = None, notification_reason: str | None = None,
                                 notification_authority: dict | None = None) -> TaskSnapshot:
-        from app.services.task_notification_preferences import normalize, save
+        from app.services.updates.notification_preferences import normalize, save
         normalized_policy, preference = normalize(policy,notification_intent,notification_reason)
         async with session_scope() as session:
             if decision_authority and idempotency_key != decision_authority.idempotency_key:
@@ -822,7 +822,7 @@ class TaskService:
                 return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
             supplied_preference = preference
             if preference is None:
-                from app.services.task_notification_preferences import current
+                from app.services.updates.notification_preferences import current
                 old = await current(session,task)
                 if normalized_policy == "silent" and old["intent"] != "suppressed":
                     preference = {"intent":"suppressed","reason":"Task update policy set to silent"}
@@ -840,7 +840,7 @@ class TaskService:
             )
             if receipt and decision_authority is not None:
                 from app.db.tables import OrchestrationDecision
-                from app.services.orchestration_attention import retain_attention
+                from app.services.orchestration.attention import retain_attention
                 decision = await session.get(OrchestrationDecision, decision_authority.decision_id)
                 retained = await retain_attention(session, decision, event_key)
                 receipt.outcome_json = {**(receipt.outcome_json or {}), "presentation_policy": normalized_policy, "retained": retained}
@@ -1538,7 +1538,7 @@ class TaskService:
                 if validated_result is not None and normalize_task_update_policy(task.presentation_policy) != SILENT:
                     # Persist publication and delivery intent together. The
                     # attention projector subsequently deduplicates by event.
-                    from app.services.task_notifications import enqueue_task_notification
+                    from app.services.updates.notifications import enqueue_task_notification
                     await enqueue_task_notification(session, task=task, event=terminal_event)
                 await lifecycle.end_current_attempt(session, task, reason=status, now=now)
                 if status == "completed" and normalized:

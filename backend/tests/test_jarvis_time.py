@@ -4,10 +4,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.jarvis_daily import jarvis_daily_service
-from app.services.jarvis_time import resolve_reminder_time
+from app.services.jarvis.brain import restricted_brain_gateway
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.jarvis.daily import jarvis_daily_service
+from app.services.jarvis.clock import resolve_reminder_time
 from app.services.tasks.service import task_service
 
 

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app import app_platform
 from app.db.repositories.conversations import utc_now
 from app.db.tables import TaskResult
-from app.services.task_result_types import collection_output, record_value
+from app.services.results.types import collection_output, record_value
 
 
 def result_url(app_slug: str, collection: str, key: str) -> str:

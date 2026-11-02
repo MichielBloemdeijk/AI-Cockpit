@@ -6,7 +6,7 @@ from datetime import datetime
 
 from app.db.session import session_scope
 from app.db.tables import JarvisPreference
-from app.services.jarvis_time import canonical_time_zone
+from app.services.jarvis.clock import canonical_time_zone
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,7 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.services.notifications import (
+from app.services.updates.push_subscriptions import (
     acknowledge_delivery,
     upsert_subscription,
 )

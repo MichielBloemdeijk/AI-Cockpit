@@ -8,10 +8,10 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import LiveSession, NotificationOutbox, TaskPresentation
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.task_notifications import _send_outbox_by_id
-from app.services.task_orchestration import DecisionTools
-from app.services.task_presentations import task_presentation_service
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.updates.notifications import _send_outbox_by_id
+from app.services.orchestration.service import DecisionTools
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from test_task_orchestration import FixtureRuntime, question, ready
 
@@ -24,7 +24,7 @@ async def test_held_legacy_transport_lease_does_not_block_factual_append(monkeyp
     await question("Ask the user for the environment")
     await task_presentation_service.sync_candidates()
     original = (await task_presentation_service.list_pending())[0]
-    from app.services.task_orchestration import now
+    from app.services.orchestration.service import now
     async with session_scope() as session:
         candidate = await session.get(TaskPresentation, original.id)
         candidate.lease_token = "pre-rollout-lease"

@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.db.session import session_scope
 from app.db.tables import JarvisDevice, JarvisLiveEvent, LiveSession, TaskResult
-from app.services.task_results import present
+from app.services.results.records import present
 
 OPEN_REQUEST_TTL = timedelta(seconds=30)
 

@@ -12,7 +12,7 @@ from app.db.session import session_scope
 from app.db.tables import Conversation, JarvisDevice, JarvisLiveEvent, LiveSession
 from app.services.auth import SESSION_COOKIE_NAME, create_session_token
 from app.services.commit_signals import CommitSignal, live_event_committed, capture_state_committed
-from app.services.jarvis_live import jarvis_live_service
+from app.services.jarvis.live import jarvis_live_service
 from app.services.tasks.capture import task_capture_service
 
 
@@ -105,7 +105,7 @@ async def test_only_outer_commit_wakes_and_rollback_does_not():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missed_hint", [False, True])
 async def test_stream_broadcast_replay_and_missed_hint_recovery(monkeypatch, missed_hint):
-    monkeypatch.setattr("app.services.jarvis_live.RECOVERY_SCAN_SECONDS", .05 if missed_hint else 10.)
+    monkeypatch.setattr("app.services.jarvis.live.RECOVERY_SCAN_SECONDS", .05 if missed_hint else 10.)
     if missed_hint:
         monkeypatch.setattr(live_event_committed, "notify", lambda: None)
     streams = [jarvis_live_service.stream(Request()) for _ in range(2)]
@@ -132,7 +132,7 @@ async def test_stream_broadcast_replay_and_missed_hint_recovery(monkeypatch, mis
 
 @pytest.mark.asyncio
 async def test_commit_between_stream_read_and_wait_is_not_lost(monkeypatch):
-    monkeypatch.setattr("app.services.jarvis_live.RECOVERY_SCAN_SECONDS", 10.)
+    monkeypatch.setattr("app.services.jarvis.live.RECOVERY_SCAN_SECONDS", 10.)
     replay = jarvis_live_service.replay
     inserted = False
     async def race(**kwargs):

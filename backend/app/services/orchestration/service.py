@@ -25,7 +25,7 @@ from app.db.tables import (
     JarvisLiveEvent, OrchestrationAction, OrchestrationDecision, TaskArtifact,
     Task, TaskEvent, TaskExecutionRun, TaskPresentation, TaskProjectionCheckpoint, TaskQuestion, TaskSupervisorLease, TaskTurn,
 )
-from app.services.orchestration_authority import (
+from app.services.orchestration.authority import (
     DecisionAuthority, StaleDecision, assert_current, begin_action, digest, observed_state,
 )
 from app.services.commit_signals import task_feedback_committed
@@ -82,7 +82,7 @@ class DecisionTools:
         self.claim = claim
 
     async def call(self, name: str, arguments: dict) -> dict:
-        from app.services.orchestration_telemetry import record
+        from app.services.orchestration.telemetry import record
         started, outcome, replay = monotonic(), "committed", False
         if name != "inspect":
             async with session_scope() as session:
@@ -130,7 +130,7 @@ class DecisionTools:
             raise ValueError("Undeclared orchestration capability or authority argument")
         task_id = self.claim.context["task"]["id"]
         if name == "inspect":
-            from app.services.orchestration_context import inspect_evidence
+            from app.services.orchestration.context import inspect_evidence
             async with session_scope() as session:
                 row = await session.get(OrchestrationDecision, self.claim.id)
                 if (row is None or row.status != "running" or row.claim_owner != self.claim.owner
@@ -189,7 +189,7 @@ class DecisionTools:
                 idempotency_key=key, decision_authority=authority,
             )
         else:
-            from app.services.orchestration_attention import retain_attention
+            from app.services.orchestration.attention import retain_attention
             async with session_scope() as session:
                 receipt = await begin_action(session, authority, action="retain",
                                              arguments={"reason": reason}, task_id=task_id)
@@ -218,7 +218,7 @@ class TaskOrchestrationService:
                  owner_has_exited: Callable[[str], bool] | None = None,
                  native_host_has_exited: Callable[[dict], bool] | None = None) -> None:
         from app.services.tasks.worker_coordinator import _supervisor_owner_has_exited
-        from app.services.orchestration_recovery import host_has_exited
+        from app.services.orchestration.recovery import host_has_exited
         self.runtime = runtime
         self.owner_has_exited = owner_has_exited or _supervisor_owner_has_exited
         self.native_host_has_exited = native_host_has_exited or host_has_exited
@@ -231,8 +231,8 @@ class TaskOrchestrationService:
 
     async def intake(self, *, before_commit: Callable[[], Awaitable[None]] | None = None) -> int:
         """One <=100-event transaction: projection + decisions + unified cursor."""
-        from app.services.task_presentations import task_presentation_service
-        from app.services.orchestration_telemetry import age_ms, record
+        from app.services.updates.presentations import task_presentation_service
+        from app.services.orchestration.telemetry import age_ms, record
         started = monotonic()
         async with session_scope() as session:
             await session.execute(sqlite_insert(TaskProjectionCheckpoint).values(
@@ -255,7 +255,7 @@ class TaskOrchestrationService:
             before_ids = set((await session.execute(select(TaskPresentation.id).where(
                 TaskPresentation.source_task_event_id.in_(list(sources)),
             ))).scalars()) if sources else set()
-            created = await task_presentation_service._project_batch(session, events)
+            created = await task_presentation_service.project_batch(session, events)
             await session.flush()
             candidates = (await session.execute(select(TaskPresentation).where(
                 TaskPresentation.source_task_event_id.in_(list(sources)),
@@ -351,9 +351,9 @@ class TaskOrchestrationService:
                 await self._queue_issue(session, source, source_sequence, repair_event=event)
 
     async def _context(self, session, task, question, event, state, repair_event) -> dict:
-        from app.services.orchestration_context import bound_context, instructions, prior_actions
+        from app.services.orchestration.context import bound_context, instructions, prior_actions
         from app.services.tasks.execution_preferences import REASONING_EFFORTS, permitted_models
-        from app.services.jarvis_situation import jarvis_situation_projector
+        from app.services.jarvis.situation import jarvis_situation_projector
         current_run = await session.get(TaskExecutionRun, task.current_run_id) if task.current_run_id else None
         turns = list((await session.execute(select(TaskTurn).where(TaskTurn.task_id == task.id)
                                            .order_by(TaskTurn.sequence.desc()).limit(6))).scalars().all())
@@ -421,7 +421,7 @@ class TaskOrchestrationService:
         return True
 
     async def recover(self, decision_id: str, **kwargs) -> dict:
-        from app.services.orchestration_recovery import recover
+        from app.services.orchestration.recovery import recover
         return await recover(self, decision_id, **kwargs)
 
     async def inspect_deferred(self) -> None:
@@ -501,7 +501,7 @@ class TaskOrchestrationService:
             row.claim_owner = self.owner
             row.claim_generation += 1
             row.claimed_at = now()
-            from app.services.orchestration_telemetry import age_ms, record
+            from app.services.orchestration.telemetry import age_ms, record
             await record(session, key=f"queue:{row.id}:{row.claim_generation}", kind="decision_queue",
                 decision_id=row.id, task_id=row.task_id, generation=row.claim_generation,
                 source_sequence=row.source_sequence, duration_ms=age_ms(row.created_at),
@@ -550,7 +550,7 @@ class TaskOrchestrationService:
                      due_at=now() + timedelta(seconds=delay) if delay else None,
                      completed_at=now() if status in {"completed", "obsolete"} else None))
             if result.rowcount == 1:
-                from app.services.orchestration_telemetry import record
+                from app.services.orchestration.telemetry import record
                 await record(session, key=f"runtime:{claim.id}:{claim.generation}", kind="runtime_invocation",
                     decision_id=claim.id, generation=claim.generation, task_id=claim.context["task"]["id"],
                     duration_ms=(monotonic() - started) * 1000,
@@ -571,7 +571,7 @@ class TaskOrchestrationService:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         if self.runtime is None and settings.task_orchestration_live_enabled:
-            from app.services.codex_orchestration_runtime import CodexOrchestrationRuntime
+            from app.services.orchestration.runtime import CodexOrchestrationRuntime
             self.runtime = CodexOrchestrationRuntime(permitted=True)
         self._loops = [asyncio.create_task(self._intake_loop()), asyncio.create_task(self._decision_loop())]
 

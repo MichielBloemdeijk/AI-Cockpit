@@ -110,7 +110,7 @@ async def test_an_app_ui_starts_its_workflow_with_its_own_token() -> None:
 
 @pytest.mark.asyncio
 async def test_jarvis_starts_app_workflows_and_writes_app_data() -> None:
-    from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+    from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
 
     await app_platform.install_package(cookbook())
     start = next(tool for tool in get_jarvis_tool_definitions() if tool["name"] == "start_workflow")

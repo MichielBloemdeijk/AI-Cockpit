@@ -8,10 +8,10 @@ from sqlalchemy import select
 
 from app.db.session import session_scope
 from app.db.tables import JarvisLiveEvent, NotificationOutbox, TaskPresentation
-from app.services.notifications import acknowledge_delivery
-from app.services import task_notifications
-from app.services.task_notifications import payload_for_task_notification
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.push_subscriptions import acknowledge_delivery
+from app.services.updates import notifications as task_notifications
+from app.services.updates.notifications import payload_for_task_notification
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
 
@@ -403,7 +403,7 @@ async def test_bookkeeper_holds_in_session_fallback_until_the_hard_cap(monkeypat
 @pytest.mark.asyncio
 async def test_bookkeeper_waits_briefly_after_a_session_ends(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.db.tables import LiveSession
-    from app.services.jarvis_coordinator import jarvis_coordinator
+    from app.services.jarvis.coordinator import jarvis_coordinator
     snapshot = await task_service.dispatch(goal="Session end grace", idempotency_key="end-grace-task", origin_surface="test")
     await task_service.complete(snapshot.task.id, summary="Ready.", idempotency_key="end-grace-complete")
     await task_presentation_service.sync_candidates()

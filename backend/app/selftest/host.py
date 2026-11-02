@@ -23,10 +23,10 @@ from app.db.session import session_scope
 from app.db.tables import (Task, TaskEvent, TaskAttempt, TaskPresentation, LiveSession, LiveSessionEvent,
     NotificationOutbox, ConversationObservation)
 from app.main import app as production_app, lifespan as production_lifespan
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services import screen_look
-from app.services.openai_live_adapter import openai_live_adapter
-from app.services.task_presentations import task_presentation_service
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.jarvis import screen_look as screen_look
+from app.services.jarvis.openai_live_adapter import openai_live_adapter
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from app.services.tasks.vocabulary import TaskStatus
 from app.services.tasks.worker_coordinator import worker_coordinator
@@ -118,7 +118,7 @@ class Recorder:
 
     def record(self, stream, event, **identity):
         # Never retain audio, transport SDP, credentials or encrypted reasoning here.
-        from app.services.live_model_diagnostics import clean
+        from app.services.jarvis.model_diagnostics import clean
         row = {"epoch_ms": time.time_ns() / 1e6, "monotonic_ns": time.perf_counter_ns(),
             "stream": stream, **identity, "event": clean(event)}
         self.events.append(row)
@@ -278,7 +278,7 @@ async def action(request: Request):
     elif name == "sync":
         await task_presentation_service.sync_candidates()
     elif name in {"observer_stop", "observer_restart"}:
-        from app.services.conversation_observer import conversation_observer
+        from app.services.jarvis.observer import conversation_observer
         await conversation_observer.stop()
         if name == "observer_restart":
             await conversation_observer.start()

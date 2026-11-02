@@ -162,7 +162,7 @@ async def test_check_reports_version_and_compatibility_against_the_installed_app
 
 
 async def _app_tool(tool_name: str, arguments: dict) -> dict:
-    from app.services.jarvis_brain import restricted_brain_gateway
+    from app.services.jarvis.brain import restricted_brain_gateway
 
     conversation = await conversation_store.create_conversation(title="Apps")
     result = await restricted_brain_gateway.execute(

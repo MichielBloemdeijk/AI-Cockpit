@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS
+from app.services.jarvis.brain import ALLOWED_SHELL_TOOLS
 from app.services.tasks.workflows import enabled_workflows
 from app.services.tasks.vocabulary import CONTROL_ACTIONS, TASK_IMPORTANCE
 
@@ -18,7 +18,7 @@ def get_jarvis_tool_definitions(provider: str = "openai") -> list[dict[str, Any]
 
 def _canonical_tools() -> list[dict[str, Any]]:
     from app.services.tasks.execution_preferences import preferences_schema
-    from app.services.task_result_contract import ResultRequest
+    from app.services.results.contract import ResultRequest
     result_request_schema = ResultRequest.model_json_schema()
     # General agents publish Documents (into the Documents app); a workflow's
     # result kind comes from its pinned definition, never from here.

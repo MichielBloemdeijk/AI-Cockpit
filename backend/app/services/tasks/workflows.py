@@ -17,7 +17,7 @@ import yaml
 
 from app.config import settings
 from app.services.tasks.capabilities import INPUT_CONTEXTS, validate_capabilities
-from app.services.task_result_types import COLLECTION_PREFIX, is_output_schema, RESULT_TYPES
+from app.services.results.types import COLLECTION_PREFIX, is_output_schema, RESULT_TYPES
 
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,63}$")

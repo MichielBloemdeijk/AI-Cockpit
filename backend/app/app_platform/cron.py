@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from app.services.jarvis_time import DEFAULT_TIME_ZONE
+from app.services.jarvis.clock import DEFAULT_TIME_ZONE
 
 ALIASES = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@weekly": "0 0 * * 0", "@monthly": "0 0 1 * *"}
 MONTHS = {name: number for number, name in enumerate(

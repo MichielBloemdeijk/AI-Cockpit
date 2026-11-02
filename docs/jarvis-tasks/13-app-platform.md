@@ -83,7 +83,7 @@ grants, not from separate infrastructure.
 | Function host | Runs handler code on demand in a sandboxed worker with timeouts and the app's grants | Task pool supervisor and `windows_job` containment |
 | Triggers | HTTP, schedule, and Cockpit events (record changed, task finished) that start functions or workflows | Reminder scheduler and `commit_signals` |
 | Workflows | Agent work: an app's workflows run as Codex tasks | Existing workflow runtime |
-| Jarvis tools | Jarvis can list, open, query, call and manage apps | `jarvis_tool_catalog` |
+| Jarvis tools | Jarvis can list, open, query, call and manage apps | `jarvis/tool_catalog` |
 | Lifecycle | Build, validate, install, activate, roll back, reset, uninstall | New, small |
 
 ### Storage

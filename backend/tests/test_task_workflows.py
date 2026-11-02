@@ -17,7 +17,7 @@ from app.services.tasks.worker import TaskWorker
 from app.services.tasks.workflows import (
     _UniqueSafeLoader, _safe_definition_file, load_workflow,
 )
-from app.services.task_result_types import validate_result
+from app.services.results.types import validate_result
 from app.services.tasks.worker_coordinator import worker_coordinator
 
 

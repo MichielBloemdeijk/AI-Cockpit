@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import PushSubscription
-from app.services.task_notifications import (
+from app.services.updates.notifications import (
     acknowledge_task_notification,
     recover_pending_task_notifications,
     utc_now,

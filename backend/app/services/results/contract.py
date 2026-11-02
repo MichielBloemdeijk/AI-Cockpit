@@ -5,9 +5,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from sqlalchemy import select
 
 from app.db.tables import TaskResult
-from app.services.task_result_types import DOCUMENT_OUTPUT, collection_output
-from app.services.task_results import current_record, present, task_results
-from app.services.admission_timing import timed
+from app.services.results.types import DOCUMENT_OUTPUT, collection_output
+from app.services.results.records import current_record, present, task_results
+from app.services.jarvis.admission_timing import timed
 
 
 class ResultRequest(BaseModel):

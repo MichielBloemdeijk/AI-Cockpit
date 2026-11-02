@@ -4,9 +4,9 @@ from sqlalchemy import select
 from app.db.session import session_scope
 from app.db.tables import Task, TaskEvent, NotificationOutbox
 from app.services.tasks.service import task_service
-from app.services.task_notification_preferences import current, normalize, EVENT
-from app.services.task_presentations import task_presentation_service
-from app.services.jarvis_coordinator import jarvis_coordinator, FLOOR_EVENT_TYPES
+from app.services.updates.notification_preferences import current, normalize, EVENT
+from app.services.updates.presentations import task_presentation_service
+from app.services.jarvis.coordinator import jarvis_coordinator, FLOOR_EVENT_TYPES
 from app.db.repositories.jarvis import JarvisDomainRepository
 
 

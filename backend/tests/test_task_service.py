@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.services.conversations.store import conversation_store
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
 

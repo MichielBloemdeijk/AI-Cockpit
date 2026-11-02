@@ -110,7 +110,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
         latest_event = int((await session.execute(
             select(func.max(TaskEvent.sequence)).where(TaskEvent.task_id == task_id)
         )).scalar_one_or_none() or 0)
-        from app.services.task_result_contract import context_result, maintained_view
+        from app.services.results.contract import context_result, maintained_view
         maintained = await maintained_view(await context_result(session, task_id, run_id), content_limit=12_000)
         handoff = {
             "schema": "task-context.v1",

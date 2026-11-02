@@ -5,15 +5,15 @@ import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import CursorResult, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.services.orchestration_visibility import visible_attention
+from app.services.orchestration.visibility import visible_attention
 from app.db.session import session_scope
 from app.db.tables import (
     JarvisLiveEvent,
@@ -86,7 +86,7 @@ async def enqueue_task_notification(
             TaskResult.task_id == task.id, TaskResult.execution_run_id == event_run_id,
         ).limit(1))).scalar_one_or_none()
         if result is not None:
-            from app.services.task_results import present
+            from app.services.results.records import present
             deep_link = present(result)["url"]
     if question_id:
         deep_link += f"?question={question_id}"
@@ -260,7 +260,7 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
     now = utc_now()
     async with session_scope() as session:
         await _reconcile_outbox_attention(session, outbox_id=outbox_id)
-        claimed = await session.execute(
+        claimed = cast(CursorResult, await session.execute(
             update(NotificationOutbox)
             .where(NotificationOutbox.id == outbox_id)
             .where(NotificationOutbox.status.in_(["queued", "failed"]))
@@ -280,7 +280,7 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
                 )
             )
             .values(status="sending", next_attempt_at=None)
-        )
+        ))
         if not claimed.rowcount:
             return
         outbox = await session.get(NotificationOutbox, outbox_id)
@@ -323,7 +323,7 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
     successes = 0
     transient_errors: list[str] = []
     stale_ids: list[str] = []
-    from pywebpush import webpush
+    from pywebpush import webpush  # pyright: ignore[reportMissingImports]  (optional `notifications` group)
 
     for subscription in subscriptions:
         try:
@@ -381,7 +381,7 @@ async def _send_outbox_by_id(outbox_id: str) -> None:
 async def acknowledge_task_notification(delivery_id: str, state: str) -> bool:
     if state != "opened":
         raise ValueError("Delivery state must be opened")
-    from app.services.task_presentations import task_presentation_service
+    from app.services.updates.presentations import task_presentation_service
 
     return await task_presentation_service.acknowledge_notification(delivery_id=delivery_id)
 

@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.jarvis_daily import jarvis_daily_service
-from app.services.jarvis_situation import jarvis_situation_projector
+from app.services.jarvis.brain import restricted_brain_gateway
+from app.services.jarvis.daily import jarvis_daily_service
+from app.services.jarvis.situation import jarvis_situation_projector
 from app.services.tasks.error_messages import public_failure_summary, public_tool_error
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 
 

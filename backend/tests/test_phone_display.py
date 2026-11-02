@@ -10,8 +10,8 @@ from sqlalchemy import select
 from app.main import app
 from app.db.session import session_scope
 from app.db.tables import JarvisLiveEvent, TaskResult
-from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+from app.services.jarvis.brain import restricted_brain_gateway
+from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
 from test_task_result_contract import claim, finish
@@ -96,5 +96,5 @@ async def test_show_on_phone_requires_the_live_phone_session() -> None:
 def test_voice_catalog_offers_showing_results_on_the_phone() -> None:
     tools = {tool["name"]: tool for tool in get_jarvis_tool_definitions("openai_live")}
     assert tools["show_on_phone"]["parameters"]["required"] == ["task_reference"]
-    from app.services.openai_live_adapter import OpenAILiveAdapter
+    from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
     assert "show_on_phone" in OpenAILiveAdapter._router_instructions({})

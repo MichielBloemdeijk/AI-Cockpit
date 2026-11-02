@@ -127,7 +127,7 @@ async def test_changed_connector_arguments_require_a_new_human_decision(monkeypa
 @pytest.mark.asyncio
 async def test_background_context_cannot_approve_a_permission_question(monkeypatch):
     from test_task_orchestration import ready, rows
-    from app.services.task_orchestration import DecisionTools
+    from app.services.orchestration.service import DecisionTools
     from app.db.tables import OrchestrationAction
     monkeypatch.setattr(settings, "task_orchestration_enabled", True)
     task = (await task_service.dispatch(goal="Send a report", origin_surface="test", idempotency_key="human-only")).task

@@ -51,7 +51,7 @@ async def test_device_auth_waits_for_writer_and_observes_committed_device_state(
     from sqlalchemy import update
     from app.db.session import session_scope
     from app.db.tables import JarvisDevice
-    from app.services.jarvis_devices import jarvis_device_service
+    from app.services.jarvis.devices import jarvis_device_service
     code = await jarvis_device_service.create_pairing_code()
     device, credential = await jarvis_device_service.pair(code=code.code, label="before")
     request = Request({"type": "http", "headers": [(b"authorization", f"Bearer {credential}".encode())]})

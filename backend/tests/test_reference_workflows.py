@@ -18,7 +18,7 @@ from app import app_platform
 from app.db.tables import TaskResult
 from app.jarvis_tasks.task_mcp import _call, _image_result, _tool_catalog
 from app.main import app
-from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
 from app.services.tasks.capture import CaptureCollection, task_capture_service
 from app.services.tasks.service import task_service, workflow_attempt_outcome
 from app.services.tasks.workflows import load_workflow, validate_pinned_workflow
@@ -37,7 +37,7 @@ async def task_record(task_id):
 
 
 def test_defined_screen_outcome_routes_before_worker_image_analysis(monkeypatch):
-    from app.services.openai_live_adapter import OpenAILiveAdapter
+    from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
     monkeypatch.setattr(settings, "task_research_enabled", True)
     workflow = next(tool for tool in get_jarvis_tool_definitions("openai_live") if tool["name"] == "start_workflow")
     assert "ingredients" in workflow["description"]

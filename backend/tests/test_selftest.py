@@ -112,8 +112,8 @@ async def test_doctor_reports_undelivered_requests_and_failed_bookkeeping(monkey
     from app.db.session import session_scope
     from app.db.tables import ConversationObservation, LiveSession, TaskPresentation
     from app.services.diagnostics import diagnose
-    from app.services.jarvis_coordinator import jarvis_coordinator
-    from app.services.task_presentations import task_presentation_service
+    from app.services.jarvis.coordinator import jarvis_coordinator
+    from app.services.updates.presentations import task_presentation_service
     from app.services.tasks.service import task_service
     task = (await task_service.dispatch(goal="Doctor page", origin_surface="test", idempotency_key="doctor-task",
         notification_intent="requested", notification_reason="Tell me")).task

@@ -15,8 +15,8 @@ from sqlalchemy import select
 
 from app.db.tables import AssistantPromise, LiveSession, Task, TaskPresentation
 from app.services.tasks.vocabulary import WAITING_TO_RUN_STATUSES, TaskStatus
-from app.services.live_task_updates import TERMINAL_WORDS
-from app.services.orchestration_visibility import live_context_visible, visible_attention
+from app.services.jarvis.task_updates import TERMINAL_WORDS
+from app.services.orchestration.visibility import live_context_visible, visible_attention
 
 RECENTLY_TOLD = timedelta(hours=12)
 RECENTLY_TOLD_LIMIT = 5

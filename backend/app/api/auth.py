@@ -13,7 +13,7 @@ from app.services.auth import (
     device_session_id,
     verify_session_token,
 )
-from app.services.jarvis_devices import require_jarvis_auth, jarvis_device_service
+from app.services.jarvis.devices import require_jarvis_auth, jarvis_device_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 

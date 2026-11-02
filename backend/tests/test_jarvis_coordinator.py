@@ -20,23 +20,23 @@ from app.db.tables import (
     LiveSessionEvent,
 )
 from app.main import app
-from app.services import task_notifications
+from app.services.updates import notifications as task_notifications
 from app.services.conversations.store import conversation_store
-from app.services.jarvis_coordinator import (
+from app.services.jarvis.coordinator import (
     StaleSessionError,
     _BargeInIntent,
     _ResponseAttempt,
     _ResponseGate,
     jarvis_coordinator,
 )
-from app.services.jarvis_live import jarvis_live_service
+from app.services.jarvis.live import jarvis_live_service
 from app.services.tasks.reminder_scheduler import reminder_scheduler
-from app.services.task_notifications import route_pending_task_notifications
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.notifications import route_pending_task_notifications
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
-from app.services.voice_session_adapter import VoiceProviderEvent
-from app.services.voice_session_adapter import fake_voice_session_adapter
+from app.services.jarvis.voice_session_adapter import VoiceProviderEvent
+from app.services.jarvis.voice_session_adapter import fake_voice_session_adapter
 
 
 @pytest.mark.asyncio
@@ -107,7 +107,7 @@ async def test_superseded_provider_cleanup_does_not_block_replacement_connect(
         return slow_adapter if name == "slow-test-adapter" else fake_voice_session_adapter
 
     monkeypatch.setattr(
-        "app.services.jarvis_coordinator.get_voice_session_adapter",
+        "app.services.jarvis.coordinator.get_voice_session_adapter",
         resolve_adapter,
     )
     try:
@@ -310,7 +310,7 @@ async def test_wake_verification_rejects_clear_incidental_mention() -> None:
 async def test_wake_gate_timeout_rejects_when_transcript_is_late(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.services.jarvis_coordinator._WAKE_GATE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("app.services.jarvis.coordinator._WAKE_GATE_TIMEOUT_SECONDS", 0.01)
     accepted = await jarvis_coordinator.accept_text_turn("Wake setup", idempotency_key="wake-grace")
     bootstrap = await jarvis_coordinator.bootstrap_controller(
         conversation_id=accepted.conversation.id,
@@ -1667,7 +1667,7 @@ async def test_barge_in_requires_the_observed_response_identity() -> None:
 @pytest.mark.asyncio
 async def test_backend_barge_in_cancels_the_current_response(monkeypatch) -> None:
     from types import SimpleNamespace
-    import app.services.jarvis_coordinator as coordinator_module
+    import app.services.jarvis.coordinator as coordinator_module
 
     key = ("barge-cancel-session", 4)
     now = time.monotonic()

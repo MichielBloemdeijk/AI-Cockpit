@@ -16,10 +16,10 @@ from uuid import uuid4
 import httpx
 
 from app.config import settings
-from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
-from app.services.live_model_diagnostics import LiveModelDiagnostics, tool_metadata
-from app.services.live_traffic import LiveTrafficObserver
-from app.services.voice_session_adapter import (
+from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
+from app.services.jarvis.model_diagnostics import LiveModelDiagnostics, tool_metadata
+from app.services.jarvis.traffic import LiveTrafficObserver
+from app.services.jarvis.voice_session_adapter import (
     ProviderEventHandler,
     VoiceProviderCapabilities,
     VoiceProviderEvent,
@@ -27,7 +27,7 @@ from app.services.voice_session_adapter import (
 )
 
 if TYPE_CHECKING:
-    from app.services.screen_look import ContextImage
+    from app.services.jarvis.screen_look import ContextImage
 
 
 class OpenAILiveConfigurationError(ValueError):
@@ -459,7 +459,7 @@ class OpenAILiveAdapter:
     async def _send_notes_update(self, provider_session: _LiveSession, *, request_id: str,
                                  facts: tuple[dict[str, Any], ...], notes: dict[str, Any], deltas: list) -> None:
         """Requested outcomes as spoken-update commentary; everything else as refreshed notes."""
-        from app.services.live_task_updates import announcement_text
+        from app.services.jarvis.task_updates import announcement_text
         appends: list[tuple[str, str, tuple[str, ...], str]] = []
         quiet_ids: list[str] = []
         for fact in facts:
@@ -1309,7 +1309,7 @@ class OpenAILiveAdapter:
         voice = str(preferences.get("voice") or settings.openai_live_voice)
         if voice not in {"marin", "cedar"}:
             voice = settings.openai_live_voice
-        from app.services.live_task_updates import NATURAL_UPDATE_PROMPT
+        from app.services.jarvis.task_updates import NATURAL_UPDATE_PROMPT
         conversation_prompt = NATURAL_UPDATE_PROMPT + (
             " Speak English. Switch language only when the user clearly speaks to you in another language; "
             "never because of an accent, screen text, tool output or location. "
@@ -1438,7 +1438,7 @@ class OpenAILiveAdapter:
                 separators=(",", ":"),
                 ensure_ascii=False,
             )
-        from app.services.live_task_updates import backend_policy
+        from app.services.jarvis.task_updates import backend_policy
         return backend_policy(router_prompt)
 
     async def _default_session_creator(

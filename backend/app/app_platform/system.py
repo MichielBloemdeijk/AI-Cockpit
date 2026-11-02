@@ -66,7 +66,7 @@ async def _rows(name: str, key: str | None = None) -> list[dict[str, Any]]:
                 "updated_at": _iso(task.updated_at), "finished_at": _iso(task.finished_at),
             }) for task in (await session.execute(statement)).scalars()]
         if name == "results":
-            from app.services.task_results import result_url
+            from app.services.results.records import result_url
             statement = select(TaskResult).order_by(TaskResult.updated_at.desc()).limit(SCAN_LIMIT)
             if key is not None:
                 statement = select(TaskResult).where(TaskResult.id == key)

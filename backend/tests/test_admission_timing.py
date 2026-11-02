@@ -17,7 +17,7 @@ import pytest
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import Conversation, JarvisDevice, LiveSession
-from app.services.admission_timing import observe_admission, span
+from app.services.jarvis.admission_timing import observe_admission, span
 from app.services.tasks.capture import task_capture_service
 
 
@@ -63,10 +63,10 @@ async def profile_fixture_routing(monkeypatch, *, with_delivery=False):
         pytest.skip("Set JARVIS_OFFLINE_TIMING_REPORT to run the offline benchmark")
     from sqlalchemy import select
     from app.db.tables import LiveSessionEvent
-    from app.services.jarvis_coordinator import jarvis_coordinator
-    from app.services.openai_live_adapter import OpenAILiveAdapter
+    from app.services.jarvis.coordinator import jarvis_coordinator
+    from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
     from test_openai_live_adapter import FakeLiveSocket, wait_for_sideband
-    from app.services.jarvis_live import jarvis_live_service
+    from app.services.jarvis.live import jarvis_live_service
     from app.services.auth import SESSION_COOKIE_NAME, create_session_token
     class Request:
         cookies = {SESSION_COOKIE_NAME: create_session_token()}
@@ -97,7 +97,7 @@ async def profile_fixture_routing(monkeypatch, *, with_delivery=False):
         if value.kind in {"user_transcript", "delegation_received", "delegation_origin_resolved", "admission_stage", "shell_call"}:
             await jarvis_coordinator.handle_provider_event(session_id, generation, value)
     adapter = OpenAILiveAdapter(session_creator=create, websocket_connector=connect, http_client_factory=forbidden)
-    monkeypatch.setattr("app.services.jarvis_coordinator.get_voice_session_adapter", lambda *args: adapter)
+    monkeypatch.setattr("app.services.jarvis.coordinator.get_voice_session_adapter", lambda *args: adapter)
     finished = asyncio.Event()
     send_result = adapter.send_tool_result
     async def result(**kwargs):

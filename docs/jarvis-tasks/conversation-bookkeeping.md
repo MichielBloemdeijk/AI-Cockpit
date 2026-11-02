@@ -20,7 +20,7 @@ Jarvis keeps two kinds of memory about task updates:
 ## Jarvis notes
 
 With the observer enabled, Live gets one readable notes view instead of JSON
-checklists. It is built by `app/services/assistant_notes.py`, put into the
+checklists. It is built by `app/services/jarvis/notes.py`, put into the
 session instructions at start, and re-sent as quiet thinking context whenever it
 changes. It has three sections:
 

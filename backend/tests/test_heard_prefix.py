@@ -1,4 +1,4 @@
-from app.services.heard_prefix import TranscriptBoundary, estimate_heard_prefix
+from app.services.jarvis.heard_prefix import TranscriptBoundary, estimate_heard_prefix
 
 
 TRANSCRIPT = (

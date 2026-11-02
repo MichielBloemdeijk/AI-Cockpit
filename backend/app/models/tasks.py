@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.services.tasks.update_policy import CRITICAL_ONLY
-from app.services.task_result_contract import ResultRequest
+from app.services.results.contract import ResultRequest
 from app.services.tasks.vocabulary import ControlAction
 
 

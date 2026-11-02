@@ -8,14 +8,14 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import ConversationObservation, LiveSession, TaskPresentation
 from app.db.repositories.jarvis import JarvisDomainRepository
-from app.services.conversation_observer import (conversation_observer, playback_support, validate_finding, now)
-from app.services.jarvis_coordinator import jarvis_coordinator
+from app.services.jarvis.observer import (conversation_observer, playback_support, validate_finding, now)
+from app.services.jarvis.coordinator import jarvis_coordinator
 from app.services.tasks.service import task_service
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 
 
 def test_context_is_not_eligible_completion_evidence():
-    from app.services.conversation_observer import semantic_input
+    from app.services.jarvis.observer import semantic_input
     e=evidence(); e["fragments"][0]["sequence"]=5
     e["presentations"]=[{"presentation_id":"p1","exposed_after_sequence":6,"facts":{}}]
     assert semantic_input(e)[0]["results"][0]["eligible_fragment_ids"]==[]
@@ -28,7 +28,7 @@ def test_context_is_not_eligible_completion_evidence():
 
 
 def test_explicit_subscription_required_in_voice_tools(monkeypatch):
-    from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+    from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
     for t in get_jarvis_tool_definitions("openai_live"):
         if t["name"] in {"dispatch_task","start_workflow","set_task_update_policy"}:
             assert {"notification_intent","notification_reason"} <= set(t["parameters"]["required"])
@@ -36,8 +36,8 @@ def test_explicit_subscription_required_in_voice_tools(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_admission_receipt_exposes_later_speech_without_repairing_preference(monkeypatch):
-    from app.services.voice_session_adapter import fake_voice_session_adapter
-    from app.services.task_notification_preferences import current
+    from app.services.jarvis.voice_session_adapter import fake_voice_session_adapter
+    from app.services.updates.notification_preferences import current
     from app.db.tables import Task
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="late-start")
     live=await jarvis_coordinator.get_active_session()
@@ -64,7 +64,7 @@ async def test_admission_receipt_exposes_later_speech_without_repairing_preferen
 
 @pytest.mark.asyncio
 async def test_batch_age_starts_with_relevant_speech_not_old_admission(monkeypatch):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="batch-start")
     live=await jarvis_coordinator.get_active_session()
     async with session_scope() as db:
@@ -243,7 +243,7 @@ async def test_subscription_routing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_collection_deduplicates_and_recovery_uses_saved_evidence(monkeypatch):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     live,task,item=await prepared(monkeypatch)
     async with session_scope() as db:
         row=await db.get(LiveSession,live.id);row.controller_id="owner"
@@ -315,7 +315,7 @@ def test_input_activity_schema_requires_measured_pairs_and_identity():
 
 @pytest.mark.asyncio
 async def test_user_reaction_is_awaited_and_possibly_unheard_stays_pending(monkeypatch):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     live,task,item=await prepared(monkeypatch)
     async with session_scope() as db:
         row=await db.get(LiveSession,live.id);row.controller_id="owner"
@@ -359,7 +359,7 @@ def test_one_fully_played_utterance_establishes_communication():
 
 @pytest.mark.asyncio
 async def test_malformed_model_answer_fails_one_job_without_stopping(monkeypatch):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     live,task,item=await prepared(monkeypatch)
     async with session_scope() as db:
         db.add(ConversationObservation(session_id=live.id,generation=live.generation,evidence_hash="bad",
@@ -375,7 +375,7 @@ async def test_malformed_model_answer_fails_one_job_without_stopping(monkeypatch
 
 
 def test_model_handles_resolve_and_unknown_handles_stay_invalid():
-    from app.services.conversation_observer import resolve_handles
+    from app.services.jarvis.observer import resolve_handles
     handles={"r1":"p1","a1":"f1"}
     result=resolve_handles({"outcomes":[{"presentation_id":"r1","classification":"complete","fragment_ids":["a1","a9"],"reason":"x"}],
         "flags":[{"kind":"unrecorded_promise","fragment_ids":["a1"],"reason":"y"}],"promises":[]},handles)
@@ -408,7 +408,7 @@ def test_short_telemetry_hole_is_bridged_only_with_continuous_player_progress(ho
 @pytest.mark.asyncio
 @pytest.mark.parametrize("final_before_user,expected",[(False,True),(True,False)])
 async def test_new_user_turn_during_assistant_speech_is_marked_overlapped(monkeypatch,final_before_user,expected):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     live,task,item=await prepared(monkeypatch)
     async with session_scope() as db:
         row=await db.get(LiveSession,live.id);row.controller_id="owner"
@@ -432,7 +432,7 @@ async def test_new_user_turn_during_assistant_speech_is_marked_overlapped(monkey
 
 @pytest.mark.asyncio
 async def test_admission_refreshes_context_once_per_request_even_if_the_user_keeps_talking(monkeypatch):
-    from app.services.voice_session_adapter import fake_voice_session_adapter
+    from app.services.jarvis.voice_session_adapter import fake_voice_session_adapter
     from app.db.tables import Task
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="keep-talking")
     live=await jarvis_coordinator.get_active_session()
@@ -459,7 +459,7 @@ async def test_admission_refreshes_context_once_per_request_even_if_the_user_kee
 
 @pytest.mark.asyncio
 async def test_late_wake_phrase_transcript_is_not_an_overlap(monkeypatch):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     live,task,item=await prepared(monkeypatch)
     async with session_scope() as db:
         row=await db.get(LiveSession,live.id);row.controller_id="owner"

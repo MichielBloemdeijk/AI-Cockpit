@@ -26,7 +26,7 @@ def client():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["failed", "cancelled", "completed"])
 async def test_notification_without_a_published_result_opens_task(status):
-    from app.services.task_presentations import task_presentation_service
+    from app.services.updates.presentations import task_presentation_service
     created = await task_service.dispatch(goal="Check the backups", origin_surface="test", idempotency_key="no-result")
     task_id = created.task.id
     if status == "cancelled":

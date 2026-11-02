@@ -179,7 +179,7 @@ async def test_http_install_host_and_token_scoped_data() -> None:
 
 
 async def _app_tool(tool_name: str, arguments: dict, **session) -> dict:
-    from app.services.jarvis_brain import restricted_brain_gateway
+    from app.services.jarvis.brain import restricted_brain_gateway
 
     result = await restricted_brain_gateway.execute(
         tool_name=tool_name, arguments=arguments, call_id=f"call-{tool_name}",

@@ -14,9 +14,9 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import OrchestrationDecision, TaskEvent
 from app.jarvis_tasks.orchestration_host import inspect_thread
-from app.services.orchestration_authority import StaleDecision
-from app.services.orchestration_recovery import host_has_exited
-from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
+from app.services.orchestration.authority import StaleDecision
+from app.services.orchestration.recovery import host_has_exited
+from app.services.orchestration.service import DecisionTools, TaskOrchestrationService
 from app.services.tasks.service import task_service
 
 
@@ -175,7 +175,7 @@ def test_native_inspector_only_reads_exact_stored_thread(statuses, turn_id, expe
 
 
 def test_host_exit_proof_rejects_unknown_identity_and_other_machine(monkeypatch):
-    import app.services.orchestration_recovery as recovery
+    import app.services.orchestration.recovery as recovery
     monkeypatch.setattr(recovery, "process_has_exited", lambda *args: True)
     assert not host_has_exited({"host_pid": 123, "host_creation_stamp": 456})
     assert not host_has_exited({"host_pid": 123, "host_creation_stamp": 456, "host_hostname": "other-machine"})
@@ -184,7 +184,7 @@ def test_host_exit_proof_rejects_unknown_identity_and_other_machine(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_due_native_retry_requires_inspection_instead_of_duplicate_generation():
-    from app.services.task_orchestration import now
+    from app.services.orchestration.service import now
     inspector = Inspector("uncertain")
     service, _, _, claim = await fixture(inspector)
     async with session_scope() as session:
@@ -200,7 +200,7 @@ async def test_due_native_retry_requires_inspection_instead_of_duplicate_generat
 @pytest.mark.asyncio
 async def test_automatic_inspection_does_not_starve_behind_100_already_inspected_bindings():
     from uuid import uuid4
-    from app.services.orchestration_authority import digest
+    from app.services.orchestration.authority import digest
     inspector = Inspector()
     service, _, _, claim = await fixture(inspector)
     async with session_scope() as session:
@@ -232,7 +232,7 @@ async def test_actual_contained_writer_crash_reconciles_one_committed_action():
         "import asyncio, json, sys",
         "from app.db.session import initialize_engine, session_scope",
         "from app.db.tables import OrchestrationDecision",
-        "from app.services.task_orchestration import DecisionClaim, DecisionTools",
+        "from app.services.orchestration.service import DecisionClaim, DecisionTools",
         "async def main():",
         "    payload = json.loads(sys.argv[1])",
         "    initialize_engine(payload['database_url'])",

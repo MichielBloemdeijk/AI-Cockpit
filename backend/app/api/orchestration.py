@@ -9,9 +9,9 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import JarvisLiveEvent, OrchestrationAction, OrchestrationDecision, TaskProjectionCheckpoint
 from app.services.auth import require_auth
-from app.services.orchestration_authority import StaleDecision
-from app.services.task_orchestration import CURSOR_KEY, now, task_orchestration_service
-from app.services.orchestration_telemetry import age_ms, snapshot
+from app.services.orchestration.authority import StaleDecision
+from app.services.orchestration.service import CURSOR_KEY, now, task_orchestration_service
+from app.services.orchestration.telemetry import age_ms, snapshot
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"], dependencies=[Depends(require_auth)])
 

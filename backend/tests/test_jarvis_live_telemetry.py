@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.db.session import session_scope
 from app.db.tables import JarvisLiveTraceEvent
-from app.services.jarvis_live_telemetry import JarvisLiveTelemetryService
+from app.services.jarvis.live_telemetry import JarvisLiveTelemetryService
 
 
 @pytest.mark.asyncio

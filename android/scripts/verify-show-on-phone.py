@@ -116,7 +116,7 @@ def main() -> None:
         async def prepare():
             from app.db.session import session_scope
             from app.db.tables import Conversation, LiveSession, TaskResult
-            from app.services.task_results import present
+            from app.services.results.records import present
             from app.services.tasks.service import task_service
             from app.services.tasks.worker_coordinator import worker_coordinator
             from sqlalchemy import select
@@ -143,7 +143,7 @@ def main() -> None:
 
         def show(call_id: str) -> dict:
             async def call():
-                from app.services.jarvis_brain import restricted_brain_gateway
+                from app.services.jarvis.brain import restricted_brain_gateway
                 result = await restricted_brain_gateway.execute(tool_name="show_on_phone",
                     arguments={"task_id": task_id}, call_id=call_id, conversation_id="show-on-phone",
                     origin_turn_id=None, session_id=session_id, generation=generation)

@@ -4,12 +4,12 @@ import asyncio
 import pytest
 from sqlalchemy import select
 
-import app.services.jarvis_coordinator as coordinator_module
+import app.services.jarvis.coordinator as coordinator_module
 from app.db.session import session_scope
 from app.db.tables import LiveSessionEvent
 from app.services.conversations.store import conversation_store
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.voice_session_adapter import VoiceProviderEvent, fake_voice_session_adapter
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.jarvis.voice_session_adapter import VoiceProviderEvent, fake_voice_session_adapter
 
 
 @pytest.mark.asyncio

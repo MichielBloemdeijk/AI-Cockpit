@@ -10,7 +10,7 @@ from sqlalchemy import select, update
 
 from app.db.session import session_scope
 from app.db.tables import JarvisDevice, LiveSession, TaskCaptureReport, JarvisLiveEvent
-from app.services.admission_timing import timed
+from app.services.jarvis.admission_timing import timed
 from app.services.commit_signals import capture_state_committed
 
 

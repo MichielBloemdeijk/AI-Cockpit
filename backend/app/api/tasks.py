@@ -45,12 +45,12 @@ from app.models.tasks import (
     TaskTurnView,
     WorkerHealthView,
 )
-from app.services.jarvis_devices import require_task_access
+from app.services.jarvis.devices import require_task_access
 from app.services.tasks.service import TaskDetailSnapshot, task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services.tasks.pool_supervisor import task_pool_manager
 from app.db.session import session_scope
-from app.services.task_result_contract import result_links, admission_result_url
+from app.services.results.contract import result_links, admission_result_url
 
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"], dependencies=[Depends(require_task_access)])

@@ -22,7 +22,7 @@ from app.config import settings  # noqa: E402
 from app.services.tasks.service import task_service  # noqa: E402
 from app.services.tasks.workflows import validate_pinned_workflow  # noqa: E402
 from app.services.tasks.capabilities import workflow_tools  # noqa: E402
-from app.services.task_result_types import publish_schema  # noqa: E402
+from app.services.results.types import publish_schema  # noqa: E402
 
 # A build_app run keeps the package it builds here, inside its workspace.
 APP_PACKAGE_DIR = "app"
@@ -398,7 +398,7 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
             })
             used += min(size, 128_000)
         next_cursor = result[-1]["sequence"] if result and (len(events) == 20 or len(result) < len(events)) else latest
-        from app.services.task_result_contract import context_result, maintained_view
+        from app.services.results.contract import context_result, maintained_view
         async with session_scope() as session:
             maintained_result = await context_result(session, args.task_id, args.run_id)
         maintained = await maintained_view(maintained_result, content_limit=128_000)

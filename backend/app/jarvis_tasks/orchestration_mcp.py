@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.db.session import close_engine, initialize_engine, session_scope
 from app.db.tables import OrchestrationDecision
-from app.services.task_orchestration import DecisionClaim, DecisionTools
+from app.services.orchestration.service import DecisionClaim, DecisionTools
 from app.services.tasks.vocabulary import ORCHESTRATION_CONTROLS, TASK_IMPORTANCE
 
 

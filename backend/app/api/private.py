@@ -7,7 +7,7 @@ import time
 
 from fastapi import HTTPException, Request
 
-from app.services.jarvis_devices import require_unlocked_device
+from app.services.jarvis.devices import require_unlocked_device
 
 PRIVATE_HEADERS = {"Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow",
     "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}

@@ -12,8 +12,8 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import OrchestrationAction, OrchestrationDecision, OrchestrationMetric
 from app.jarvis_tasks.orchestration_mcp import catalog, handle
-from app.services.codex_orchestration_runtime import CodexOrchestrationRuntime
-from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
+from app.services.orchestration.runtime import CodexOrchestrationRuntime
+from app.services.orchestration.service import DecisionTools, TaskOrchestrationService
 from app.services.tasks.service import task_service
 
 
@@ -99,7 +99,7 @@ async def test_actual_restricted_codex_host_answers_question(tmp_path: Path, mon
         if scenario == "answer":
             assert "staging" in detail.questions[0].answer.casefold()
         else:
-            from app.services.task_presentations import task_presentation_service
+            from app.services.updates.presentations import task_presentation_service
             assert detail.questions[0].state == "asked"
             assert detail.questions[0].answer is None
             assert detail.task.presentation_policy == "follow_progress"
@@ -111,7 +111,7 @@ async def test_actual_restricted_codex_host_answers_question(tmp_path: Path, mon
         assert len(native_calls) == 1
         assert usage is not None, "The actual native stream must expose provider token usage"
         assert usage.values_json["total"]["totalTokens"] > 0
-        from app.services.orchestration_recovery import host_has_exited
+        from app.services.orchestration.recovery import host_has_exited
         assert host_has_exited(decision.native_binding_json)
         inspection = await runtime.inspect(decision.native_binding_json, str(profile))
         assert inspection["status"] == "terminal"

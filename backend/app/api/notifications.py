@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.auth import require_auth
-from app.services.jarvis_devices import require_jarvis_auth
-from app.services.notifications import (
+from app.services.jarvis.devices import require_jarvis_auth
+from app.services.updates.push_subscriptions import (
     LegacyNotificationStateError,
     acknowledge_delivery,
     get_public_key,

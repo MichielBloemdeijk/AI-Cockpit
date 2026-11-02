@@ -7,8 +7,8 @@ from sqlalchemy import select
 
 from app.db.session import session_scope
 from app.db.tables import RuntimeComponentHealth, Task
-from app.services.jarvis_daily import jarvis_daily_service
-from app.services.jarvis_situation import jarvis_situation_projector
+from app.services.jarvis.daily import jarvis_daily_service
+from app.services.jarvis.situation import jarvis_situation_projector
 from app.services.tasks.reminder_scheduler import reminder_scheduler
 from app.services.runtime_health import runtime_health_service
 from app.services.tasks.service import task_service

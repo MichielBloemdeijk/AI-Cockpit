@@ -8,8 +8,8 @@ import pytest
 import httpx
 
 from app.config import settings
-from app.services.openai_live_adapter import OpenAILiveAdapter
-from app.services.voice_session_adapter import VoiceProviderEvent
+from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
+from app.services.jarvis.voice_session_adapter import VoiceProviderEvent
 
 
 class FakeLiveSocket:
@@ -41,7 +41,7 @@ class FakeLiveSocket:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("termination", ["closed", "transport", "stale_closed"])
 async def test_terminal_sideband_retires_session_and_idle_watcher(monkeypatch, termination):
-    from app.services.jarvis_coordinator import StaleSessionError
+    from app.services.jarvis.coordinator import StaleSessionError
     monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
     socket, events = FakeLiveSocket(), []
     async def create(**kwargs):
@@ -74,9 +74,9 @@ async def test_terminal_sideband_retires_session_and_idle_watcher(monkeypatch, t
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flush_path", ["gap", "close"])
 async def test_rejected_transcript_does_not_strand_old_session_work(monkeypatch, flush_path):
-    from app.services.jarvis_coordinator import StaleSessionError
+    from app.services.jarvis.coordinator import StaleSessionError
     monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
-    monkeypatch.setattr("app.services.openai_live_adapter._TRANSCRIPT_GAP_SECONDS", .01)
+    monkeypatch.setattr("app.services.jarvis.openai_live_adapter._TRANSCRIPT_GAP_SECONDS", .01)
     socket, events = FakeLiveSocket(), []
     async def create(**kwargs):
         return {"session": {"id": "old"}, "transport": {"sdp": "answer"}}
@@ -491,7 +491,7 @@ async def test_sideband_setup_failure_is_reported_after_sdp_return(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_rejected_attachment_ready_retires_socket_and_watchers(monkeypatch):
-    from app.services.jarvis_coordinator import StaleSessionError
+    from app.services.jarvis.coordinator import StaleSessionError
     monkeypatch.setattr(settings, "openai_api_key", "fixture-key")
     socket, observed = FakeLiveSocket(), []
     key = ("superseded", 4)
@@ -985,7 +985,7 @@ async def test_response_completion_does_not_end_assistant_transcript(monkeypatch
 
 @pytest.mark.asyncio
 async def test_screen_look_result_attaches_the_screenshot_before_one_continuation(monkeypatch) -> None:
-    from app.services.screen_look import ContextImage
+    from app.services.jarvis.screen_look import ContextImage
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
     socket = FakeLiveSocket()
 

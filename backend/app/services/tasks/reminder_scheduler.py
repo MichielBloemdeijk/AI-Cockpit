@@ -10,11 +10,11 @@ from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import Task
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import TaskSnapshot, task_service
 from app.services.tasks import lifecycle
 from app.services.tasks.vocabulary import TaskStatus
-from app.services.jarvis_time import DEFAULT_TIME_ZONE, resolve_reminder_time
+from app.services.jarvis.clock import DEFAULT_TIME_ZONE, resolve_reminder_time
 from app.services.runtime_health import runtime_health_service
 
 

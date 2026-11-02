@@ -11,9 +11,9 @@ from app.db.session import session_scope
 from app.db.tables import JarvisLiveEvent, NotificationOutbox, TaskEvent
 from app.main import app
 from app.services.history_retrieval import history_retrieval_service
-from app.services.jarvis_live import jarvis_live_service
-from app.services.jarvis_preferences import jarvis_preferences_service
-from app.services.natural_task_resolver import natural_task_resolver
+from app.services.jarvis.live import jarvis_live_service
+from app.services.jarvis.preferences import jarvis_preferences_service
+from app.services.jarvis.task_resolver import natural_task_resolver
 from app.services.tasks.reminder_scheduler import reminder_scheduler
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator

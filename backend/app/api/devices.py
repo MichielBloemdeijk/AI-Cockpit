@@ -11,7 +11,7 @@ from app.db.tables import JarvisDevice, JarvisLiveEvent, LiveSession
 from app.models.jarvis import DevicePairRequest, DevicePairResponse, DeviceStatePatch, PairingCodeView
 from app.services.auth import require_auth, create_device_session, SESSION_COOKIE_NAME, SESSION_MAX_AGE
 from app.services import android_updates
-from app.services.jarvis_devices import jarvis_device_service, require_jarvis_auth, require_paired_device
+from app.services.jarvis.devices import jarvis_device_service, require_jarvis_auth, require_paired_device
 
 
 router = APIRouter(prefix="/api/jarvis/devices", tags=["jarvis-devices"])
@@ -117,7 +117,7 @@ async def patch_device(device_id: str, request: DeviceStatePatch, http_request: 
 
 @router.delete("/{device_id}", dependencies=[Depends(require_auth)])
 async def revoke_device(device_id: str) -> dict[str, bool]:
-    from app.services.jarvis_devices import utc_now
+    from app.services.jarvis.devices import utc_now
 
     async with session_scope() as session:
         device = await session.get(JarvisDevice, device_id)
@@ -130,7 +130,7 @@ async def revoke_device(device_id: str) -> dict[str, bool]:
             target_device_id=device_id, idempotency_key=f"device-unlinked:{device_id}", payload_json={"device_id": device_id}))
         calls = list((await session.execute(select(LiveSession).where(LiveSession.controller_id == device_id,
             LiveSession.lifecycle_state.in_(("connecting", "ready"))))).scalars().all())
-    from app.services.jarvis_coordinator import jarvis_coordinator
+    from app.services.jarvis.coordinator import jarvis_coordinator
     for call in calls:
         try:
             await jarvis_coordinator.supersede_session(call.id, generation=call.generation, reason="device_unlinked")

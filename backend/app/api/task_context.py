@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.db.tables import JarvisDevice, TaskCaptureReport
 from app.db.session import session_scope
 from app.models.jarvis import JarvisCaptureStatusRequest, JarvisCaptureStatusView
-from app.services.jarvis_devices import require_paired_device
+from app.services.jarvis.devices import require_paired_device
 from app.services.auth import require_auth
 from app.services.tasks.capture import task_capture_service
 from app.services.tasks.context_upload import MAX_JPEG_BYTES, task_context_upload_service

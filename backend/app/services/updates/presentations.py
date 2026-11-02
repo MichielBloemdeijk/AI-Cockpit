@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import CursorResult, and_, func, or_, select, true, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import aliased
 from app.config import settings
@@ -28,12 +29,12 @@ from app.db.tables import (
     TaskQuestion,
     LiveSessionEvent,
 )
-from app.services.task_notifications import enqueue_task_notification
+from app.services.updates.notifications import enqueue_task_notification
 from app.services.tasks.error_messages import public_failure_summary
 from app.services.runtime_health import runtime_health_service
 from app.services.tasks.update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
-from app.services.orchestration_visibility import visible_attention, live_context_visible
-from app.services.task_notification_preferences import current as current_notification
+from app.services.orchestration.visibility import visible_attention, live_context_visible
+from app.services.updates.notification_preferences import current as current_notification
 
 
 PRESENTABLE_EVENT_TYPES = {
@@ -94,7 +95,7 @@ class TaskPresentationService:
 
     async def recover_reservations(self) -> int:
         async with session_scope() as session:
-            recovered = await session.execute(
+            recovered = cast(CursorResult, await session.execute(
                 update(TaskPresentation)
                 .where(TaskPresentation.state == "pending")
                 .where(TaskPresentation.lease_token.is_not(None))
@@ -108,7 +109,7 @@ class TaskPresentationService:
                     last_error="process_restarted",
                     updated_at=utc_now(),
                 )
-            )
+            ))
             return int(recovered.rowcount or 0)
 
     async def sync_candidates(self) -> int:
@@ -128,7 +129,7 @@ class TaskPresentationService:
         if settings.task_orchestration_enabled:
             # One feedback owner, including when voice is connected. This
             # performs only code/DB work and never waits for the decision loop.
-            from app.services.task_orchestration import task_orchestration_service
+            from app.services.orchestration.service import task_orchestration_service
             return await task_orchestration_service.intake()
         created = 0
         async with self._projection_lock:
@@ -165,11 +166,11 @@ class TaskPresentationService:
                             f"Caught up through task event {target_sequence}."
                         )
                         return created
-                    created += await self._project_batch(session, events)
+                    created += await self.project_batch(session, events)
                     checkpoint.last_sequence = events[-1].sequence
                     checkpoint.updated_at = utc_now()
 
-    async def _project_batch(self, session, events: list[TaskEvent], *, judged_event_ids: frozenset[str] = frozenset()) -> int:
+    async def project_batch(self, session, events: list[TaskEvent], *, judged_event_ids: frozenset[str] = frozenset()) -> int:
         # Preserve the canonical candidates while the receipt-based visibility
         # gate holds them. Disablement must not lose skipped worker questions.
         relevant = [
@@ -532,7 +533,7 @@ class TaskPresentationService:
             .where(TaskPresentation.state == "pending")
             .where(TaskPresentation.lease_token.is_(None))
             .where(live_context_visible() if realtime.provider_adapter == "openai_live" else visible_attention())
-            .where(TaskPresentation.candidate_type == "terminal_result" if terminal_only or quiet_context else True)
+            .where(TaskPresentation.candidate_type == "terminal_result" if terminal_only or quiet_context else true())
             .order_by(
                 TaskPresentation.created_at.asc(),
                 TaskPresentation.id.asc(),
@@ -619,7 +620,7 @@ class TaskPresentationService:
                     LiveSessionEvent.event_type == "provider.assistant_update_submitted")
                     .order_by(LiveSessionEvent.sequence.desc()).limit(100))).scalars().all()
                 for receipt in receipts:
-                    rp = receipt.payload_json or {}
+                    rp: dict[str, Any] = receipt.payload_json or {}
                     if rp.get("generation") != generation:
                         continue
                     if candidate.id not in rp.get("presentation_ids", []):
@@ -782,7 +783,7 @@ class TaskPresentationService:
             row.next_attempt_at = None
         if transitioned.rowcount != 1:
             return True
-        presentation.handled_event_id = await self._append_handled_audit(
+        presentation.handled_event_id = await self.append_handled_audit(
             session,
             presentation,
             handled_by="notification_opened",
@@ -802,7 +803,7 @@ class TaskPresentationService:
         ).strip()
 
     @staticmethod
-    async def _append_handled_audit(
+    async def append_handled_audit(
         session,
         candidate: TaskPresentation,
         *,
@@ -845,7 +846,7 @@ class TaskPresentationService:
         *,
         exposure_token: str,
         commentary: bool,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         """Build one bounded append item without truncating opaque IDs."""
         raw = dict(candidate.required_facts_json or {})
         if candidate.candidate_type == "terminal_result":
@@ -869,9 +870,9 @@ class TaskPresentationService:
                 return None
             return normalized if len(normalized) <= limit else normalized[: limit - 1].rstrip() + "…"
 
-        task = raw.get("task") if isinstance(raw.get("task"), dict) else {}
-        source = raw.get("source") if isinstance(raw.get("source"), dict) else {}
-        presentation = raw.get("presentation") if isinstance(raw.get("presentation"), dict) else {}
+        task = value if isinstance(value := raw.get("task"), dict) else {}
+        source = value if isinstance(value := raw.get("source"), dict) else {}
+        presentation = value if isinstance(value := raw.get("presentation"), dict) else {}
         fact = {
             "schema": "jarvis.task_update.v1",
             "task_id": candidate.task_id,
@@ -1103,7 +1104,7 @@ class TaskPresentationService:
         now = utc_now()
         released = 0
         async with session_scope() as session:
-            result = await session.execute(
+            result = cast(CursorResult, await session.execute(
                 update(TaskPresentation)
                 .where(TaskPresentation.state == "pending")
                 .where(TaskPresentation.reserved_session_id == session_id)
@@ -1118,7 +1119,7 @@ class TaskPresentationService:
                     last_error=error,
                     updated_at=now,
                 )
-            )
+            ))
             released = int(result.rowcount or 0)
         return released
 
@@ -1137,7 +1138,7 @@ class TaskPresentationService:
             candidate.reserved_at = None
             candidate.lease_token = None
             if candidate.source_task_event_id:
-                await TaskPresentationService._supersede_notification(
+                await TaskPresentationService.supersede_notification(
                     session, candidate.source_task_event_id
                 )
 
@@ -1161,12 +1162,12 @@ class TaskPresentationService:
                 candidate.reserved_at = None
                 candidate.lease_token = None
                 if candidate.source_task_event_id:
-                    await TaskPresentationService._supersede_notification(
+                    await TaskPresentationService.supersede_notification(
                         session, candidate.source_task_event_id
                     )
 
     @staticmethod
-    async def _supersede_notification(session, task_event_id: str) -> None:
+    async def supersede_notification(session, task_event_id: str) -> None:
         rows = list((await session.execute(
             select(NotificationOutbox)
             .where(NotificationOutbox.task_event_id == task_event_id)

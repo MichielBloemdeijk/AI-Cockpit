@@ -7,7 +7,7 @@ from app.services.tasks.vocabulary import UNSUCCESSFUL_TASK_STATUSES
 
 
 async def retain_attention(session, decision, event_key: str) -> bool:
-    from app.services.task_presentations import task_presentation_service
+    from app.services.updates.presentations import task_presentation_service
     task = (await session.execute(select(Task).where(Task.id == decision.task_id))).scalar_one()
     source = (await session.execute(select(TaskEvent).where(
         TaskEvent.id.in_(decision.source_event_ids_json),
@@ -23,5 +23,5 @@ async def retain_attention(session, decision, event_key: str) -> bool:
     if source:
         if source.id not in decision.source_event_ids_json:
             decision.source_event_ids_json = [*decision.source_event_ids_json, source.id]
-        await task_presentation_service._project_batch(session, [source], judged_event_ids=frozenset({source.id}))
+        await task_presentation_service.project_batch(session, [source], judged_event_ids=frozenset({source.id}))
     return source is not None

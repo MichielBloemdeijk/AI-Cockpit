@@ -11,16 +11,16 @@ from sqlalchemy import select
 from app.db.session import read_session_scope
 from app.db.tables import ConversationMessage, LiveSession, Task, TaskContextRequest, TaskExecutionRun, TaskTurn
 from app.services.history_retrieval import history_retrieval_service
-from app.services.jarvis_preferences import jarvis_preferences_service
-from app.services.natural_task_resolver import natural_task_resolver, task_title
+from app.services.jarvis.preferences import jarvis_preferences_service
+from app.services.jarvis.task_resolver import natural_task_resolver, task_title
 from app.services.tasks.reminder_scheduler import reminder_scheduler
 from app.services.tasks.error_messages import public_failure_summary
 from app.services.tasks.service import task_service
 from app.services.tasks.vocabulary import ACTIVE_TASK_STATUSES, UNSUCCESSFUL_TASK_STATUSES, TaskStatus
 from app.services.tasks.capture import task_capture_service
 from app.services.tasks.workflows import resolve_workflow_config, workflow_catalog_revision
-from app.services.task_result_contract import result_links, admission_result_url
-from app.services.admission_timing import observe_admission, timestamp, timed
+from app.services.results.contract import result_links, admission_result_url
+from app.services.jarvis.admission_timing import observe_admission, timestamp, timed
 
 
 ALLOWED_SHELL_TOOLS = frozenset(
@@ -71,7 +71,7 @@ class RestrictedBrainGateway:
     async def _preference_receipt(self, result):
         task_id = result.output.get("task_id")
         if task_id:
-            from app.services.task_notification_preferences import current
+            from app.services.updates.notification_preferences import current
             async with read_session_scope() as session:
                 task = (await session.execute(select(Task).where(Task.id == task_id))).scalar_one()
                 preference = await current(session,task)
@@ -86,7 +86,7 @@ class RestrictedBrainGateway:
         if name not in {"dispatch_task", "start_workflow", "continue_task"} or kwargs.get("session_id") is None:
             result = await self._execute(**kwargs)
             return await self._preference_receipt(result) if name in {"dispatch_task","start_workflow","set_task_update_policy"} else result
-        from app.services.live_admission_intents import reserve_intent, finish_intent, pin_target
+        from app.services.jarvis.admission_intents import reserve_intent, finish_intent, pin_target
         receipt = await reserve_intent(session_id=kwargs["session_id"], generation=kwargs["generation"],
             turn_scope=turn_scope or kwargs.get("origin_turn_id"),
             intent_id=kwargs["arguments"].get("intent_id"), tool_name=name, arguments=kwargs["arguments"])
@@ -238,7 +238,7 @@ class RestrictedBrainGateway:
         if tool_name == "open_app":
             if session_id is None or generation is None:
                 return {"found": True, "opened": False, "url": app.summary()["url"], "title": app.title}
-            from app.services.phone_display import open_path
+            from app.services.jarvis.phone_display import open_path
             try:
                 return {"found": True, "opened": True, **await open_path(
                     session_id=session_id, generation=generation, request_identity=call_id,
@@ -427,7 +427,7 @@ class RestrictedBrainGateway:
         if tool_name == "look_at_screen":
             if session_id is None or generation is None:
                 raise ValueError("Looking at the screen requires an active Live session")
-            from app.services.screen_look import look
+            from app.services.jarvis.screen_look import look
             return BrainResult(output=await look(
                 session_id=session_id, generation=generation,
                 request_identity=capture_request_identity or call_id,
@@ -444,7 +444,7 @@ class RestrictedBrainGateway:
                 raise ValueError("Showing something on the phone requires an active Live session")
             task = await self._resolve_task(arguments, mutation=False)
             await natural_task_resolver.touch(task.id)
-            from app.services.phone_display import show
+            from app.services.jarvis.phone_display import show
             return BrainResult(output=await show(session_id=session_id, generation=generation,
                 request_identity=call_id, task_id=task.id, title=task_title(task)))
 
@@ -675,7 +675,7 @@ class RestrictedBrainGateway:
         if tool_name == "get_attention_checklist":
             if not session_id or generation is None:
                 raise ValueError("Attention checklist requires the active voice session")
-            from app.services.task_presentations import task_presentation_service
+            from app.services.updates.presentations import task_presentation_service
 
             checklist = await task_presentation_service.get_attention_checklist(
                 session_id=session_id,

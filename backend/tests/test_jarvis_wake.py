@@ -1,4 +1,4 @@
-from app.services.jarvis_wake import verify_wake_transcript
+from app.services.jarvis.wake import verify_wake_transcript
 
 
 def test_wake_verifier_requires_direct_address() -> None:

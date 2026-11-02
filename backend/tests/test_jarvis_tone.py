@@ -1,4 +1,4 @@
-from app.services.jarvis_tone import (
+from app.services.jarvis.tone import (
     CALM_BUTLER_ACKNOWLEDGEMENT_CORPUS,
     CALM_BUTLER_REGRESSION_RESPONSES,
     calm_acknowledgement_violations,

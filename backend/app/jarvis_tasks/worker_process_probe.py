@@ -78,7 +78,7 @@ async def probe_recipe_task(task_id: str, *, expected_images: int) -> dict:
     assert publications[0] == publications[1]
     assert (await task_service.get_task(task_id)).task.status == TaskStatus.completed
     from app.db.session import session_scope
-    from app.services.task_results import task_results
+    from app.services.results.records import task_results
     async with session_scope() as session:
         result_id = (await task_results(session, task_id))[0].id
     await worker_coordinator.release_claim(worker.worker_id, context.attempt_id,

@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 
 from app.config import settings
-from app.services.orchestration_visibility import visible_attention
+from app.services.orchestration.visibility import visible_attention
 from app.db.session import session_scope
 from app.db.tables import (
     Conversation,
@@ -24,7 +24,7 @@ from app.db.tables import (
     TaskResult,
     WorkerInstance,
 )
-from app.services.jarvis_time import temporal_frame
+from app.services.jarvis.clock import temporal_frame
 from app.services.runtime_health import runtime_health_service
 from app.services.tasks.error_messages import public_failure_summary
 from app.services.tasks.vocabulary import (

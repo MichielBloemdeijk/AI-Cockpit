@@ -41,7 +41,7 @@ def prepare(source: Path, destination: Path) -> Path:
 
 async def replay_case(source: Path, destination: Path) -> dict:
     from app.db.session import close_engine, initialize_engine
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     database = prepare(source, destination)
     await close_engine()
     settings.database_url = f"sqlite+aiosqlite:///{database.as_posix()}"

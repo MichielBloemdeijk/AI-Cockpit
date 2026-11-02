@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from app.db.session import session_scope
 from app.db.tables import Conversation, JarvisState, LiveSession, Task, TaskTurn
-from app.services.jarvis_brain import RestrictedBrainGateway
+from app.services.jarvis.brain import RestrictedBrainGateway
 from app.services.tasks.service import task_service
 
 
@@ -47,7 +47,7 @@ async def test_crash_after_continuation_commit_recovers_one_original_run(monkeyp
     common = await live_arguments()
     original = await task_service.dispatch(goal="Original note", origin_surface="test", idempotency_key="original")
     await task_service.complete(original.task.id, summary="Done", idempotency_key="original-done")
-    import app.services.live_admission_intents as receipts
+    import app.services.jarvis.admission_intents as receipts
     finish = receipts.finish_intent
     async def interrupted(*args, **kwargs):
         raise RuntimeError("Host stopped after commit")
@@ -67,7 +67,7 @@ async def test_crash_after_continuation_commit_recovers_one_original_run(monkeyp
 
 @pytest.mark.asyncio
 async def test_concurrent_task_focus_preserves_every_reference_and_revision():
-    from app.services.natural_task_resolver import natural_task_resolver
+    from app.services.jarvis.task_resolver import natural_task_resolver
     tasks = [await task_service.dispatch(goal=f"Concurrent focus {i}", origin_surface="test",
         idempotency_key=f"focus-{i}") for i in range(8)]
     await asyncio.gather(*(natural_task_resolver.touch(item.task.id) for item in tasks))

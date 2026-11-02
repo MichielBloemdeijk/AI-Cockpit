@@ -9,12 +9,12 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import AssistantPromise, ConversationObservation, LiveSession, LiveSessionEvent, TaskPresentation
 from app.db.repositories.jarvis import JarvisDomainRepository
-from app.services import assistant_notes
-from app.services.conversation_observer import conversation_observer
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.live_task_updates import announcement_text
-from app.services.openai_live_adapter import OpenAILiveAdapter
-from app.services.task_presentations import task_presentation_service
+from app.services.jarvis import notes as assistant_notes
+from app.services.jarvis.observer import conversation_observer
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.jarvis.task_updates import announcement_text
+from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from tests.test_openai_live_adapter import FakeLiveSocket, wait_for_sideband
 
@@ -197,7 +197,7 @@ async def test_spoken_update_waits_while_the_user_is_speaking(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bookkeeper_assesses_delivered_reminders(monkeypatch):
-    from app.services import conversation_observer as module
+    from app.services.jarvis import observer as module
     from datetime import timedelta
     live, task, _ = await requested_outcome(monkeypatch)
     reminder = (await task_service.dispatch(goal="Remind me: Stretch", origin_surface="jarvis_reminder",

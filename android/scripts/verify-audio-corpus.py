@@ -70,7 +70,7 @@ def close_observed_sessions(url, candidate, database, runtime, samples):
             from uuid import UUID
             UUID(session_id)
             owners.add((session_id, int(generation)))
-    from app.services.jarvis_coordinator import ACTIVE_SESSION_STATES
+    from app.services.jarvis.coordinator import ACTIVE_SESSION_STATES
     active = set()
     with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as db:
         for session_id, generation in owners:
@@ -277,7 +277,7 @@ async def prepare_scenario(database: Path, identifier: str, *, task_id: str | No
     from app.config import settings
     from app.db.session import close_engine
     from app.services.tasks.service import task_service
-    from app.services.natural_task_resolver import natural_task_resolver
+    from app.services.jarvis.task_resolver import natural_task_resolver
     target = database.resolve()
     if not target.is_relative_to((ROOT / "data").resolve()):
         raise ValueError("Scenario setup requires a project-owned isolated database under data")

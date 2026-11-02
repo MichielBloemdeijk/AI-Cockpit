@@ -161,6 +161,11 @@ def main() -> None:
         (evidence / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps(report, indent=2))
         screen.stop_tree(backend)
+        if serial and not args.keep_emulator:
+            # The release build's higher version code and signature would block every
+            # later debug install on this test AVD; leave it as other harnesses expect.
+            subprocess.run([str(screen.ADB), "-s", serial, "uninstall", screen.PACKAGE],
+                           capture_output=True, timeout=60, check=False)
         if not args.keep_emulator:
             screen.stop_tree(emulator)
 

@@ -37,7 +37,7 @@ async def observed_state(session, task: Task, question: TaskQuestion | None = No
     user_sequence = int((await session.execute(select(func.max(TaskTurn.sequence)).where(
         TaskTurn.task_id == task.id, TaskTurn.role == "user", TaskTurn.origin != "orchestration",
     ))).scalar_one_or_none() or 0)
-    from app.services.orchestration_context import instructions
+    from app.services.orchestration.context import instructions
     return {
         "task_id": task.id, "run_id": task.current_run_id,
         "goal_revision": task.goal_revision, "control_revision": task.control_revision,

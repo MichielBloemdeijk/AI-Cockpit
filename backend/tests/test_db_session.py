@@ -40,7 +40,7 @@ async def test_read_scope_detaches_scalar_rows_and_rejects_writes():
 @pytest.mark.asyncio
 async def test_commit_trace_separates_flush_connection_setup_and_commit():
     from types import SimpleNamespace
-    from app.services.admission_timing import observe_admission
+    from app.services.jarvis.admission_timing import observe_admission
     from app.db.session import session_scope
     from app.db.tables import Conversation
     @observe_admission

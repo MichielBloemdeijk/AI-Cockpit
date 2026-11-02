@@ -12,11 +12,11 @@ from app.db.tables import (
     OrchestrationAction, OrchestrationDecision, Task, TaskProjectionCheckpoint,
     TaskQuestion, TaskSupervisorLease,
 )
-from app.services.orchestration_authority import StaleDecision
-from app.services.task_orchestration import (
+from app.services.orchestration.authority import StaleDecision
+from app.services.orchestration.service import (
     CURSOR_KEY, LEASE_KEY, DecisionTools, TaskOrchestrationService, now,
 )
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 
 
@@ -382,7 +382,7 @@ async def test_supervisor_recovery_needed_retains_failure_in_the_existing_inbox(
 
 
 def test_voice_prompt_assigns_only_background_automatic_feedback_ownership():
-    from app.services.openai_live_adapter import OpenAILiveAdapter
+    from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
     config = OpenAILiveAdapter._session_config({})
     assert "sole automatic worker-feedback owner" in config["instructions"]
     assert "exclusively handles automatic worker questions" in config["delegation"]["responses"]["instructions"]
@@ -505,7 +505,7 @@ async def test_direct_user_update_preference_fences_background_mutation():
 
 def test_context_budget_handles_unicode_and_advertises_retrievable_truncation():
     import json
-    from app.services.orchestration_context import bound_context
+    from app.services.orchestration.context import bound_context
     context = {"task": {"goal": "🦉" * 12000}, "question": "Which environment?",
                "events": [{"payload": "x" * 600} for _ in range(8)], "turns": [], "prior_actions": [], "artifacts": []}
     result = bound_context(context)

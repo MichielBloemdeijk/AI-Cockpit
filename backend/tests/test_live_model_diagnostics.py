@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
-from app.services import live_model_diagnostics as module
-from app.services.openai_live_adapter import OpenAILiveAdapter
+from app.services.jarvis import model_diagnostics as module
+from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
 from test_openai_live_adapter import FakeLiveSocket, wait_for_sideband
 from test_live_managed_delegation import connected, DELEGATION
 

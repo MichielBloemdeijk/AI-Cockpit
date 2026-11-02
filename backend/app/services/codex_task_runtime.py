@@ -412,7 +412,7 @@ class CodexTaskRuntime:
                 event_counter += 1
                 payload = json_value(event.payload)
                 if event.method == "thread/tokenUsage/updated" and isinstance(payload, dict):
-                    from app.services.orchestration_telemetry import token_usage
+                    from app.services.orchestration.telemetry import token_usage
                     usage = token_usage(payload, thread_id=thread.id, turn_id=handle.id)
                     if usage:
                         await task_service.record_attempt_usage(context.task_id,

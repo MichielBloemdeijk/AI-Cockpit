@@ -10,7 +10,7 @@ from app.db.session import session_scope
 from app.db.tables import LiveAdmissionIntent, LiveSession
 
 
-from app.services.admission_timing import timed
+from app.services.jarvis.admission_timing import timed
 
 
 @timed("intent_reservation")

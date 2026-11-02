@@ -11,7 +11,7 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import ResourceLease
 from app.services.agent_execution import AgentExecutionResult
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from app.services.tasks.worker import TaskWorker
 from app.services.tasks.worker_coordinator import ClaimResult

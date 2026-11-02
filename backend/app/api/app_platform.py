@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from app import app_platform
 from app.config import settings
 from app.services.auth import authorization_scheme, require_auth
-from app.services.jarvis_devices import require_jarvis_auth
+from app.services.jarvis.devices import require_jarvis_auth
 
 router = APIRouter(prefix="/api/app-platform", tags=["app-platform"])
 host_router = APIRouter(prefix="/api/app-host", tags=["app-platform"])

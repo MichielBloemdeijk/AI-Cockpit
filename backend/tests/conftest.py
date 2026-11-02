@@ -31,7 +31,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2] / "android" / "scripts")
 from app.config import settings
 from app.app_platform import close_apps_engine, ensure_apps_database, install_builtin_apps
 from app.db.session import close_engine, ensure_database_ready, initialize_engine
-from app.services.voice_session_adapter import fake_voice_session_adapter
+from app.services.jarvis.voice_session_adapter import fake_voice_session_adapter
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ def offline_network_boundary(request, monkeypatch):
 def offline_conversation_observer(monkeypatch):
     # The application lifespan starts the conversation observer. Tests never reach
     # the paid Responses assessment; observer tests substitute their own infer().
-    from app.services import conversation_observer
+    from app.services.jarvis import observer as conversation_observer
 
     async def unavailable(evidence):
         raise RuntimeError("Tests must not call the observer's Responses model")
@@ -153,13 +153,13 @@ async def configured_database(tmp_path: Path, migrated_template_database: Path):
         yield
     finally:
         # Finish coordinator DB work before the test event loop/database closes.
-        from app.services.conversation_observer import conversation_observer
-        from app.services.jarvis_coordinator import jarvis_coordinator
+        from app.services.jarvis.observer import conversation_observer
+        from app.services.jarvis.coordinator import jarvis_coordinator
         await conversation_observer.stop()
         await jarvis_coordinator.stop()
         # Fire-and-forget push deliveries may still hold a database connection
         # (Windows then cannot delete the test database).
-        from app.services import task_notifications
+        from app.services.updates import notifications as task_notifications
         pending = list(task_notifications._outbox_tasks)
         for task in pending:
             task.cancel()

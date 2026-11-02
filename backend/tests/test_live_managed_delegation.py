@@ -5,7 +5,7 @@ import json
 import pytest
 
 from app.config import settings
-from app.services.openai_live_adapter import OpenAILiveAdapter
+from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
 from test_openai_live_adapter import FakeLiveSocket, wait_for_sideband
 
 

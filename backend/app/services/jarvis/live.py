@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from app.db.session import read_session_scope
 from app.db.tables import JarvisLiveEvent
 from app.services.auth import SESSION_COOKIE_NAME, verify_session_token, authorization_scheme
-from app.services.jarvis_devices import jarvis_device_service
+from app.services.jarvis.devices import jarvis_device_service
 from app.services.commit_signals import live_event_committed
 
 RECOVERY_SCAN_SECONDS = .5

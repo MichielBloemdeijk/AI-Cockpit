@@ -20,15 +20,15 @@ from app.app_platform import app_runtime, close_apps_engine, ensure_apps_databas
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
 from app.services.conversations.store import conversation_store
 from app.services.conversations.run_supervisor import run_supervisor
-from app.services.task_notifications import recover_pending_task_notifications
+from app.services.updates.notifications import recover_pending_task_notifications
 from app.services.tasks.reminder_scheduler import reminder_scheduler
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.jarvis_live_telemetry import jarvis_live_telemetry
-from app.services.conversation_observer import conversation_observer
-from app.services.openai_live_adapter import openai_live_adapter
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.jarvis.live_telemetry import jarvis_live_telemetry
+from app.services.jarvis.observer import conversation_observer
+from app.services.jarvis.openai_live_adapter import openai_live_adapter
 from app.services.runtime_health import runtime_health_service
 from app.services.tasks.service import task_service
-from app.services.task_orchestration import task_orchestration_service
+from app.services.orchestration.service import task_orchestration_service
 from app.services.tasks.context_upload import task_context_upload_service
 from app.services.tasks.pool_supervisor import task_pool_manager
 from app.services.tasks.worker_coordinator import worker_coordinator

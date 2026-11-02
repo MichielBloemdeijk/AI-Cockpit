@@ -22,7 +22,7 @@ from app.jarvis_tasks.task_mcp import _call, _tool_catalog
 
 
 def test_generic_voice_catalog_advertises_only_its_publication_contract():
-    from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+    from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
     for tool in get_jarvis_tool_definitions():
         if tool["name"] in {"dispatch_task", "continue_task"}:
             # The kind is not the model's choice: agents publish Documents, workflows their own output.
@@ -101,7 +101,7 @@ async def test_general_admission_publish_update_answer_additional_result_and_rep
         answer_fence = await claim(worker, task_id)
         await finish(worker, task_id, answer_fence, "Answer only", "answer-done")
         assert await record(first) == stored
-        from app.services.task_presentations import task_presentation_service
+        from app.services.updates.presentations import task_presentation_service
         await task_presentation_service.sync_candidates()
         async with session_scope() as session:
             assert (await session.execute(select(NotificationOutbox).where(NotificationOutbox.task_id == task_id,
@@ -255,7 +255,7 @@ async def test_result_authority_owned_by_admission_and_fenced_at_publication():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("policy", ["critical_only", "silent"])
 async def test_publication_delivery_failure_rolls_back_task_writes_and_silent_stays_silent(monkeypatch, policy):
-    from app.services import task_notifications
+    from app.services.updates import notifications as task_notifications
     worker = await worker_coordinator.activate(process_identity="atomic-result-test")
     task = await task_service.dispatch(goal="Document", origin_surface="test", idempotency_key="atomic",
         presentation_policy=policy, result_request={"mode": "new"})
@@ -286,7 +286,7 @@ async def test_publication_delivery_failure_rolls_back_task_writes_and_silent_st
 @pytest.mark.asyncio
 async def test_workflow_outcome_and_replay_survive_promotion_to_a_general_result(monkeypatch):
     from app.services.tasks.service import workflow_attempt_outcome
-    from app.services.task_result_contract import admission_result_url
+    from app.services.results.contract import admission_result_url
     from test_reference_workflows import admit, researched, content
     args, worker = await admit(monkeypatch, "research_screen@1")
     detail = await task_service.get_task(args.task_id)
@@ -349,8 +349,8 @@ async def test_general_committed_outcome_wins_over_heartbeat_during_runtime_clea
 
 @pytest.mark.asyncio
 async def test_plain_follow_up_revises_the_result_in_place_with_its_current_content():
-    from app.services.jarvis_daily import jarvis_daily_service
-    from app.services.jarvis_situation import jarvis_situation_projector
+    from app.services.jarvis.daily import jarvis_daily_service
+    from app.services.jarvis.situation import jarvis_situation_projector
     worker = await worker_coordinator.activate(process_identity="implicit-edit-test")
     created = await task_service.dispatch(goal="Write a pudding recipe", origin_surface="test",
         idempotency_key="pudding", result_request={"mode": "new"})

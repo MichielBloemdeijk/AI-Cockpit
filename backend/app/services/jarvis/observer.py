@@ -392,7 +392,7 @@ class ConversationObserver:
                 presentations = (await db.execute(select(TaskPresentation).where(TaskPresentation.id.in_(exposed),
                     TaskPresentation.state == "pending",
                     TaskPresentation.candidate_type.in_(["terminal_result", "reminder"])))).scalars().all()
-                from app.services.assistant_notes import recent_session_ids
+                from app.services.jarvis.notes import recent_session_ids
                 open_promises = (await db.execute(select(AssistantPromise).where(AssistantPromise.status == "open",
                     AssistantPromise.session_id.in_(await recent_session_ids(db, live.id)))
                     .order_by(AssistantPromise.created_at))).scalars().all()
@@ -537,14 +537,14 @@ class ConversationObserver:
                         reserved_session_id=None, reserved_generation=None, reserved_at=None))
                 if updated.rowcount != 1:
                     continue
-                from app.services.task_presentations import task_presentation_service
+                from app.services.updates.presentations import task_presentation_service
                 await db.refresh(candidate)
-                candidate.handled_event_id = await task_presentation_service._append_handled_audit(db, candidate,
+                candidate.handled_event_id = await task_presentation_service.append_handled_audit(db, candidate,
                     handled_by="conversation_observer", idempotency_key=f"observer:{pid}:{job_id}", payload={
                         "session_id": job.session_id, "generation": job.generation, "observation_id": job_id,
                         "source_task_event_id": candidate.source_task_event_id, "fragment_ids": finding["fragment_ids"],
                         "source_window": {"fragment_ids": finding["fragment_ids"]}, "playback": support, "policy_hash": usage.get("policy_hash", POLICY_HASH), "model": usage.get("model", MODEL)})
-                await task_presentation_service._supersede_notification(db, candidate.source_task_event_id)
+                await task_presentation_service.supersede_notification(db, candidate.source_task_event_id)
             await self._apply_promises(db, job, evidence, result)
             job.result_json = {**result, "validation": validations}
             job.usage_json = {**usage, "attempts": (job.usage_json or {}).get("attempts", [])}

@@ -3,12 +3,12 @@ import pytest
 from app.db.session import session_scope
 from app.db.tables import LiveSession
 from app.db.repositories.jarvis import JarvisDomainRepository
-from app.services.jarvis_coordinator import jarvis_coordinator
+from app.services.jarvis.coordinator import jarvis_coordinator
 from app.services.tasks.service import task_service
-from app.services.voice_session_adapter import VoiceProviderEvent
-from app.services import jarvis_coordinator as module
+from app.services.jarvis.voice_session_adapter import VoiceProviderEvent
+from app.services.jarvis import coordinator as module
 from app.config import settings
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.db.tables import TaskEvent
 from sqlalchemy import select
 

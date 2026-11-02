@@ -29,18 +29,18 @@ from app.db.tables import (
     TaskPresentation,
     LiveSessionEvent,
 )
-from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.jarvis_live_telemetry import jarvis_live_telemetry
-from app.services.live_traffic import LiveTrafficObserver
+from app.services.jarvis.brain import restricted_brain_gateway
+from app.services.jarvis.live_telemetry import jarvis_live_telemetry
+from app.services.jarvis.traffic import LiveTrafficObserver
 from app.services.tasks.error_messages import public_tool_error
-from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
-from app.services.jarvis_time import normalize_client_context
-from app.services.jarvis_wake import verify_wake_transcript
-from app.services.jarvis_situation import jarvis_situation_projector
+from app.services.jarvis.daily import JarvisAcceptedTurn, jarvis_daily_service
+from app.services.jarvis.clock import normalize_client_context
+from app.services.jarvis.wake import verify_wake_transcript
+from app.services.jarvis.situation import jarvis_situation_projector
 from app.services.runtime_health import runtime_health_service
-from app.services.task_presentations import task_presentation_service
-from app.services.task_notifications import route_pending_task_notifications
-from app.services.voice_session_adapter import (
+from app.services.updates.presentations import task_presentation_service
+from app.services.updates.notifications import route_pending_task_notifications
+from app.services.jarvis.voice_session_adapter import (
     VoiceProviderEvent,
     fake_voice_session_adapter,
     get_voice_session_adapter,
@@ -652,7 +652,7 @@ class JarvisCoordinator:
                         pending = await task_presentation_service.list_pending(include_terminal_context=active.provider_adapter == "openai_live")
                         fingerprint = task_presentation_service.semantic_fingerprint(pending)
                         # Anything in Jarvis's notes (retries, follow-ups, promises) refreshes them.
-                        from app.services import assistant_notes
+                        from app.services.jarvis import notes as assistant_notes
                         async with session_scope() as session:
                             fingerprint += ":" + (await assistant_notes.render(session, session_id=active.id))["signature"]
                         attention_key = (active.id, active.generation)
@@ -990,7 +990,7 @@ class JarvisCoordinator:
                             "next_cursor": attention_update.next_cursor,
                             "deltas": tombstones,
                         }
-                        from app.services import assistant_notes
+                        from app.services.jarvis import notes as assistant_notes
                         context["assistant_notes"] = await assistant_notes.render(session, session_id=session_id)
                     reservation_started = situation_finished
                     if selected_reason == "task_update":
@@ -1490,7 +1490,7 @@ class JarvisCoordinator:
                 "next_cursor": attention_update.next_cursor,
                 "deltas": [],
             }
-            from app.services import assistant_notes
+            from app.services.jarvis import notes as assistant_notes
             context["assistant_notes"] = await assistant_notes.render(session, session_id=realtime.id)
             if wake_activation is not None and wake_activation.activation_id:
                 context = {**context, "activation_id": wake_activation.activation_id,
@@ -2422,7 +2422,7 @@ class JarvisCoordinator:
     async def _send_tool_result(self, adapter, *, session_id: str, generation: int,
                                 call_id: str, ok: bool, output: dict[str, Any]) -> None:
         """Return a tool result to the provider, attaching any screenshot it references."""
-        from app.services.screen_look import load_context_image, split_screenshot
+        from app.services.jarvis.screen_look import load_context_image, split_screenshot
         output, screenshot = split_screenshot(output) if ok else (output, None)
         images: tuple[Any, ...] = ()
         if screenshot is not None:
@@ -2503,7 +2503,7 @@ class JarvisCoordinator:
                 raise ValueError("That action is unavailable while the device is locked")
             freshness = None
             if tool_name in {"dispatch_task", "start_workflow"}:
-                from app.services.live_request_context import advanced_context, admission_reserved
+                from app.services.jarvis.request_context import advanced_context, admission_reserved
                 reserved = await admission_reserved(session_id, generation,
                     origin_item_id or last_turn_id or origin_correlation_id, arguments.get("intent_id"))
                 if not reserved:

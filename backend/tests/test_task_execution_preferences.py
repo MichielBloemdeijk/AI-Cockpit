@@ -7,7 +7,7 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import Task, TaskExecutionRun
 from app.services.tasks.execution_preferences import normalize_agent_preferences
-from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
+from app.services.orchestration.service import DecisionTools, TaskOrchestrationService
 from app.services.tasks.service import task_service
 
 
@@ -68,7 +68,7 @@ async def test_background_pending_continuation_retains_question_and_pins_only_ne
     assert detail.task.current_run_id == task.current_run_id
     assert detail.runs[0].configuration_json == {}
     assert detail.runs[-1].configuration_json["reasoning_effort"] == "high"
-    from app.services.task_presentations import task_presentation_service
+    from app.services.updates.presentations import task_presentation_service
     assert len(await task_presentation_service.list_pending()) == 1
     assert detail.questions[0].state == "asked"
 
@@ -82,7 +82,7 @@ def test_invalid_preferences_never_expand_permissions(options):
 
 def test_voice_and_background_schema_share_permitted_options():
     from app.jarvis_tasks.orchestration_mcp import catalog
-    from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+    from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
     voice = {row["name"]: row["parameters"] for row in get_jarvis_tool_definitions()}
     background = {row["name"]: row["inputSchema"] for row in catalog()}
     assert voice["dispatch_task"]["properties"]["execution_preferences"] == background["delegate"]["properties"]["execution_preferences"]

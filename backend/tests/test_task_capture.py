@@ -20,10 +20,10 @@ from app.db.tables import NotificationOutbox, TaskContextRequest, TaskResult
 from app.services.tasks.capture import CaptureCollection, task_capture_service
 from app.services.tasks.service import task_service
 from app.services.tasks.workflows import load_workflow
-from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+from app.services.jarvis.brain import restricted_brain_gateway
+from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
 from app.services.tasks.worker_coordinator import worker_coordinator
-from app.services.task_presentations import task_presentation_service
+from app.services.updates.presentations import task_presentation_service
 from app.jarvis_tasks.task_mcp import _call, _image_result
 from sqlalchemy import select
 
@@ -352,7 +352,7 @@ def _jpeg(size=(32, 16), colour=(200, 40, 40)) -> bytes:
 @pytest.mark.asyncio
 async def test_look_at_screen_attaches_a_fresh_upload_without_a_task() -> None:
     import asyncio
-    from app.services.screen_look import split_screenshot
+    from app.services.jarvis.screen_look import split_screenshot
     device, activation_id, live_session = await _paired_live_phone(ASGITransport(app=app))
     async with aclosing(device):
         capture_id, captured_at = await _phone_captures_fresh(device, activation_id, live_session, "delegation-1")
@@ -375,8 +375,8 @@ async def test_look_at_screen_attaches_a_fresh_upload_without_a_task() -> None:
 async def test_screen_look_tool_result_attaches_pixels_but_stores_only_a_reference() -> None:
     import asyncio
     from app.db.tables import LiveSessionEvent
-    from app.services.jarvis_coordinator import jarvis_coordinator
-    from app.services.voice_session_adapter import fake_voice_session_adapter
+    from app.services.jarvis.coordinator import jarvis_coordinator
+    from app.services.jarvis.voice_session_adapter import fake_voice_session_adapter
     fake_voice_session_adapter.context_images.clear()
     device, activation_id, live_session = await _paired_live_phone(ASGITransport(app=app))
     async with aclosing(device):
@@ -404,7 +404,7 @@ async def test_screen_look_tool_result_attaches_pixels_but_stores_only_a_referen
 
 
 def test_screenshots_are_bounded_for_the_router_context() -> None:
-    from app.services.screen_look import CONTEXT_LONG_SIDE, normalise_for_context
+    from app.services.jarvis.screen_look import CONTEXT_LONG_SIDE, normalise_for_context
     small = _jpeg((640, 480))
     assert normalise_for_context(small) == small
     for size in [(921, 2048), (1440, 3200), (3200, 1440)]:
@@ -445,7 +445,7 @@ def test_voice_catalog_offers_screen_looks_and_session_ending() -> None:
     tools = {tool["name"]: tool for tool in get_jarvis_tool_definitions("openai_live")}
     assert tools["look_at_screen"]["parameters"]["required"] == ["question"]
     assert "wake word" in tools["end_voice_session"]["description"]
-    from app.services.openai_live_adapter import OpenAILiveAdapter
+    from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
     router = OpenAILiveAdapter._router_instructions({})
     assert "look_at_screen" in router and "end_voice_session" in router
     assert "attach it to this conversation" in tools["look_at_screen"]["description"]
@@ -457,7 +457,7 @@ def test_voice_catalog_offers_screen_looks_and_session_ending() -> None:
 
 def test_spoken_language_is_pinned_to_english() -> None:
     # A Live session once relayed an English screen description in Dutch; nothing set the language.
-    from app.services.openai_live_adapter import OpenAILiveAdapter
+    from app.services.jarvis.openai_live_adapter import OpenAILiveAdapter
     conversation = OpenAILiveAdapter._session_config({})["instructions"]
     assert "Speak English" in conversation and "never because of an accent, screen text" in conversation
     router = OpenAILiveAdapter._router_instructions({})

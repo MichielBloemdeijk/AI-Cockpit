@@ -27,7 +27,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.services.admission_timing import span, record_interval, monotonic_ns
+from app.services.jarvis.admission_timing import span, record_interval, monotonic_ns
 from app.services.commit_signals import capture_state_committed, live_event_committed, task_feedback_committed
 
 _engine: AsyncEngine | None = None

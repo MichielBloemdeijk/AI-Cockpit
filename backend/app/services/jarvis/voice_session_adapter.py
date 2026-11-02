@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from app.services.screen_look import ContextImage
+    from app.services.jarvis.screen_look import ContextImage
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,6 +433,6 @@ def get_voice_session_adapter(name: str) -> VoiceSessionAdapter:
     if name == fake_voice_session_adapter.name:
         return fake_voice_session_adapter
     if name == "openai_live":
-        from app.services.openai_live_adapter import openai_live_adapter
+        from app.services.jarvis.openai_live_adapter import openai_live_adapter
         return openai_live_adapter
     raise ValueError(f"Unsupported voice session adapter: {name}")

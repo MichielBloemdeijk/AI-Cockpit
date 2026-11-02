@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import OrchestrationAction, OrchestrationDecision, Task, TaskEvent, TaskSupervisorLease
-from app.services.orchestration_authority import StaleDecision, assert_current, digest, observed_state
+from app.services.orchestration.authority import StaleDecision, assert_current, digest, observed_state
 from app.services.windows_job import process_has_exited
 
 
@@ -23,7 +23,7 @@ def host_has_exited(binding: dict) -> bool:
 
 async def recover(service, decision_id: str, *, resume: bool = False,
                   operation_key: str | None = None, reason: str = "", automatic: bool = False) -> dict:
-    from app.services.task_orchestration import LEASE_KEY, now
+    from app.services.orchestration.service import LEASE_KEY, now
 
     if resume and (not operation_key or len(operation_key) > 128 or not reason.strip() or len(reason) > 2000):
         raise ValueError("Resumption requires a bounded stable operation key and reason")
@@ -76,7 +76,7 @@ async def recover(service, decision_id: str, *, resume: bool = False,
         else:
             runtime = service.runtime
             if runtime is None or not hasattr(runtime, "inspect"):
-                from app.services.codex_orchestration_runtime import CodexOrchestrationRuntime
+                from app.services.orchestration.runtime import CodexOrchestrationRuntime
                 runtime = CodexOrchestrationRuntime()  # Read-only; cannot generate a turn.
             try:
                 observed = await runtime.inspect(binding, profile)

@@ -39,17 +39,17 @@ from app.models.jarvis import (
 )
 from app.presenters.conversations import present_conversation_message
 from app.presenters.conversations import present_conversation_event
-from app.services.jarvis_devices import require_jarvis_auth, jarvis_device_service
+from app.services.jarvis.devices import require_jarvis_auth, jarvis_device_service
 from app.services.auth import SESSION_COOKIE_NAME, verify_session_token, authorization_scheme
 from app.services.conversations.read_model import conversation_read_model
-from app.services.jarvis_coordinator import StaleSessionError, jarvis_coordinator
-from app.services.jarvis_daily import jarvis_daily_service
-from app.services.jarvis_live import jarvis_live_service
-from app.services.jarvis_live_telemetry import jarvis_live_telemetry
-from app.services.jarvis_preferences import jarvis_preferences_service
-from app.services.jarvis_situation import jarvis_situation_projector
-from app.services.openai_live_adapter import OpenAILiveConfigurationError
-from app.services.task_presentations import task_presentation_service
+from app.services.jarvis.coordinator import StaleSessionError, jarvis_coordinator
+from app.services.jarvis.daily import jarvis_daily_service
+from app.services.jarvis.live import jarvis_live_service
+from app.services.jarvis.live_telemetry import jarvis_live_telemetry
+from app.services.jarvis.preferences import jarvis_preferences_service
+from app.services.jarvis.situation import jarvis_situation_projector
+from app.services.jarvis.openai_live_adapter import OpenAILiveConfigurationError
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 from app.services.tasks.vocabulary import ACTIVE_TASK_STATUSES
 from app.models.tasks import WorkerHealthView
@@ -413,7 +413,7 @@ async def ingest_live_telemetry(
 
 @router.post("/live/sessions/{session_id}/playback", status_code=202)
 async def ingest_playback(session_id: str, request: JarvisPlaybackBatch, http_request: Request):
-    from app.services.conversation_observer import conversation_observer
+    from app.services.jarvis.observer import conversation_observer
     device = await jarvis_device_service.authenticate(http_request)
     if device is not None and request.controller_id != device.id:
         raise HTTPException(403, "Playback belongs to another controller")
@@ -428,7 +428,7 @@ async def ingest_playback(session_id: str, request: JarvisPlaybackBatch, http_re
 
 @router.get("/live/observer")
 async def observer_health():
-    from app.services.conversation_observer import conversation_observer
+    from app.services.jarvis.observer import conversation_observer
     return {"failure": conversation_observer.failure,
             "running": conversation_observer.task is not None and not conversation_observer.task.done()}
 
@@ -436,7 +436,7 @@ async def observer_health():
 @router.get("/diagnostics")
 async def diagnostics():
     """Read-only fault findings with proposed fixes (see app/services/diagnostics.py)."""
-    from app.services.conversation_observer import conversation_observer
+    from app.services.jarvis.observer import conversation_observer
     from app.db.session import session_scope
     from app.services.diagnostics import diagnose
     async with session_scope() as db:

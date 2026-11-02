@@ -143,7 +143,7 @@ def test_only_the_lifecycle_module_writes_task_and_run_status() -> None:
 def test_every_control_surface_offers_the_control_vocabulary() -> None:
     from app.jarvis_tasks.orchestration_mcp import catalog
     from app.models.tasks import TaskControlRequest
-    from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
+    from app.services.jarvis.tool_catalog import get_jarvis_tool_definitions
 
     api_actions = TaskControlRequest.model_json_schema()["$defs"]["ControlAction"]["enum"]
     voice_tool = next(tool for tool in get_jarvis_tool_definitions() if tool["name"] == "control_task")

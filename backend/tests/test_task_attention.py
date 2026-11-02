@@ -11,9 +11,9 @@ from app.db.tables import (
     NotificationOutbox,
     TaskPresentation,
 )
-from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.notifications import acknowledge_delivery
-from app.services.task_presentations import task_presentation_service
+from app.services.jarvis.coordinator import jarvis_coordinator
+from app.services.updates.push_subscriptions import acknowledge_delivery
+from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service
 
 
@@ -38,7 +38,7 @@ async def test_completion_between_sessions_retains_pending_facts_and_renews_expo
 
 @pytest.mark.asyncio
 async def test_delivery_state_and_task_truth_survive_session_replacement():
-    from app.services.jarvis_brain import restricted_brain_gateway
+    from app.services.jarvis.brain import restricted_brain_gateway
     accepted = await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="delivery-first")
     first = await jarvis_coordinator.get_active_session()
     task = await task_service.dispatch(goal="Persist my result",origin_surface="test",idempotency_key="delivery-task")

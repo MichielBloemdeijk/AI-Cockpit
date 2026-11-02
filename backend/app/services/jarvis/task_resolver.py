@@ -10,7 +10,7 @@ from sqlalchemy.dialects.sqlite import insert
 from app.db.session import session_scope, read_session_scope
 from app.db.tables import JarvisState, Task, TaskEvent, TaskQuestion
 from app.services.tasks.vocabulary import ACTIVE_TASK_STATUSES, TaskStatus
-from app.services.admission_timing import timed
+from app.services.jarvis.admission_timing import timed
 
 
 _PRONOUNS = {"this", "that", "it", "this task", "that task", "the task"}

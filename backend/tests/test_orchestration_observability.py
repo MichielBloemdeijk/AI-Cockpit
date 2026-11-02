@@ -10,8 +10,8 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import OrchestrationDecision, OrchestrationMetric, TaskExecutionRun
-from app.services.orchestration_telemetry import record, snapshot, timestamp, token_usage
-from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
+from app.services.orchestration.telemetry import record, snapshot, timestamp, token_usage
+from app.services.orchestration.service import DecisionTools, TaskOrchestrationService
 from app.services.tasks.service import task_service
 
 
@@ -90,7 +90,7 @@ async def test_replay_and_stale_action_metrics_never_replace_action_authority():
     await tools.call("retain", args)
     await tools.call("retain", args)
     await task_service.control(task.id, action="cancel", idempotency_key="cancel")
-    from app.services.orchestration_authority import StaleDecision
+    from app.services.orchestration.authority import StaleDecision
     with pytest.raises(StaleDecision):
         await tools.call("answer", {"answer": "staging", "reason": "Late answer", "operation_key": "late"})
     async with session_scope() as session:
@@ -131,7 +131,7 @@ async def test_native_protocol_records_turn_and_usage_without_provider(monkeypat
     def no_network(*args, **kwargs):
         pytest.fail("Offline native protocol fixture attempted a network connection")
     monkeypatch.setattr(socket.socket, "connect", no_network)
-    from app.services.codex_orchestration_runtime import CodexOrchestrationRuntime
+    from app.services.orchestration.runtime import CodexOrchestrationRuntime
     service, task = await prepared()
     claim = await service.claim()
     messages = [
