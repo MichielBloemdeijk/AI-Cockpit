@@ -10,8 +10,8 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.services.codex_task_runtime import codex_task_runtime
-from app.services.task_service import task_service
-from app.services.task_worker import TaskWorker
+from app.services.tasks.service import task_service
+from app.services.tasks.worker import TaskWorker
 from test_codex_task_runtime_live import _live_directory
 from test_reference_workflows import result_snapshot
 
@@ -66,7 +66,7 @@ async def test_general_codex_publication_update_and_answer_preserve_identity():
 @pytest.mark.skipif(os.environ.get("JARVIS_LIVE_CODEX") != "1", reason="billed live Codex test is opt-in")
 async def test_workflow_answer_uses_filtered_codex_inventory_without_republishing(monkeypatch):
     from app.jarvis_tasks.task_mcp import _call
-    from app.services.worker_coordinator import worker_coordinator
+    from app.services.tasks.worker_coordinator import worker_coordinator
     from test_reference_workflows import admit, researched, content
     if not settings.openai_api_key:
         pytest.skip("No authorized API credential is configured")

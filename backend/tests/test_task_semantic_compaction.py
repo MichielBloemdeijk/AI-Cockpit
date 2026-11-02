@@ -11,10 +11,10 @@ from app.config import settings
 from app.jarvis_tasks.task_mcp import _call
 from app.db.session import session_scope
 from app.db.tables import TaskTurn
-from app.services.task_context import portable_context
-from app.services.task_semantic_compaction import ensure_semantic_compaction, latest_semantic_summary
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.context import portable_context
+from app.services.tasks.semantic_compaction import ensure_semantic_compaction, latest_semantic_summary
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio

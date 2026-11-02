@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import session_scope
 from app.db.tables import TaskExecutionRun, WorkerToolPolicy
+from app.services.tasks import lifecycle
 from app.config import settings
 
 
@@ -47,9 +48,9 @@ def normalize_overrides(value: dict | None) -> dict:
 
 
 def resolve_tools(policy: dict, *, workflow: dict | None = None, task: dict | None = None) -> list[str]:
-    policy = WorkerPolicy.model_validate(policy)
-    selected = identifiers(policy.defaults)
-    forbidden = identifiers(policy.disabled)
+    parsed = WorkerPolicy.model_validate(policy)
+    selected = identifiers(parsed.defaults)
+    forbidden = identifiers(parsed.disabled)
     for layer in (workflow, task):
         override = normalize_overrides(layer)
         selected = (selected - set(override["remove"])) | set(override["add"])
@@ -80,6 +81,8 @@ async def save_policy(value: dict, *, expected_revision: int) -> tuple[int, dict
         from sqlalchemy import text
         await session.execute(text("INSERT OR IGNORE INTO worker_tool_policy (id, revision, configuration_json) VALUES ('worker', 0, '{}')"))
         row = await session.get(WorkerToolPolicy, "worker", populate_existing=True)
+        if row is None:
+            raise RuntimeError("Worker policy row is missing")
         if row.revision != expected_revision:
             raise ValueError("Worker policy revision is stale")
         row.configuration_json = parsed
@@ -88,7 +91,7 @@ async def save_policy(value: dict, *, expected_revision: int) -> tuple[int, dict
 
 
 async def freeze_tools(context) -> dict:
-    from app.services.task_service import task_service
+    from app.services.tasks.service import task_service
     await task_service.validate_execution_authority(context.task_id, attempt_id=context.attempt_id,
         execution_run_id=context.execution_run_id, claim_token=context.claim_token)
     revision, policy = await read_policy()
@@ -99,10 +102,12 @@ async def freeze_tools(context) -> dict:
         "local_execution_mode": settings.task_command_mode}
     async with session_scope() as session:
         # Fence and configuration write share the task lock.
-        task = await task_service._lock_task(session, context.task_id)
-        await task_service._assert_fence(session, task, attempt_id=context.attempt_id,
+        task = await lifecycle.lock_task(session, context.task_id)
+        await lifecycle.assert_fence(session, task, attempt_id=context.attempt_id,
             execution_run_id=context.execution_run_id, claim_token=context.claim_token)
         run = await session.get(TaskExecutionRun, context.execution_run_id)
+        if run is None:
+            raise ValueError("Execution run is unavailable")
         current = dict(run.configuration_json or {})
         if "resolved_tools" in current:
             return current["resolved_tools"]

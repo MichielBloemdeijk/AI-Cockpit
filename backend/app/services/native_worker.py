@@ -53,7 +53,7 @@ def approved_skill_config(client, workspace: Path, resolved: dict) -> dict:
 
 def verify_native_workload(client, workspace: Path) -> None:
     from app.jarvis_tasks.codex_probe import _command_exec
-    from app.services.worker_tool_policy import sandbox_policy
+    from app.services.tasks.worker_tool_policy import sandbox_policy
     scratch = workspace / ".jarvis-scratch"
     scratch.mkdir(exist_ok=True)
     code = """import os, tempfile, subprocess, sys

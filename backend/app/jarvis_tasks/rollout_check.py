@@ -18,7 +18,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from app.config import Settings
-from app.services.result_static import SHELL_FILES
+from app.api.result_static import SHELL_FILES
 from app.jarvis_tasks.sqlite_backup import snapshot_database
 
 

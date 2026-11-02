@@ -41,8 +41,8 @@ async def test_paired_device_can_ack_open_but_cannot_manage_push_and_revocation_
     from app.db.session import session_scope
     from app.db.tables import JarvisDevice, NotificationOutbox
     from app.db.repositories.conversations import utc_now
-    from app.services.task_service import task_service
-    from app.services.worker_coordinator import worker_coordinator
+    from app.services.tasks.service import task_service
+    from app.services.tasks.worker_coordinator import worker_coordinator
     from test_task_result_contract import claim, finish
     worker = await worker_coordinator.activate(process_identity="native-open-ack")
     task = await task_service.dispatch(goal="Native ack fixture", origin_surface="test", idempotency_key="native-ack", result_request={"mode": "new"})

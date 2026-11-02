@@ -16,7 +16,7 @@ from sqlalchemy import or_, select
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import TaskArtifact, TaskTurn
-from app.services.task_service import task_service
+from app.services.tasks import lifecycle
 
 
 KEEP_RECENT_TURNS = 12
@@ -58,12 +58,12 @@ async def ensure_semantic_compaction(
     """Compact every old batch before a new portable context is pinned."""
     while True:
         async with session_scope() as session:
-            task = await task_service._lock_task(session, task_id)
-            await task_service._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=run_id, claim_token=claim_token,
             )
-            existing_bundle = await task_service._current_run(session, task)
+            existing_bundle = await lifecycle.current_run(session, task)
             artifact = (await session.execute(select(TaskArtifact).where(
                 TaskArtifact.task_id == task_id,
                 TaskArtifact.artifact_type == "task.context.summary",
@@ -109,8 +109,8 @@ async def ensure_semantic_compaction(
         if not summary or len(summary) > MAX_SUMMARY_CHARS:
             raise RuntimeError("Semantic task compaction returned an empty or oversized summary")
         async with session_scope() as session:
-            task = await task_service._lock_task(session, task_id)
-            await task_service._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=run_id, claim_token=claim_token,
             )

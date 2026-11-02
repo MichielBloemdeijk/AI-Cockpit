@@ -22,7 +22,7 @@ from sqlalchemy import select
 from app.db.session import session_scope
 from app.db.tables import JarvisLiveEvent, LiveSession, TaskContextBlob, TaskContextRequest
 from app.services.commit_signals import capture_state_committed
-from app.services.task_capture import task_capture_service
+from app.services.tasks.capture import task_capture_service
 
 UPLOAD_WAIT_SECONDS = 6.0
 CONTEXT_LONG_SIDE = 1536

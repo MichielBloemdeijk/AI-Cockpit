@@ -9,7 +9,7 @@ import pytest
 from app.config import Settings, settings
 from app.jarvis_tasks.rollout_check import inspect_rollout, migration_rehearsal, rehearsal_report, write_rollout_report
 from app.jarvis_tasks.sqlite_backup import snapshot_database
-from app.services.result_static import SHELL_FILES
+from app.api.result_static import SHELL_FILES
 
 
 def configured(tmp_path):

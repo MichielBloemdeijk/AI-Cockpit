@@ -6,9 +6,9 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import Task, TaskExecutionRun
-from app.services.task_execution_preferences import normalize_agent_preferences
+from app.services.tasks.execution_preferences import normalize_agent_preferences
 from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.fixture(autouse=True)

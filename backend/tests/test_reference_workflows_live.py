@@ -16,8 +16,8 @@ pytestmark = pytest.mark.provider
 from app.config import settings
 from test_reference_workflows import result_snapshot
 from app.services.codex_task_runtime import codex_task_runtime
-from app.services.task_service import task_service
-from app.services.task_worker import TaskWorker
+from app.services.tasks.service import task_service
+from app.services.tasks.worker import TaskWorker
 from test_reference_workflows import admit
 
 

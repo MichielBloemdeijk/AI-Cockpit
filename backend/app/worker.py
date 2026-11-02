@@ -7,8 +7,8 @@ import logging
 
 from app.config import settings
 from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
-from app.services.task_pool_supervisor import SupervisorLeaseBusy, task_pool_supervisor
-from app.services.task_worker import TaskWorker
+from app.services.tasks.pool_supervisor import SupervisorLeaseBusy, task_pool_supervisor
+from app.services.tasks.worker import TaskWorker
 
 
 logging.basicConfig(

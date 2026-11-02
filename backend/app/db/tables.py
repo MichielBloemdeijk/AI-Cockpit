@@ -24,6 +24,7 @@ from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.services.tasks.vocabulary import RunStatus as TaskRunStatus, TaskStatus
 
 
 def _uuid_str() -> str:
@@ -96,19 +97,6 @@ class ConversationKind(str, Enum):
 class ConversationLifecycle(str, Enum):
     open = "open"
     closed = "closed"
-
-
-class TaskStatus(str, Enum):
-    queued = "queued"
-    waiting_for_worker = "waiting_for_worker"
-    running = "running"
-    waiting_for_input = "waiting_for_input"
-    waiting_until = "waiting_until"
-    paused = "paused"
-    completed = "completed"
-    failed = "failed"
-    interrupted = "interrupted"
-    cancelled = "cancelled"
 
 
 class Conversation(Base):
@@ -584,7 +572,7 @@ class Task(Base):
         String(32), nullable=False, default="agent", server_default="agent"
     )
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default=TaskStatus.queued.value, server_default="queued"
+        String(32), nullable=False, default=TaskStatus.queued, server_default=TaskStatus.queued
     )
     status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -663,7 +651,7 @@ class TaskExecutionRun(Base):
     input_turn_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("task_turns.id", ondelete="RESTRICT"), nullable=False
     )
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", server_default="queued")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=TaskRunStatus.queued, server_default=TaskRunStatus.queued)
     execution_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="agent", server_default="agent")
     configuration_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     workspace_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")

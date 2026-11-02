@@ -17,8 +17,8 @@ from app import app_platform
 from app.config import settings
 from app.db.session import read_session_scope
 from app.db.tables import Task
-from app.services.task_service import task_service, utc_now
-from app.services.task_workflows import load_workflow
+from app.services.tasks.service import task_service, utc_now
+from app.services.tasks.workflows import load_workflow
 
 KEY_PREFIX = "app-workflow"
 

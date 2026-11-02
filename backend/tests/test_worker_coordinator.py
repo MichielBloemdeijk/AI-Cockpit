@@ -10,9 +10,9 @@ from sqlalchemy import delete, select
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, Task, TaskAttempt, WorkerInstance
 from app.services.conversation_store import conversation_store
-from app.services.task_delegation import delegate_background_task
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.delegation import delegate_background_task
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
@@ -287,11 +287,11 @@ async def test_new_supervisor_generation_releases_orphan_lease_only_after_exact_
     assert await worker_coordinator.acquire_supervisor(
         "replacement", now=NOW + timedelta(seconds=16)
     ) == 2
-    monkeypatch.setattr("app.services.worker_coordinator.process_has_exited", lambda *_: False)
+    monkeypatch.setattr("app.services.tasks.worker_coordinator.process_has_exited", lambda *_: False)
     await worker_coordinator.reconcile_availability(now=NOW + timedelta(seconds=16))
     async with session_scope() as session:
         assert (await session.execute(select(ResourceLease))).scalars().first() is not None
-    monkeypatch.setattr("app.services.worker_coordinator.process_has_exited", lambda *_: True)
+    monkeypatch.setattr("app.services.tasks.worker_coordinator.process_has_exited", lambda *_: True)
     await worker_coordinator.reconcile_availability(now=NOW + timedelta(seconds=17))
     async with session_scope() as session:
         assert (await session.execute(select(ResourceLease))).scalars().first() is None

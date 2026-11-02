@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse
 
+from app.api.private import PRIVATE_HEADERS
+
 
 class _Scripts(HTMLParser):
     def __init__(self):
@@ -56,6 +58,5 @@ def result_shell_response(export_root: Path, page: str, *, fallback_root: Path |
     html = shell.read_text(encoding="utf-8")
     scripts = _Scripts()
     scripts.feed(html)
-    from app.api.private import PRIVATE_HEADERS
     csp = f"default-src 'self'; script-src 'self' {' '.join(scripts.hashes)}; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     return HTMLResponse(html, headers={**PRIVATE_HEADERS, "Content-Security-Policy": csp})

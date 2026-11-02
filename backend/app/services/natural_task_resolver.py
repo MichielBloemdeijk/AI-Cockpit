@@ -9,7 +9,7 @@ from sqlalchemy.dialects.sqlite import insert
 
 from app.db.session import session_scope, read_session_scope
 from app.db.tables import JarvisState, Task, TaskEvent, TaskQuestion
-from app.services.task_statuses import ACTIVE_TASK_STATUSES
+from app.services.tasks.vocabulary import ACTIVE_TASK_STATUSES, TaskStatus
 from app.services.admission_timing import timed
 
 
@@ -90,7 +90,7 @@ class NaturalTaskResolver:
                 task = await self._first_recent(session, recent, statuses={"completed"})
                 if task is None:
                     task = (await session.execute(
-                        select(Task).where(Task.status == "completed")
+                        select(Task).where(Task.status == TaskStatus.completed)
                         .order_by(Task.finished_at.desc(), Task.creation_order.desc()).limit(1)
                     )).scalar_one_or_none()
                 return TaskResolution(task=task)

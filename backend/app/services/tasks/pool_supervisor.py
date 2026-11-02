@@ -10,7 +10,7 @@ import sys
 from uuid import uuid4
 
 from app.config import settings
-from app.services.worker_coordinator import WorkerCoordinator, worker_coordinator
+from app.services.tasks.worker_coordinator import WorkerCoordinator, worker_coordinator
 from app.services.windows_job import process_creation_stamp
 
 

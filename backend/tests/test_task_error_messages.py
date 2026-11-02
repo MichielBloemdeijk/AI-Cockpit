@@ -7,9 +7,9 @@ import pytest
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_daily import jarvis_daily_service
 from app.services.jarvis_situation import jarvis_situation_projector
-from app.services.task_error_messages import public_failure_summary, public_tool_error
+from app.services.tasks.error_messages import public_failure_summary, public_tool_error
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 RAW_DATABASE_ERROR = (

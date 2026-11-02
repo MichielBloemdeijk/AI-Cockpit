@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.repositories.conversations import utc_now
-from app.db.tables import Task, TaskEvent, TaskStatus
-from app.services.task_update_policy import CRITICAL_ONLY
+from app.db.tables import Task, TaskEvent
+from app.services.tasks.vocabulary import TaskStatus
+from app.services.tasks.update_policy import CRITICAL_ONLY
 
 
 class TaskRepository:
@@ -39,7 +38,7 @@ class TaskRepository:
                 origin_conversation_id=origin_conversation_id,
                 origin_turn_id=origin_turn_id,
                 goal=goal,
-                status=TaskStatus.queued.value,
+                status=TaskStatus.queued,
                 idempotency_key=idempotency_key,
                 importance=importance,
                 presentation_policy=presentation_policy,
@@ -102,50 +101,8 @@ class TaskRepository:
         result = await self.session.execute(
             select(TaskEvent).where(TaskEvent.idempotency_key == idempotency_key).limit(1)
         )
-        self.session.info["task_feedback_committed"] = True
+        self.session.info["task_feedback_changed"] = True
         return result.scalar_one()
-
-    async def transition_with_event(
-        self,
-        *,
-        task_id: str,
-        expected_statuses: set[str],
-        status: str,
-        event_type: str,
-        idempotency_key: str,
-        attempt_id: str | None = None,
-        payload_json: dict | None = None,
-        terminal_summary: str | None = None,
-        finished_at: datetime | None = None,
-    ) -> TaskEvent:
-        existing_result = await self.session.execute(
-            select(TaskEvent).where(TaskEvent.idempotency_key == idempotency_key).limit(1)
-        )
-        existing = existing_result.scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-        values: dict[str, object] = {"status": status, "updated_at": utc_now()}
-        if terminal_summary is not None:
-            values["terminal_summary"] = terminal_summary
-        if finished_at is not None:
-            values["finished_at"] = finished_at
-        statement = (
-            update(Task)
-            .where(Task.id == task_id)
-            .where(Task.status.in_(sorted(expected_statuses)))
-            .values(**values)
-        )
-        result = await self.session.execute(statement)
-        if result.rowcount != 1:
-            raise ValueError(f"Task {task_id} is not in an expected state")
-        return await self.append_event(
-            task_id=task_id,
-            attempt_id=attempt_id,
-            event_type=event_type,
-            payload_json=payload_json,
-            idempotency_key=idempotency_key,
-        )
 
     async def get_latest_event_sequence(self) -> int:
         result = await self.session.execute(select(func.max(TaskEvent.sequence)))

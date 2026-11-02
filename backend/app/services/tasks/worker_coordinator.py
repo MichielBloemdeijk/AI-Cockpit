@@ -7,9 +7,10 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import socket
+from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import CursorResult, case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
@@ -30,7 +31,9 @@ from app.db.tables import (
 )
 from app.services.windows_job import process_creation_stamp, process_has_exited
 from app.services.resource_state import directory_snapshot
-from app.services.task_operation_recovery import confirmed_file_write
+from app.services.tasks.operation_recovery import confirmed_file_write
+from app.services.tasks import lifecycle
+from app.services.tasks.vocabulary import TaskStatus
 
 
 ACTIVE_WORKER_STATES = {"starting", "idle", "busy"}
@@ -354,27 +357,23 @@ class WorkerCoordinator:
             )).scalar_one_or_none()
             if (
                 attempt is None or task is None or attempt.claim_token != claim.claim_token
-                or task.current_attempt_id != claim.attempt_id or task.status != "running"
+                or task.current_attempt_id != claim.attempt_id or task.status != TaskStatus.running
             ):
                 return False, ()
             metadata = dict(attempt.recovery_metadata_json or {})
             metadata["observed_resource_changes"] = changes
             attempt.recovery_metadata_json = metadata
             if not permitted:
-                attempt.ended_at = timestamp
-                attempt.terminal_reason = "resource_changed"
-                task.status = "interrupted"
-                task.finished_at = timestamp
-                task.terminal_summary = (
-                    "A shared target cannot be checked automatically before reacquisition."
-                    if unobservable else
-                    "A shared target changed while this task did not hold its lease."
+                await lifecycle.end_attempt(session, attempt, reason="resource_changed", now=timestamp)
+                lifecycle.finish(
+                    task, await session.get(TaskExecutionRun, claim.execution_run_id), TaskStatus.interrupted,
+                    summary=(
+                        "A shared target cannot be checked automatically before reacquisition."
+                        if unobservable else
+                        "A shared target changed while this task did not hold its lease."
+                    ),
+                    now=timestamp,
                 )
-                run = await session.get(TaskExecutionRun, claim.execution_run_id)
-                if run is not None:
-                    run.status = "interrupted"
-                    run.finished_at = timestamp
-                    run.terminal_summary = task.terminal_summary
             task.updated_at = timestamp
             await TaskRepository(session).append_event(
                 task_id=task.id,
@@ -435,7 +434,7 @@ class WorkerCoordinator:
     ) -> bool:
         timestamp = now or utc_now()
         async with session_scope() as session:
-            result = await session.execute(
+            result = cast(CursorResult, await session.execute(
                 update(TaskSupervisorLease)
                 .where(
                     TaskSupervisorLease.lease_key == "task-pool",
@@ -446,7 +445,7 @@ class WorkerCoordinator:
                     heartbeat_at=timestamp,
                     expires_at=timestamp + timedelta(seconds=settings.supervisor_lease_ttl_seconds),
                 )
-            )
+            ))
             return result.rowcount == 1
 
     async def release_supervisor(self, owner_identity: str, generation: int) -> None:
@@ -467,10 +466,10 @@ class WorkerCoordinator:
             lease = await session.get(TaskSupervisorLease, "task-pool")
             workers = list((await session.execute(select(WorkerInstance))).scalars().all())
             queue_depth = int((await session.execute(
-                select(func.count()).select_from(Task).where(Task.status == "queued")
+                select(func.count()).select_from(Task).where(Task.status == TaskStatus.queued)
             )).scalar_one())
             waiting = int((await session.execute(
-                select(func.count()).select_from(Task).where(Task.status == "waiting_for_worker")
+                select(func.count()).select_from(Task).where(Task.status == TaskStatus.waiting_for_worker)
             )).scalar_one())
             live = [worker for worker in workers if worker.stopped_at is None]
             return PoolSnapshot(
@@ -631,7 +630,7 @@ class WorkerCoordinator:
         if state is not None:
             values["state"] = state
         async with session_scope() as session:
-            result = await session.execute(
+            result = cast(CursorResult, await session.execute(
                 update(WorkerInstance)
                 .where(
                     WorkerInstance.id == worker_id,
@@ -639,7 +638,7 @@ class WorkerCoordinator:
                     WorkerInstance.state.in_(sorted(ACTIVE_WORKER_STATES)),
                 )
                 .values(**values)
-            )
+            ))
             return result.rowcount == 1
 
     async def stop(self, worker_id: str, *, now: datetime | None = None) -> None:
@@ -682,7 +681,7 @@ class WorkerCoordinator:
                 .where(
                     TaskAttempt.worker_id == worker_id,
                     TaskAttempt.ended_at.is_(None),
-                    Task.status == "running",
+                    Task.status == TaskStatus.running,
                 )
             )).all())
             repo = TaskRepository(session)
@@ -692,96 +691,16 @@ class WorkerCoordinator:
                     if task.pending_control_id else None
                 )
                 if command is not None and command.attempt_id == attempt.id:
-                    attempt.ended_at = timestamp
-                    attempt.terminal_reason = f"control:{command.action}"
-                    attempt.recovery_metadata_json = {
-                        **dict(attempt.recovery_metadata_json or {}),
-                        "stop_evidence": {
-                            "kind": "observed_process_tree_exit",
-                            "worker_id": worker_id,
-                            "exit_code": exit_code,
-                        },
-                    }
-                    await session.execute(
-                        delete(ResourceLease).where(ResourceLease.owner_attempt_id == attempt.id)
+                    await lifecycle.confirm_stop(
+                        session, task, command, attempt,
+                        evidence={"kind": "observed_process_tree_exit", "worker_id": worker_id, "exit_code": exit_code},
+                        now=timestamp, detail="confirmed after the supervised process tree exited",
                     )
-                    run = await session.get(TaskExecutionRun, attempt.execution_run_id)
-                    if run is None:
-                        raise RuntimeError("Controlled attempt has no execution run")
-                    if command.action in {"yield", "restart_execution", "restart_from_beginning"}:
-                        if command.action == "restart_from_beginning":
-                            task.workspace_generation += 1
-                            run.workspace_generation = task.workspace_generation
-                            checkpoint = {}
-                        else:
-                            checkpoint = dict(attempt.checkpoint_json or {})
-                        max_number = int((await session.execute(
-                            select(func.max(TaskAttempt.attempt_number)).where(TaskAttempt.task_id == task.id)
-                        )).scalar_one_or_none() or 0)
-                        replacement = TaskAttempt(
-                            id=str(uuid4()),
-                            task_id=task.id,
-                            execution_run_id=run.id,
-                            attempt_number=max_number + 1,
-                            parent_attempt_id=attempt.id,
-                            resume_reason=command.action,
-                            checkpoint_json=checkpoint,
-                            checkpoint_version=attempt.checkpoint_version,
-                        )
-                        session.add(replacement)
-                        await session.flush()
-                        task.status = "queued"
-                        task.current_attempt_id = replacement.id
-                        task.queue_entered_at = timestamp
-                        run.status = "queued"
-                        run.current_attempt_id = replacement.id
-                        run.queue_entered_at = timestamp
-                    elif command.action == "suspend":
-                        task.status = "paused"
-                        run.status = "paused"
-                    elif command.action == "cancel":
-                        task.status = "cancelled"
-                        task.finished_at = timestamp
-                        task.terminal_summary = "Task cancelled by user."
-                        run.status = "cancelled"
-                        run.finished_at = timestamp
-                        run.terminal_summary = task.terminal_summary
-                    else:
-                        raise RuntimeError(f"Unsupported stopped control: {command.action}")
-                    task.pending_control_id = None
-                    task.status_reason = None
-                    task.updated_at = timestamp
-                    command.state = "confirmed"
-                    command.confirmed_at = timestamp
-                    command.detail = "confirmed after the supervised process tree exited"
-                    await repo.append_event(
-                        task_id=task.id,
-                        attempt_id=attempt.id,
-                        execution_run_id=attempt.execution_run_id,
-                        event_type="task.control.confirmed",
-                        payload_json={
-                            "command_id": command.id,
-                            "action": command.action,
-                            "state": "confirmed",
-                            "stop_evidence": "observed_process_tree_exit",
-                        },
-                        idempotency_key=f"task.control.confirmed:{command.id}",
-                    )
-                    if command.action == "cancel":
-                        await repo.append_event(
-                            task_id=task.id,
-                            attempt_id=attempt.id,
-                            execution_run_id=run.id,
-                            event_type="task.cancelled",
-                            payload_json={"status": "cancelled", "summary": task.terminal_summary},
-                            idempotency_key=f"task.cancelled:{task.id}:{run.id}",
-                        )
                     continue
                 operation = None
                 if attempt.active_operation:
                     operation = await session.get(TaskOperation, attempt.active_operation)
-                attempt.ended_at = timestamp
-                attempt.terminal_reason = "worker_exit"
+                await lifecycle.end_attempt(session, attempt, reason="worker_exit", now=timestamp)
                 metadata = dict(attempt.recovery_metadata_json or {})
                 consecutive = int(metadata.get("consecutive_crashes", 0) or 0)
                 if operation is not None and operation.state == "started":
@@ -814,26 +733,12 @@ class WorkerCoordinator:
                 ) and consecutive < 1
                 run = await session.get(TaskExecutionRun, attempt.execution_run_id)
                 if safe and run is not None:
-                    max_number = int((await session.execute(
-                        select(func.max(TaskAttempt.attempt_number)).where(TaskAttempt.task_id == task.id)
-                    )).scalar_one_or_none() or 0)
-                    replacement = TaskAttempt(
-                        id=str(uuid4()),
-                        task_id=task.id,
-                        execution_run_id=run.id,
-                        attempt_number=max_number + 1,
-                        parent_attempt_id=attempt.id,
-                        resume_reason="automatic_worker_exit_recovery",
-                        checkpoint_json=dict(attempt.checkpoint_json or {}),
-                        checkpoint_version=attempt.checkpoint_version,
-                        recovery_metadata_json={
-                            "consecutive_crashes": consecutive + 1,
-                            "previous_exit_code": exit_code,
-                        },
+                    replacement = await lifecycle.create_attempt(
+                        session, task, run, parent=attempt, resume_reason="automatic_worker_exit_recovery",
+                        checkpoint=lifecycle.inherited_checkpoint(attempt),
+                        recovery_metadata={"consecutive_crashes": consecutive + 1, "previous_exit_code": exit_code},
                         workspace_path=attempt.workspace_path,
                     )
-                    session.add(replacement)
-                    await session.flush()
                     await session.execute(
                         update(ResourceLease)
                         .where(ResourceLease.owner_attempt_id == attempt.id)
@@ -848,13 +753,7 @@ class WorkerCoordinator:
                             },
                         )
                     )
-                    task.status = "queued"
-                    task.status_reason = "Recovering from an observed worker exit."
-                    task.current_attempt_id = replacement.id
-                    task.queue_entered_at = timestamp
-                    run.status = "queued"
-                    run.current_attempt_id = replacement.id
-                    run.queue_entered_at = timestamp
+                    lifecycle.requeue(task, run, now=timestamp, reason="Recovering from an observed worker exit.")
                     await repo.append_event(
                         task_id=task.id,
                         attempt_id=replacement.id,
@@ -869,17 +768,15 @@ class WorkerCoordinator:
                     )
                     recovered.append(task.id)
                 else:
-                    task.status = "interrupted"
-                    task.finished_at = timestamp
-                    task.terminal_summary = (
-                        "Worker exited with an uncertain operation outcome."
-                        if operation is not None else
-                        "Worker exited before a safe recovery checkpoint was available."
+                    lifecycle.finish(
+                        task, run, TaskStatus.interrupted,
+                        summary=(
+                            "Worker exited with an uncertain operation outcome."
+                            if operation is not None else
+                            "Worker exited before a safe recovery checkpoint was available."
+                        ),
+                        now=timestamp,
                     )
-                    if run is not None:
-                        run.status = "interrupted"
-                        run.finished_at = timestamp
-                        run.terminal_summary = task.terminal_summary
                     await session.execute(
                         delete(ResourceLease).where(ResourceLease.owner_attempt_id == attempt.id)
                     )
@@ -1001,10 +898,10 @@ class WorkerCoordinator:
         """Acknowledge an already committed assignment, without touching the queue."""
         timestamp = utc_now()
         async with session_scope() as session:
-            locked = await session.execute(update(WorkerInstance).where(
+            locked = cast(CursorResult, await session.execute(update(WorkerInstance).where(
                 WorkerInstance.id == worker_id, WorkerInstance.state == "busy",
                 WorkerInstance.stopped_at.is_(None),
-            ).values(heartbeat_at=timestamp))
+            ).values(heartbeat_at=timestamp)))
             if locked.rowcount != 1:
                 return ClaimResult(task=None)
             worker = await session.get(WorkerInstance, worker_id)
@@ -1018,12 +915,12 @@ class WorkerCoordinator:
                 return ClaimResult(task=None)
             attempt = await session.get(TaskAttempt, worker.assignment_attempt_id)
             if (attempt is None or attempt.ended_at is not None or not attempt.claim_token
-                    or attempt.worker_id != worker.id):
+                    or attempt.worker_id != worker.id or not attempt.workspace_path):
                 return ClaimResult(task=None)
             task = (await session.execute(select(Task).where(Task.id == attempt.task_id))).scalar_one_or_none()
             run = await session.get(TaskExecutionRun, attempt.execution_run_id)
             if (task is None or run is None or task.current_attempt_id != attempt.id
-                    or task.status != "running" or task.current_run_id != run.id):
+                    or task.status != TaskStatus.running or task.current_run_id != run.id):
                 return ClaimResult(task=None)
             targets = list((await session.execute(select(TaskTarget).where(
                 TaskTarget.task_id == task.id,
@@ -1068,7 +965,7 @@ class WorkerCoordinator:
             )).scalar_one_or_none()
             if supervisor is not None and worker_generation != supervisor.generation:
                 return ClaimResult(task=None)
-            locked = await session.execute(
+            locked = cast(CursorResult, await session.execute(
                 update(WorkerInstance)
                 .where(
                     WorkerInstance.id == worker_id,
@@ -1076,7 +973,7 @@ class WorkerCoordinator:
                     WorkerInstance.state.in_(["idle", "starting"]),
                 )
                 .values(heartbeat_at=timestamp)
-            )
+            ))
             if locked.rowcount != 1:
                 return ClaimResult(task=None)
 
@@ -1101,7 +998,7 @@ class WorkerCoordinator:
 
             task_result = await session.execute(
                 select(Task)
-                .where(Task.status == "queued")
+                .where(Task.status == TaskStatus.queued)
                 .order_by(
                     case(
                         (Task.importance == "high", 0),
@@ -1234,11 +1131,7 @@ class WorkerCoordinator:
             attempt.heartbeat_at = timestamp
             if not attempt.agent_runtime_reference:
                 attempt.agent_runtime_reference = f"worker:{worker_id}"
-            task.status = "running"
-            task.status_reason = None
-            task.updated_at = timestamp
-            run.status = "running"
-            run.started_at = run.started_at or timestamp
+            lifecycle.start(task, run, now=timestamp)
             worker.state = "busy"
             worker.assignment_attempt_id = attempt.id
             worker.metadata_json = dict(worker.metadata_json or {}) | {"assignment_taken": False}
@@ -1301,7 +1194,7 @@ class WorkerCoordinator:
             )).scalar_one_or_none()
             if supervisor is not None and attempt_generation != supervisor.generation:
                 return False
-            worker_update = await session.execute(
+            worker_update = cast(CursorResult, await session.execute(
                 update(WorkerInstance)
                 .where(
                     WorkerInstance.id == worker_id,
@@ -1309,7 +1202,7 @@ class WorkerCoordinator:
                     WorkerInstance.state == "busy",
                 )
                 .values(heartbeat_at=timestamp)
-            )
+            ))
             if worker_update.rowcount != 1:
                 return False
             statement = update(TaskAttempt).where(
@@ -1319,7 +1212,7 @@ class WorkerCoordinator:
             )
             if claim_token is not None:
                 statement = statement.where(TaskAttempt.claim_token == claim_token)
-            result = await session.execute(statement.values(heartbeat_at=timestamp))
+            result = cast(CursorResult, await session.execute(statement.values(heartbeat_at=timestamp)))
             if result.rowcount != 1:
                 return False
             await session.execute(
@@ -1385,19 +1278,14 @@ class WorkerCoordinator:
                 prior_attempt_id = str((prior_event.payload_json or {}).get("attempt_id") or prior_event.attempt_id or "")
                 if prior_attempt_id:
                     return prior_attempt_id
-            task_result = await session.execute(
-                update(Task).where(Task.id == task_id).values(status=Task.status)
-            )
-            if task_result.rowcount != 1:
-                raise ValueError("Task not found")
-            task = (await session.execute(select(Task).where(Task.id == task_id).limit(1))).scalar_one()
+            task = await lifecycle.lock_task(session, task_id)
             existing = (await session.execute(
                 select(TaskAttempt)
                 .where(TaskAttempt.task_id == task_id)
                 .order_by(TaskAttempt.attempt_number.desc())
                 .limit(1)
             )).scalar_one()
-            if existing.id != attempt_id or existing.worker_id != worker_id or task.status != "running":
+            if existing.id != attempt_id or existing.worker_id != worker_id or task.status != TaskStatus.running:
                 raise ValueError("Task attempt is no longer claimable")
 
             normalized_expansions = {
@@ -1426,37 +1314,22 @@ class WorkerCoordinator:
             timestamp = utc_now()
             existing.checkpoint_json = checkpoint
             existing.checkpoint_version += 1
-            existing.ended_at = timestamp
-            existing.terminal_reason = "target_expansion" if expanded_targets else "checkpoint"
             if existing.id in snapshots:
                 existing.recovery_metadata_json = {
                     **dict(existing.recovery_metadata_json or {}),
                     "released_resource_snapshots": snapshots[existing.id],
                 }
-            if writers_stopped:
-                await session.execute(delete(ResourceLease).where(ResourceLease.owner_attempt_id == attempt_id))
-            next_attempt = TaskAttempt(
-                id=str(uuid4()),
-                task_id=task_id,
-                execution_run_id=existing.execution_run_id,
-                attempt_number=existing.attempt_number + 1,
-                parent_attempt_id=existing.id,
-                resume_reason=existing.terminal_reason,
-                checkpoint_json=checkpoint,
-                checkpoint_version=existing.checkpoint_version,
+            await lifecycle.end_attempt(
+                session, existing, reason="target_expansion" if expanded_targets else "checkpoint",
+                now=timestamp, release_leases=writers_stopped,
             )
-            session.add(next_attempt)
-            await session.flush()
-            task.status = "queued"
-            task.status_reason = None
-            task.current_attempt_id = next_attempt.id
-            task.queue_entered_at = timestamp
-            task.updated_at = timestamp
             run = await session.get(TaskExecutionRun, existing.execution_run_id)
-            if run is not None:
-                run.status = "queued"
-                run.current_attempt_id = next_attempt.id
-                run.queue_entered_at = timestamp
+            if run is None:
+                raise ValueError("Task attempt has no execution run")
+            next_attempt = await lifecycle.create_attempt(
+                session, task, run, parent=existing, resume_reason=existing.terminal_reason, checkpoint=checkpoint,
+            )
+            lifecycle.requeue(task, run, now=timestamp)
             await TaskRepository(session).append_event(
                 task_id=task_id,
                 attempt_id=next_attempt.id,
@@ -1490,22 +1363,10 @@ class WorkerCoordinator:
             and attempt.worker_id is None
         ):
             return attempt
-        max_number = (await session.execute(
-            select(func.max(TaskAttempt.attempt_number)).where(TaskAttempt.task_id == task.id)
-        )).scalar_one_or_none()
-        attempt = TaskAttempt(
-            id=str(uuid4()),
-            task_id=task.id,
-            execution_run_id=task.current_run_id,
-            attempt_number=int(max_number or 0) + 1,
-        )
-        session.add(attempt)
-        await session.flush()
-        task.current_attempt_id = attempt.id
-        run = await session.get(TaskExecutionRun, task.current_run_id)
-        if run is not None:
-            run.current_attempt_id = attempt.id
-        return attempt
+        run = await lifecycle.current_run(session, task)
+        if run is None:
+            raise ValueError("Queued task has no execution run")
+        return await lifecycle.create_attempt(session, task, run)
 
     async def _reconcile_stale_worker(
         self,
@@ -1520,23 +1381,18 @@ class WorkerCoordinator:
             .where(
                 TaskAttempt.worker_id == worker.id,
                 TaskAttempt.ended_at.is_(None),
-                Task.status == "running",
+                Task.status == TaskStatus.running,
             )
         )
         interrupted: list[str] = []
         repo = TaskRepository(session)
         for attempt, task in attempts_result.all():
-            attempt.ended_at = timestamp
-            attempt.terminal_reason = "worker_stale"
-            task.status = "interrupted"
-            task.finished_at = timestamp
-            task.updated_at = timestamp
-            task.terminal_summary = "Worker heartbeat was lost; the task was not retried."
-            run = await session.get(TaskExecutionRun, attempt.execution_run_id)
-            if run is not None:
-                run.status = "interrupted"
-                run.finished_at = timestamp
-                run.terminal_summary = task.terminal_summary
+            # Leases stay held until this worker's process tree is seen to exit.
+            await lifecycle.end_attempt(session, attempt, reason="worker_stale", now=timestamp)
+            lifecycle.finish(
+                task, await session.get(TaskExecutionRun, attempt.execution_run_id), TaskStatus.interrupted,
+                summary="Worker heartbeat was lost; the task was not retried.", now=timestamp,
+            )
             await repo.append_event(
                 task_id=task.id,
                 attempt_id=attempt.id,
@@ -1565,15 +1421,13 @@ class WorkerCoordinator:
     ) -> list[str]:
         tasks = list((await session.execute(
             select(Task)
-            .where(Task.status == "waiting_for_worker")
+            .where(Task.status == TaskStatus.waiting_for_worker)
             .order_by(Task.creation_order.asc())
         )).scalars().all())
         repo = TaskRepository(session)
         promoted: list[str] = []
         for task in tasks:
-            task.status = "queued"
-            task.status_reason = None
-            task.updated_at = timestamp
+            lifecycle.release_for_worker(task, now=timestamp)
             await repo.append_event(
                 task_id=task.id,
                 attempt_id=task.current_attempt_id,
@@ -1590,15 +1444,13 @@ class WorkerCoordinator:
     async def _hold_queued_tasks(session, *, timestamp: datetime) -> list[str]:
         tasks = list((await session.execute(
             select(Task)
-            .where(Task.status == "queued")
+            .where(Task.status == TaskStatus.queued)
             .order_by(Task.creation_order.asc())
         )).scalars().all())
         repo = TaskRepository(session)
         held: list[str] = []
         for task in tasks:
-            task.status = "waiting_for_worker"
-            task.status_reason = "No live worker is available; this task has not started."
-            task.updated_at = timestamp
+            lifecycle.hold_for_worker(task, now=timestamp)
             await repo.append_event(
                 task_id=task.id,
                 attempt_id=task.current_attempt_id,

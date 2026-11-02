@@ -46,9 +46,9 @@ from app.models.tasks import (
     WorkerHealthView,
 )
 from app.services.jarvis_devices import require_task_access
-from app.services.task_service import TaskDetailSnapshot, task_service
-from app.services.worker_coordinator import worker_coordinator
-from app.services.task_pool_supervisor import task_pool_manager
+from app.services.tasks.service import TaskDetailSnapshot, task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
+from app.services.tasks.pool_supervisor import task_pool_manager
 from app.db.session import session_scope
 from app.services.task_result_contract import result_links, admission_result_url
 

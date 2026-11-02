@@ -27,8 +27,9 @@ from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services import screen_look
 from app.services.openai_live_adapter import openai_live_adapter
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.vocabulary import TaskStatus
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_RESULTS = {
@@ -135,7 +136,7 @@ class Recorder:
     async def finish(self, task_id, status, summary):
         if task_id in self.completed:
             current = await task_service.get_task(task_id)
-            if current.task.status != "queued":
+            if current.task.status != TaskStatus.queued:
                 # Redelivery resynchronizes the projection rather than reusing a stale worker fence.
                 await task_presentation_service.sync_candidates()
                 return current
@@ -143,7 +144,7 @@ class Recorder:
             self.completed.pop(task_id); self.claims.pop(task_id, None)
         claim = self.claims.get(task_id)
         detail = await task_service.get_task(task_id)
-        if claim is None and detail.task.status not in {"queued"}:
+        if claim is None and detail.task.status != TaskStatus.queued:
             raise HTTPException(409, f"Task is {detail.task.status}, not claimable; the scenario expected it to be queued")
         if claim is None:
             claimed = await worker_coordinator.claim_next(self.worker_id)

@@ -14,8 +14,8 @@ from app.db.session import session_scope
 from app.db.tables import RuntimeCredentialLease
 from app.jarvis_tasks.acceptance import SCHEMA, candidate_identity, resolve_test_configuration as configuration_for
 from app.services.runtime_auth_routes import subscription_profile, profile_revision, select_route
-from app.services.task_pool_supervisor import TaskPoolSupervisor
-from app.services.task_service import task_service
+from app.services.tasks.pool_supervisor import TaskPoolSupervisor
+from app.services.tasks.service import task_service
 from app.services.windows_job import process_creation_stamp, process_has_exited
 
 pytestmark = pytest.mark.provider

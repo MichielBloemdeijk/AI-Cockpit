@@ -26,7 +26,7 @@ from app.db.tables import (
     TaskQuestion,
     TaskResult,
 )
-from app.services.task_error_messages import public_failure_summary
+from app.services.tasks.error_messages import public_failure_summary
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )

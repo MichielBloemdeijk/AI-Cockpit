@@ -14,9 +14,9 @@ from app import app_platform
 from app.config import settings
 from app.jarvis_tasks.task_mcp import _call, _tool_catalog
 from app.main import app
-from app.services.task_service import task_service
-from app.services.task_workflows import load_workflow
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.workflows import load_workflow
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services.conversation_store import conversation_store
 from tests.test_app_platform import SAMPLE, build
 

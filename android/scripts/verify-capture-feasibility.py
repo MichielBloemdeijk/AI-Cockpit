@@ -70,7 +70,7 @@ def main():
         for setting in ("assist_screenshot_enabled", "assist_structure_enabled"):
             adb(serial, "shell", "settings", "put", "secure", setting, "1")
         adb(serial, "shell", "am", "start", "-W", "-n", f"{FIXTURE_PACKAGE}/.MarkerActivity")
-        from app.services.task_workflows import load_workflow
+        from app.services.tasks.workflows import load_workflow
         definition = load_workflow("screen_document@1")
         db_path = evidence / "fixture.db"
         port = unused_port()
@@ -271,8 +271,8 @@ async def admit_capture(capture_id):
     from app.db.session import session_scope, close_engine
     from app.db.tables import TaskCaptureReport, LiveSession
     from sqlalchemy import select
-    from app.services.task_capture import CaptureCollection, task_capture_service
-    from app.services.task_service import task_service
+    from app.services.tasks.capture import CaptureCollection, task_capture_service
+    from app.services.tasks.service import task_service
     try:
         async with session_scope() as session:
             capture = await session.get(TaskCaptureReport, capture_id)

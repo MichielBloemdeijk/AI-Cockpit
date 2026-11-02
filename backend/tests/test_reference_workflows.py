@@ -19,10 +19,10 @@ from app.db.tables import TaskResult
 from app.jarvis_tasks.task_mcp import _call, _image_result, _tool_catalog
 from app.main import app
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
-from app.services.task_capture import CaptureCollection, task_capture_service
-from app.services.task_service import task_service, workflow_attempt_outcome
-from app.services.task_workflows import load_workflow, validate_pinned_workflow
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.capture import CaptureCollection, task_capture_service
+from app.services.tasks.service import task_service, workflow_attempt_outcome
+from app.services.tasks.workflows import load_workflow, validate_pinned_workflow
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 # Provided by the built-in Recipes and Documents apps, so installed rather than allowlisted.
@@ -181,7 +181,7 @@ async def test_registry_catalog_and_retired_schema_rejection(monkeypatch):
     monkeypatch.setattr(settings, "task_research_enabled", False)
     catalog = next(tool for tool in get_jarvis_tool_definitions() if tool["name"] == "start_workflow")
     assert set(catalog["parameters"]["properties"]["definition"]["enum"]) == {"screen_document@1", "text_report@1"}
-    from app.services.task_workflows import resolve_workflow_config
+    from app.services.tasks.workflows import resolve_workflow_config
     with pytest.raises(ValueError, match="research capability"):
         resolve_workflow_config({"definition": WORKFLOWS[0]})
 

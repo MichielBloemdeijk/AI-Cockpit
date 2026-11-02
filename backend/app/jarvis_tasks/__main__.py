@@ -168,7 +168,7 @@ def main() -> int:
         (folder / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         return 0 if summary["status"] == "passed" else 1
     if args.command in {"validate", "fixtures"}:
-        from app.services.task_workflows import load_workflow
+        from app.services.tasks.workflows import load_workflow
         try:
             loaded = load_workflow(args.definition)
         except (ValueError, OSError) as exc:

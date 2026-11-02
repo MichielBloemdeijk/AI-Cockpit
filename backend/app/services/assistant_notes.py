@@ -14,6 +14,7 @@ import json
 from sqlalchemy import select
 
 from app.db.tables import AssistantPromise, LiveSession, Task, TaskPresentation
+from app.services.tasks.vocabulary import WAITING_TO_RUN_STATUSES, TaskStatus
 from app.services.live_task_updates import TERMINAL_WORDS
 from app.services.orchestration_visibility import live_context_visible, visible_attention
 
@@ -99,7 +100,7 @@ def waiting_line(row: TaskPresentation, now: datetime, session_start: datetime |
             " If it is still relevant, re-offer it briefly, once, at a natural opening.")
     elif assessment.get("classification") == "partial":
         line += " You started telling them but did not finish."
-    if facts.get("event_type") in {"task.failed", "task.interrupted"} and task_status in {"queued", "running", "claimed"}:
+    if facts.get("event_type") in {"task.failed", "task.interrupted"} and task_status in WAITING_TO_RUN_STATUSES | {TaskStatus.running}:
         line += " A retry is already running; when you tell them about the failure, mention briefly that you are retrying."
     return line
 
@@ -134,7 +135,7 @@ async def render(db, *, session_id: str, now: datetime | None = None) -> dict:
     lines += ([waiting_line(row, now, session_start, statuses.get(row.task_id)) for row in pending]
         + [open_question_line(row) for row in checking]) or ["- Nothing."]
     follow_ups = list((await db.execute(select(Task).where(Task.origin_surface == "orchestration",
-        Task.status.in_(["queued", "waiting_for_worker", "running"]), Task.created_at >= now - FOLLOW_UP_WINDOW)
+        Task.status.in_(sorted(WAITING_TO_RUN_STATUSES | {TaskStatus.running})), Task.created_at >= now - FOLLOW_UP_WINDOW)
         .order_by(Task.created_at))).scalars().all())
     if follow_ups:
         lines.append("Started in the background on the user's behalf (mention briefly when relevant, e.g. after a failure):")

@@ -2,9 +2,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import settings
-from app.services.worker_tool_policy import WorkerPolicy, resolve_tools, normalize_overrides, save_policy, read_policy, freeze_tools, sandbox_policy, native_overrides
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.worker_tool_policy import WorkerPolicy, resolve_tools, normalize_overrides, save_policy, read_policy, freeze_tools, sandbox_policy, native_overrides
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services import connector_permissions as permissions
 
 

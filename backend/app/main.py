@@ -21,17 +21,17 @@ from app.db.session import close_engine, ensure_database_ready, initialize_engin
 from app.services.conversation_store import conversation_store
 from app.services.run_supervisor import run_supervisor
 from app.services.task_notifications import recover_pending_task_notifications
-from app.services.reminder_scheduler import reminder_scheduler
+from app.services.tasks.reminder_scheduler import reminder_scheduler
 from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services.jarvis_live_telemetry import jarvis_live_telemetry
 from app.services.conversation_observer import conversation_observer
 from app.services.openai_live_adapter import openai_live_adapter
 from app.services.runtime_health import runtime_health_service
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from app.services.task_orchestration import task_orchestration_service
-from app.services.task_context_upload import task_context_upload_service
-from app.services.task_pool_supervisor import task_pool_manager
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.context_upload import task_context_upload_service
+from app.services.tasks.pool_supervisor import task_pool_manager
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -182,14 +182,14 @@ _frontend_out = Path(__file__).parent.parent.parent / "frontend" / "out"
 @app.get("/tasks", include_in_schema=False)
 @app.get("/workspace/apps", include_in_schema=False)
 async def focused_companion_shell(request: Request):
-    from app.services.result_static import result_shell_response
+    from app.api.result_static import result_shell_response
     page = {"/login": "login", "/tasks": "tasks", "/workspace/apps": "apps"}[request.url.path]
     return result_shell_response(_result_export, page, fallback_root=_frontend_out)
 
 
 @app.get("/tasks/{task_id}", include_in_schema=False)
 async def focused_task_shell(task_id: str):
-    from app.services.result_static import result_shell_response
+    from app.api.result_static import result_shell_response
     return result_shell_response(_result_export, "task")
 
 

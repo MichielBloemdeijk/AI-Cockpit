@@ -157,7 +157,7 @@ async def test_schema_changes_are_decided_by_stored_data_and_consumers() -> None
 @pytest.mark.asyncio
 async def test_system_collections_expose_cockpits_own_data_read_only() -> None:
     from app.services.conversation_store import conversation_store
-    from app.services.task_service import task_service
+    from app.services.tasks.service import task_service
 
     conversation = await conversation_store.create_conversation(title="Dinner ideas")
     created = await task_service.dispatch(goal="Find a soup recipe", origin_surface="test",

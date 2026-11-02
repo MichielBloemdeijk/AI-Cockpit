@@ -18,9 +18,9 @@ from app.services.agent_execution import (
     AgentExecutionSink,
     CancellationProbe,
 )
-from app.services.task_service import task_service, workflow_attempt_outcome
-from app.services.task_workflows import validate_pinned_workflow
-from app.services.task_capabilities import workflow_tools
+from app.services.tasks.service import task_service, workflow_attempt_outcome
+from app.services.tasks.workflows import validate_pinned_workflow
+from app.services.tasks.capabilities import workflow_tools
 
 
 CODEX_RUNTIME_PIN = "0.155.1"
@@ -129,7 +129,7 @@ class CodexTaskRuntime:
                     if context.execution_kind == "workflow" else None)
         result_intent = context.execution_config.get("result")
         answer_only = bool(result_intent and result_intent["mode"] == "answer")
-        from app.services.worker_tool_policy import freeze_tools, native_overrides, policy_digest
+        from app.services.tasks.worker_tool_policy import freeze_tools, native_overrides, policy_digest
         resolved = await freeze_tools(context)
         selected = set(resolved["tools"])
         local_requested = "native.local" in selected
@@ -144,7 +144,7 @@ class CodexTaskRuntime:
             profile_mode += f":result:{result_intent['mode']}"
         enabled_tools = workflow_tools(workflow) if workflow else ["task_history", "task_question", "task_finish"]
         if local_broker:
-            from app.services.task_project_tools import project_tool_catalog
+            from app.services.tasks.project_tools import project_tool_catalog
             enabled_tools += [tool["name"] for tool in project_tool_catalog()]
         if answer_only:
             enabled_tools = [name for name in enabled_tools if name != "result_publish"]
@@ -154,8 +154,8 @@ class CodexTaskRuntime:
             return AgentExecutionResult(status="control_requested", summary="Task control requested.")
 
         from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
-        from app.services.task_context import current_run_delta, portable_context
-        from app.services.task_semantic_compaction import ensure_semantic_compaction
+        from app.services.tasks.context import current_run_delta, portable_context
+        from app.services.tasks.semantic_compaction import ensure_semantic_compaction
 
         from app.services.runtime_auth_routes import worker_route
         auth = await worker_route(context)
@@ -187,7 +187,7 @@ class CodexTaskRuntime:
         ))
         overrides.extend(f'mcp_servers.jarvis_task.tools.{tool}.approval_mode="approve"' for tool in enabled_tools)
         from types import SimpleNamespace
-        from app.services.task_project_tools import authorized_roots
+        from app.services.tasks.project_tools import authorized_roots
         roots = list((await authorized_roots(SimpleNamespace(task_id=context.task_id,
             run_id=context.execution_run_id, attempt_id=context.attempt_id,
             claim_token=context.claim_token, workspace=workspace))).values())
@@ -434,7 +434,7 @@ class CodexTaskRuntime:
                     + json.dumps(resource_changes, ensure_ascii=False)
                 )
             from app.services.native_worker import start_turn
-            from app.services.worker_tool_policy import sandbox_policy
+            from app.services.tasks.worker_tool_policy import sandbox_policy
             handle = await asyncio.to_thread(start_turn, thread, prompt, effort=effort,
                 policy=sandbox_policy(roots, local=local_enabled, network=resolved["command_network"]))
             await task_service.attach_runtime_reference(
@@ -488,7 +488,7 @@ class CodexTaskRuntime:
             while True:
                 if loop.time() - policy_checked_at >= 0.5 and not interrupted and not workflow_terminal:
                     policy_checked_at = loop.time()
-                    from app.services.worker_tool_policy import read_policy
+                    from app.services.tasks.worker_tool_policy import read_policy
                     revision, current_policy = await read_policy()
                     revoked = selected & set(current_policy["disabled"])
                     revoked_network = resolved["command_network"] and not current_policy["command_network"]
@@ -581,7 +581,7 @@ class CodexTaskRuntime:
                 if completed_status == "completed":
                     raise RuntimeError("Workflow turn ended without a typed result publication")
             if workflow is None:
-                from app.services.task_service import execution_attempt_outcome
+                from app.services.tasks.service import execution_attempt_outcome
                 detail = await task_service.get_task(context.task_id)
                 outcome = execution_attempt_outcome(detail, context.execution_run_id, context.attempt_id)
                 if outcome is not None:

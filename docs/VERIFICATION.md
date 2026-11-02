@@ -17,6 +17,7 @@ Run these before committing a change in the matching area.
 |---|---|---|
 | `uv run pytest` (`backend/`) | The whole backend suite, in parallel. Tests marked `provider` are billed and skip unless their own opt-in flag is set; every other test fails if it reaches the network. | free |
 | `uv run ruff check app` (`backend/`) | Python correctness lint (undefined names, unused imports and variables). | free |
+| `uv run pyright` (`backend/`) | Type check of the refactored seams listed under `[tool.pyright]` in `pyproject.toml` (basic mode; currently `app/services/tasks`). | free |
 | `npm test` (`frontend/`) | All frontend unit and hook tests (Vitest). | free |
 | `npm run lint` (`frontend/`) | ESLint over source; build outputs (`.next*`) are ignored. | free |
 | `npm run typecheck` (`frontend/`) | TypeScript over the main app. Excludes `result-export`. | free |

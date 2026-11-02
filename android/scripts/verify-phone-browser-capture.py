@@ -52,7 +52,7 @@ class Page(BaseHTTPRequestHandler):
 
 
 async def fresh(session_id, generation, turn):
-    from app.services.task_capture import task_capture_service
+    from app.services.tasks.capture import task_capture_service
     from app.db.session import close_engine
     try:
         item = await task_capture_service.request_fresh(session_id=session_id, generation=int(generation), request_identity=turn)
@@ -64,8 +64,8 @@ async def fresh(session_id, generation, turn):
 async def admit_collection(session_id, generation, turn):
     from app.db.session import session_scope, close_engine
     from app.db.tables import LiveSession
-    from app.services.task_capture import task_capture_service
-    from app.services.task_service import task_service
+    from app.services.tasks.capture import task_capture_service
+    from app.services.tasks.service import task_service
     try:
         async with session_scope() as session:
             live = await session.get(LiveSession, session_id)

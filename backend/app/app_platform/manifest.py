@@ -272,7 +272,7 @@ def _check_function(root: Path, manifest: AppManifest, name: str, spec: Function
 
 def package_workflows(root: Path, manifest: AppManifest) -> dict[str, dict[str, Any]]:
     """Validate the package's workflows; returns {id: {"version", "digest"}}."""
-    from app.services.task_workflows import load_package_workflow
+    from app.services.tasks.workflows import load_package_workflow
 
     results = tuple(name for name, spec in manifest.collections.items() if spec.result_type)
     definitions: dict[str, dict[str, Any]] = {}

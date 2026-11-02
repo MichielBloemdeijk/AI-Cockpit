@@ -12,8 +12,8 @@ from app.services.notifications import acknowledge_delivery
 from app.services import task_notifications
 from app.services.task_notifications import payload_for_task_notification
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 async def _outbox() -> list[NotificationOutbox]:

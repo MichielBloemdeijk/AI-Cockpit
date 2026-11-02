@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from app.config import settings
-from app.services.task_capabilities import INPUT_CONTEXTS, validate_capabilities
+from app.services.tasks.capabilities import INPUT_CONTEXTS, validate_capabilities
 from app.services.task_result_types import COLLECTION_PREFIX, is_output_schema, RESULT_TYPES
 
 
@@ -153,7 +153,7 @@ def _load_folder(folder: Path, workflow_id: str, version: int | None, *, app: st
     validate_capabilities(capabilities, tuple(required_context))
     if app is not None and CORE_ONLY_CAPABILITIES & set(capabilities):
         raise ValueError("App workflows cannot hold core-only capabilities")
-    from app.services.worker_tool_policy import normalize_overrides
+    from app.services.tasks.worker_tool_policy import normalize_overrides
     tools = normalize_overrides(manifest.get("tools"))
     purpose = manifest.get("purpose", workflow_id.replace("_", " "))
     examples = manifest.get("routing_examples", [])
@@ -206,7 +206,7 @@ def resolve_workflow_config(config: dict[str, Any] | None, *, inherited: dict | 
     effort = request.get("reasoning_effort") or settings.codex_task_reasoning_effort
     if not isinstance(model, str) or not model.strip() or effort not in {"low", "medium", "high"}:
         raise ValueError("Workflow model or reasoning effort is invalid")
-    from app.services.task_execution_preferences import normalize_agent_preferences
+    from app.services.tasks.execution_preferences import normalize_agent_preferences
     preferences = normalize_agent_preferences({key: value for key, value in request.items() if key != "definition"}, inherited={key: value for key, value in (inherited or {}).items() if key in {"model", "reasoning_effort", "override_reason", "tools"}})
     return {
         "definition": definition, "model": model.strip(), "reasoning_effort": effort,
@@ -218,7 +218,7 @@ def validate_pinned_workflow(config: dict[str, Any]) -> dict[str, Any]:
     pinned = config.get("workflow")
     if not isinstance(pinned, dict) or pinned.get("schema") != "workflow-pinned.v2":
         raise ValueError("Workflow run has no pinned definition")
-    contexts = tuple(INPUT_CONTEXTS.get(pinned.get("input_schema"), ()))
+    contexts = tuple(INPUT_CONTEXTS.get(str(pinned.get("input_schema")), ()))
     validate_capabilities(pinned.get("capabilities"), contexts)
     if (not isinstance(pinned.get("id"), str) or not _IDENTIFIER.fullmatch(pinned["id"])
             or type(pinned.get("version")) is not int or pinned["version"] < 1
@@ -229,7 +229,7 @@ def validate_pinned_workflow(config: dict[str, Any]) -> dict[str, Any]:
     if (pinned.get("input_schema") not in INPUT_CONTEXTS
                        or pinned.get("required_initial_context") != list(contexts)):
         raise ValueError("Pinned workflow context is invalid")
-    from app.services.worker_tool_policy import normalize_overrides
+    from app.services.tasks.worker_tool_policy import normalize_overrides
     normalize_overrides(pinned.get("tools"))
     return pinned
 

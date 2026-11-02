@@ -18,7 +18,7 @@ from app.db.tables import (
     TaskOperation, TaskQuestion, TaskTurn,
 )
 from app.db.repositories.tasks import TaskRepository
-from app.services.task_service import task_service
+from app.services.tasks import lifecycle
 
 
 def _short(value: str | None, limit: int) -> str | None:
@@ -30,8 +30,8 @@ def _short(value: str | None, limit: int) -> str | None:
 async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_token: str) -> str:
     """Pin once, then return the exact same evidence index across attempts."""
     async with session_scope() as session:
-        task = await task_service._lock_task(session, task_id)
-        await task_service._assert_fence(
+        task = await lifecycle.lock_task(session, task_id)
+        await lifecycle.assert_fence(
             session, task, attempt_id=attempt_id,
             execution_run_id=run_id, claim_token=claim_token,
         )
@@ -74,7 +74,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
             TaskArtifact.task_id == task_id,
             TaskArtifact.artifact_type == "task.context.summary",
         ).order_by(TaskArtifact.content_json["through_turn_sequence"].as_integer().desc()).limit(1))).scalar_one_or_none()
-        from app.services.task_semantic_compaction import _summary_payload
+        from app.services.tasks.semantic_compaction import _summary_payload
 
         semantic_summary = _summary_payload(summary_artifact)
         if (prior_turn_count > len(turns)
@@ -119,7 +119,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
             "current_request": _short(current_input.content, 2_000),
             "current_input_artifact": current_input.artifact_reference,
             "result_intent": (current_run.configuration_json or {}).get("result"),
-            "screen_context": next((run.configuration_json["screen_context"] for run in [current_run, *runs]
+            "screen_context": next(((run.configuration_json or {})["screen_context"] for run in [current_run, *runs]
                 if (run.configuration_json or {}).get("screen_context")), None),
             "maintained_result": maintained,
             "semantic_summary": (
@@ -128,7 +128,7 @@ async def portable_context(task_id: str, *, run_id: str, attempt_id: str, claim_
                  "summary": semantic_summary["summary"],
                  "source_sha256": semantic_summary["source_sha256"],
                  "truncated_source_count": semantic_summary["truncated_source_count"]}
-                if semantic_summary is not None else None
+                if semantic_summary is not None and summary_artifact is not None else None
             ),
             "recent_turns": [
                 {"sequence": turn.sequence, "role": turn.role,
@@ -201,8 +201,8 @@ async def current_run_delta(
     if after_sequence < 0:
         raise ValueError("Context evidence cursor cannot be negative")
     async with session_scope() as session:
-        task = await task_service._lock_task(session, task_id)
-        await task_service._assert_fence(
+        task = await lifecycle.lock_task(session, task_id)
+        await lifecycle.assert_fence(
             session, task, attempt_id=attempt_id,
             execution_run_id=run_id, claim_token=claim_token,
         )
@@ -229,6 +229,8 @@ async def current_run_delta(
             ).order_by(TaskEvent.sequence.desc()).limit(20)
         )).scalars().all())
         run = await session.get(TaskExecutionRun, run_id)
+        if run is None:
+            raise ValueError("Current execution run is unavailable")
         user_turns = list((await session.execute(select(TaskTurn).where(
             TaskTurn.task_id == task_id, TaskTurn.execution_run_id == run_id,
             TaskTurn.id != run.input_turn_id, TaskTurn.role == "user",

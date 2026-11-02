@@ -18,7 +18,7 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import Conversation, JarvisDevice, LiveSession
 from app.services.admission_timing import observe_admission, span
-from app.services.task_capture import task_capture_service
+from app.services.tasks.capture import task_capture_service
 
 
 def summary(values):

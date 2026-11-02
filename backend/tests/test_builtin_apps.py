@@ -12,7 +12,7 @@ from app import app_platform
 from app.app_platform.builtin import builtin_root
 from app.config import settings
 from app.main import app
-from app.services.task_workflows import enabled_workflows, load_workflow, workflow_catalog_revision
+from app.services.tasks.workflows import enabled_workflows, load_workflow, workflow_catalog_revision
 
 needs_browser = pytest.mark.skipif(
     shutil.which("node") is None or not (settings.app_check_playwright_path / "node_modules" / "playwright").is_dir(),

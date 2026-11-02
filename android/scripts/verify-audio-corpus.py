@@ -276,7 +276,7 @@ async def prepare_scenario(database: Path, identifier: str, *, task_id: str | No
     """
     from app.config import settings
     from app.db.session import close_engine
-    from app.services.task_service import task_service
+    from app.services.tasks.service import task_service
     from app.services.natural_task_resolver import natural_task_resolver
     target = database.resolve()
     if not target.is_relative_to((ROOT / "data").resolve()):

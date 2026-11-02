@@ -6,14 +6,14 @@ import os
 import pytest
 
 from app.config import settings
-from app.services.task_pool_supervisor import TaskPoolManager, TaskPoolSupervisor, SupervisorLeaseBusy
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.pool_supervisor import TaskPoolManager, TaskPoolSupervisor, SupervisorLeaseBusy
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio
 async def test_child_registration_race_cannot_spawn_an_extra_standby(monkeypatch):
     from types import SimpleNamespace
-    from app.services.task_pool_supervisor import SupervisedChild
+    from app.services.tasks.pool_supervisor import SupervisedChild
     stop = asyncio.Event()
     registered, spawns = False, []
 
@@ -78,7 +78,7 @@ async def test_pool_manager_retries_lost_lease_and_repairs_failed_supervisor(mon
             serving.set()
             await stop.wait()
 
-    monkeypatch.setattr("app.services.task_pool_supervisor.TaskPoolSupervisor", StubSupervisor)
+    monkeypatch.setattr("app.services.tasks.pool_supervisor.TaskPoolSupervisor", StubSupervisor)
     manager = TaskPoolManager(retry_seconds=0.01)
     await manager.start()
     try:

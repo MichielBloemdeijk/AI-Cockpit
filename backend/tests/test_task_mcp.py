@@ -28,10 +28,10 @@ from sqlalchemy import select
 from app.jarvis_tasks.task_mcp import _call
 from app.db.session import session_scope
 from app.db.tables import TaskContextBundle
-from app.services.task_context import current_run_delta, portable_context
-from app.services.task_operation_recovery import confirmed_file_write
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.context import current_run_delta, portable_context
+from app.services.tasks.operation_recovery import confirmed_file_write
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio

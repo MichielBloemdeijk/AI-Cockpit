@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from app.services.conversation_store import EventRecord, conversation_store
 from app.services.conversation_timeline import build_background_task_timeline_item
-from app.services.task_service import TaskSnapshot, task_service
-from app.services.task_update_policy import CRITICAL_ONLY, FOLLOW_PROGRESS, SILENT
+from app.services.tasks.service import TaskSnapshot, task_service
+from app.services.tasks.update_policy import CRITICAL_ONLY, FOLLOW_PROGRESS, SILENT
 
 
 def _title(goal: str) -> str:

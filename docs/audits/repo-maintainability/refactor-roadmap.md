@@ -101,7 +101,8 @@ Do not extract every query into a repository, require an interface per class, ge
 | App platform gaps: app workflows from functions/UI, `write_app_data`, Recipes-from-README acceptance, Android scripts on app records (model-free emulator runs pass) | Done | `8abb796` … |
 | Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Done, one regression test per finding (see below) | `d615719` |
 | Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Done (see below); the type checker waits for the phase-4 seams | `134a896` |
-| Phase 4: task lifecycle, conversation runs, execution contracts, live transitions, provider transport | Not started | — |
+| Phase 4.1: task lifecycle module (T01, T02, B04; pyright added; `services/tasks/` package) | Done (see below) | this commit |
+| Phase 4.2–4.5: conversation runs, execution contracts, live transitions, provider transport | Not started | — |
 | Re-baseline before phase 4: scans re-run, stale phase 4–6 items updated, decisions 6–8 (see below) | Done | this commit |
 | Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02) | Not started | — |
 | Phase 6: remaining leftovers (C08, C13, rest of I05, B08, P03, E02 scripts) | Not started | — |
@@ -199,6 +200,15 @@ Start by adding pyright (basic mode) to `backend/pyproject.toml` and `docs/VERIF
 5. **Provider transport** (I06): one retry/error helper, a model-profile table, explicit model parameter.
 
 Acceptance: targeted regressions plus the full offline suite. `private-attribute-scan.py` reports no `task_service` privates used outside it. Status literals are confined to the vocabulary module. The type checker covers the new seams.
+
+**4.1 done (2026-11-02).**
+
+- **T01:** `services/tasks/vocabulary.py` holds `TaskStatus`, `RunStatus`, `ControlAction` and `ControlState` (`StrEnum`, so stored and API values are unchanged) and the named sets (active, terminal, retryable, unsuccessful, owner-held, waiting-to-run, stopping and immediate controls, the orchestration subset). The API request model, the Jarvis `control_task` tool and the orchestration MCP schema derive their action lists from it; `task_statuses.py` and the duplicate enum in `tables.py` are gone. Task and run status literals outside it remain only for the conversation-run state machine (4.2).
+- **T02:** `services/tasks/lifecycle.py` owns the task lock, the worker fence, attempt creation and every task/run status change (`requeue`, `start`, `pause`, `wait_for_input`, `wait_until`, `finish`, `activate_run`, `promote_next_run`, worker availability, `apply_control`, `confirm_stop`). `control` and `confirm_control` in `task_service`, `worker_exited` and the other `worker_coordinator` paths, the reminder scheduler and context upload call it; `test_only_the_lifecycle_module_writes_task_and_run_status` keeps it that way. Fixed on the way: a resumed wait and an answered question now continue from the previous attempt (lineage and checkpoint) like every other resume; a stop proven by process exit records the same structured evidence as one confirmed by the runtime; context upload takes the task lock; a resumed reminder's run no longer gets the task-only `waiting_for_worker` status; `status_reason` is cleared on requeue and terminal outcomes.
+- **B04:** `task_service` privates are no longer used elsewhere (`private-attribute-scan.py`: 0). The orchestration wake is a `task_feedback_committed` commit signal, so `db/session.py` no longer imports the orchestration service. The companion-shell response moved to `api/result_static.py` beside the header policy it uses. The unused `TaskRepository.transition_with_event` is deleted.
+- **E03:** pyright (basic) runs on `app/services/tasks`, clean. Bringing the moved modules in surfaced 48 findings, mostly unchecked `None` from row lookups and untyped `rowcount`; each now has a guard or an explicit type (a missing run, attempt, workspace or policy row raises a clear error instead of an `AttributeError`).
+- Tests: `test_task_lifecycle.py` (wait and answer lineage, the same stop result from runtime and process-exit evidence, the single-writer guard, one control vocabulary on every surface).
+- **O01:** the task control plane is the `services/tasks/` package: `service` (was `task_service`), `worker_coordinator`, `reminder_scheduler`, `worker` and `pool_supervisor` (were `task_worker` and `task_pool_supervisor`), `context`, `context_upload`, `semantic_compaction`, `capture`, `operation_recovery`, `update_policy`, `execution_preferences`, `capabilities`, `error_messages`, `delegation`, `project_tools`, `workflows`, `worker_tool_policy`. Results, presentations, notifications and orchestration move with their own owners (4.2–4.5, phase 5). `tasks/delegation.py` has no application caller (only two tests use it); phase 6 decides whether it stays.
 
 ## Phase 5 — Client feature ownership
 

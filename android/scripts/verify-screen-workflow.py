@@ -464,7 +464,7 @@ def main() -> None:
         # Warm the separate fixture before the debug driver switches to it.
         adb(serial, "shell", "am", "start", "-W", "-n", f"{FIXTURE_PACKAGE}/.MarkerActivity")
 
-        from app.services.task_workflows import load_workflow
+        from app.services.tasks.workflows import load_workflow
         workflow = load_workflow(args.workflow)
         port, web_port = unused_port(), unused_port()
         db_path = evidence / "fixture.db"

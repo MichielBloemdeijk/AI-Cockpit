@@ -12,9 +12,9 @@ from app.db.session import session_scope
 from app.db.tables import ResourceLease
 from app.services.agent_execution import AgentExecutionResult
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
-from app.services.task_worker import TaskWorker
-from app.services.worker_coordinator import ClaimResult
+from app.services.tasks.service import task_service
+from app.services.tasks.worker import TaskWorker
+from app.services.tasks.worker_coordinator import ClaimResult
 from app.worker import wait_for_worker_activation
 
 

@@ -8,8 +8,8 @@ import sys
 import pytest
 
 from app.config import settings
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.jarvis_tasks.worker_process_probe import call_worker_bridge, probe_recipe_task
 
 

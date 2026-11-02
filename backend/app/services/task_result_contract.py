@@ -69,7 +69,7 @@ async def resolve_result_request(session, request, *, task_id=None, workflow=Non
 
 def publication_profile(run):
     """Return a trusted output profile, never one selected by a worker payload."""
-    from app.services.task_workflows import validate_pinned_workflow
+    from app.services.tasks.workflows import validate_pinned_workflow
     config = dict(run.configuration_json or {})
     request = config.get("result")
     if run.execution_kind == "workflow":

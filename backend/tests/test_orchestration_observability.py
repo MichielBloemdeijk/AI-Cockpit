@@ -12,7 +12,7 @@ from app.db.session import session_scope
 from app.db.tables import OrchestrationDecision, OrchestrationMetric, TaskExecutionRun
 from app.services.orchestration_telemetry import record, snapshot, timestamp, token_usage
 from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.fixture(autouse=True)

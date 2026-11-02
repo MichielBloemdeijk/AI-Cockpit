@@ -29,9 +29,9 @@ from app.db.tables import (
     LiveSessionEvent,
 )
 from app.services.task_notifications import enqueue_task_notification
-from app.services.task_error_messages import public_failure_summary
+from app.services.tasks.error_messages import public_failure_summary
 from app.services.runtime_health import runtime_health_service
-from app.services.task_update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
+from app.services.tasks.update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
 from app.services.orchestration_visibility import visible_attention, live_context_visible
 from app.services.task_notification_preferences import current as current_notification
 

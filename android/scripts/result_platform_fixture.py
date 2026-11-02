@@ -12,8 +12,8 @@ from app.db.session import session_scope
 from app import app_platform
 from app.db.tables import TaskResult
 from app.services.task_results import present
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 @asynccontextmanager

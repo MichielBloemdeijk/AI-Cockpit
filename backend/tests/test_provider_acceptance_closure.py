@@ -7,9 +7,9 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import RuntimeCredentialLease, TaskAttempt, WorkerInstance, Task, TaskExecutionRun, TaskSupervisorLease
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
-from app.services.task_project_tools import call_project_tool
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
+from app.services.tasks.project_tools import call_project_tool
 from app.services.runtime_auth_routes import select_route, release_stopped_owner
 
 
@@ -63,8 +63,8 @@ async def test_failed_command_result_is_durable_and_replay_cannot_repeat_effect(
     def execute(argv, cwd, root, profile):
         calls.append(argv)
         return {"exit_code": 1, "stdout": "1 failed", "stderr": ""}
-    monkeypatch.setattr("app.services.task_project_tools.execute_sandboxed", execute)
-    monkeypatch.setattr("app.services.task_project_tools.execute_trusted", execute)
+    monkeypatch.setattr("app.services.tasks.project_tools.execute_sandboxed", execute)
+    monkeypatch.setattr("app.services.tasks.project_tools.execute_trusted", execute)
     command = {"target_id": target, "argv": ["pytest"], "operation_key": "failing-test"}
     assert (await call_project_tool("project_command", command, args))["exit_code"] == 1
     assert (await call_project_tool("project_command", command, args))["stdout"] == "1 failed"

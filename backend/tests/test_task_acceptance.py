@@ -69,7 +69,7 @@ def test_candidate_prunes_generated_directories_before_traversal(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_candidate_tracks_saved_tool_policy_and_approved_skill_contents(tmp_path, monkeypatch):
-    from app.services.worker_tool_policy import read_policy, save_policy
+    from app.services.tasks.worker_tool_policy import read_policy, save_policy
     import app.jarvis_tasks.acceptance as acceptance
     from types import SimpleNamespace
     monkeypatch.setattr(acceptance.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout="fixture"))

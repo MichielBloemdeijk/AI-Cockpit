@@ -6,8 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.services.task_update_policy import CRITICAL_ONLY
+from app.services.tasks.update_policy import CRITICAL_ONLY
 from app.services.task_result_contract import ResultRequest
+from app.services.tasks.vocabulary import ControlAction
 
 
 TaskUpdatePolicy = Literal["critical_only", "follow_progress", "silent"]
@@ -301,10 +302,7 @@ class TaskTurnAdmissionView(BaseModel):
 
 
 class TaskControlRequest(TaskActionRequest):
-    action: Literal[
-        "set_importance", "yield", "suspend", "resume", "cancel",
-        "restart_execution", "retry", "restart_from_beginning",
-    ]
+    action: ControlAction
     parameters: dict[str, Any] = Field(default_factory=dict)
     reason: str | None = None
     expected_run_id: str | None = None

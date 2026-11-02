@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.services.admission_timing import span, record_interval, monotonic_ns
-from app.services.commit_signals import live_event_committed, capture_state_committed
+from app.services.commit_signals import capture_state_committed, live_event_committed, task_feedback_committed
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -76,6 +76,8 @@ def _wake_committed_readers(session):
         live_event_committed.notify()
     if session.info.pop("capture_state_changed", False):
         capture_state_committed.notify()
+    if session.info.pop("task_feedback_changed", False):
+        task_feedback_committed.notify()
 
 
 @event.listens_for(Session, "after_rollback")
@@ -84,7 +86,7 @@ def _discard_rolled_back_signals(session):
         return  # Preserve hints for changes in the surviving outer writer.
     session.info.pop("live_event_changed", None)
     session.info.pop("capture_state_changed", None)
-    session.info.pop("result_event_changed", None)
+    session.info.pop("task_feedback_changed", None)
 
 
 def _engine_kwargs_for_url(database_url: str) -> dict[str, object]:
@@ -201,11 +203,6 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
                         await session.flush()
                     with span("db_transaction_commit"):
                         await session.commit()
-                if settings.task_orchestration_enabled and session.info.pop("task_feedback_committed", False):
-                    # In-process hint only after commit; other writers/processes
-                    # are caught by the durable cursor's one-second safety scan.
-                    from app.services.task_orchestration import task_orchestration_service
-                    task_orchestration_service.wake_feedback()
             except BaseException:
                 # SSE disconnects use AnyIO level cancellation, which cancels
                 # every await until the scope exits. Cleanup must finish even

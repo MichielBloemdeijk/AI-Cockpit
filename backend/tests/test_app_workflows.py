@@ -14,7 +14,7 @@ from app.app_platform.check import check_package
 from app.config import settings
 from app.main import app
 from app.services.app_workflows import AppWorkflowError, start_app_workflow
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from tests.test_app_builder import _app_tool
 from tests.test_app_platform import build
 from tests.test_builtin_apps import needs_browser
@@ -169,7 +169,7 @@ async def test_a_workflow_folder_must_be_listed_in_the_manifest() -> None:
 def test_the_builders_workflow_example_is_valid(tmp_path: Path) -> None:
     """The workflow.yaml the build_app instructions show must load as written."""
     import re
-    from app.services.task_workflows import load_package_workflow
+    from app.services.tasks.workflows import load_package_workflow
 
     instructions = (Path(__file__).parents[1] / "workflows" / "build_app" / "1" / "instructions.md").read_text(
         encoding="utf-8")

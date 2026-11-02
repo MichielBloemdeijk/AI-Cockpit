@@ -11,7 +11,7 @@ from app.api import private
 from app.db.session import session_scope
 from app.db.tables import NotificationOutbox
 from app.main import app
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +42,7 @@ async def test_notification_without_a_published_result_opens_task(status):
 @pytest.mark.asyncio
 async def test_companion_routes_are_allowlisted_data_free_and_private_apis_stay_authenticated(monkeypatch, tmp_path):
     from app import main
-    from app.services.result_static import SHELL_FILES
+    from app.api.result_static import SHELL_FILES
     monkeypatch.setattr(main, "_result_export", tmp_path)
     monkeypatch.setattr(main, "_frontend_out", tmp_path / "missing-legacy")
     paths = {"/tasks/future-task": "task", "/login": "login", "/tasks": "tasks", "/workspace/apps": "apps"}

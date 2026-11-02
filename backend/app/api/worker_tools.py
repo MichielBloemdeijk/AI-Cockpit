@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.services.auth import require_auth
 from app.config import settings
-from app.services.worker_tool_policy import WorkerPolicy, read_policy, save_policy, NATIVE_GROUPS
+from app.services.tasks.worker_tool_policy import WorkerPolicy, read_policy, save_policy, NATIVE_GROUPS
 from app.services import connector_permissions
 
 router = APIRouter(prefix="/api/worker-tools", tags=["worker-tools"], dependencies=[Depends(require_auth)])

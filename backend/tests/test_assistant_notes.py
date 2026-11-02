@@ -15,7 +15,7 @@ from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services.live_task_updates import announcement_text
 from app.services.openai_live_adapter import OpenAILiveAdapter
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from tests.test_openai_live_adapter import FakeLiveSocket, wait_for_sideband
 
 

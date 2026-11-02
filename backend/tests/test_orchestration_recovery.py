@@ -17,7 +17,7 @@ from app.jarvis_tasks.orchestration_host import inspect_thread
 from app.services.orchestration_authority import StaleDecision
 from app.services.orchestration_recovery import host_has_exited
 from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.fixture(autouse=True)

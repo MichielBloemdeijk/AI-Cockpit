@@ -2,7 +2,7 @@
 from sqlalchemy import select, update
 from app.db.tables import TaskEvent, LiveSession, LiveSessionEvent, JarvisDevice, NotificationOutbox, TaskPresentation
 from app.db.repositories.tasks import TaskRepository
-from app.services.task_update_policy import normalize_task_update_policy
+from app.services.tasks.update_policy import normalize_task_update_policy
 
 INTENTS = frozenset({"requested", "discretionary", "suppressed"})
 EVENT = "task.notification_intent.changed"

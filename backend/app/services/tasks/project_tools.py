@@ -15,7 +15,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, TaskTarget, TaskAttempt
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 class SandboxBoundaryUnavailable(RuntimeError):
@@ -50,6 +50,8 @@ async def authorized_roots(args) -> dict[str, Path]:
     configured = [Path(value.strip()).resolve() for value in settings.task_project_roots.split(",") if value.strip()]
     async with session_scope() as session:
         attempt = await session.get(TaskAttempt, args.attempt_id)
+        if attempt is None or attempt.workspace_path is None:
+            raise ValueError("Task attempt has no workspace")
         workspace = Path(attempt.workspace_path).resolve()
         if args.workspace.resolve() != workspace:
             raise ValueError("Workspace does not match the durable attempt")

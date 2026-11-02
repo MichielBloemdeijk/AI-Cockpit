@@ -12,10 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from app.db.session import close_engine, initialize_engine, session_scope
 from app.db.tables import OrchestrationDecision
 from app.services.task_orchestration import DecisionClaim, DecisionTools
+from app.services.tasks.vocabulary import ORCHESTRATION_CONTROLS, TASK_IMPORTANCE
 
 
 def catalog() -> list[dict]:
-    from app.services.task_execution_preferences import preferences_schema
+    from app.services.tasks.execution_preferences import preferences_schema
     execution = {"execution_preferences": preferences_schema()}
     common = {"operation_key": {"type": "string", "minLength": 1, "maxLength": 128},
               "reason": {"type": "string", "minLength": 1, "maxLength": 2000}}
@@ -30,7 +31,7 @@ def catalog() -> list[dict]:
                      "byte_offset": {"type": "integer", "minimum": 0}}, [],
                     "Read bounded task evidence or approved standing instructions. Select one original event, turn, artifact or instruction and page its JSON by byte offset. List further instructions using instructions_after (empty string starts the catalog). Never read a native file or URL."),
         "answer": ({**common, "answer": {"type": "string", "minLength": 1}}, ["answer", *common], "Answer the exact worker question only from supported instructions/evidence; resumes its asking run."),
-        "control": ({**common, "action": {"type": "string", "enum": ["retry", "set_importance", "suspend", "yield"]}, "importance": {"type": "string", "enum": ["low", "normal", "high"]}}, ["action", *common], "Apply a supported task control. Never override user pause, cancel or permissions."),
+        "control": ({**common, "action": {"type": "string", "enum": [str(action) for action in ORCHESTRATION_CONTROLS]}, "importance": {"type": "string", "enum": list(TASK_IMPORTANCE)}}, ["action", *common], "Apply a supported task control. Never override user pause, cancel or permissions."),
         "continue": ({**common, **execution, "content": {"type": "string", "minLength": 1}}, ["content", *common], "Continue through the common turn API. Optional permitted model/effort apply only to the new run; omitted preferences inherit the prior run."),
         "delegate": ({**common, **execution, "goal": {"type": "string", "minLength": 1}}, ["goal", *common], "Delegate substantial repair to the ordinary worker queue, optionally choosing a permitted model/effort; never change permissions or repeat an unchanged failed repair."),
         "retain": (common, list(common), "Retain the unresolved question/failure in the existing user attention inbox. Never treat announcement as an answer."),

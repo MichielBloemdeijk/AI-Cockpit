@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 
 from app.db.tables import OrchestrationAction, OrchestrationDecision, Task, TaskQuestion, TaskTurn
+from app.services.tasks.vocabulary import OWNER_HELD_TASK_STATUSES, UNSUCCESSFUL_TASK_STATUSES
 
 
 class StaleDecision(ValueError):
@@ -56,9 +57,9 @@ async def assert_current(session, decision: OrchestrationDecision, task: Task) -
     question = await session.get(TaskQuestion, decision.question_id) if decision.question_id else None
     if decision.observed_json != await observed_state(session, task, question):
         raise StaleDecision("Background decision observed stale task/question state")
-    if task.pending_control_id or task.status in {"paused", "cancelled"}:
+    if task.pending_control_id or task.status in OWNER_HELD_TASK_STATUSES:
         raise StaleDecision("User control prevents automatic background action")
-    if decision.trigger_kind == "failure" and task.status not in {"failed", "interrupted"}:
+    if decision.trigger_kind == "failure" and task.status not in UNSUCCESSFUL_TASK_STATUSES:
         raise StaleDecision("Failure no longer needs background recovery")
     if decision.question_id and (question is None or question.state != "asked"
                                  or question.asking_run_id != task.current_run_id):

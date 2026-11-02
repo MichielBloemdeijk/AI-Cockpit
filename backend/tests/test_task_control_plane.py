@@ -19,9 +19,9 @@ from app.db.repositories.tasks import TaskRepository
 from app.db.tables import ResourceLease, TaskAttempt, TaskOperation, WorkerInstance
 from app.main import app
 from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.task_service import task_service
-from app.services.task_worker import TaskWorker
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.worker import TaskWorker
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services.windows_job import process_creation_stamp
 from app.services.agent_execution import AgentExecutionResult
 
@@ -776,11 +776,11 @@ async def test_supervisor_lease_takes_over_immediately_after_verified_owner_exit
     owner = f"{socket.gethostname()}:123456:987654321:owner"
     assert await worker_coordinator.acquire_supervisor(owner, now=NOW) == 1
     monkeypatch.setattr(
-        "app.services.worker_coordinator.process_has_exited", lambda *_: False,
+        "app.services.tasks.worker_coordinator.process_has_exited", lambda *_: False,
     )
     assert await worker_coordinator.acquire_supervisor("replacement", now=NOW) is None
     monkeypatch.setattr(
-        "app.services.worker_coordinator.process_has_exited", lambda *_: True,
+        "app.services.tasks.worker_coordinator.process_has_exited", lambda *_: True,
     )
     assert await worker_coordinator.acquire_supervisor("replacement", now=NOW) == 2
 

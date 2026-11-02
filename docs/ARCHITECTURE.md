@@ -44,7 +44,7 @@ Android companion ────────────────────�
   Jarvis coordinator, conversation observer, runtime health, the app runtime,
   the run supervisor and, when enabled, background orchestration and the task
   pool. With a built frontend it also serves it (`frontend/out`).
-- **Task pool** (`task_pool_supervisor`, `task_worker`, `app/worker.py`): with
+- **Task pool** (`services/tasks/pool_supervisor`, `services/tasks/worker`, `app/worker.py`): with
   `TASK_POOL_ENABLED=true` the API supervises a pool of worker processes, each
   contained in a Windows job. `python -m app.worker` only runs a pool child or a
   standalone supervisor. Without the pool no tasks execute.
@@ -74,11 +74,11 @@ behavior and transactions.
 | Chat and council | `chat_orchestrator` (single-model streaming completion, council fan-out and synthesis, one run owner per turn), `conversation_store`, `conversation_timeline`, `conversation_read_model`, `conversation_compaction`, `llm` |
 | Reviewed memory | `memory_review_store` (approve/reject/delete together with publication), `knowledge_memory` (notes under `knowledge/notes/`), `knowledge_extractor`, `brain_retrieval`, `history_retrieval` |
 | Jarvis voice | `jarvis_coordinator` (one controller generation per session, response gate), `openai_live_adapter` behind `voice_session_adapter`, `jarvis_brain` (restricted tool gateway), `jarvis_tool_catalog`, `conversation_observer` (records what the user actually heard), `jarvis_daily`, `jarvis_situation` |
-| Tasks | `task_service` (creation, control, completion under the task lock), `worker_coordinator` (claims, leases), `reminder_scheduler`, `task_presentations`, `task_notifications`, `run_supervisor`; worker side `task_worker`, `codex_task_runtime`, `app/jarvis_tasks/task_mcp.py` (the MCP server a worker uses) |
-| Workflows | `task_workflows` (versioned definitions in `backend/workflows/` and app packages), `task_capture`, `task_context` |
+| Tasks | The `services/tasks/` package: `vocabulary` (task, run and control vocabularies) and `lifecycle` (every task/run/attempt transition, the task lock and the worker fence; nothing else writes a task or run status); `service` (creation, control, questions, completion and result publication, calling the lifecycle), `worker_coordinator` (claims, leases, worker exits), `reminder_scheduler`, `pool_supervisor`, `context`, `context_upload`, `capture`, `update_policy` and the other task-domain modules. Outside it: `task_presentations`, `task_notifications`, `run_supervisor` (conversation runs); worker side `tasks/worker`, `codex_task_runtime`, `app/jarvis_tasks/task_mcp.py` (the MCP server a worker uses) |
+| Workflows | `tasks/workflows` (versioned definitions in `backend/workflows/` and app packages), `tasks/capture`, `tasks/context` |
 | Results and apps | `app/app_platform/` (packages, records, files, functions, hosting, lifecycle), `task_results`, `task_result_types`; built-in apps in `backend/apps/` |
 | Background orchestration | `task_orchestration`, `codex_orchestration_runtime`, `orchestration_*` (off unless `TASK_ORCHESTRATION_ENABLED`) |
-| Worker tools | `worker_tool_policy`, `connector_permissions`, `native_research` |
+| Worker tools | `tasks/worker_tool_policy`, `tasks/project_tools`, `connector_permissions`, `native_research` |
 | Notifications | `notifications` (Web Push outbox), `commit_signals` (after-commit hints; durable rescans are the authority) |
 | Diagnostics | `diagnostics`, `runtime_health`, `jarvis_live_telemetry`, `live_traffic` (observer hook used by the self-test recorder) |
 

@@ -13,7 +13,7 @@ from app.db.tables import Conversation, JarvisDevice, JarvisLiveEvent, LiveSessi
 from app.services.auth import SESSION_COOKIE_NAME, create_session_token
 from app.services.commit_signals import CommitSignal, live_event_committed, capture_state_committed
 from app.services.jarvis_live import jarvis_live_service
-from app.services.task_capture import task_capture_service
+from app.services.tasks.capture import task_capture_service
 
 
 def event_row():

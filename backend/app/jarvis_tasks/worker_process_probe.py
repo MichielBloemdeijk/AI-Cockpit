@@ -12,7 +12,8 @@ from pathlib import Path
 import sys
 
 from app.services.codex_task_runtime import task_mcp_arguments
-from app.services.task_workflows import validate_pinned_workflow
+from app.services.tasks.workflows import validate_pinned_workflow
+from app.services.tasks.vocabulary import TaskStatus
 
 
 async def call_worker_bridge(context, calls):
@@ -46,8 +47,8 @@ async def call_worker_bridge(context, calls):
 
 
 async def probe_recipe_task(task_id: str, *, expected_images: int) -> dict:
-    from app.services.task_service import task_service
-    from app.services.worker_coordinator import worker_coordinator
+    from app.services.tasks.service import task_service
+    from app.services.tasks.worker_coordinator import worker_coordinator
     worker = await worker_coordinator.activate(process_identity="unpaid-recipe-process-probe")
     context = (await worker_coordinator.claim_next(worker.worker_id)).task
     assert context is not None and context.task_id == task_id, "Probe must claim its isolated recipe task"
@@ -75,7 +76,7 @@ async def probe_recipe_task(task_id: str, *, expected_images: int) -> dict:
     publications = await call_worker_bridge(context, [("result_publish", payload), ("result_publish", payload)])
     assert all(not result.get("isError") for result in publications), publications
     assert publications[0] == publications[1]
-    assert (await task_service.get_task(task_id)).task.status == "completed"
+    assert (await task_service.get_task(task_id)).task.status == TaskStatus.completed
     from app.db.session import session_scope
     from app.services.task_results import task_results
     async with session_scope() as session:

@@ -224,7 +224,7 @@ def _http_functions(manifest: AppManifest) -> set[str]:
 
 def _workflows(root: Path, manifest: AppManifest) -> dict[str, bool]:
     """{workflow id: needs the phone's screen} for the package's workflows (validated by load_package)."""
-    from app.services.task_workflows import load_package_workflow
+    from app.services.tasks.workflows import load_package_workflow
     results = tuple(name for name, spec in manifest.collections.items() if spec.result_type)
     return {workflow_id: bool(load_package_workflow(root / "workflows" / workflow_id, workflow_id, app=manifest.slug,
                                                     result_collections=results).required_initial_context)

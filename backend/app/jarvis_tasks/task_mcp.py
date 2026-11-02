@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from app.db.session import close_engine, initialize_engine, session_scope  # noqa: E402
 from app.db.tables import TaskArtifact, TaskContextBlob, TaskContextRequest, TaskEvent, TaskExecutionRun, TaskTurn  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.services.task_service import task_service  # noqa: E402
-from app.services.task_workflows import validate_pinned_workflow  # noqa: E402
-from app.services.task_capabilities import workflow_tools  # noqa: E402
+from app.services.tasks.service import task_service  # noqa: E402
+from app.services.tasks.workflows import validate_pinned_workflow  # noqa: E402
+from app.services.tasks.capabilities import workflow_tools  # noqa: E402
 from app.services.task_result_types import publish_schema  # noqa: E402
 
 # A build_app run keeps the package it builds here, inside its workspace.
@@ -154,7 +154,7 @@ async def _tool_catalog(workflow_schema: str | None = None, capabilities: list[s
     if not workflow_schema:
         common += _terminal_tools()
     if local_broker:
-        from app.services.task_project_tools import project_tool_catalog
+        from app.services.tasks.project_tools import project_tool_catalog
         common += project_tool_catalog()
     return common
 
@@ -234,8 +234,8 @@ async def _call(name: str, arguments: dict[str, Any], args: argparse.Namespace) 
             if (run is None or run.task_id != args.task_id or "native.local" not in resolved.get("tools", [])
                     or resolved.get("local_execution_mode") != "trusted"):
                 raise ValueError("This run did not select trusted local execution")
-        from app.services.task_project_tools import call_project_tool
-        from app.services.worker_tool_policy import read_policy
+        from app.services.tasks.project_tools import call_project_tool
+        from app.services.tasks.worker_tool_policy import read_policy
         _, policy = await read_policy()
         if "native.local" in policy["disabled"]:
             raise ValueError("Local tool access was revoked")

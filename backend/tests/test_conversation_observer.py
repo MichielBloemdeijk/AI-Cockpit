@@ -10,7 +10,7 @@ from app.db.tables import ConversationObservation, LiveSession, TaskPresentation
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.services.conversation_observer import (conversation_observer, playback_support, validate_finding, now)
 from app.services.jarvis_coordinator import jarvis_coordinator
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from app.services.task_presentations import task_presentation_service
 
 

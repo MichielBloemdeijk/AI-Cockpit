@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.native_worker import approved_skill_config, start_turn, verify_native_workload
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from test_worker_tool_policy import claimed
 
 

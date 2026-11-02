@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from app.db.repositories.tasks import TaskRepository
 from app.db.tables import Task, TaskEvent
+from app.services.tasks.vocabulary import UNSUCCESSFUL_TASK_STATUSES
 
 
 async def retain_attention(session, decision, event_key: str) -> bool:
@@ -12,7 +13,7 @@ async def retain_attention(session, decision, event_key: str) -> bool:
         TaskEvent.id.in_(decision.source_event_ids_json),
         TaskEvent.event_type.in_(["task.requires_input", "task.failed", "task.interrupted"]),
     ).order_by(TaskEvent.sequence.desc()).limit(1))).scalar_one_or_none()
-    if source is None and task.status in {"failed", "interrupted"}:
+    if source is None and task.status in UNSUCCESSFUL_TASK_STATUSES:
         source = await TaskRepository(session).append_event(
             task_id=task.id, execution_run_id=task.current_run_id, event_type=f"task.{task.status}",
             payload_json={"status": task.status, "summary": task.terminal_summary, "decision_id": decision.id},

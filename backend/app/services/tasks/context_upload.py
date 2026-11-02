@@ -13,10 +13,11 @@ from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import (
-    JarvisDevice, Task, TaskArtifact, TaskCaptureReport, TaskContextBlob, TaskContextRequest,
+    JarvisDevice, TaskArtifact, TaskCaptureReport, TaskContextBlob, TaskContextRequest,
     TaskExecutionRun, WorkflowRun,
 )
-from app.services.task_service import task_service
+from app.services.tasks import lifecycle
+from app.services.tasks.vocabulary import RunStatus, TaskStatus
 
 
 MAX_JPEG_BYTES = 5 * 1024 * 1024
@@ -141,12 +142,12 @@ class TaskContextUploadService:
                     or capture_monotonic_ms < 0):
                 raise ValueError("Capture timing is invalid")
             look = row.task_id is None
-            if not look:
-                task = (await session.execute(select(Task).where(Task.id == row.task_id))).scalar_one()
+            if row.task_id is not None:
+                task = await lifecycle.lock_task(session, row.task_id)
                 run = await session.get(TaskExecutionRun, row.execution_run_id)
                 current = run is not None and task.current_run_id == run.id
-                if (run is None or (not current and run.status != "pending") or
-                        (current and (task.status != "waiting_for_input" or task.status_reason != "context_upload_pending"))):
+                if (run is None or (not current and run.status != RunStatus.pending) or (current and (
+                        task.status != TaskStatus.waiting_for_input or task.status_reason != "context_upload_pending"))):
                     raise ValueError("Task is no longer waiting for this context")
             blob = (await session.execute(select(TaskContextBlob).where(
                 TaskContextBlob.sha256 == digest,
@@ -196,15 +197,12 @@ class TaskContextUploadService:
             outstanding = await session.scalar(select(TaskContextRequest.id).where(
                 TaskContextRequest.execution_run_id == run.id, TaskContextRequest.state != "ready").limit(1))
             complete = outstanding is None
-            if current and complete:
-                run.status = "queued"
             workflow_run = await session.get(WorkflowRun, row.workflow_run_id)
             if workflow_run is not None:
                 workflow_run.context_reference = reference
                 workflow_run.stage = "ready" if complete else "context_pending"
             if current and complete:
-                task.status = "queued"
-                task.status_reason = None
+                lifecycle.requeue(task, run, now=_now())
             await TaskRepository(session).append_event(
                 task_id=task.id, attempt_id=task.current_attempt_id if current else None,
                 execution_run_id=run.id, event_type="task.context.ready",
@@ -212,9 +210,8 @@ class TaskContextUploadService:
                 idempotency_key=f"task.context.ready:{row.id}",
             )
             if complete:
-                await task_service._assign_worker_eligibility(
-                    session, task, repo=TaskRepository(session),
-                    idempotency_key=f"task.context.waiting-for-worker:{row.id}",
+                await lifecycle.assign_worker_eligibility(
+                    session, task, idempotency_key=f"task.context.waiting-for-worker:{row.id}",
                 )
             return {"state": "ready", "context_reference": reference, "sha256": digest}
 
@@ -248,18 +245,14 @@ class TaskContextUploadService:
         row.failed_at = now
         if row.task_id is None:
             return
-        task = (await session.execute(select(Task).where(Task.id == row.task_id))).scalar_one()
+        task = await lifecycle.lock_task(session, row.task_id)
         run = await session.get(TaskExecutionRun, row.execution_run_id)
-        if run is not None and run.status in {"waiting_for_input", "pending"}:
-            run.status = "failed"
-            run.terminal_summary = f"Required screen context failed: {reason}"
-            run.finished_at = now
-        failed_current = task.current_run_id == row.execution_run_id and task.status == "waiting_for_input"
+        summary = f"Required screen context failed: {reason}"
+        failed_current = task.current_run_id == row.execution_run_id and task.status == TaskStatus.waiting_for_input
         if failed_current:
-            task.status = "failed"
-            task.status_reason = reason
-            task.terminal_summary = f"Required screen context failed: {reason}"
-            task.finished_at = now
+            lifecycle.finish(task, run, TaskStatus.failed, summary=summary, reason=reason, now=now)
+        elif run is not None and run.status == RunStatus.pending:
+            lifecycle.fail_pending_run(run, summary=summary, now=now)
         await TaskRepository(session).append_event(
             task_id=row.task_id, attempt_id=task.current_attempt_id if task.current_run_id == row.execution_run_id else None,
             execution_run_id=row.execution_run_id, event_type="task.context.failed",

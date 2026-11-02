@@ -7,7 +7,7 @@ from app.services import conversation_store as conversation_store_module
 from app.services.conversation_read_model import conversation_read_model
 from app.services.conversation_store import conversation_store
 from app.services.conversation_timeline import build_tool_result_timeline_item
-from app.services.task_delegation import delegate_background_task
+from app.services.tasks.delegation import delegate_background_task
 
 
 def test_app_initialize_activity_lists_scaffolded_files():

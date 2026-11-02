@@ -14,9 +14,9 @@ from app.services.history_retrieval import history_retrieval_service
 from app.services.jarvis_live import jarvis_live_service
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.natural_task_resolver import natural_task_resolver
-from app.services.reminder_scheduler import reminder_scheduler
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.reminder_scheduler import reminder_scheduler
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 @pytest.mark.asyncio

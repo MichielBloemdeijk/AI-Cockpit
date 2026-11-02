@@ -9,7 +9,7 @@ from hashlib import sha256
 from typing import Any
 
 from app import app_platform
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 BUILD_WORKFLOW = "build_app@1"
 

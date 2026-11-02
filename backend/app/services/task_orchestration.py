@@ -28,7 +28,9 @@ from app.db.tables import (
 from app.services.orchestration_authority import (
     DecisionAuthority, StaleDecision, assert_current, begin_action, digest, observed_state,
 )
+from app.services.commit_signals import task_feedback_committed
 from app.services.runtime_health import runtime_health_service
+from app.services.tasks.vocabulary import ORCHESTRATION_CONTROLS, OWNER_HELD_TASK_STATUSES, UNSUCCESSFUL_TASK_STATUSES
 from app.services.windows_job import process_creation_stamp
 
 logger = logging.getLogger(__name__)
@@ -114,7 +116,7 @@ class DecisionTools:
                     logger.exception("Unable to record background action metadata")
 
     async def _call(self, name: str, arguments: dict) -> dict:
-        from app.services.task_service import task_service
+        from app.services.tasks.service import task_service
         allowed = {
             "inspect": {"after_sequence", "event_sequence", "turn_sequence", "artifact_id", "byte_offset", "instruction_id", "instructions_after", "task_goal"},
             "answer": {"answer", "reason", "operation_key"},
@@ -162,7 +164,7 @@ class DecisionTools:
             )
         elif name == "control":
             action = str(arguments.get("action") or "")
-            if action not in {"retry", "set_importance", "suspend", "yield"}:
+            if action not in ORCHESTRATION_CONTROLS:
                 raise ValueError("Background cannot override user pause/cancel or expand permissions")
             result = await task_service.control(
                 task_id, action=action, parameters={"importance": arguments["importance"]}
@@ -215,7 +217,7 @@ class TaskOrchestrationService:
     def __init__(self, runtime: DecisionRuntime | None = None,
                  owner_has_exited: Callable[[str], bool] | None = None,
                  native_host_has_exited: Callable[[dict], bool] | None = None) -> None:
-        from app.services.worker_coordinator import _supervisor_owner_has_exited
+        from app.services.tasks.worker_coordinator import _supervisor_owner_has_exited
         from app.services.orchestration_recovery import host_has_exited
         self.runtime = runtime
         self.owner_has_exited = owner_has_exited or _supervisor_owner_has_exited
@@ -224,12 +226,8 @@ class TaskOrchestrationService:
         self.generation: int | None = None
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
-        self._feedback_wake = asyncio.Event()
         self._last_batch_full = False
         self._loops: list[asyncio.Task] = []
-
-    def wake_feedback(self) -> None:
-        self._feedback_wake.set()
 
     async def intake(self, *, before_commit: Callable[[], Awaitable[None]] | None = None) -> int:
         """One <=100-event transaction: projection + decisions + unified cursor."""
@@ -298,9 +296,9 @@ class TaskOrchestrationService:
     async def _queue_issue(self, session, event: TaskEvent, source_sequence: int,
                            repair_event: TaskEvent | None = None) -> None:
         task = (await session.execute(select(Task).where(Task.id == event.task_id))).scalar_one_or_none()
-        if task is None or task.status in {"paused", "cancelled"} or task.pending_control_id:
+        if task is None or task.status in OWNER_HELD_TASK_STATUSES or task.pending_control_id:
             return
-        if task.origin_surface == "orchestration" and task.status in {"failed", "interrupted"} and repair_event is None:
+        if task.origin_surface == "orchestration" and task.status in UNSUCCESSFUL_TASK_STATUSES and repair_event is None:
             # A failed delegated repair reports back to its originating issue;
             # it cannot recursively originate a new repair-of-repair chain.
             return
@@ -308,7 +306,7 @@ class TaskOrchestrationService:
             TaskQuestion.task_id == task.id, TaskQuestion.asking_run_id == task.current_run_id,
             TaskQuestion.state == "asked",
         ).order_by(TaskQuestion.asked_at.desc()).limit(1))).scalar_one_or_none()
-        kind = "question" if question else "failure" if task.status in {"failed", "interrupted"} else None
+        kind = "question" if question else "failure" if task.status in UNSUCCESSFUL_TASK_STATUSES else None
         if kind is None:
             return
         state = await observed_state(session, task, question)
@@ -354,7 +352,7 @@ class TaskOrchestrationService:
 
     async def _context(self, session, task, question, event, state, repair_event) -> dict:
         from app.services.orchestration_context import bound_context, instructions, prior_actions
-        from app.services.task_execution_preferences import permitted_models
+        from app.services.tasks.execution_preferences import permitted_models
         from app.services.jarvis_situation import jarvis_situation_projector
         current_run = await session.get(TaskExecutionRun, task.current_run_id) if task.current_run_id else None
         turns = list((await session.execute(select(TaskTurn).where(TaskTurn.task_id == task.id)
@@ -572,7 +570,6 @@ class TaskOrchestrationService:
             return
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
-        self._feedback_wake = asyncio.Event()
         if self.runtime is None and settings.task_orchestration_live_enabled:
             from app.services.codex_orchestration_runtime import CodexOrchestrationRuntime
             self.runtime = CodexOrchestrationRuntime(permitted=True)
@@ -581,7 +578,7 @@ class TaskOrchestrationService:
     async def stop(self) -> None:
         self._stop.set()
         self._wake.set()
-        self._feedback_wake.set()
+        task_feedback_committed.notify()  # wakes the intake loop so it sees the stop
         if self.runtime:
             await self.runtime.stop()
         # Let short in-flight DB transactions close before disposing the
@@ -602,8 +599,10 @@ class TaskOrchestrationService:
 
     async def _intake_loop(self) -> None:
         while not self._stop.is_set():
+            # In-process hint after each committed task event; other writers
+            # and processes are caught by the durable cursor's one-second scan.
+            observed = task_feedback_committed.snapshot()
             try:
-                self._feedback_wake.clear()
                 await self.intake()
                 await runtime_health_service.healthy("background_feedback", detail="Code-only unified event intake")
                 if self.generation is not None:
@@ -621,10 +620,7 @@ class TaskOrchestrationService:
                     continue
             except Exception as exc:
                 await runtime_health_service.failed("background_feedback", exc)
-            try:
-                await asyncio.wait_for(self._feedback_wake.wait(), 1.0)
-            except TimeoutError:
-                pass
+            await task_feedback_committed.wait(observed, timeout=1.0)
 
     async def _decision_loop(self) -> None:
         while not self._stop.is_set():

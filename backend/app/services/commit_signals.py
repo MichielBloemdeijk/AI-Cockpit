@@ -44,3 +44,5 @@ class CommitSignal:
 
 live_event_committed = CommitSignal()
 capture_state_committed = CommitSignal()
+# A task event was committed; background orchestration reads new feedback.
+task_feedback_committed = CommitSignal()

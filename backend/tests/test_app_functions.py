@@ -304,8 +304,8 @@ async def test_new_errors_start_one_repair_a_day(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_repairs_start_the_builder_with_the_reported_errors(monkeypatch) -> None:
     from app.services.app_repair import start_app_repair
-    from app.services.task_service import task_service
-    from app.services.task_workflows import load_workflow
+    from app.services.tasks.service import task_service
+    from app.services.tasks.workflows import load_workflow
 
     app_ = await app_platform.install_package(clippings())
     errors = [{"version": 1, "message": "Function fetch_page failed (schedule): boom", "count": 2}]

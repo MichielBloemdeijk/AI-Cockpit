@@ -13,10 +13,10 @@ import pytest
 
 from app.config import settings
 from app.main import app
-from app.services.task_capture import task_capture_service
-from app.services.task_service import task_service
-from app.services.task_workflows import load_workflow
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.capture import task_capture_service
+from app.services.tasks.service import task_service
+from app.services.tasks.workflows import load_workflow
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.jarvis_tasks.task_mcp import _image_result
 
 

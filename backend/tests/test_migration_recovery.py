@@ -19,7 +19,7 @@ def _use_database(database_path: Path) -> Config:
 
 
 def test_in_process_migrations_preserve_application_logging(caplog) -> None:
-    app_logger = logging.getLogger("app.services.task_service")
+    app_logger = logging.getLogger("app.services.tasks.service")
     caplog.set_level(logging.INFO, logger=app_logger.name)
     handlers, level = list(logging.getLogger().handlers), logging.getLogger().level
     run_migrations()

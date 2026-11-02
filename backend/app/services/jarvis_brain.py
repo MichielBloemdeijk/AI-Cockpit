@@ -13,11 +13,12 @@ from app.db.tables import ConversationMessage, LiveSession, Task, TaskContextReq
 from app.services.history_retrieval import history_retrieval_service
 from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.natural_task_resolver import natural_task_resolver, task_title
-from app.services.reminder_scheduler import reminder_scheduler
-from app.services.task_error_messages import public_failure_summary
-from app.services.task_service import task_service
-from app.services.task_capture import task_capture_service
-from app.services.task_workflows import resolve_workflow_config, workflow_catalog_revision
+from app.services.tasks.reminder_scheduler import reminder_scheduler
+from app.services.tasks.error_messages import public_failure_summary
+from app.services.tasks.service import task_service
+from app.services.tasks.vocabulary import ACTIVE_TASK_STATUSES, UNSUCCESSFUL_TASK_STATUSES, TaskStatus
+from app.services.tasks.capture import task_capture_service
+from app.services.tasks.workflows import resolve_workflow_config, workflow_catalog_revision
 from app.services.task_result_contract import result_links, admission_result_url
 from app.services.admission_timing import observe_admission, timestamp, timed
 
@@ -103,7 +104,7 @@ class RestrictedBrainGateway:
             else:
                 kwargs["admission_task_id"] = receipt.target_task_id
         # Retried deliveries share the original bounded pre-admission wait.
-        from app.services.task_capture import PREFLIGHT_WAIT_SECONDS
+        from app.services.tasks.capture import PREFLIGHT_WAIT_SECONDS
         created = receipt.created_at.replace(tzinfo=timezone.utc) if receipt.created_at.tzinfo is None else receipt.created_at
         kwargs["capture_wait_seconds"] = max(0., PREFLIGHT_WAIT_SECONDS - (datetime.now(timezone.utc) - created).total_seconds())
         try:
@@ -457,11 +458,11 @@ class RestrictedBrainGateway:
                     "status_reason": item.task.status_reason,
                     "summary": (
                         public_failure_summary(item.task.terminal_summary)
-                        if item.task.status in {"failed", "interrupted"}
+                        if item.task.status in UNSUCCESSFUL_TASK_STATUSES
                         else item.task.terminal_summary
                     ),
                     "diagnostics_available": bool(
-                        item.task.status in {"failed", "interrupted"}
+                        item.task.status in UNSUCCESSFUL_TASK_STATUSES
                         and item.task.terminal_summary
                     ),
                     "due_at": item.task.resume_at.isoformat() if item.task.resume_at else None,
@@ -490,11 +491,11 @@ class RestrictedBrainGateway:
                 "status_reason": detail.task.status_reason,
                 "summary": (
                     public_failure_summary(detail.task.terminal_summary)
-                    if detail.task.status in {"failed", "interrupted"}
+                    if detail.task.status in UNSUCCESSFUL_TASK_STATUSES
                     else detail.task.terminal_summary
                 ),
                 "diagnostics_available": bool(
-                    detail.task.status in {"failed", "interrupted"}
+                    detail.task.status in UNSUCCESSFUL_TASK_STATUSES
                     and detail.task.terminal_summary
                 ),
                 "questions": [
@@ -742,9 +743,7 @@ class RestrictedBrainGateway:
             async with read_session_scope() as session:
                 task = (await session.execute(select(Task).where(Task.id == internal_id))).scalar_one_or_none()
             if task is not None:
-                if mutation and not allow_terminal and task.status not in {
-                    "queued", "waiting_for_worker", "running", "waiting_for_input", "waiting_until"
-                }:
+                if mutation and not allow_terminal and task.status not in ACTIVE_TASK_STATUSES - {TaskStatus.paused}:
                     raise ValueError("That task is no longer active.")
                 return task
         reference = str(

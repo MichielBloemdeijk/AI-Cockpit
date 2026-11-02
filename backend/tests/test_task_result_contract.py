@@ -15,9 +15,9 @@ from app import app_platform
 from app.db.session import session_scope
 from app.db.tables import NotificationOutbox, TaskArtifact, TaskOperation, TaskEvent, TaskResult
 from app.main import app
-from app.services.task_context import portable_context
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.context import portable_context
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.jarvis_tasks.task_mcp import _call, _tool_catalog
 
 
@@ -285,7 +285,7 @@ async def test_publication_delivery_failure_rolls_back_task_writes_and_silent_st
 
 @pytest.mark.asyncio
 async def test_workflow_outcome_and_replay_survive_promotion_to_a_general_result(monkeypatch):
-    from app.services.task_service import workflow_attempt_outcome
+    from app.services.tasks.service import workflow_attempt_outcome
     from app.services.task_result_contract import admission_result_url
     from test_reference_workflows import admit, researched, content
     args, worker = await admit(monkeypatch, "research_screen@1")
@@ -315,7 +315,7 @@ async def test_workflow_outcome_and_replay_survive_promotion_to_a_general_result
 async def test_general_committed_outcome_wins_over_heartbeat_during_runtime_cleanup(monkeypatch, cleanup_error):
     from app.config import settings
     from app.services.agent_execution import AgentExecutionResult
-    from app.services.task_worker import TaskWorker
+    from app.services.tasks.worker import TaskWorker
     completed, cleanup = asyncio.Event(), asyncio.Event()
     class Coordinator:
         def __getattr__(self, name):

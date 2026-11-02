@@ -50,7 +50,8 @@ from app.services.jarvis_preferences import jarvis_preferences_service
 from app.services.jarvis_situation import jarvis_situation_projector
 from app.services.openai_live_adapter import OpenAILiveConfigurationError
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import ACTIVE_TASK_STATUSES, task_service
+from app.services.tasks.service import task_service
+from app.services.tasks.vocabulary import ACTIVE_TASK_STATUSES
 from app.models.tasks import WorkerHealthView
 
 
@@ -352,7 +353,7 @@ async def create_live_call(request: JarvisLiveCallRequest, http_request: Request
             detail="Live provider connection failed",
         ) from exc
     if phone_browser:
-        from app.services.task_capture import task_capture_service
+        from app.services.tasks.capture import task_capture_service
         await task_capture_service.request_browser_activation(
             session_id=bootstrap.session.id, generation=bootstrap.session.generation)
     server_responded_at = datetime.now(timezone.utc)

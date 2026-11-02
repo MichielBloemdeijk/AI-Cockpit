@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.db.session import session_scope
 from app.db.tables import Conversation, JarvisState, LiveSession, Task, TaskTurn
 from app.services.jarvis_brain import RestrictedBrainGateway
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 async def live_arguments():

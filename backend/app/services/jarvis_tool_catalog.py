@@ -5,7 +5,8 @@ from copy import deepcopy
 from typing import Any
 
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS
-from app.services.task_workflows import enabled_workflows
+from app.services.tasks.workflows import enabled_workflows
+from app.services.tasks.vocabulary import CONTROL_ACTIONS, TASK_IMPORTANCE
 
 
 def get_jarvis_tool_definitions(provider: str = "openai") -> list[dict[str, Any]]:
@@ -16,7 +17,7 @@ def get_jarvis_tool_definitions(provider: str = "openai") -> list[dict[str, Any]
 
 
 def _canonical_tools() -> list[dict[str, Any]]:
-    from app.services.task_execution_preferences import preferences_schema
+    from app.services.tasks.execution_preferences import preferences_schema
     from app.services.task_result_contract import ResultRequest
     result_request_schema = ResultRequest.model_json_schema()
     # General agents publish Documents (into the Documents app); a workflow's
@@ -175,12 +176,9 @@ def _canonical_tools() -> list[dict[str, Any]]:
                     "task_reference": task_reference,
                     "action": {
                         "type": "string",
-                        "enum": [
-                            "set_importance", "yield", "suspend", "resume", "cancel",
-                            "retry", "restart_execution", "restart_from_beginning",
-                        ],
+                        "enum": list(CONTROL_ACTIONS),
                     },
-                    "importance": {"type": "string", "enum": ["low", "normal", "high"]},
+                    "importance": {"type": "string", "enum": list(TASK_IMPORTANCE)},
                     "immediate": {"type": "boolean"},
                     "reason": {"type": "string"},
                 },

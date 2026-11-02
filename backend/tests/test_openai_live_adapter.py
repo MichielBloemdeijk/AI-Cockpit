@@ -329,7 +329,7 @@ async def test_default_creator_posts_documented_session_and_transport(monkeypatc
 @pytest.mark.asyncio
 async def test_screen_workflow_preflight_does_not_block_live_sideband(monkeypatch) -> None:
     from app.config import settings
-    from app.services.task_workflows import load_workflow
+    from app.services.tasks.workflows import load_workflow
     definition = load_workflow("screen_document@1")
     monkeypatch.setattr(settings, "task_workflow_allowlist", f"screen_document@1:{definition.digest}")
     monkeypatch.setattr(settings, "openai_api_key", "test-key")

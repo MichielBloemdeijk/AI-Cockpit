@@ -22,12 +22,12 @@ from app.db.session import session_scope
 from app.db.tables import TaskTurn
 from app.main import app
 from app.services.codex_task_runtime import codex_task_runtime
-from app.services.task_service import task_service
-from app.services.task_worker import TaskWorker
-from app.services.task_pool_supervisor import TaskPoolSupervisor
-from app.services.worker_coordinator import worker_coordinator
-from app.services.task_workflows import load_workflow
-from app.services.task_capture import CaptureCollection, task_capture_service
+from app.services.tasks.service import task_service
+from app.services.tasks.worker import TaskWorker
+from app.services.tasks.pool_supervisor import TaskPoolSupervisor
+from app.services.tasks.worker_coordinator import worker_coordinator
+from app.services.tasks.workflows import load_workflow
+from app.services.tasks.capture import CaptureCollection, task_capture_service
 from test_reference_workflows import result_snapshot
 
 

@@ -17,12 +17,12 @@ from app.config import settings
 from app.db.session import session_scope
 from app import app_platform
 from app.db.tables import NotificationOutbox, TaskContextRequest, TaskResult
-from app.services.task_capture import CaptureCollection, task_capture_service
-from app.services.task_service import task_service
-from app.services.task_workflows import load_workflow
+from app.services.tasks.capture import CaptureCollection, task_capture_service
+from app.services.tasks.service import task_service
+from app.services.tasks.workflows import load_workflow
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services.task_presentations import task_presentation_service
 from app.jarvis_tasks.task_mcp import _call, _image_result
 from sqlalchemy import select

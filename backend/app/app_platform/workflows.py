@@ -49,7 +49,7 @@ def installed_workflows() -> dict[str, AppWorkflow]:
 
 def workflow_conflicts(slug: str, workflow_ids: list[str]) -> list[str]:
     """Workflow ids this app may not use because the core or another app already does."""
-    from app.services.task_workflows import core_workflow_ids
+    from app.services.tasks.workflows import core_workflow_ids
 
     taken = core_workflow_ids()
     others = {workflow_id for workflow_id, provider in installed_workflows().items() if provider.slug != slug}

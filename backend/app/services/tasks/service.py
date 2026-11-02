@@ -2,23 +2,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import re
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.services.admission_timing import timed
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import (
-    ResourceLease,
     Task,
     TaskArtifact,
     TaskAttempt,
@@ -33,42 +31,37 @@ from app.db.tables import (
     TaskQuestion,
     TaskResult,
     TaskTarget,
-    TaskSupervisorLease,
     TaskTurn,
     WorkflowRun,
     JarvisDevice,
     JarvisLiveEvent,
     LiveSession,
-    WorkerInstance,
 )
-from app.services.task_update_policy import (
+from app.services.tasks.update_policy import (
     CRITICAL_ONLY,
     SILENT,
     normalize_task_update_policy,
 )
-from app.services.task_workflows import current_definition, resolve_workflow_config, validate_pinned_workflow, workflow_enabled
+from app.services.tasks.workflows import current_definition, resolve_workflow_config, validate_pinned_workflow, workflow_enabled
 from app.services.task_result_types import DOCUMENT_OUTPUT, collection_output, validate_result
-from app.services.task_capture import CaptureCollection
+from app.services.tasks.capture import CaptureCollection
 from app.services.orchestration_authority import DecisionAuthority, begin_action
-from app.services.task_execution_preferences import normalize_agent_preferences
+from app.services.tasks.execution_preferences import normalize_agent_preferences
 from app.services.task_results import current_record, write_result
 from app.services.task_result_contract import resolve_result_request, publication_profile
-from app.services.task_statuses import ACTIVE_TASK_STATUSES
+from app.services.tasks import lifecycle
+from app.services.tasks.lifecycle import WorkerHealth
+from app.services.tasks.vocabulary import (
+    ACTIVE_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    WAITING_TO_RUN_STATUSES,
+    ControlAction,
+    ControlState,
+    RunStatus,
+    TaskStatus,
+)
 
 
-TERMINAL_TASK_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
-RETRYABLE_TASK_STATUSES = {"failed", "interrupted", "cancelled"}
-RUN_TERMINAL_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
-CONTROL_ACTIONS = {
-    "set_importance",
-    "yield",
-    "suspend",
-    "resume",
-    "cancel",
-    "restart_execution",
-    "retry",
-    "restart_from_beginning",
-}
 GENERIC_REMINDER_TEXT = "This is your reminder."
 
 
@@ -88,9 +81,9 @@ def execution_attempt_outcome(detail, run_id: str, attempt_id: str) -> str | Non
     if attempt.terminal_reason == "waiting_for_input" and any(
             question.asked_attempt_id == attempt_id and question.asking_run_id == run_id for question in detail.questions):
         return "waiting_for_input"
-    if attempt.terminal_reason == "completed" and run.status == "completed" and run.result_reference:
+    if attempt.terminal_reason == TaskStatus.completed and run.status == RunStatus.completed and run.result_reference:
         return "completed"
-    if attempt.terminal_reason == "failed" and run.status == "failed":
+    if attempt.terminal_reason == TaskStatus.failed and run.status == RunStatus.failed:
         return "failed"
     return None
 
@@ -128,13 +121,6 @@ class TaskControlSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkerHealth:
-    status: str
-    worker_id: str | None
-    heartbeat_at: datetime | None
-
-
-@dataclass(frozen=True, slots=True)
 class TaskDetailSnapshot:
     task: Task
     queue_position: int | None
@@ -157,7 +143,7 @@ class TaskService:
         # Audit-only update may arrive while a committed MCP terminal response drains.
         # It never reopens authority or changes a task/result/operation outcome.
         async with session_scope() as session:
-            await self._lock_task(session, task_id)
+            await lifecycle.lock_task(session, task_id)
             attempt = await session.get(TaskAttempt, attempt_id)
             if (attempt is None or attempt.task_id != task_id or attempt.execution_run_id != execution_run_id
                     or attempt.claim_token != claim_token):
@@ -191,7 +177,7 @@ class TaskService:
                     select(Task)
                     .where(Task.origin_surface == "jarvis_reminder")
                     .where(Task.origin_conversation_id == origin_conversation_id)
-                    .where(Task.status == "waiting_until")
+                    .where(Task.status == TaskStatus.waiting_until)
                     .where(Task.resume_at == due)
                     .order_by(Task.creation_order.asc())
                 )).scalars().all())
@@ -210,7 +196,7 @@ class TaskService:
                 importance="high",
                 presentation_policy=CRITICAL_ONLY,
             )
-            task = await self._lock_task(session, task.id)
+            task = await lifecycle.lock_task(session, task.id)
             attempt = await self._ensure_attempt(session, task)
             await repo.append_event(
                 task_id=task.id,
@@ -219,14 +205,9 @@ class TaskService:
                 payload_json={"goal": task.goal, "status": "queued"},
                 idempotency_key=f"task.dispatch:{idempotency_key}",
             )
-            if task.status == "queued":
-                task.status = "waiting_until"
-                run = await self._current_run(session, task)
-                if run is not None:
-                    run.status = "waiting_until"
-                task.waiting_until = due
-                task.resume_at = due
-                task.wait_reason = "reminder"
+            if task.status == TaskStatus.queued:
+                now = utc_now()
+                lifecycle.wait_until(task, await lifecycle.current_run(session, task), due=due, reason="reminder", now=now)
                 task.scheduled_delivery_json = {
                     "kind": "reminder",
                     "text": normalized,
@@ -240,7 +221,7 @@ class TaskService:
                     payload_json={"status": "waiting_until", "resume_at": due.isoformat(), "reason": "reminder"},
                     idempotency_key=f"task.waiting:{idempotency_key}",
                 )
-                await self._end_current_attempt(session, task, reason="waiting_until")
+                await lifecycle.end_current_attempt(session, task, reason="waiting_until", now=now)
             await session.flush()
             return TaskSnapshot(task=task, queue_position=None)
 
@@ -262,23 +243,19 @@ class TaskService:
         normalized_reason = " ".join(reason.split()).strip() or "scheduled wait"
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
             event_key = f"task.wait-until:{task_id}:{idempotency_key}"
             if await self._event_by_key(session, event_key) is None:
-                if task.status not in {"queued", "waiting_for_worker", "running"}:
+                if task.status not in WAITING_TO_RUN_STATUSES | {TaskStatus.running}:
                     raise ValueError(f"Task in {task.status} cannot wait until a scheduled time")
-                task.status = "waiting_until"
-                run = await self._current_run(session, task)
-                if run is not None:
-                    run.status = "waiting_until"
-                task.waiting_until = due
-                task.resume_at = due
-                task.wait_reason = normalized_reason
-                task.updated_at = utc_now()
+                now = utc_now()
+                lifecycle.wait_until(
+                    task, await lifecycle.current_run(session, task), due=due, reason=normalized_reason, now=now,
+                )
                 await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
@@ -290,7 +267,7 @@ class TaskService:
                     },
                     idempotency_key=event_key,
                 )
-                await self._end_current_attempt(session, task, reason="waiting_until")
+                await lifecycle.end_current_attempt(session, task, reason="waiting_until", now=now)
             await session.flush()
             return TaskSnapshot(task=task, queue_position=None)
 
@@ -354,10 +331,11 @@ class TaskService:
                 importance=importance,
                 presentation_policy=normalized_policy,
             )
-            task = await self._lock_task(session, task.id)
+            task = await lifecycle.lock_task(session, task.id)
             prior_dispatch = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == f"task.dispatch:{idempotency_key}"))).scalar_one_or_none()
-            if prior_dispatch and (prior_dispatch.payload_json.get("notification_input") != preference
-                    or prior_dispatch.payload_json.get("presentation_policy", CRITICAL_ONLY) != normalized_policy):
+            prior_payload = (prior_dispatch.payload_json or {}) if prior_dispatch else {}
+            if prior_dispatch and (prior_payload.get("notification_input") != preference
+                    or prior_payload.get("presentation_policy", CRITICAL_ONLY) != normalized_policy):
                 raise ValueError("Admission replay conflicts with notification preference arguments")
             await save(session,task,preference,key=f"task.dispatch:{idempotency_key}:notification",authority=notification_authority)
             if receipt is not None:
@@ -410,12 +388,7 @@ class TaskService:
                 payload_json={"goal": task.goal, "status": task.status,"notification_input":preference,"presentation_policy":normalized_policy},
                 idempotency_key=f"task.dispatch:{idempotency_key}",
             )
-            await self._assign_worker_eligibility(
-                session,
-                task,
-                repo=repo,
-                idempotency_key=f"task.waiting-for-worker:{task.id}",
-            )
+            await lifecycle.assign_worker_eligibility(session, task, idempotency_key=f"task.waiting-for-worker:{task.id}")
             await session.refresh(task)
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
 
@@ -484,9 +457,7 @@ class TaskService:
             session.add(request)
             await session.flush()
             if task.current_run_id == run.id:
-                task.status = "waiting_for_input"
-                task.status_reason = "context_upload_pending"
-                run.status = "waiting_for_input"
+                lifecycle.wait_for_input(task, run, now=utc_now(), reason="context_upload_pending")
             session.add(JarvisLiveEvent(
                 event_type="context.requested", source_domain="task",
                 source_id=task.id, target_device_id=capture_binding.device_id,
@@ -516,7 +487,7 @@ class TaskService:
         if not normalized:
             raise ValueError("Task turn content cannot be empty")
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             if decision_authority is not None and idempotency_key != decision_authority.idempotency_key:
                 raise ValueError("Background idempotency identity is backend-owned")
             receipt = await begin_action(session, decision_authority, action="continue", task_id=task_id, arguments={
@@ -526,7 +497,7 @@ class TaskService:
             existing = (await session.execute(select(TaskTurn).where(
                 TaskTurn.task_id == task_id, TaskTurn.request_identity == idempotency_key,
             ).limit(1))).scalar_one_or_none()
-            previous = await session.get(TaskExecutionRun, existing.execution_run_id) if existing else await self._current_run(session, task)
+            previous = await session.get(TaskExecutionRun, existing.execution_run_id) if existing else await lifecycle.current_run(session, task)
             kind = (execution_kind or (previous.execution_kind if existing and previous else task.execution_kind)).strip().casefold()
             if kind not in {"agent", "workflow"}:
                 raise ValueError("Task execution kind must be agent or workflow")
@@ -536,9 +507,12 @@ class TaskService:
                 inherited.pop("resolved_tools", None)
                 execution_config = normalize_agent_preferences(execution_config, inherited=inherited)
             if kind == "workflow":
+                if previous is None:
+                    raise ValueError("Task has no execution run to continue")
+                previous_config = dict(previous.configuration_json or {})
                 if not self.workflow_fixture_enabled:
                     if execution_config:
-                        execution_config = resolve_workflow_config({"definition": previous.configuration_json["definition"], **execution_config}, inherited=previous.configuration_json)
+                        execution_config = resolve_workflow_config({"definition": previous_config["definition"], **execution_config}, inherited=previous_config)
                     else:
                         previous_config = dict(previous.configuration_json or {}) if previous else {}
                         pinned = validate_pinned_workflow(previous_config)
@@ -567,7 +541,7 @@ class TaskService:
             if result_request is not None:
                 if existing:
                     # Replay compares the original contract, not today's head.
-                    original = (previous.configuration_json or {}).get("result")
+                    original = ((previous.configuration_json if previous else None) or {}).get("result")
                     from app.services.task_result_contract import ResultRequest
                     requested = ResultRequest.model_validate(result_request).model_dump(exclude_none=True)
                     if original is None or requested != {key: value for key, value in original.items()
@@ -577,9 +551,9 @@ class TaskService:
                 else:
                     execution_config["result"] = await resolve_result_request(session, result_request,
                         task_id=task_id, workflow=execution_config.get("workflow"))
-            elif existing and (previous.configuration_json or {}).get("result"):
+            elif existing and previous is not None and (previous.configuration_json or {}).get("result"):
                 # Replaying an implicit request reuses the intent resolved at admission.
-                execution_config["result"] = previous.configuration_json["result"]
+                execution_config["result"] = (previous.configuration_json or {})["result"]
             fingerprint = _fingerprint(
                 {"content": normalized, "execution_kind": kind, "configuration": execution_config or {},
                  **({"screen_context": capture_binding.manifest()} if capture_binding else {})}
@@ -621,7 +595,7 @@ class TaskService:
                 task_id=task_id,
                 ordinal=next_ordinal,
                 input_turn_id=turn.id,
-                status="queued" if activate else "pending",
+                status=RunStatus.queued if activate else RunStatus.pending,
                 execution_kind=kind,
                 configuration_json=execution_config or {},
                 workspace_generation=task.workspace_generation,
@@ -631,19 +605,7 @@ class TaskService:
             await session.flush()
             turn.execution_run_id = run.id
             if activate:
-                now = utc_now()
-                task.current_run_id = run.id
-                task.execution_kind = kind
-                task.goal = normalized
-                task.goal_revision += 1
-                task.status = "queued"
-                task.status_reason = None
-                task.terminal_summary = None
-                task.finished_at = None
-                task.cancellation_requested_at = None
-                task.queue_entered_at = now
-                task.updated_at = now
-                attempt = await self._create_attempt(session, task, execution_run=run)
+                attempt = await lifecycle.activate_run(session, task, run, goal=normalized, now=utc_now())
                 await TaskRepository(session).append_event(
                     task_id=task.id,
                     attempt_id=attempt.id,
@@ -658,12 +620,7 @@ class TaskService:
                 )
                 if capture_binding:
                     await self._bind_required_capture(session, task, run, attempt, capture_binding, normalized)
-                await self._assign_worker_eligibility(
-                    session,
-                    task,
-                    repo=TaskRepository(session),
-                    idempotency_key=f"task.turn-waiting:{run.id}",
-                )
+                await lifecycle.assign_worker_eligibility(session, task, idempotency_key=f"task.turn-waiting:{run.id}")
             else:
                 if capture_binding:
                     await self._bind_required_capture(session, task, run, None, capture_binding, normalized)
@@ -674,14 +631,14 @@ class TaskService:
                     payload_json={"turn_id": turn.id, "run_id": run.id, "ordinal": run.ordinal},
                     idempotency_key=f"task.turn:{task.id}:{idempotency_key}",
                 )
-                if receipt is not None:
+                if receipt is not None and decision_authority is not None:
                     from app.db.tables import OrchestrationDecision
                     from app.services.orchestration_attention import retain_attention
                     decision = await session.get(OrchestrationDecision, decision_authority.decision_id)
                     retained = await retain_attention(session, decision, idempotency_key)
-                    receipt.outcome_json = {**receipt.outcome_json, "retained": retained}
+                    receipt.outcome_json = {**(receipt.outcome_json or {}), "retained": retained}
             if receipt is not None:
-                receipt.outcome_json = {**receipt.outcome_json, "run_id": run.id,
+                receipt.outcome_json = {**(receipt.outcome_json or {}), "run_id": run.id,
                                         "execution_preferences": run.configuration_json}
             await session.flush()
             return TaskTurnAdmission(
@@ -705,12 +662,13 @@ class TaskService:
         expected_control_revision: int | None = None,
         decision_authority: DecisionAuthority | None = None,
     ) -> TaskControlSnapshot:
-        normalized_action = action.strip().casefold()
-        if normalized_action not in CONTROL_ACTIONS:
-            raise ValueError(f"Unsupported task control action: {action}")
+        try:
+            normalized_action = ControlAction(action.strip().casefold())
+        except ValueError:
+            raise ValueError(f"Unsupported task control action: {action}") from None
         values = dict(parameters or {})
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             if decision_authority is not None and idempotency_key != decision_authority.idempotency_key:
                 raise ValueError("Background idempotency identity is backend-owned")
             await begin_action(session, decision_authority, action="control", task_id=task_id, arguments={
@@ -749,129 +707,7 @@ class TaskService:
             session.add(command)
             task.control_revision += 1
             now = utc_now()
-            run = await self._current_run(session, task)
-
-            if normalized_action == "set_importance":
-                importance = str(values.get("importance") or "").casefold()
-                if importance not in {"low", "normal", "high"}:
-                    raise ValueError("Task importance must be low, normal, or high")
-                task.importance = importance
-                if task.status in {"queued", "waiting_for_worker"}:
-                    task.queue_entered_at = now
-                    if run is not None:
-                        run.queue_entered_at = now
-                command.state = "confirmed"
-                command.confirmed_at = now
-            elif normalized_action == "resume":
-                if task.status != "paused" or run is None:
-                    raise ValueError(f"Task in {task.status} cannot be resumed")
-                previous = await self._current_attempt(session, task)
-                attempt = await self._create_attempt(
-                    session,
-                    task,
-                    execution_run=run,
-                    parent_attempt=previous,
-                    resume_reason="resume",
-                    checkpoint=dict(previous.checkpoint_json or {}) if previous is not None else None,
-                )
-                task.status = "queued"
-                task.queue_entered_at = now
-                task.finished_at = None
-                run.status = "queued"
-                run.queue_entered_at = now
-                run.finished_at = None
-                command.attempt_id = attempt.id
-                command.state = "confirmed"
-                command.confirmed_at = now
-            elif normalized_action in {"retry", "restart_execution", "restart_from_beginning"} and task.status != "running":
-                if normalized_action == "retry" and task.status not in RETRYABLE_TASK_STATUSES:
-                    raise ValueError(f"Task in {task.status} cannot be retried")
-                if run is None:
-                    raise ValueError("Task has no current execution run")
-                previous = await self._current_attempt(session, task)
-                if normalized_action == "restart_from_beginning":
-                    task.workspace_generation += 1
-                    run.workspace_generation = task.workspace_generation
-                    checkpoint = None
-                else:
-                    checkpoint = dict(previous.checkpoint_json or {}) if previous is not None else None
-                attempt = await self._create_attempt(
-                    session,
-                    task,
-                    execution_run=run,
-                    parent_attempt=previous,
-                    resume_reason=normalized_action,
-                    checkpoint=checkpoint,
-                )
-                if (
-                    normalized_action == "retry"
-                    and previous is not None
-                    and previous.terminal_reason == "resource_changed"
-                    and bool(values.get("accept_resource_changes"))
-                ):
-                    if not reason:
-                        raise ValueError("A reason is required to accept changed shared resources")
-                    attempt.recovery_metadata_json = {"accept_resource_changes": True}
-                task.status = "queued"
-                task.queue_entered_at = now
-                task.terminal_summary = None
-                task.finished_at = None
-                task.cancellation_requested_at = None
-                run.status = "queued"
-                run.queue_entered_at = now
-                run.finished_at = None
-                command.attempt_id = attempt.id
-                command.state = "confirmed"
-                command.confirmed_at = now
-            elif normalized_action == "yield" and task.status in {"queued", "waiting_for_worker"}:
-                task.queue_entered_at = now
-                if run is not None:
-                    run.queue_entered_at = now
-                command.state = "confirmed"
-                command.confirmed_at = now
-            elif normalized_action == "suspend" and task.status in {
-                "queued", "waiting_for_worker", "waiting_for_input", "waiting_until"
-            }:
-                task.status = "paused"
-                task.status_reason = reason or "Task suspended."
-                if run is not None:
-                    run.status = "paused"
-                command.state = "confirmed"
-                command.confirmed_at = now
-                await self._end_current_attempt(session, task, reason="suspended")
-            elif normalized_action == "cancel" and task.status != "running":
-                if task.status in TERMINAL_TASK_STATUSES:
-                    raise ValueError(f"Task in {task.status} cannot be cancelled")
-                task.status = "cancelled"
-                task.cancellation_requested_at = now
-                task.finished_at = now
-                task.terminal_summary = "Task cancelled by user."
-                if run is not None:
-                    run.status = "cancelled"
-                    run.finished_at = now
-                    run.terminal_summary = task.terminal_summary
-                command.state = "confirmed"
-                command.confirmed_at = now
-                await self._end_current_attempt(session, task, reason="cancelled")
-            elif task.status == "running" and normalized_action in {
-                "yield", "suspend", "cancel", "restart_execution", "restart_from_beginning"
-            }:
-                immediate = bool(values.get("immediate", normalized_action in {
-                    "cancel", "restart_execution", "restart_from_beginning"
-                }))
-                command.state = "stop_requested" if immediate else "requested"
-                task.pending_control_id = command.id
-                task.status_reason = f"{normalized_action} requested"
-                if normalized_action == "cancel":
-                    task.cancellation_requested_at = now
-                if immediate:
-                    attempt = await self._current_attempt(session, task)
-                    if attempt is not None:
-                        attempt.claim_token = str(uuid4())
-            else:
-                raise ValueError(f"Task in {task.status} cannot apply {normalized_action}")
-
-            task.updated_at = now
+            await lifecycle.apply_control(session, task, command, parameters=values, reason=reason, now=now)
             await TaskRepository(session).append_event(
                 task_id=task.id,
                 attempt_id=task.current_attempt_id,
@@ -885,20 +721,11 @@ class TaskService:
                 },
                 idempotency_key=f"task.control:{task.id}:{idempotency_key}",
             )
-            if normalized_action == "cancel" and task.status == "cancelled" and run is not None:
-                await TaskRepository(session).append_event(
-                    task_id=task.id,
-                    attempt_id=task.current_attempt_id,
-                    execution_run_id=run.id,
-                    event_type="task.cancelled",
-                    payload_json={"status": "cancelled", "summary": task.terminal_summary},
-                    idempotency_key=f"task.cancelled:{task.id}:{run.id}",
-                )
-            await self._assign_worker_eligibility(
-                session,
-                task,
-                repo=TaskRepository(session),
-                idempotency_key=f"task.control-waiting:{command.id}",
+            run = await lifecycle.current_run(session, task)
+            if command.action == ControlAction.cancel and task.status == TaskStatus.cancelled and run is not None:
+                await lifecycle.record_cancelled(session, task, run, attempt_id=task.current_attempt_id)
+            await lifecycle.assign_worker_eligibility(
+                session, task, idempotency_key=f"task.control-waiting:{command.id}",
             )
             await session.flush()
             return TaskControlSnapshot(
@@ -923,7 +750,7 @@ class TaskService:
     ) -> None:
         """Escalate a cooperative stop at a safe runtime boundary to supervisor stop."""
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             command = await session.get(TaskControlCommand, command_id)
             if (
                 command is None
@@ -931,14 +758,14 @@ class TaskService:
                 or command.attempt_id != attempt_id
             ):
                 raise ValueError("Task control no longer targets this attempt")
-            if command.state == "stop_requested":
+            if command.state == ControlState.stop_requested:
                 return
-            if command.state != "requested":
+            if command.state != ControlState.requested:
                 raise ValueError("Task control is not awaiting a runtime boundary")
             attempt = await session.get(TaskAttempt, attempt_id)
             if attempt is None or attempt.ended_at is not None:
                 raise ValueError("Task attempt is not active")
-            command.state = "stop_requested"
+            command.state = ControlState.stop_requested
             attempt.claim_token = str(uuid4())
             await TaskRepository(session).append_event(
                 task_id=task_id,
@@ -958,93 +785,18 @@ class TaskService:
         stop_evidence: dict[str, Any],
     ) -> TaskControlSnapshot:
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             command = await session.get(TaskControlCommand, command_id)
             if command is None or command.task_id != task_id:
                 raise ValueError("Task control command not found")
-            if command.state == "confirmed":
+            if command.state == ControlState.confirmed:
                 return TaskControlSnapshot(task, command, await self._queue_position(session, task))
             if task.pending_control_id != command.id or command.attempt_id != stopped_attempt_id:
                 raise ValueError("Task control no longer targets the active attempt")
             attempt = await session.get(TaskAttempt, stopped_attempt_id)
             if attempt is None:
                 raise ValueError("Task attempt not found")
-            now = utc_now()
-            attempt.ended_at = now
-            attempt.terminal_reason = f"control:{command.action}"
-            attempt.recovery_metadata_json = {
-                **dict(attempt.recovery_metadata_json or {}),
-                "stop_evidence": dict(stop_evidence),
-            }
-            await session.execute(
-                delete(ResourceLease).where(ResourceLease.owner_attempt_id == stopped_attempt_id)
-            )
-            run = await self._current_run(session, task)
-            if run is None:
-                raise ValueError("Task has no current execution run")
-            checkpoint = dict(attempt.checkpoint_json or {})
-            if command.action == "yield":
-                next_attempt = await self._create_attempt(
-                    session, task, execution_run=run, parent_attempt=attempt,
-                    resume_reason="yield", checkpoint=checkpoint,
-                )
-                task.status = "queued"
-                task.queue_entered_at = now
-                run.status = "queued"
-                run.queue_entered_at = now
-                command.detail = f"requeued as attempt {next_attempt.attempt_number}"
-            elif command.action == "suspend":
-                task.status = "paused"
-                run.status = "paused"
-                command.detail = "writers stopped; task paused"
-            elif command.action == "cancel":
-                task.status = "cancelled"
-                task.finished_at = now
-                task.terminal_summary = "Task cancelled by user."
-                run.status = "cancelled"
-                run.finished_at = now
-                run.terminal_summary = task.terminal_summary
-            elif command.action in {"restart_execution", "restart_from_beginning"}:
-                if command.action == "restart_from_beginning":
-                    task.workspace_generation += 1
-                    run.workspace_generation = task.workspace_generation
-                    checkpoint = {}
-                next_attempt = await self._create_attempt(
-                    session, task, execution_run=run, parent_attempt=attempt,
-                    resume_reason=command.action, checkpoint=checkpoint,
-                )
-                task.status = "queued"
-                task.queue_entered_at = now
-                run.status = "queued"
-                run.queue_entered_at = now
-                command.detail = f"restarted as attempt {next_attempt.attempt_number}"
-            else:
-                raise ValueError(f"Control {command.action} does not require stop confirmation")
-            task.pending_control_id = None
-            task.status_reason = None
-            command.state = "confirmed"
-            command.confirmed_at = now
-            await TaskRepository(session).append_event(
-                task_id=task.id,
-                attempt_id=stopped_attempt_id,
-                event_type="task.control.confirmed",
-                payload_json={
-                    "command_id": command.id,
-                    "action": command.action,
-                    "state": "confirmed",
-                    "stop_evidence": dict(stop_evidence),
-                },
-                idempotency_key=f"task.control.confirmed:{command.id}",
-            )
-            if command.action == "cancel":
-                await TaskRepository(session).append_event(
-                    task_id=task.id,
-                    attempt_id=stopped_attempt_id,
-                    execution_run_id=run.id,
-                    event_type="task.cancelled",
-                    payload_json={"status": "cancelled", "summary": task.terminal_summary},
-                    idempotency_key=f"task.cancelled:{task.id}:{run.id}",
-                )
+            await lifecycle.confirm_stop(session, task, command, attempt, evidence=stop_evidence, now=utc_now())
             await session.flush()
             return TaskControlSnapshot(task, command, await self._queue_position(session, task))
 
@@ -1059,11 +811,12 @@ class TaskService:
                 raise ValueError("Decision action key must be backend-derived")
             receipt = await begin_action(session, decision_authority, action="set_update_policy",
                                          arguments={"policy": normalized_policy,"notification":preference}, task_id=task_id)
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             event_key = idempotency_key or f"task.update-policy:{task.id}:{normalized_policy}:{uuid4()}"
             existing = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == event_key))).scalar_one_or_none()
             if existing:
-                if existing.task_id != task_id or existing.payload_json.get("presentation_policy") != normalized_policy or existing.payload_json.get("notification_input") != preference:
+                existing_payload = existing.payload_json or {}
+                if existing.task_id != task_id or existing_payload.get("presentation_policy") != normalized_policy or existing_payload.get("notification_input") != preference:
                     raise ValueError("Update-policy operation key conflicts with changed arguments")
                 await save(session,task,preference,key=event_key+":notification",authority=notification_authority)
                 return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
@@ -1085,12 +838,12 @@ class TaskService:
                 payload_json={"presentation_policy": normalized_policy,"notification_input":supplied_preference},
                 idempotency_key=event_key,
             )
-            if receipt:
+            if receipt and decision_authority is not None:
                 from app.db.tables import OrchestrationDecision
                 from app.services.orchestration_attention import retain_attention
                 decision = await session.get(OrchestrationDecision, decision_authority.decision_id)
                 retained = await retain_attention(session, decision, event_key)
-                receipt.outcome_json = {**receipt.outcome_json, "presentation_policy": normalized_policy, "retained": retained}
+                receipt.outcome_json = {**(receipt.outcome_json or {}), "presentation_policy": normalized_policy, "retained": retained}
             await session.flush()
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
 
@@ -1179,7 +932,7 @@ class TaskService:
                 artifacts=artifacts,
                 targets=targets,
                 presentations=presentations,
-                worker_health=await self._worker_health(session),
+                worker_health=await lifecycle.worker_health(session),
             )
 
     async def replay_events(self, *, after_sequence: int = 0, limit: int = 250) -> tuple[int, list[TaskEvent]]:
@@ -1220,8 +973,8 @@ class TaskService:
         native_item_id: str | None = None,
     ) -> TaskEvent:
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
@@ -1244,7 +997,7 @@ class TaskService:
         from app.services.native_worker import observation_payload
         payload = observation_payload(payload)
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             attempt = await session.get(TaskAttempt, attempt_id)
             if (attempt is None or attempt.task_id != task_id or attempt.execution_run_id != execution_run_id
                     or attempt.claim_token != claim_token):
@@ -1263,12 +1016,12 @@ class TaskService:
         claim_token: str | None = None,
     ) -> None:
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
-            attempt = await self._current_attempt(session, task)
+            attempt = await lifecycle.current_attempt(session, task)
             if attempt is None or attempt.ended_at is not None:
                 raise ValueError("Task has no active attempt")
             attempt.checkpoint_json = checkpoint
@@ -1281,7 +1034,7 @@ class TaskService:
             task = await TaskRepository(session).get_task(task_id)
             return bool(
                 task is not None
-                and task.status == "running"
+                and task.status == TaskStatus.running
                 and (
                     task.cancellation_requested_at is not None
                     or task.pending_control_id is not None
@@ -1290,7 +1043,7 @@ class TaskService:
 
     async def worker_health(self) -> WorkerHealth:
         async with session_scope() as session:
-            return await self._worker_health(session)
+            return await lifecycle.worker_health(session)
 
     async def repair_invalid_reminder_tasks(self) -> int:
         """Quarantine reminder-like work incorrectly sent to the worker queue."""
@@ -1313,11 +1066,11 @@ class TaskService:
                 )
                 if reminder is None or timing is None:
                     continue
-                task.status = "failed"
-                task.status_reason = "Reminder request was routed to background work and was not scheduled."
-                task.terminal_summary = task.status_reason
-                task.finished_at = now
-                task.updated_at = now
+                reason = "Reminder request was routed to background work and was not scheduled."
+                lifecycle.finish(
+                    task, await lifecycle.current_run(session, task), TaskStatus.failed,
+                    summary=reason, reason=reason, now=now,
+                )
                 await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
@@ -1329,7 +1082,7 @@ class TaskService:
                     },
                     idempotency_key=f"task.repair-misrouted-reminder:{task.id}",
                 )
-                await self._end_current_attempt(session, task, reason="misrouted_reminder")
+                await lifecycle.end_current_attempt(session, task, reason="misrouted_reminder", now=now)
                 repaired += 1
         return repaired
 
@@ -1366,7 +1119,7 @@ class TaskService:
             raise ValueError("Task question cannot be empty")
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             event_key = f"task.question:{task_id}:{idempotency_key}"
             existing = await self._event_by_key(session, event_key)
             if existing is not None:
@@ -1382,11 +1135,11 @@ class TaskService:
                                 or saved.asked_attempt_id != attempt_id or saved.asking_run_id != execution_run_id):
                             raise ValueError("Question replay lacks original authority")
                     return saved
-            await self._assert_fence(
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
-            if task.status not in {"queued", "waiting_for_worker", "running"}:
+            if task.status not in WAITING_TO_RUN_STATUSES | {TaskStatus.running}:
                 raise ValueError(f"Task in {task.status} cannot ask a question")
             question_row = TaskQuestion(
                 id=str(uuid4()),
@@ -1408,12 +1161,9 @@ class TaskService:
                 idempotency_key=event_key,
             )
             question_row.source_task_event_id = event.id
-            task.status = "waiting_for_input"
-            task.updated_at = utc_now()
-            run = await self._current_run(session, task)
-            if run is not None:
-                run.status = "waiting_for_input"
-            await self._end_current_attempt(session, task, reason="waiting_for_input")
+            now = utc_now()
+            lifecycle.wait_for_input(task, await lifecycle.current_run(session, task), now=now)
+            await lifecycle.end_current_attempt(session, task, reason="waiting_for_input", now=now)
             await session.flush()
             saved_question = question_row
         return saved_question
@@ -1432,7 +1182,7 @@ class TaskService:
             raise ValueError("Task answer cannot be empty")
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             if decision_authority is not None and idempotency_key != decision_authority.idempotency_key:
                 raise ValueError("Background idempotency identity is backend-owned")
             await begin_action(session, decision_authority, action="answer", task_id=task_id, arguments={
@@ -1449,9 +1199,14 @@ class TaskService:
                     raise ValueError("Permission answer must be approve or deny")
                 if question.state != "asked" or question.answered_at is not None:
                     raise ValueError("Task question has already been answered")
-                if task.status != "waiting_for_input":
+                if task.status != TaskStatus.waiting_for_input:
                     raise ValueError(f"Task in {task.status} is not waiting for input")
-                attempt = await self._create_attempt(session, task)
+                run = await self._current_or_initial_run(session, task)
+                previous = await lifecycle.current_attempt(session, task)
+                attempt = await lifecycle.create_attempt(
+                    session, task, run, parent=previous, resume_reason="question_answered",
+                    checkpoint=lifecycle.inherited_checkpoint(previous),
+                )
                 now = utc_now()
                 question.answer = normalized
                 question.state = "answered"
@@ -1459,14 +1214,7 @@ class TaskService:
                 question.answered_attempt_id = attempt.id
                 task.control_revision += 1
                 question.resolution_revision = task.control_revision
-                task.status = "queued"
-                task.queue_entered_at = now
-                task.current_attempt_id = attempt.id
-                task.updated_at = now
-                run = await self._current_run(session, task)
-                if run is not None:
-                    run.status = "queued"
-                    run.queue_entered_at = now
+                lifecycle.requeue(task, run, now=now)
                 next_sequence = int((await session.execute(
                     select(func.max(TaskTurn.sequence)).where(TaskTurn.task_id == task.id)
                 )).scalar_one_or_none() or 0) + 1
@@ -1493,12 +1241,7 @@ class TaskService:
                     },
                     idempotency_key=event_key,
                 )
-                await self._assign_worker_eligibility(
-                    session,
-                    task,
-                    repo=repo,
-                    idempotency_key=f"task.answer-waiting-for-worker:{event_key}",
-                )
+                await lifecycle.assign_worker_eligibility(session, task, idempotency_key=f"task.answer-waiting-for-worker:{event_key}")
             await session.flush()
             return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
 
@@ -1517,32 +1260,29 @@ class TaskService:
             raise ValueError("Task progress cannot be empty")
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
             event_key = f"task.progress:{task_id}:{idempotency_key}"
             if await self._event_by_key(session, event_key) is not None:
                 return TaskSnapshot(task=task, queue_position=await self._queue_position(session, task))
-            if task.status not in {"queued", "running"}:
+            if task.status not in {TaskStatus.queued, TaskStatus.running}:
                 raise ValueError(f"Task in {task.status} cannot publish progress")
-            task.status = "running"
-            task.status_reason = None
-            task.updated_at = utc_now()
-            attempt = await self._current_attempt(session, task)
-            if attempt is not None and attempt.started_at is None:
-                attempt.started_at = utc_now()
+            now = utc_now()
+            run = await lifecycle.current_run(session, task)
+            if run is None:
+                raise ValueError("Task has no current execution run")
+            lifecycle.start(task, run, now=now)
+            attempt = await lifecycle.current_attempt(session, task)
             if attempt is not None:
-                attempt.last_progress_at = utc_now()
+                attempt.started_at = attempt.started_at or now
+                attempt.last_progress_at = now
                 recovery = dict(attempt.recovery_metadata_json or {})
                 if recovery.get("consecutive_crashes"):
                     recovery["consecutive_crashes"] = 0
                     attempt.recovery_metadata_json = recovery
-            run = await self._current_run(session, task)
-            if run is not None:
-                run.status = "running"
-                run.started_at = run.started_at or utc_now()
             await repo.append_event(
                 task_id=task.id,
                 attempt_id=task.current_attempt_id,
@@ -1572,21 +1312,16 @@ class TaskService:
                 return TaskSnapshot(confirmed.task, confirmed.queue_position)
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             event_key = f"task.cancelled:{task_id}:{idempotency_key}"
             if await self._event_by_key(session, event_key) is None:
-                if task.status != "running" or task.cancellation_requested_at is None:
+                if task.status != TaskStatus.running or task.cancellation_requested_at is None:
                     raise ValueError("Task does not have a running cancellation request")
                 now = utc_now()
-                task.status = "cancelled"
-                task.finished_at = now
-                task.updated_at = now
-                task.terminal_summary = "Task cancelled by user."
-                run = await self._current_run(session, task)
-                if run is not None:
-                    run.status = "cancelled"
-                    run.finished_at = now
-                    run.terminal_summary = task.terminal_summary
+                lifecycle.finish(
+                    task, await lifecycle.current_run(session, task), TaskStatus.cancelled,
+                    summary=lifecycle.CANCELLED_SUMMARY, now=now,
+                )
                 await repo.append_event(
                     task_id=task.id,
                     attempt_id=task.current_attempt_id,
@@ -1594,7 +1329,7 @@ class TaskService:
                     payload_json={"status": "cancelled", "summary": task.terminal_summary},
                     idempotency_key=event_key,
                 )
-                await self._end_current_attempt(session, task, reason="cancelled")
+                await lifecycle.end_current_attempt(session, task, reason="cancelled", now=now)
             await session.flush()
             snapshot = TaskSnapshot(task=task, queue_position=None)
         return snapshot
@@ -1615,12 +1350,12 @@ class TaskService:
         execution_run_id: str | None = None,
         claim_token: str | None = None,
     ) -> TaskSnapshot:
-        if status not in {"completed", "failed", "interrupted"}:
+        if status not in TERMINAL_TASK_STATUSES - {TaskStatus.cancelled}:
             raise ValueError(f"Invalid terminal task status: {status}")
         normalized = " ".join(summary.split()).strip()
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
+            task = await lifecycle.lock_task(session, task_id)
             producing_run = await session.get(TaskExecutionRun, execution_run_id or task.current_run_id) if (execution_run_id or task.current_run_id) else None
             if (producing_run is not None and producing_run.execution_kind == "agent"
                     and publication_profile(producing_run) is not None
@@ -1662,7 +1397,7 @@ class TaskService:
                 if prior is not None:
                     prior_run = await session.get(TaskExecutionRun, execution_run_id)
                     if (prior_run is None or prior_run.task_id != task_id
-                            or prior_run.status != "completed" or prior.state != "succeeded"
+                            or prior_run.status != RunStatus.completed or prior.state != "succeeded"
                             or prior_run.result_reference != prior.result_reference
                             or prior.attempt_id != attempt_id):
                         raise ValueError("Workflow publication replay is inconsistent")
@@ -1678,12 +1413,14 @@ class TaskService:
                     if prior.input_digest != _fingerprint(publication_input):
                         raise ValueError("Workflow publication operation key conflicts with an earlier result")
                     return TaskSnapshot(task=task, queue_position=None)
-            await self._assert_fence(
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
-            run = await self._current_run(session, task)
+            run = await lifecycle.current_run(session, task)
             pinned = publication_profile(run) if run is not None else None
+            # A validated result implies a publishing profile; this keeps its lookups typed.
+            profile = pinned or {}
             validated_result: dict[str, Any] | None = None
             result_target: TaskResult | None = None
             if status == "completed" and run is not None and run.execution_kind == "agent" and pinned is not None and workflow_result is None:
@@ -1729,14 +1466,8 @@ class TaskService:
                 if task.status not in ACTIVE_TASK_STATUSES:
                     raise ValueError(f"Task in {task.status} cannot complete")
                 now = utc_now()
-                task.status = status
-                task.terminal_summary = normalized or None
-                task.finished_at = now
-                task.updated_at = now
+                lifecycle.finish(task, run, TaskStatus(status), summary=normalized or None, now=now)
                 if run is not None:
-                    run.status = status
-                    run.terminal_summary = normalized or None
-                    run.finished_at = now
                     run.updated_at = now
                 if status == "completed" and (final_text is not None or validated_result is not None):
                     artifact = TaskArtifact(
@@ -1748,7 +1479,7 @@ class TaskService:
                         mime_type="application/json" if validated_result is not None else "text/markdown",
                         title=validated_result["title"] if validated_result is not None else "Task result",
                         content_text=final_text,
-                        content_json={"schema": pinned["output_schema"], "content": validated_result}
+                        content_json={"schema": profile["output_schema"], "content": validated_result}
                         if validated_result is not None else None,
                     )
                     session.add(artifact)
@@ -1768,9 +1499,9 @@ class TaskService:
                     artifact.source_task_event_id = created_event.id
                     if run is not None:
                         run.result_reference = f"task-artifact:{artifact.id}"
-                    if (validated_result is not None and collection_output(pinned["output_schema"]) is not None
+                    if (validated_result is not None and collection_output(profile["output_schema"]) is not None
                             and run is not None):
-                        await write_result(session, task_id=task.id, run_id=run.id, schema=pinned["output_schema"],
+                        await write_result(session, task_id=task.id, run_id=run.id, schema=profile["output_schema"],
                             content=validated_result, target=result_target, expected_revision=workflow_base_revision)
                     if validated_result is not None and run is not None:
                         operation = TaskOperation(
@@ -1780,7 +1511,7 @@ class TaskService:
                             operation_type="task.result.publish@1", state="succeeded",
                             input_digest=_fingerprint(validated_result if workflow_base_revision is None else {
                                 "content": validated_result, "base_revision": workflow_base_revision}),
-                            intent_json={"schema": pinned["output_schema"]},
+                            intent_json={"schema": profile["output_schema"]},
                             result_reference=run.result_reference,
                             result_json={"artifact_id": artifact.id},
                             completed_at=now,
@@ -1809,7 +1540,7 @@ class TaskService:
                     # attention projector subsequently deduplicates by event.
                     from app.services.task_notifications import enqueue_task_notification
                     await enqueue_task_notification(session, task=task, event=terminal_event)
-                await self._end_current_attempt(session, task, reason=status)
+                await lifecycle.end_current_attempt(session, task, reason=status, now=now)
                 if status == "completed" and normalized:
                     next_sequence = int((await session.execute(
                         select(func.max(TaskTurn.sequence)).where(TaskTurn.task_id == task.id)
@@ -1823,7 +1554,7 @@ class TaskService:
                         origin="executor",
                         execution_run_id=task.current_run_id,
                     ))
-                await self._promote_next_run(session, task, repo=repo)
+                await lifecycle.promote_next_run(session, task)
             await session.flush()
             snapshot = TaskSnapshot(task=task, queue_position=None)
         return snapshot
@@ -1845,8 +1576,8 @@ class TaskService:
     ) -> TaskArtifact:
         async with session_scope() as session:
             repo = TaskRepository(session)
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
@@ -1895,8 +1626,8 @@ class TaskService:
         claim_token: str,
     ) -> TaskOperation:
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
@@ -1954,8 +1685,8 @@ class TaskService:
         claim_token: str,
     ) -> None:
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
@@ -1976,8 +1707,8 @@ class TaskService:
         if state not in {"succeeded", "failed", "uncertain"}:
             raise ValueError("Operation state must be succeeded, failed, or uncertain")
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
@@ -2060,8 +1791,8 @@ class TaskService:
         replacement_reason: str | None = None,
     ) -> TaskNativeBinding:
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
@@ -2109,55 +1840,16 @@ class TaskService:
     ) -> None:
         """Link the current attempt to a temporary or durable execution runtime."""
         async with session_scope() as session:
-            task = await self._lock_task(session, task_id)
-            await self._assert_fence(
+            task = await lifecycle.lock_task(session, task_id)
+            await lifecycle.assert_fence(
                 session, task, attempt_id=attempt_id,
                 execution_run_id=execution_run_id, claim_token=claim_token,
             )
-            attempt = await self._current_attempt(session, task)
+            attempt = await lifecycle.current_attempt(session, task)
             if attempt is None:
                 raise ValueError("Task has no current attempt")
             attempt.agent_runtime_reference = runtime_reference
             await session.flush()
-
-    async def _lock_task(self, session: AsyncSession, task_id: str) -> Task:
-        result = await session.execute(
-            update(Task).where(Task.id == task_id).values(status=Task.status)
-        )
-        if result.rowcount != 1:
-            raise ValueError(f"Task not found: {task_id}")
-        task_result = await session.execute(select(Task).where(Task.id == task_id).limit(1))
-        return task_result.scalar_one()
-
-    async def _assert_fence(
-        self,
-        session: AsyncSession,
-        task: Task,
-        *,
-        attempt_id: str | None,
-        execution_run_id: str | None,
-        claim_token: str | None,
-    ) -> None:
-        if attempt_id is None and execution_run_id is None and claim_token is None:
-            return
-        if not attempt_id or not execution_run_id or not claim_token:
-            raise ValueError("Fenced task writes require run, attempt, and claim token")
-        attempt = await session.get(TaskAttempt, attempt_id)
-        if (
-            attempt is None
-            or task.current_run_id != execution_run_id
-            or task.current_attempt_id != attempt_id
-            or attempt.execution_run_id != execution_run_id
-            or attempt.claim_token != claim_token
-            or attempt.ended_at is not None
-        ):
-            raise ValueError("Stale task execution authority")
-        supervisor = await session.get(TaskSupervisorLease, "task-pool")
-        if (
-            supervisor is not None
-            and attempt.supervisor_generation != supervisor.generation
-        ):
-            raise ValueError("Stale task supervisor generation")
 
     async def _ensure_targets(
         self,
@@ -2245,72 +1937,6 @@ class TaskService:
         task.current_run_id = run.id
         return run
 
-    async def _current_run(self, session: AsyncSession, task: Task) -> TaskExecutionRun | None:
-        if task.current_run_id is None:
-            return None
-        return await session.get(TaskExecutionRun, task.current_run_id)
-
-    async def _promote_next_run(
-        self,
-        session: AsyncSession,
-        task: Task,
-        *,
-        repo: TaskRepository,
-    ) -> TaskExecutionRun | None:
-        next_run = (await session.execute(
-            select(TaskExecutionRun)
-            .where(TaskExecutionRun.task_id == task.id, TaskExecutionRun.status == "pending")
-            .order_by(TaskExecutionRun.ordinal.asc())
-            .limit(1)
-        )).scalar_one_or_none()
-        if next_run is None:
-            return None
-        turn = await session.get(TaskTurn, next_run.input_turn_id)
-        if turn is None or not turn.content:
-            raise RuntimeError("Pending task run has no input turn")
-        now = utc_now()
-        task.current_run_id = next_run.id
-        task.execution_kind = next_run.execution_kind
-        task.goal = turn.content
-        task.goal_revision += 1
-        task.status = "queued"
-        task.status_reason = None
-        task.terminal_summary = None
-        task.finished_at = None
-        task.cancellation_requested_at = None
-        task.queue_entered_at = now
-        task.updated_at = now
-        context_request = (await session.execute(select(TaskContextRequest).where(
-            TaskContextRequest.execution_run_id == next_run.id,
-            TaskContextRequest.state != "ready").limit(1))).scalar_one_or_none()
-        if context_request is not None and context_request.state != "ready":
-            task.status = "waiting_for_input"
-            task.status_reason = "context_upload_pending"
-            next_run.status = "waiting_for_input"
-        else:
-            next_run.status = "queued"
-        next_run.queue_entered_at = now
-        attempt = await self._create_attempt(session, task, execution_run=next_run)
-        await repo.append_event(
-            task_id=task.id,
-            attempt_id=attempt.id,
-            event_type="task.run.promoted",
-            payload_json={
-                "run_id": next_run.id,
-                "ordinal": next_run.ordinal,
-                "turn_id": next_run.input_turn_id,
-                "status": next_run.status,
-            },
-            idempotency_key=f"task.run.promoted:{next_run.id}",
-        )
-        await self._assign_worker_eligibility(
-            session,
-            task,
-            repo=repo,
-            idempotency_key=f"task.run.promoted.waiting:{next_run.id}",
-        )
-        return next_run
-
     async def _ensure_attempt(
         self,
         session: AsyncSession,
@@ -2318,13 +1944,7 @@ class TaskService:
         *,
         execution_run: TaskExecutionRun | None = None,
     ) -> TaskAttempt:
-        run = execution_run or await self._current_run(session, task)
-        if run is None:
-            run = await self._ensure_initial_run(
-                session,
-                task,
-                request_identity=task.idempotency_key,
-            )
+        run = execution_run or await self._current_or_initial_run(session, task)
         result = await session.execute(
             select(TaskAttempt)
             .where(TaskAttempt.task_id == task.id, TaskAttempt.execution_run_id == run.id)
@@ -2333,59 +1953,16 @@ class TaskService:
         )
         attempt = result.scalar_one_or_none()
         if attempt is None:
-            attempt = await self._create_attempt(session, task, execution_run=run)
-        if task.current_attempt_id != attempt.id:
-            task.current_attempt_id = attempt.id
-        run.current_attempt_id = attempt.id
-        return attempt
-
-    async def _create_attempt(
-        self,
-        session: AsyncSession,
-        task: Task,
-        *,
-        execution_run: TaskExecutionRun | None = None,
-        parent_attempt: TaskAttempt | None = None,
-        resume_reason: str | None = None,
-        checkpoint: dict | None = None,
-    ) -> TaskAttempt:
-        run = execution_run or await self._current_run(session, task)
-        if run is None:
-            run = await self._ensure_initial_run(
-                session,
-                task,
-                request_identity=task.idempotency_key,
-            )
-        result = await session.execute(
-            select(func.max(TaskAttempt.attempt_number)).where(TaskAttempt.task_id == task.id)
-        )
-        attempt_number = int(result.scalar_one_or_none() or 0) + 1
-        attempt = TaskAttempt(
-            id=str(uuid4()),
-            task_id=task.id,
-            execution_run_id=run.id,
-            attempt_number=attempt_number,
-            parent_attempt_id=parent_attempt.id if parent_attempt is not None else None,
-            resume_reason=resume_reason,
-            checkpoint_json=checkpoint,
-            checkpoint_version=(parent_attempt.checkpoint_version if parent_attempt is not None else 0),
-        )
-        session.add(attempt)
-        await session.flush()
+            attempt = await lifecycle.create_attempt(session, task, run)
         task.current_attempt_id = attempt.id
         run.current_attempt_id = attempt.id
         return attempt
 
-    async def _current_attempt(self, session: AsyncSession, task: Task) -> TaskAttempt | None:
-        if task.current_attempt_id is None:
-            return None
-        return await session.get(TaskAttempt, task.current_attempt_id)
-
-    async def _end_current_attempt(self, session: AsyncSession, task: Task, *, reason: str) -> None:
-        attempt = await self._current_attempt(session, task)
-        if attempt is not None and attempt.ended_at is None:
-            attempt.ended_at = utc_now()
-            attempt.terminal_reason = reason
+    async def _current_or_initial_run(self, session: AsyncSession, task: Task) -> TaskExecutionRun:
+        run = await lifecycle.current_run(session, task)
+        if run is None:
+            run = await self._ensure_initial_run(session, task, request_identity=task.idempotency_key)
+        return run
 
     async def _event_by_key(self, session: AsyncSession, idempotency_key: str) -> TaskEvent | None:
         result = await session.execute(
@@ -2394,11 +1971,11 @@ class TaskService:
         return result.scalar_one_or_none()
 
     async def _queue_position(self, session: AsyncSession, task: Task) -> int | None:
-        if task.status != "queued":
+        if task.status != TaskStatus.queued:
             return None
         priority = {"high": 0, "normal": 1, "low": 2}
         queued = list((await session.execute(
-            select(Task).where(Task.status == "queued")
+            select(Task).where(Task.status == TaskStatus.queued)
         )).scalars().all())
         queued.sort(
             key=lambda item: (
@@ -2410,58 +1987,6 @@ class TaskService:
         )
         return next((index for index, item in enumerate(queued, start=1) if item.id == task.id), None)
 
-    async def _worker_health(
-        self,
-        session: AsyncSession,
-        *,
-        now: datetime | None = None,
-    ) -> WorkerHealth:
-        result = await session.execute(
-            select(WorkerInstance)
-            .where(
-                WorkerInstance.stopped_at.is_(None),
-                WorkerInstance.state.in_(["starting", "idle", "busy"]),
-            )
-            .order_by(WorkerInstance.heartbeat_at.desc())
-            .limit(1)
-        )
-        worker = result.scalar_one_or_none()
-        if worker is None:
-            return WorkerHealth(status="offline", worker_id=None, heartbeat_at=None)
-        heartbeat = worker.heartbeat_at
-        if heartbeat.tzinfo is None:
-            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
-        status = (
-            "online"
-            if heartbeat >= (now or utc_now()) - timedelta(seconds=settings.worker_stale_after_seconds)
-            and worker.stopped_at is None
-            else "offline"
-        )
-        return WorkerHealth(status=status, worker_id=worker.id, heartbeat_at=worker.heartbeat_at)
-
-    async def _assign_worker_eligibility(
-        self,
-        session: AsyncSession,
-        task: Task,
-        *,
-        repo: TaskRepository,
-        idempotency_key: str,
-    ) -> None:
-        if task.status != "queued":
-            return
-        if (await self._worker_health(session)).status == "online":
-            task.status_reason = None
-            return
-        task.status = "waiting_for_worker"
-        task.status_reason = "No live worker is available; this task has not started."
-        task.updated_at = utc_now()
-        await repo.append_event(
-            task_id=task.id,
-            attempt_id=task.current_attempt_id,
-            event_type="task.waiting_for_worker",
-            payload_json={"status": task.status, "reason": task.status_reason},
-            idempotency_key=idempotency_key,
-        )
 
 
 task_service = TaskService()

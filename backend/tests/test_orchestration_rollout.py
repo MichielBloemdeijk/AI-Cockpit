@@ -12,7 +12,7 @@ from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services.task_notifications import _send_outbox_by_id
 from app.services.task_orchestration import DecisionTools
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from test_task_orchestration import FixtureRuntime, question, ready
 
 

@@ -1,4 +1,6 @@
 """Shared, administrator-bounded model preferences; never permission overrides."""
+from typing import Any
+
 from app.config import settings
 from pydantic import BaseModel, ConfigDict
 
@@ -34,7 +36,7 @@ def normalize_agent_preferences(config: dict | None, *, inherited: dict | None =
     if not request:
         return dict(inherited or {})
     ExecutionPreferences.model_validate(request)
-    from app.services.worker_tool_policy import normalize_overrides
+    from app.services.tasks.worker_tool_policy import normalize_overrides
     tools = normalize_overrides(request.get("tools", (inherited or {}).get("tools")))
     defaults = {"model": settings.codex_task_model, "reasoning_effort": settings.codex_task_reasoning_effort}
     baseline = defaults | (inherited or {})
@@ -49,7 +51,7 @@ def normalize_agent_preferences(config: dict | None, *, inherited: dict | None =
         raise ValueError("Changing execution settings requires a nonempty override_reason")
     if reason is not None and not reason.strip():
         raise ValueError("override_reason cannot be empty")
-    result = {"model": model.strip(), "reasoning_effort": effort}
+    result: dict[str, Any] = {"model": model.strip(), "reasoning_effort": effort}
     if reason:
         result["override_reason"] = reason.strip()
     if "tools" in request or "tools" in (inherited or {}):

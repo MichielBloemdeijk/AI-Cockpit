@@ -11,8 +11,8 @@ import pytest
 
 from app.config import settings
 from app.jarvis_tasks.acceptance import SCHEMA, candidate_identity, resolve_test_configuration
-from app.services.task_pool_supervisor import TaskPoolSupervisor
-from app.services.task_service import task_service
+from app.services.tasks.pool_supervisor import TaskPoolSupervisor
+from app.services.tasks.service import task_service
 
 pytestmark = pytest.mark.provider
 

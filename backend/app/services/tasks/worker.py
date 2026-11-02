@@ -16,8 +16,9 @@ from app.services.agent_execution import (
     TaskExecutionSink,
     TaskRuntime,
 )
-from app.services.task_service import task_service, execution_attempt_outcome
-from app.services.worker_coordinator import ClaimedTask, WorkerCoordinator, worker_coordinator
+from app.services.tasks.service import task_service, execution_attempt_outcome
+from app.services.tasks.vocabulary import ControlAction, TaskStatus
+from app.services.tasks.worker_coordinator import ClaimedTask, WorkerCoordinator, worker_coordinator
 
 
 logger = logging.getLogger(__name__)
@@ -254,7 +255,7 @@ class TaskWorker:
             if outcome is not None:
                 logger.warning("Runtime cleanup failed after durable task outcome: %s", claim.task_id)
                 return WorkerRunResult(task_id=claim.task_id, status=outcome)
-            if detail is not None and detail.task.status == "running":
+            if detail is not None and detail.task.status == TaskStatus.running:
                 await sink.fail(str(exc))
             return WorkerRunResult(task_id=claim.task_id, status="failed")
         finally:
@@ -293,13 +294,13 @@ class TaskWorker:
                 "writer_boundary": "in_process_runtime",
             },
         )
-        status = {
-            "cancel": "cancelled",
-            "suspend": "paused",
-            "yield": "requeued",
-            "restart_execution": "requeued",
-            "restart_from_beginning": "requeued",
-        }.get(action, "controlled")
-        return WorkerRunResult(task_id=claim.task_id, status=status)
+        status_by_action: dict[str, str] = {
+            ControlAction.cancel: "cancelled",
+            ControlAction.suspend: "paused",
+            ControlAction.yield_: "requeued",
+            ControlAction.restart_execution: "requeued",
+            ControlAction.restart_from_beginning: "requeued",
+        }
+        return WorkerRunResult(task_id=claim.task_id, status=status_by_action.get(action, "controlled"))
 
 task_worker = TaskWorker()

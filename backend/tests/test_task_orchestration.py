@@ -17,7 +17,7 @@ from app.services.task_orchestration import (
     CURSOR_KEY, LEASE_KEY, DecisionTools, TaskOrchestrationService, now,
 )
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.fixture(autouse=True)

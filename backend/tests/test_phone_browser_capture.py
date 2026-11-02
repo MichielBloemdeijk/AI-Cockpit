@@ -5,7 +5,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from app.main import app
-from app.services.task_capture import task_capture_service
+from app.services.tasks.capture import task_capture_service
 
 
 @pytest.mark.asyncio

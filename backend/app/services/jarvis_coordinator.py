@@ -12,7 +12,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from app.config import settings
-from app.services.task_workflows import workflow_catalog_revision
+from app.services.tasks.workflows import workflow_catalog_revision
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.db.session import session_scope
@@ -32,7 +32,7 @@ from app.db.tables import (
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_live_telemetry import jarvis_live_telemetry
 from app.services.live_traffic import LiveTrafficObserver
-from app.services.task_error_messages import public_tool_error
+from app.services.tasks.error_messages import public_tool_error
 from app.services.jarvis_daily import JarvisAcceptedTurn, jarvis_daily_service
 from app.services.jarvis_time import normalize_client_context
 from app.services.jarvis_wake import verify_wake_transcript
@@ -1913,7 +1913,7 @@ class JarvisCoordinator:
                     )
 
         if event.kind == "delegation_received":
-            from app.services.task_capture import task_capture_service
+            from app.services.tasks.capture import task_capture_service
             try:
                 await task_capture_service.request_fresh(session_id=session_id, generation=generation,
                     request_identity=event.payload["origin_correlation_id"])

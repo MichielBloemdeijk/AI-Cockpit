@@ -26,8 +26,13 @@ from app.db.tables import (
 )
 from app.services.jarvis_time import temporal_frame
 from app.services.runtime_health import runtime_health_service
-from app.services.task_error_messages import public_failure_summary
-from app.services.task_service import ACTIVE_TASK_STATUSES
+from app.services.tasks.error_messages import public_failure_summary
+from app.services.tasks.vocabulary import (
+    ACTIVE_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    UNSUCCESSFUL_TASK_STATUSES,
+    TaskStatus,
+)
 
 
 OPEN_RESULT_WINDOW = timedelta(minutes=30)
@@ -150,7 +155,7 @@ class JarvisSituationProjector:
         )).scalars().all())
         terminal_tasks = list((await session.execute(
             select(Task)
-            .where(Task.status.in_(["completed", "failed", "interrupted", "cancelled"]))
+            .where(Task.status.in_(sorted(TERMINAL_TASK_STATUSES)))
             .order_by(Task.finished_at.desc(), Task.creation_order.desc())
             .limit(12)
         )).scalars().all())
@@ -260,7 +265,7 @@ class JarvisSituationProjector:
             due = _aware(task.resume_at)
             summary = task.terminal_summary
             diagnostics_available = False
-            if task.status in {"failed", "interrupted"} and summary:
+            if task.status in UNSUCCESSFUL_TASK_STATUSES and summary:
                 summary = public_failure_summary(summary)
                 diagnostics_available = True
             return {
@@ -272,7 +277,7 @@ class JarvisSituationProjector:
                 "diagnostics_available": diagnostics_available,
                 "importance": task.importance,
                 "due_at": None if due is None else due.isoformat(),
-                "overdue": bool(task.status == "waiting_until" and due is not None and due <= timestamp),
+                "overdue": bool(task.status == TaskStatus.waiting_until and due is not None and due <= timestamp),
                 "created_at": _aware(task.created_at).isoformat(),
                 "finished_at": None if task.finished_at is None else _aware(task.finished_at).isoformat(),
                 **({"results": results_by_task[task.id]} if task.id in results_by_task else {}),
@@ -295,9 +300,9 @@ class JarvisSituationProjector:
                 "handled_by": item.handled_by,
             }
 
-        upcoming = [task_value(task) for task in reminders if task.status == "waiting_until" and not task_value(task)["overdue"]]
-        overdue = [task_value(task) for task in reminders if task.status == "waiting_until" and task_value(task)["overdue"]]
-        recent_reminders = [task_value(task) for task in reminders if task.status == "completed"][:20]
+        upcoming = [task_value(task) for task in reminders if task.status == TaskStatus.waiting_until and not task_value(task)["overdue"]]
+        overdue = [task_value(task) for task in reminders if task.status == TaskStatus.waiting_until and task_value(task)["overdue"]]
+        recent_reminders = [task_value(task) for task in reminders if task.status == TaskStatus.completed][:20]
         payload = {
             "schema": "jarvis.situation.v1",
             "situation_revision": state.situation_revision,

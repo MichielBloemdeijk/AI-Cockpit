@@ -14,7 +14,7 @@ from app.db.tables import OrchestrationAction, OrchestrationDecision, Orchestrat
 from app.jarvis_tasks.orchestration_mcp import catalog, handle
 from app.services.codex_orchestration_runtime import CodexOrchestrationRuntime
 from app.services.task_orchestration import DecisionTools, TaskOrchestrationService
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.mark.asyncio

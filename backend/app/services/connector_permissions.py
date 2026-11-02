@@ -49,7 +49,7 @@ async def configure(connector: str, account: str, tool: str, mode: str, *, expec
 
 async def authorize(context, *, connector: str, account: str, tool: str, arguments: dict,
                     operation_key: str) -> dict:
-    from app.services.task_service import task_service
+    from app.services.tasks.service import task_service
     fence = dict(attempt_id=context.attempt_id, execution_run_id=context.execution_run_id,
                  claim_token=context.claim_token)
     await task_service.validate_execution_authority(context.task_id, **fence)
@@ -95,7 +95,7 @@ contract. A new attempt may replay a committed receipt, never an uncertain send.
                             arguments=arguments, operation_key=operation_key)
     if grant.get("status"):
         return grant
-    from app.services.task_service import task_service
+    from app.services.tasks.service import task_service
     fence = dict(attempt_id=context.attempt_id, execution_run_id=context.execution_run_id, claim_token=context.claim_token)
     async with session_scope() as session:
         row = await session.get(ConnectorToolPermission, grant["identity"])

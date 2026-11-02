@@ -178,7 +178,7 @@ class RuntimeHealthService:
     async def _run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             try:
-                from app.services.worker_coordinator import worker_coordinator
+                from app.services.tasks.worker_coordinator import worker_coordinator
 
                 await worker_coordinator.reconcile_availability()
                 await self.mark_stale_components()

@@ -29,11 +29,11 @@ from app.services.jarvis_coordinator import (
     jarvis_coordinator,
 )
 from app.services.jarvis_live import jarvis_live_service
-from app.services.reminder_scheduler import reminder_scheduler
+from app.services.tasks.reminder_scheduler import reminder_scheduler
 from app.services.task_notifications import route_pending_task_notifications
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services.voice_session_adapter import VoiceProviderEvent
 from app.services.voice_session_adapter import fake_voice_session_adapter
 

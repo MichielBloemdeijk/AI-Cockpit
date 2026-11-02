@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Protocol
 
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 CancellationProbe = Callable[[], Awaitable[bool]]

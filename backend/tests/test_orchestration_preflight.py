@@ -16,9 +16,9 @@ from app.db.session import session_scope
 from app.db.tables import Conversation
 from app.main import app
 from app.services.jarvis_brain import restricted_brain_gateway
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 from app.services.task_presentations import task_presentation_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.worker_coordinator import worker_coordinator
 
 
 async def saturate_pool():

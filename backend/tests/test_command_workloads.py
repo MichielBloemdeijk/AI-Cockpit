@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from app.config import settings
-from app.services.task_project_tools import execute_sandboxed, execute_trusted
+from app.services.tasks.project_tools import execute_sandboxed, execute_trusted
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows command boundary")
@@ -40,7 +40,7 @@ fs.rmSync(folder,{recursive:true});console.log('node-ok');"""
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows command boundary")
 def test_native_never_retries_as_trusted(tmp_path, monkeypatch):
-    from app.services.task_project_tools import SandboxBoundaryUnavailable
+    from app.services.tasks.project_tools import SandboxBoundaryUnavailable
     import app.jarvis_tasks.codex_probe as probe
     from types import SimpleNamespace
     monkeypatch.setattr(probe, "_sandbox_checks", lambda *a, **kw: [SimpleNamespace(id="denied", status="fail")])

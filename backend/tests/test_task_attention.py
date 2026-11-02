@@ -14,7 +14,7 @@ from app.db.tables import (
 from app.services.jarvis_coordinator import jarvis_coordinator
 from app.services.notifications import acknowledge_delivery
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import task_service
+from app.services.tasks.service import task_service
 
 
 @pytest.mark.asyncio

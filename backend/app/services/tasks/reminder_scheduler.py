@@ -3,16 +3,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
-from app.db.tables import Task, TaskAttempt, TaskExecutionRun
+from app.db.tables import Task
 from app.services.task_presentations import task_presentation_service
-from app.services.task_service import TaskSnapshot, task_service
+from app.services.tasks.service import TaskSnapshot, task_service
+from app.services.tasks import lifecycle
+from app.services.tasks.vocabulary import TaskStatus
 from app.services.jarvis_time import DEFAULT_TIME_ZONE, resolve_reminder_time
 from app.services.runtime_health import runtime_health_service
 
@@ -68,7 +69,7 @@ class ReminderScheduler:
         async with session_scope() as session:
             due_ids = list((await session.execute(
                 select(Task.id)
-                .where(Task.status == "waiting_until")
+                .where(Task.status == TaskStatus.waiting_until)
                 .where(Task.resume_at.is_not(None), Task.resume_at <= timestamp)
                 .order_by(Task.resume_at.asc(), Task.creation_order.asc())
                 .limit(limit)
@@ -81,31 +82,26 @@ class ReminderScheduler:
 
     async def _resume_one(self, task_id: str, *, timestamp: datetime) -> bool:
         async with session_scope() as session:
-            # Take the task write lock before reading, like every task_service
-            # writer, so a concurrent cancel or suspend is never overwritten.
+            # Take the task write lock before reading, like every task writer,
+            # so a concurrent cancel or suspend is never overwritten.
             try:
-                task = await task_service._lock_task(session, task_id)
+                task = await lifecycle.lock_task(session, task_id)
             except ValueError:
                 return False
-            if task.status != "waiting_until" or task.resume_at is None:
+            if task.status != TaskStatus.waiting_until or task.resume_at is None:
                 return False
             due = task.resume_at if task.resume_at.tzinfo is not None else task.resume_at.replace(tzinfo=timezone.utc)
             if due > timestamp:
                 return False
             repo = TaskRepository(session)
+            run = await lifecycle.current_run(session, task)
             delivery = dict(task.scheduled_delivery_json or {})
             if delivery.get("kind") == "reminder":
                 key = task.scheduled_delivery_key or f"reminder:{task.id}"
-                task.status = "completed"
-                task.finished_at = timestamp
-                task.updated_at = timestamp
+                lifecycle.finish(
+                    task, run, TaskStatus.completed, summary=str(delivery.get("text") or task.goal), now=timestamp,
+                )
                 task.scheduled_delivered_at = timestamp
-                task.terminal_summary = str(delivery.get("text") or task.goal)
-                run = await session.get(TaskExecutionRun, task.current_run_id)
-                if run is not None:
-                    run.status = "completed"
-                    run.finished_at = timestamp
-                    run.terminal_summary = task.terminal_summary
                 await repo.append_event(
                     task_id=task.id,
                     event_type="task.reminder.due",
@@ -118,34 +114,17 @@ class ReminderScheduler:
                     idempotency_key=f"task.reminder.due:{key}",
                 )
             else:
-                max_attempt = int((await session.execute(
-                    select(func.max(TaskAttempt.attempt_number)).where(TaskAttempt.task_id == task.id)
-                )).scalar_one_or_none() or 0)
-                attempt = TaskAttempt(
-                    id=str(uuid4()),
-                    task_id=task.id,
-                    execution_run_id=task.current_run_id,
-                    attempt_number=max_attempt + 1,
+                if run is None:
+                    raise RuntimeError("Waiting task has no execution run")
+                previous = await lifecycle.current_attempt(session, task)
+                attempt = await lifecycle.create_attempt(
+                    session, task, run, parent=previous, resume_reason="wait_elapsed",
+                    checkpoint=lifecycle.inherited_checkpoint(previous),
                 )
-                session.add(attempt)
-                worker_health = await task_service._worker_health(session, now=timestamp)
-                task.status = "queued" if worker_health.status == "online" else "waiting_for_worker"
-                task.status_reason = (
-                    None
-                    if worker_health.status == "online"
-                    else "No live worker is available; this task has not started."
-                )
-                task.current_attempt_id = attempt.id
-                task.queue_entered_at = timestamp
-                run = await session.get(TaskExecutionRun, task.current_run_id)
-                if run is not None:
-                    run.status = task.status
-                    run.current_attempt_id = attempt.id
-                    run.queue_entered_at = timestamp
-                task.waiting_until = None
-                task.resume_at = None
-                task.wait_reason = None
-                task.updated_at = timestamp
+                lifecycle.end_wait(task)
+                lifecycle.requeue(task, run, now=timestamp)
+                if (await lifecycle.worker_health(session, now=timestamp)).status != "online":
+                    lifecycle.hold_for_worker(task, now=timestamp)
                 await repo.append_event(
                     task_id=task.id,
                     attempt_id=attempt.id,

@@ -12,8 +12,8 @@ from app.db.session import session_scope
 from app.db.tables import JarvisLiveEvent, TaskResult
 from app.services.jarvis_brain import restricted_brain_gateway
 from app.services.jarvis_tool_catalog import get_jarvis_tool_definitions
-from app.services.task_service import task_service
-from app.services.worker_coordinator import worker_coordinator
+from app.services.tasks.service import task_service
+from app.services.tasks.worker_coordinator import worker_coordinator
 from test_task_result_contract import claim, finish
 
 

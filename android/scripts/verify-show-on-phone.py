@@ -117,8 +117,8 @@ def main() -> None:
             from app.db.session import session_scope
             from app.db.tables import Conversation, LiveSession, TaskResult
             from app.services.task_results import present
-            from app.services.task_service import task_service
-            from app.services.worker_coordinator import worker_coordinator
+            from app.services.tasks.service import task_service
+            from app.services.tasks.worker_coordinator import worker_coordinator
             from sqlalchemy import select
             created = await task_service.dispatch(goal="Write a short packing list", origin_surface="test",
                 idempotency_key="show-on-phone-acceptance", result_request={"mode": "new"})

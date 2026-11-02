@@ -104,7 +104,7 @@ def candidate_identity(root: Path = ROOT) -> dict:
 def worker_policy_identity() -> dict:
     """Bind evidence to persisted grants and approved skill source, not credentials."""
     import sqlite3
-    from app.services.worker_tool_policy import WorkerPolicy
+    from app.services.tasks.worker_tool_policy import WorkerPolicy
     policy, revision, permissions = WorkerPolicy().model_dump(), 0, []
     path = settings.database_path
     if path and path.is_file():
@@ -160,7 +160,7 @@ def resolve_test_configuration(profile: str, *, paths: dict[str, str] | None = N
             raise ValueError("Gate private path is outside the isolated execution roots")
         resolved[key] = str(path)
     if definition.get("workflow_definitions"):
-        from app.services.task_workflows import load_workflow
+        from app.services.tasks.workflows import load_workflow
         resolved["task_workflow_allowlist"] = ",".join(f"{w.id}@{w.version}:{w.digest}" for w in
             (load_workflow(name) for name in definition["workflow_definitions"]))
     return {"profile": profile, "settings": resolved,
