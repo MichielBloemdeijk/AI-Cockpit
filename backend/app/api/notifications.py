@@ -8,7 +8,6 @@ from app.config import settings
 from app.services.auth import require_auth
 from app.services.jarvis.devices import require_jarvis_auth
 from app.services.updates.push_subscriptions import (
-    LegacyNotificationStateError,
     acknowledge_delivery,
     get_public_key,
     upsert_subscription,
@@ -49,8 +48,6 @@ async def create_subscription(request: PushSubscriptionRequest) -> dict[str, str
 async def ack_delivery(delivery_id: str, request: DeliveryAckRequest) -> dict[str, bool]:
     try:
         found = await acknowledge_delivery(delivery_id, request.state)
-    except LegacyNotificationStateError as exc:
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if not found:

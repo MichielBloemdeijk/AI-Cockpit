@@ -104,50 +104,45 @@ describe("JarvisWakeRuntime", () => {
     expect(value.worker.transfers[1]).toEqual([samples.buffer]);
   });
 
-  it("emits exactly one handoff and resolves its one-shot utterance", async () => {
+  it("emits exactly one handoff per activation", async () => {
     const value = harness();
     await value.runtime.start(configuration);
     value.worker.emit({ type: "ready" });
-    value.worker.emit({ type: "detected", probability: 0.91 });
-    value.worker.emit({ type: "detected", probability: 0.92 });
+    value.worker.emit({ type: "detected", probability: 0.91, activationId: "activation-1" });
+    value.worker.emit({ type: "detected", probability: 0.92, activationId: "activation-2" });
 
     expect(value.handoffs).toHaveLength(1);
     expect(value.handoffs[0].localStream).toBe(value.stream);
     expect(value.handoffs[0].wakeProbability).toBe(0.91);
-    const samples = new Float32Array([3, 4, 5]);
-    value.worker.emit({ type: "utterance", samples, sampleRate: 16_000 });
-    await expect(value.handoffs[0].utterance).resolves.toBe(samples);
-    expect(value.capture.pause).toHaveBeenCalledOnce();
-    expect(value.traces.map((trace) => trace.kind)).toContain("wake_utterance_ready");
+    expect(value.handoffs[0].activationId).toBe("activation-1");
+    expect(value.handoffs[0].candidateAudio?.activationId).toBe("activation-1");
   });
 
-  it("queues candidate chunks until subscribed and resolves the local endpoint", async () => {
+  it("delivers this activation's chunks once and resolves the local endpoint", async () => {
     const value = harness();
     await value.runtime.start(configuration);
     value.worker.emit({ type: "ready" });
-    const preRoll = new Float32Array([1, 2]);
-    value.worker.emit({ type: "detected", probability: 0.91, preRoll, sampleRate: 16_000 });
-    const candidate = value.handoffs[0].candidateAudio;
-    expect(candidate?.preRoll).toBe(preRoll);
-    const queued = new Float32Array([3, 4]);
-    value.worker.emit({ type: "candidate_audio", samples: queued, sampleRate: 16_000 });
+    value.worker.emit({ type: "detected", probability: 0.91, activationId: "activation-1" });
+    const candidate = value.handoffs[0].candidateAudio!;
     const received: number[][] = [];
-    candidate?.subscribe((samples) => received.push([...("samples" in samples ? samples.samples : samples)]));
-    const direct = new Float32Array([5, 6]);
-    value.worker.emit({ type: "candidate_audio", samples: direct, sampleRate: 16_000 });
+    candidate.subscribe((chunk) => received.push([...chunk.samples]));
+    const chunk = (sequence: number, activationId = "activation-1") => ({
+      type: "candidate_chunk" as const, activationId, sequence, sampleRate: 16_000 as const,
+      startSample: sequence * 2, endSample: sequence * 2 + 2, capturedMonotonicMs: sequence, samples: new Float32Array([sequence, sequence]),
+    });
+    value.worker.emit(chunk(0));
+    value.worker.emit(chunk(1));
+    const foreign = chunk(0, "other-activation");
+    value.worker.emit(foreign);
     value.worker.emit({
-      type: "candidate_endpoint",
-      sampleRate: 16_000,
-      totalSamples: 6,
-      trailingSilenceMs: 300,
+      type: "candidate_endpoint", sampleRate: 16_000, totalSamples: 4, trailingSilenceMs: 300,
+      speechEndSample: 2, observedAtSample: 4, trailingSilenceSamples: 2, processingLagMs: 0,
     });
 
-    expect(received).toEqual([[3, 4], [5, 6]]);
-    await expect(candidate?.endpoint).resolves.toMatchObject({ totalSamples: 6 });
-    expect(value.traces).toContainEqual({
-      kind: "wake_local_endpoint",
-      detail: { samples: 6, silence_ms: 300 },
-    });
+    expect(received).toEqual([[0, 0], [1, 1]]);
+    expect([...foreign.samples]).toEqual([0, 0]);
+    await expect(candidate.observeEndpoint()).resolves.toMatchObject({ speechEndSample: 2 });
+    expect(value.traces).toContainEqual({ kind: "wake_local_endpoint", detail: { samples: 4, silence_ms: 300 } });
   });
 
   it("reports local VAD boundaries for latency diagnostics", async () => {
@@ -167,8 +162,7 @@ describe("JarvisWakeRuntime", () => {
     const value = harness();
     await value.runtime.start(configuration);
     value.worker.emit({ type: "ready" });
-    value.worker.emit({ type: "detected", probability: 0.9 });
-    value.worker.emit({ type: "utterance", samples: new Float32Array([1]), sampleRate: 16_000 });
+    value.worker.emit({ type: "detected", probability: 0.9, activationId: "activation-1" });
     await value.runtime.rearm();
 
     expect(value.worker.messages.at(-1)).toEqual({ type: "resume" });
@@ -187,7 +181,7 @@ describe("JarvisWakeRuntime", () => {
 
     expect(handoff.localStream).toBe(value.stream);
     expect(handoff.wakeProbability).toBeNull();
-    await expect(handoff.utterance).resolves.toHaveLength(0);
+    expect(handoff.candidateAudio).toBeUndefined();
     expect(value.worker.messages.at(-1)).toEqual({ type: "pause" });
     expect(value.capture.pause).toHaveBeenCalledOnce();
     expect(value.runtime.current().status).toBe("triggered");

@@ -28,14 +28,7 @@ export type JarvisWakeWorkerCommand =
 
 export type JarvisWakeWorkerEvent =
   | { type: "ready" }
-  | {
-    type: "detected";
-    probability: number;
-    activationId?: string;
-    preRoll?: Float32Array;
-    sampleRate?: number;
-  }
-  | { type: "candidate_audio"; samples: Float32Array; sampleRate: number }
+  | { type: "detected"; probability: number; activationId: string }
   | {
     type: "candidate_chunk";
     activationId: string;
@@ -61,7 +54,6 @@ export type JarvisWakeWorkerEvent =
     reason: "audio_backlog_overflow" | "rearmed" | "sleep";
   }
   | { type: "vad_boundary"; state: "speech_started" | "speech_stopped"; probability: number }
-  | { type: "utterance"; samples: Float32Array; sampleRate: number }
   | { type: "error"; message: string };
 
 export function defaultJarvisWakeModelConfiguration(): JarvisWakeModelConfiguration {

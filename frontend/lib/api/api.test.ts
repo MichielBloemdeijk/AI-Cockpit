@@ -299,8 +299,7 @@ describe("streamChat", () => {
     const encoder = new TextEncoder();
     const frames = [
       `data: ${JSON.stringify({ type: "metadata", conversation_id: "conv-1", run_id: "run-1", model: "model-1" })}\n\n`,
-      `data: ${JSON.stringify({ type: "agent_stream", stream: { kind: "thought_delta", run_id: "run-1", step: 1, delta: "Looking " } })}\n\n`,
-      `data: ${JSON.stringify({ type: "event", event: { id: "event-1", run_id: "run-1", sequence: 1, branch_key: "main", parent_event_id: null, actor_kind: "assistant", event_type: "agent.plan.created", created_at: "2026-05-01T00:00:01Z", schema_version: 1, payload_json: { summary: "Plan", steps: ["Step"], open_questions: [], assumptions: [] } } })}\n\n`,
+      `data: ${JSON.stringify({ type: "event", event: { id: "event-1", run_id: "run-1", sequence: 1, branch_key: "main", parent_event_id: null, actor_kind: "assistant", event_type: "chat.timeline.item.committed", created_at: "2026-05-01T00:00:01Z", schema_version: 1, payload_json: { item_id: "assistant:run-1:1:text", role: "assistant", kind: "status", content: "Reading" } } })}\n\n`,
       `data: ${JSON.stringify({ type: "chunk", content: "hello" })}\n\n`,
       `data: ${JSON.stringify({ type: "done" })}\n\n`,
     ];
@@ -328,7 +327,6 @@ describe("streamChat", () => {
     const chunks: string[] = [];
     const metadata: Array<{ conversation_id: string; run_id: string; model?: string }> = [];
     const events: Array<{ id: string; event_type: string }> = [];
-    const liveUpdates: Array<{ kind: string; step: number }> = [];
 
     await new Promise<void>((resolve, reject) => {
       streamChat({
@@ -337,7 +335,6 @@ describe("streamChat", () => {
         branchKey: "feature-branch",
         model: "model-1",
         onMetadata: (data) => metadata.push(data),
-        onAgentStream: (update) => liveUpdates.push({ kind: update.kind, step: update.step }),
         onEvent: (event) => events.push({ id: event.id, event_type: event.event_type }),
         onChunk: (chunk) => chunks.push(chunk),
         onDone: resolve,
@@ -346,8 +343,7 @@ describe("streamChat", () => {
     });
 
     expect(metadata).toEqual([{ type: "metadata", conversation_id: "conv-1", run_id: "run-1", model: "model-1" }]);
-    expect(liveUpdates).toEqual([{ kind: "thought_delta", step: 1 }]);
-    expect(events).toEqual([{ id: "event-1", event_type: "agent.plan.created" }]);
+    expect(events).toEqual([{ id: "event-1", event_type: "chat.timeline.item.committed" }]);
     expect(chunks).toEqual(["hello"]);
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({

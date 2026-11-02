@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from fnmatch import fnmatch
 import re
 import shlex
@@ -38,7 +39,7 @@ class HistoryMatch:
     source_type: str
     internal_source_id: str
     virtual_path: str
-    timestamp: object
+    timestamp: datetime
     title: str
     matching_text: str
     line_number: int

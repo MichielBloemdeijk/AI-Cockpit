@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import type { CouncilResponse, TimelineItemView } from "../api/conversations";
 import { buildCommittedConversationMessages, buildTimelineMessageFromEvent } from "./feed";
-import { buildConversationDetail } from "../test-fixtures";
 
 const at = "2026-10-29T12:00:00Z";
 const usage = { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, cost: 0.004 };
@@ -20,13 +19,13 @@ const council: CouncilResponse = {
 function item(overrides: Partial<TimelineItemView>): TimelineItemView {
   return {
     item_id: "assistant:a1", run_id: "r1", sequence: 3, role: "assistant", kind: "message",
-    content: "synthesis", created_at: at, badges: [], sections: [], ...overrides,
+    content: "synthesis", created_at: at, ...overrides,
   };
 }
 
 describe("timeline feed", () => {
   it("shows a reloaded council answer with its model panel and usage", () => {
-    const [user, answer] = buildCommittedConversationMessages(buildConversationDetail("c1"), [], [], [
+    const [user, answer] = buildCommittedConversationMessages([
       item({ item_id: "user:u1", sequence: 1, role: "user", content: "question" }),
       item({ usage, council }),
     ]);

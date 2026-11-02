@@ -100,11 +100,6 @@ class ConversationArtifactView(BaseModel):
     created_at: datetime
 
 
-class TimelineSectionView(BaseModel):
-    title: str
-    items: list[str] = Field(default_factory=list)
-
-
 class TimelineItemView(BaseModel):
     item_id: str
     run_id: str | None = None
@@ -112,15 +107,7 @@ class TimelineItemView(BaseModel):
     role: str
     kind: str
     content: str
-    title: str | None = None
     label: str | None = None
-    tone: str | None = None
-    status: str | None = None
-    step: int | None = None
-    tool_name: str | None = None
-    badges: list[str] = Field(default_factory=list)
-    code: str | None = None
-    sections: list[TimelineSectionView] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
     # Committed assistant messages: the reply's token/cost usage and, for a
     # council answer, the per-model responses it was synthesized from.
@@ -133,7 +120,6 @@ class ActiveRunView(BaseModel):
     run_id: str
     status: str
     latest_sequence: int = 0
-    live_item: TimelineItemView | None = None
 
 
 class ConversationEventsResponse(BaseModel):

@@ -7,31 +7,18 @@ import {
 import type { ChatMessage } from "./state-types";
 
 describe("conversation feed state", () => {
-  it("updates a background task card in place", () => {
-    const queued: ChatMessage = {
-      id: "task:run-task-1",
-      activityId: "task:run-task-1",
-      runId: "run-task-1",
+  it("updates a re-recorded message in place", () => {
+    const heard: ChatMessage = {
+      id: "assistant:m1",
+      activityId: "assistant:m1",
+      runId: "run-1",
       role: "assistant",
-      kind: "task",
-      title: "Repository review",
-      content: "Queued",
-      status: "queued",
+      content: "I heard: tomorow",
     };
 
-    const next = appendCommittedTimelineMessage([queued], {
-      ...queued,
-      content: "Reading documentation",
-      status: "running",
-      sections: [{ title: "Updates", items: ["Reading documentation"] }],
-    });
+    const next = appendCommittedTimelineMessage([heard], { ...heard, content: "I heard: tomorrow" });
 
-    expect(next).toHaveLength(1);
-    expect(next[0]).toEqual(expect.objectContaining({
-      activityId: "task:run-task-1",
-      status: "running",
-      content: "Reading documentation",
-    }));
+    expect(next).toEqual([expect.objectContaining({ activityId: "assistant:m1", content: "I heard: tomorrow" })]);
   });
 
   it("inserts committed timeline rows before the live row", () => {
@@ -42,82 +29,27 @@ describe("conversation feed state", () => {
         content: "build app",
       },
       {
-        id: "live-local:run-1:tool:1:file_read",
+        id: "live-local:run-1:chunk",
+        activityId: "assistant:run-1:final",
         runId: "run-1",
-        step: 1,
         role: "assistant",
-        kind: "tool_call",
-        title: "file read",
-        content: "Reading lib/hooks.ts",
+        content: "Still",
         streaming: true,
       },
     ];
 
     const nextMessages = appendCommittedTimelineMessage(currentMessages, {
-      id: "assistant:run-1:summary-1",
+      id: "user:run-1:u2",
+      activityId: "user:run-1:u2",
       runId: "run-1",
-      step: 1,
-      role: "assistant",
-      kind: "message",
-      content: "Inspecting the hooks flow",
-      streaming: false,
+      role: "user",
+      content: "and also this",
     });
 
     expect(nextMessages.map((message) => message.id)).toEqual([
       "persisted-user-1",
-      "assistant:run-1:summary-1",
-      "live-local:run-1:tool:1:file_read",
-    ]);
-  });
-
-  it("replaces a completed activity at its original position", () => {
-    const currentMessages: ChatMessage[] = [
-      {
-        id: "live-local:tool:run-1:1:file_read",
-        activityId: "tool:run-1:1:file_read",
-        runId: "run-1",
-        step: 1,
-        role: "assistant",
-        kind: "tool_call",
-        content: "Reading lib/hooks.ts",
-        streaming: true,
-      },
-      {
-        id: "live-local:tool:run-1:2:file_read",
-        activityId: "tool:run-1:2:file_read",
-        runId: "run-1",
-        step: 2,
-        role: "assistant",
-        kind: "tool_call",
-        content: "Reading lib/api.ts",
-        streaming: true,
-      },
-    ];
-
-    const nextMessages = appendCommittedTimelineMessage(currentMessages, {
-      id: "tool:run-1:1:file_read",
-      activityId: "tool:run-1:1:file_read",
-      runId: "run-1",
-      step: 1,
-      role: "assistant",
-      kind: "tool_result",
-      title: "file read",
-      label: "Tool result",
-      content: "Read lib/hooks.ts",
-      streaming: false,
-    });
-
-    expect(nextMessages).toEqual([
-      expect.objectContaining({
-        id: "tool:run-1:1:file_read",
-        content: "Read lib/hooks.ts",
-        streaming: false,
-      }),
-      expect.objectContaining({
-        id: "live-local:tool:run-1:2:file_read",
-        content: "Reading lib/api.ts",
-        streaming: true,
-      }),
+      "user:run-1:u2",
+      "live-local:run-1:chunk",
     ]);
   });
 
@@ -154,7 +86,6 @@ describe("conversation feed state", () => {
           content: "Committed reply",
         },
       ],
-      null,
       "run-1",
     );
 

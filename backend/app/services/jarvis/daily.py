@@ -6,14 +6,22 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, update
+from typing import cast
+
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.conversations import ConversationRepository
 from app.db.session import session_scope
 from app.db.tables import Conversation, ConversationEvent, JarvisState
-from app.services.conversations.store import ConversationRecord, MessageRecord, _conversation_record, _message_record
+from app.services.conversations.store import (
+    ConversationRecord,
+    MessageRecord,
+    _conversation_record,
+    _message_record,
+    record_message_timeline_item,
+)
 from app.services.conversations.workspace import MAIN_BRANCH_KEY, ensure_conversation_workspace, workspace_relative_path
 
 
@@ -129,6 +137,7 @@ class JarvisDailyService:
                 execution_mode="jarvis_shell",
                 communication_state="completed",
             )
+            await record_message_timeline_item(repo, message)
             event.payload_json = {
                 **(event.payload_json or {}),
                 "turn_id": message.id,
@@ -187,6 +196,7 @@ class JarvisDailyService:
                     execution_mode="jarvis_shell",
                     communication_state="completed",
                 )
+                await record_message_timeline_item(repo, acknowledgement)
                 acknowledgement_event.payload_json = {
                     **(acknowledgement_event.payload_json or {}),
                     "turn_id": acknowledgement.id,
@@ -218,11 +228,11 @@ class JarvisDailyService:
             .values(id=JARVIS_STATE_ID, state_revision=0)
             .on_conflict_do_nothing(index_elements=["id"])
         )
-        lock_result = await session.execute(
+        lock_result = cast(CursorResult, await session.execute(
             update(JarvisState)
             .where(JarvisState.id == JARVIS_STATE_ID)
             .values(state_revision=JarvisState.state_revision)
-        )
+        ))
         if lock_result.rowcount != 1:
             raise RuntimeError("Unable to lock Jarvis state")
         state = await session.get(JarvisState, JARVIS_STATE_ID)

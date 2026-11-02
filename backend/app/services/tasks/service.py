@@ -60,13 +60,10 @@ from app.services.tasks.vocabulary import (
     RunStatus,
     TaskStatus,
 )
+from app.timestamps import utc_now
 
 
 GENERIC_REMINDER_TEXT = "This is your reminder."
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def execution_attempt_outcome(detail, run_id: str, attempt_id: str) -> str | None:
@@ -1986,7 +1983,6 @@ class TaskService:
             )
         )
         return next((index for index, item in enumerate(queued, start=1) if item.id == task.id), None)
-
 
 
 task_service = TaskService()

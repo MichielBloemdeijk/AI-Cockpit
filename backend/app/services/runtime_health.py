@@ -12,6 +12,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import RuntimeComponentHealth
+from app.timestamps import utc_now
 
 
 EXPECTED_COMPONENTS = (
@@ -20,10 +21,6 @@ EXPECTED_COMPONENTS = (
     "response_arbiter",
     "task_projector",
 )
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _aware(value: datetime) -> datetime:

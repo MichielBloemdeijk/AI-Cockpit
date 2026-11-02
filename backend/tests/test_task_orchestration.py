@@ -14,7 +14,7 @@ from app.db.tables import (
 )
 from app.services.orchestration.authority import StaleDecision
 from app.services.orchestration.service import (
-    CURSOR_KEY, LEASE_KEY, DecisionTools, TaskOrchestrationService, now,
+    LEASE_KEY, DecisionTools, TaskOrchestrationService, now,
 )
 from app.services.updates.presentations import task_presentation_service
 from app.services.tasks.service import task_service

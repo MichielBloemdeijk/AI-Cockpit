@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from app.config import settings
-from app.db.repositories.conversations import utc_now
+from app.timestamps import utc_now
 from app.services.tasks import reminder_scheduler as scheduler_module
 from app.services.tasks.service import task_service
 

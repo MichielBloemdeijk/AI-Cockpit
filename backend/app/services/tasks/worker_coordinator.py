@@ -34,13 +34,10 @@ from app.services.resource_state import directory_snapshot
 from app.services.tasks.operation_recovery import confirmed_file_write
 from app.services.tasks import lifecycle
 from app.services.tasks.vocabulary import RESOURCE_CHANGED_REASON, RESOURCE_UNOBSERVABLE_REASON, TaskStatus
+from app.timestamps import utc_now
 
 
 ACTIVE_WORKER_STATES = {"starting", "idle", "busy"}
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _aware(value: datetime) -> datetime:

@@ -130,28 +130,6 @@ export interface ConversationEventView {
   payload_json?: Record<string, unknown> | null;
 }
 
-export interface AgentStreamUpdate {
-  kind:
-    | "thought_delta"
-    | "thought_done"
-    | "text_delta"
-    | "text_done"
-    | "summary_delta"
-    | "summary_done"
-    | "tool_started"
-    | "tool_progress"
-    | "tool_done"
-    | "progress";
-  run_id: string;
-  step: number;
-  activity_id?: string;
-  tool_call_id?: string;
-  tool?: string;
-  ok?: boolean;
-  delta?: string;
-  content?: string;
-}
-
 export interface ConversationArtifactView {
   id: string;
   run_id: string | null;
@@ -163,27 +141,15 @@ export interface ConversationArtifactView {
   created_at: string;
 }
 
-export interface TimelineSectionView {
-  title: string;
-  items: string[];
-}
-
 export interface TimelineItemView {
   item_id: string;
   run_id: string | null;
   sequence: number;
   role: "user" | "assistant" | "system";
-  kind: "message" | "status" | "plan" | "thought" | "tool_call" | "tool_result" | "question" | "answer" | "summary" | "error" | "task";
+  kind: "message";
   content: string;
-  title?: string | null;
+  /** The author label of a Jarvis message. */
   label?: string | null;
-  tone?: "default" | "info" | "success" | "warning" | "error" | null;
-  status?: string | null;
-  step?: number | null;
-  tool_name?: string | null;
-  badges?: string[];
-  code?: string | null;
-  sections?: TimelineSectionView[];
   metadata?: Record<string, unknown> | null;
   /** Committed assistant messages: the reply's usage and, for a council answer, its model responses. */
   usage?: UsageStats | null;
@@ -195,7 +161,6 @@ export interface ActiveRunView {
   run_id: string;
   status: string;
   latest_sequence: number;
-  live_item: TimelineItemView | null;
 }
 
 export interface ConversationEventsResponse {
@@ -247,7 +212,6 @@ export interface ChatStreamOptions {
   temperature?: number;
   onMetadata?: (data: { conversation_id: string; run_id: string; model?: string }) => void;
   onEvent?: (event: ConversationEventView) => void;
-  onAgentStream?: (update: AgentStreamUpdate) => void;
   onChunk: (chunk: string) => void;
   onDone: () => void;
   onError: (err: string) => void;
@@ -293,7 +257,6 @@ export function streamChat(opts: ChatStreamOptions): void {
           const parsed = JSON.parse(line.slice(6));
           if (parsed.type === "metadata") opts.onMetadata?.(parsed);
           else if (parsed.type === "event" && parsed.event) opts.onEvent?.(parsed.event as ConversationEventView);
-          else if (parsed.type === "agent_stream" && parsed.stream) opts.onAgentStream?.(parsed.stream as AgentStreamUpdate);
           else if (parsed.type === "chunk") opts.onChunk(parsed.content);
           else if (parsed.type === "done") {
             completed = true;

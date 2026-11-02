@@ -447,7 +447,7 @@ export default function ChatPage() {
                 <ChatMessage
                   key={msg.activityId ?? msg.id}
                   message={msg}
-                  onEdit={!readOnlyConversation && msg.role === "user" && (msg.kind ?? "message") === "message" ? handleEditStart : undefined}
+                  onEdit={!readOnlyConversation && msg.role === "user" ? handleEditStart : undefined}
                 />
               ))}
             </>

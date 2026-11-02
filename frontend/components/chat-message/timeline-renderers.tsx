@@ -1,16 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { AlertTriangle, Bot, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Loader2, Sparkles, User, Wrench } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, CircleHelp, Loader2, Sparkles, User } from "lucide-react";
 import clsx from "clsx";
 
 import type { ChatMessage } from "../../lib/conversations/state-types";
 import { MarkdownContent } from "./MarkdownContent";
 
+/** Rows of a task's trace (status, question, answer, summary, error). */
+
 function toneClasses(message: ChatMessage) {
-  if (message.kind === "tool_call" || message.kind === "tool_result") {
-    return { icon: "text-zinc-500", text: "text-zinc-400" };
-  }
   if (message.tone === "success") {
     return { icon: "text-emerald-500", text: "text-zinc-300" };
   }
@@ -28,19 +26,8 @@ function toneClasses(message: ChatMessage) {
 
 function messageIcon(message: ChatMessage) {
   switch (message.kind) {
-    case "task":
-      if (message.status === "queued" || message.status === "running") {
-        return <Loader2 size={15} className="animate-spin" />;
-      }
-      if (message.status === "completed") {
-        return <CheckCircle2 size={15} />;
-      }
-      return <AlertTriangle size={15} />;
     case "question":
       return <CircleHelp size={15} />;
-    case "tool_call":
-    case "tool_result":
-      return <Wrench size={15} />;
     case "summary":
       return <CheckCircle2 size={15} />;
     case "error":
@@ -53,18 +40,6 @@ function messageIcon(message: ChatMessage) {
       }
       return message.role === "system" ? <Sparkles size={15} /> : <Bot size={15} />;
   }
-}
-
-function timestampLabel(createdAt?: string | null): string | null {
-  if (!createdAt) {
-    return null;
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    month: "short",
-    day: "numeric",
-  }).format(new Date(createdAt));
 }
 
 function TimelineShell({
@@ -88,181 +63,25 @@ function TimelineShell({
   );
 }
 
-export function ThoughtMessageRenderer({ message }: { message: ChatMessage }) {
-  const [expanded, setExpanded] = useState(false);
+export function StatusMessageRenderer({ message }: { message: ChatMessage }) {
   const tones = toneClasses(message);
 
   return (
     <TimelineShell message={message}>
-      <button
-        onClick={() => setExpanded((current) => !current)}
-        className={clsx(
-          "flex min-w-0 w-full items-center gap-1.5 text-left text-sm leading-6 transition-colors cursor-pointer hover:text-zinc-100",
-          tones.text,
-        )}
-      >
-        {expanded ? <ChevronDown size={12} className="shrink-0 text-zinc-500" /> : <ChevronRight size={12} className="shrink-0 text-zinc-500" />}
-        <span className="font-medium text-zinc-200">{message.title ?? (message.streaming ? "Thinking" : "Thought")}</span>
-      </button>
-      {expanded && message.content && (
-        <MarkdownContent content={message.content} className="mt-1 text-sm leading-6 text-zinc-300" />
-      )}
-    </TimelineShell>
-  );
-}
-
-export function ToolActivityMessageRenderer({ message }: { message: ChatMessage }) {
-  const [expanded, setExpanded] = useState(false);
-  const [showMore, setShowMore] = useState(false);
-  const previewLimit = 1200;
-  const debugContent = message.code && expanded
-    ? (message.code.length > previewLimit && !showMore
-      ? `${message.code.slice(0, previewLimit).trimEnd()}\n...`
-      : message.code)
-    : null;
-  const tones = toneClasses(message);
-
-  return (
-    <TimelineShell message={message}>
-      <button
-        onClick={() => {
-          setExpanded((current) => !current);
-          if (expanded) setShowMore(false);
-        }}
-        className={clsx(
-          "flex min-w-0 w-full items-center gap-1.5 text-left text-sm leading-6 transition-colors cursor-pointer hover:text-zinc-300",
-          tones.text,
-        )}
-      >
-        <span className="min-w-0 truncate text-zinc-400">{message.content || message.title || "Working…"}</span>
-        {expanded ? <ChevronDown size={12} className="ml-auto shrink-0 text-zinc-600" /> : <ChevronRight size={12} className="ml-auto shrink-0 text-zinc-700" />}
-      </button>
-      {debugContent && (
-        <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-          <pre className="overflow-x-auto text-xs leading-6 text-zinc-300">{debugContent}</pre>
-          {message.code && message.code.length > previewLimit && (
-            <button
-              onClick={() => setShowMore((current) => !current)}
-              className="mt-2 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
-            >
-              {showMore ? "Show less" : "Show more"}
-            </button>
-          )}
-        </div>
-      )}
-    </TimelineShell>
-  );
-}
-
-export function ToolCallMessageRenderer({ message }: { message: ChatMessage }) {
-  return <ToolActivityMessageRenderer message={message} />;
-}
-
-export function BackgroundTaskMessageRenderer({ message }: { message: ChatMessage }) {
-  const [expanded, setExpanded] = useState(false);
-  const tones = toneClasses(message);
-  const active = message.status === "queued" || message.status === "running";
-
-  return (
-    <TimelineShell message={message}>
-      <div className="overflow-hidden rounded-xl border border-zinc-800/90 bg-zinc-950/35">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-          className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-zinc-900/60"
-        >
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-sm font-medium text-zinc-200">{message.title || "Background task"}</span>
-              <span className={clsx("shrink-0 text-[11px] capitalize", tones.text)}>{message.status || "running"}</span>
-            </div>
-            <div className="mt-0.5 truncate text-xs text-zinc-500">
-              {active && message.status === "queued" ? "Waiting to start" : (message.content || "Working in the background")}
-            </div>
-          </div>
-          {expanded
-            ? <ChevronDown size={14} className="shrink-0 text-zinc-500" />
-            : <ChevronRight size={14} className="shrink-0 text-zinc-600" />}
-        </button>
-        {expanded && (
-          <div className="space-y-3 border-t border-zinc-800/80 px-3 py-3">
-            {message.sections?.map((section) => (
-              <div key={section.title}>
-                <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">{section.title}</div>
-                <ul className="mt-1 space-y-1 text-sm leading-5 text-zinc-300">
-                  {section.items.map((entry, index) => (
-                    <li key={`${section.title}-${index}`} className="whitespace-pre-wrap">{entry}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-            {!message.sections?.length && (
-              <div className="text-sm text-zinc-400">{message.content}</div>
-            )}
-          </div>
-        )}
+      <div className={clsx("text-sm leading-6", tones.text)}>
+        {message.title && <span className="font-medium text-zinc-200">{message.title}</span>}
+        {message.title && message.content && <span className="text-zinc-600">·</span>}
+        {message.content && <MarkdownContent content={message.content} className={message.title ? "mt-1" : undefined} />}
+        {message.badges?.map((badge) => (
+          <span key={badge} className="text-xs text-zinc-500">· {badge}</span>
+        ))}
       </div>
     </TimelineShell>
   );
 }
 
-export function ToolResultMessageRenderer({ message }: { message: ChatMessage }) {
-  return <ToolActivityMessageRenderer message={message} />;
-}
-
-export function StatusMessageRenderer({ message }: { message: ChatMessage }) {
-  const [expanded, setExpanded] = useState(false);
-  const tones = toneClasses(message);
-  const isTaskStartedStatusRow = typeof message.title === "string" && /started app task/i.test(message.title) && Boolean(message.code);
-
-  return (
-    <TimelineShell message={message}>
-      {isTaskStartedStatusRow ? (
-        <>
-          <button
-            onClick={() => setExpanded((current) => !current)}
-            className={clsx(
-              "flex min-w-0 w-full items-center gap-1.5 text-left text-sm leading-6 transition-colors cursor-pointer hover:text-zinc-100",
-              tones.text,
-            )}
-          >
-            {expanded ? <ChevronDown size={12} className="shrink-0 text-zinc-500" /> : <ChevronRight size={12} className="shrink-0 text-zinc-500" />}
-            {message.title && <span className="font-medium text-zinc-200">{message.title}</span>}
-            {message.title && message.content && <span className="text-zinc-600">·</span>}
-            {message.content && <span className="whitespace-pre-wrap">{message.content}</span>}
-          </button>
-          {expanded && message.code && (
-            <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-              <pre className="overflow-x-auto text-xs leading-6 text-zinc-300">{message.code}</pre>
-            </div>
-          )}
-        </>
-      ) : (
-        <div className={clsx("text-sm leading-6", tones.text)}>
-          {message.title && <span className="font-medium text-zinc-200">{message.title}</span>}
-          {message.title && message.content && <span className="text-zinc-600">·</span>}
-          {message.content && <MarkdownContent content={message.content} className={message.title ? "mt-1" : undefined} />}
-          {message.badges?.map((badge) => (
-            <span key={badge} className="text-xs text-zinc-500">· {badge}</span>
-          ))}
-        </div>
-      )}
-    </TimelineShell>
-  );
-}
-
 export function GenericTimelineMessageRenderer({ message }: { message: ChatMessage }) {
-  const [debugExpanded, setDebugExpanded] = useState(false);
-  const [showMore, setShowMore] = useState(false);
   const tones = toneClasses(message);
-  const previewLimit = 1200;
-  const debugContent = message.code && debugExpanded
-    ? (message.code.length > previewLimit && !showMore
-      ? `${message.code.slice(0, previewLimit).trimEnd()}\n...`
-      : message.code)
-    : null;
-  const timestamp = timestampLabel(message.createdAt);
 
   return (
     <TimelineShell message={message}>
@@ -274,51 +93,6 @@ export function GenericTimelineMessageRenderer({ message }: { message: ChatMessa
           <span key={badge} className="text-xs text-zinc-500">· {badge}</span>
         ))}
       </div>
-
-      {message.sections?.length ? (
-        <div className="mt-1.5 space-y-2 border-l border-zinc-800/80 pl-3">
-          {message.sections.map((section) => (
-            <div key={section.title}>
-              <div className="text-[11px] uppercase tracking-[0.16em] text-zinc-500">{section.title}</div>
-              <ul className="mt-1 space-y-0.5 text-sm leading-6 text-zinc-300">
-                {section.items.map((entry, index) => (
-                  <li key={`${section.title}-${index}`}>{entry}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {message.code && (
-        <div className="mt-1.5">
-          <button
-            onClick={() => {
-              setDebugExpanded((current) => !current);
-              if (debugExpanded) setShowMore(false);
-            }}
-            className="inline-flex items-center gap-1 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
-          >
-            {debugExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            Debug
-          </button>
-        </div>
-      )}
-
-      {debugContent && (
-        <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-          {timestamp && <div className="mb-2 text-[11px] text-zinc-500">{timestamp}</div>}
-          <pre className="overflow-x-auto text-xs leading-6 text-zinc-300">{debugContent}</pre>
-          {message.code && message.code.length > previewLimit && (
-            <button
-              onClick={() => setShowMore((current) => !current)}
-              className="mt-2 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
-            >
-              {showMore ? "Show less" : "Show more"}
-            </button>
-          )}
-        </div>
-      )}
     </TimelineShell>
   );
 }

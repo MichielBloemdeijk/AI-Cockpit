@@ -12,6 +12,7 @@ from app import app_platform
 from app.app_platform.manifest import compatibility_problems
 from app.config import settings
 from app.main import app
+from app_packages import staging_path
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -26,7 +27,7 @@ SAMPLE = Path(app_platform.__file__).parent / "samples" / "notes"
 
 def build(name: str = "notes", *, version: int | None = None, edit=None) -> Path:
     """Copy the sample into the builds folder, optionally changing its manifest or schema."""
-    target = settings.app_builds_path / name
+    target = staging_path() / name
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(SAMPLE, target)
     manifest_path = target / "cockpit-app.json"
@@ -139,15 +140,12 @@ async def test_manifest_rejects_unknown_sections_and_escaping_paths() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_install_host_and_token_scoped_data() -> None:
-    build()
-    build("other", edit=lambda manifest, _schema: manifest.update(slug="other", title="Other"))
+async def test_http_host_and_token_scoped_data() -> None:
+    await app_platform.install_package(build())
+    await app_platform.install_package(
+        build("other", edit=lambda manifest, _schema: manifest.update(slug="other", title="Other")))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-        assert (await client.post("/api/app-platform/apps/install", json={"source": "notes"})).status_code == 401
         await client.post("/api/auth/login", json={"password": ""})
-        assert (await client.post("/api/app-platform/apps/install", json={"source": "../.."})).status_code == 404
-        assert (await client.post("/api/app-platform/apps/install", json={"source": "notes"})).status_code == 200
-        assert (await client.post("/api/app-platform/apps/install", json={"source": "other"})).status_code == 200
 
         session = (await client.post("/api/app-platform/apps/notes/session")).json()
         assert session["frame_url"] == "/api/app-host/notes/1/index.html"

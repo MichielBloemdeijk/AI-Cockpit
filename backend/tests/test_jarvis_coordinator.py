@@ -137,7 +137,7 @@ async def test_wake_response_waits_for_permissive_verification() -> None:
         conversation_id=accepted.conversation.id,
         controller_id="wake-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.2},
+        activation_context={"source": "wake_word", "wake_score": 0.2, "activation_id": "jarvis_coordinator-wake-1"},
     )
     realtime = bootstrap.session
     _, initial_events = await jarvis_coordinator.replay_session_events(realtime.id)
@@ -208,7 +208,7 @@ async def test_wake_response_accepts_transcript_before_audio_commit() -> None:
         conversation_id=accepted.conversation.id,
         controller_id="wake-browser-transcript-first",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.2},
+        activation_context={"source": "wake_word", "wake_score": 0.2, "activation_id": "jarvis_coordinator-wake-2"},
     )
     realtime = bootstrap.session
 
@@ -278,7 +278,7 @@ async def test_wake_verification_rejects_clear_incidental_mention() -> None:
         conversation_id=accepted.conversation.id,
         controller_id="wake-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.95},
+        activation_context={"source": "wake_word", "wake_score": 0.95, "activation_id": "jarvis_coordinator-wake-3"},
     )
     realtime = bootstrap.session
 
@@ -316,14 +316,14 @@ async def test_wake_gate_timeout_rejects_when_transcript_is_late(
         conversation_id=accepted.conversation.id,
         controller_id="wake-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.19},
+        activation_context={"source": "wake_word", "wake_score": 0.19, "activation_id": "jarvis_coordinator-wake-4"},
     )
     realtime = bootstrap.session
 
     await jarvis_coordinator.handle_provider_event(
         realtime.id,
         realtime.generation,
-        VoiceProviderEvent(event_id="late-transcript-stop", kind="user_stopped"),
+        VoiceProviderEvent(event_id="late-transcript-commit", kind="user_input_committed", payload={"item_id": "late-item"}),
     )
     await asyncio.sleep(0.2)
     _, events = await jarvis_coordinator.replay_session_events(realtime.id)
@@ -345,7 +345,7 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
         conversation_id=accepted.conversation.id,
         controller_id="wake-late-transcript-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.2},
+        activation_context={"source": "wake_word", "wake_score": 0.2, "activation_id": "jarvis_coordinator-wake-5"},
     )
     realtime = bootstrap.session
 
@@ -361,7 +361,7 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
             event_id="late-first-delta",
             kind="user_transcript_delta",
             payload={
-                "item_id": "late-first-user-item",
+                "item_id": "late-first-wake-item",
                 "delta": "Jarvis",
                 "transcript": "Jarvis",
             },
@@ -380,7 +380,7 @@ async def test_late_wake_transcript_does_not_strand_or_duplicate_first_response(
             event_id="late-first-transcript",
             kind="user_transcript",
             payload={
-                "item_id": "late-first-user-item",
+                "item_id": "late-first-wake-item",
                 "transcript": "Jarvis, are you there?",
             },
         ),
@@ -418,7 +418,7 @@ async def test_wake_boundaries_request_once_then_normal_turns_continue(
         conversation_id=accepted.conversation.id,
         controller_id="wake-one-shot-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.2},
+        activation_context={"source": "wake_word", "wake_score": 0.2, "activation_id": "jarvis_coordinator-wake-6"},
     )
     realtime = bootstrap.session
 
@@ -490,7 +490,7 @@ async def test_wake_boundaries_request_once_then_normal_turns_continue(
     await jarvis_coordinator.handle_provider_event(
         realtime.id,
         realtime.generation,
-        VoiceProviderEvent(event_id="normal-follow-up-speaking", kind="user_speaking"),
+        VoiceProviderEvent(event_id="normal-follow-up-speaking", kind="user_speaking", payload={"item_id": "normal-follow-up-item"}),
     )
     assert (realtime.id, realtime.generation) not in jarvis_coordinator._wake_activations
     await jarvis_coordinator.handle_provider_event(
@@ -520,84 +520,6 @@ async def test_wake_boundaries_request_once_then_normal_turns_continue(
                 "item_id": "normal-follow-up-assistant-item",
                 "response_kind": "user_turn",
                 "transcript": "Yes.",
-            },
-        ),
-    )
-
-
-@pytest.mark.asyncio
-async def test_deferred_wake_response_retries_only_after_real_speech_stop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    accepted = await jarvis_coordinator.accept_text_turn(
-        "Wake setup",
-        idempotency_key="wake-deferred-retry-regression",
-    )
-    create_calls: list[dict] = []
-
-    async def capture_response(**kwargs) -> None:
-        create_calls.append(kwargs)
-
-    monkeypatch.setattr(fake_voice_session_adapter, "create_response", capture_response)
-    bootstrap = await jarvis_coordinator.bootstrap_controller(
-        conversation_id=accepted.conversation.id,
-        controller_id="wake-deferred-retry-browser",
-        adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.2},
-    )
-    realtime = bootstrap.session
-
-    await jarvis_coordinator.handle_provider_event(
-        realtime.id,
-        realtime.generation,
-        VoiceProviderEvent(
-            event_id="deferred-wake-commit",
-            kind="user_input_committed",
-            payload={"item_id": "deferred-wake-item"},
-        ),
-    )
-    await jarvis_coordinator.handle_provider_event(
-        realtime.id,
-        realtime.generation,
-        VoiceProviderEvent(event_id="deferred-wake-stop", kind="user_stopped"),
-    )
-    await jarvis_coordinator.handle_provider_event(
-        realtime.id,
-        realtime.generation,
-        VoiceProviderEvent(event_id="continued-speech-start", kind="user_speaking"),
-    )
-    await asyncio.sleep(0.7)
-    assert create_calls == []
-
-    await jarvis_coordinator.handle_provider_event(
-        realtime.id,
-        realtime.generation,
-        VoiceProviderEvent(
-            event_id="deferred-wake-transcript",
-            kind="user_transcript",
-            payload={"item_id": "deferred-wake-item", "transcript": "Jarvis, tell me"},
-        ),
-    )
-    assert create_calls == []
-
-    await jarvis_coordinator.handle_provider_event(
-        realtime.id,
-        realtime.generation,
-        VoiceProviderEvent(event_id="continued-speech-stop", kind="user_stopped"),
-    )
-    assert len(create_calls) == 1
-    await jarvis_coordinator.handle_provider_event(
-        realtime.id,
-        realtime.generation,
-        VoiceProviderEvent(
-            event_id="continued-speech-response",
-            kind="assistant_response",
-            payload={
-                "request_id": create_calls[0]["request_id"],
-                "response_id": "continued-speech-response",
-                "item_id": "continued-speech-assistant-item",
-                "response_kind": "user_turn",
-                "transcript": "Done.",
             },
         ),
     )
@@ -1412,7 +1334,7 @@ async def test_recap_reserves_urgent_updates_first_and_leaves_the_rest_pending()
     now = datetime.now(timezone.utc)
     await reminder_scheduler.create(
         text=None,
-        due_at=now + timedelta(seconds=1),
+        timing={"kind": "instant", "due_at": now + timedelta(seconds=1)},
         idempotency_key="priority-reminder",
         origin_conversation_id=accepted.conversation.id,
     )
@@ -1439,13 +1361,13 @@ async def test_duplicate_reminder_stays_pending_without_model_report() -> None:
     due = datetime.now(timezone.utc) + timedelta(seconds=60)
     reminder = await reminder_scheduler.create(
         text=None,
-        due_at=due,
+        timing={"kind": "instant", "due_at": due},
         idempotency_key="reminder-provider-call-1",
         origin_conversation_id=accepted.conversation.id,
     )
     duplicate = await reminder_scheduler.create(
         text="  ",
-        due_at=due,
+        timing={"kind": "instant", "due_at": due},
         idempotency_key="reminder-provider-call-2",
         origin_conversation_id=accepted.conversation.id,
     )

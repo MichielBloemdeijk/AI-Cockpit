@@ -7,7 +7,6 @@ from uuid import uuid4
 
 import pytest
 
-from app.config import settings
 from app.jarvis_tasks.task_mcp import _call
 from app.db.session import session_scope
 from app.db.tables import TaskTurn

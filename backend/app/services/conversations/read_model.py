@@ -10,7 +10,6 @@ from app.services.conversations.store import ArtifactRecord, BranchRecord, Event
 from app.services.conversations.timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
     extract_timeline_item_payload,
-    normalize_live_item,
 )
 from app.services.conversations.workspace import MAIN_BRANCH_KEY
 
@@ -190,25 +189,13 @@ class ConversationReadModel:
         for run in runs:
             if self._run_branch_key(run) != normalized_branch_key:
                 continue
-            metadata = dict(run.metadata_json or {})
-            live_item = normalize_live_item(metadata.get("live_item"))
-            if run.status not in {"running", "paused"} and live_item is None:
+            if run.status not in {"running", "paused"}:
                 continue
-            latest_sequence = visible_sequences_by_run.get(run.id, 0)
-            active_run: dict[str, object] = {
+            return {
                 "run_id": run.id,
                 "status": run.status,
-                "latest_sequence": latest_sequence,
-                "live_item": None,
+                "latest_sequence": visible_sequences_by_run.get(run.id, 0),
             }
-            if live_item is not None:
-                active_run["live_item"] = {
-                    **live_item,
-                    "run_id": run.id,
-                    "sequence": int(live_item.get("sequence") or latest_sequence),
-                    "created_at": live_item.get("created_at") or run.started_at,
-                }
-            return active_run
         return None
 
     async def list_messages_for_branch(

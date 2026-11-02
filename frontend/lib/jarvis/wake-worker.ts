@@ -1,11 +1,7 @@
 import { HeyBuddyOnnxInference } from "./hey-buddy-inference";
 import { JarvisWakeEngine } from "./wake-engine";
 import { createUuid } from "../uuid";
-import {
-  JARVIS_WAKE_SAMPLE_RATE,
-  type JarvisWakeWorkerCommand,
-  type JarvisWakeWorkerEvent,
-} from "./wake-protocol";
+import type { JarvisWakeWorkerCommand, JarvisWakeWorkerEvent } from "./wake-protocol";
 
 interface WakeWorkerScope {
   onmessage: ((event: MessageEvent<JarvisWakeWorkerCommand>) => void) | null;
@@ -78,20 +74,10 @@ scope.onmessage = (event) => {
       onDetected: () => {
         currentActivationId = createUuid();
       },
-      onCandidateStart: (probability, preRoll) => {
-        const copiedPreRoll = preRoll.slice();
-        emit({
-          type: "detected",
-          probability,
-          activationId: currentActivationId ?? undefined,
-          preRoll: copiedPreRoll,
-          sampleRate: JARVIS_WAKE_SAMPLE_RATE,
-        }, [copiedPreRoll.buffer]);
+      onCandidateStart: (probability) => {
+        // The pre-roll follows as the first candidate chunks.
+        if (currentActivationId) emit({ type: "detected", probability, activationId: currentActivationId });
       },
-      onCandidateAudio: (samples) => emit(
-        { type: "candidate_audio", samples, sampleRate: JARVIS_WAKE_SAMPLE_RATE },
-        [samples.buffer],
-      ),
       onCandidateChunk: (chunk) => {
         const samples = chunk.samples.slice();
         emit({
@@ -107,10 +93,6 @@ scope.onmessage = (event) => {
       },
       onCandidateEndpoint: (endpoint) => emit({ type: "candidate_endpoint", ...endpoint }),
       onCandidateClose: (reason) => emit({ type: "candidate_close", reason }),
-      onUtterance: (samples) => emit(
-        { type: "utterance", samples, sampleRate: JARVIS_WAKE_SAMPLE_RATE },
-        [samples.buffer],
-      ),
       onError: (cause) => emit({
         type: "error",
         message: cause instanceof Error ? cause.message : "Wake inference failed",

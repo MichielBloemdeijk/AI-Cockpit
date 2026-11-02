@@ -18,6 +18,7 @@ from app.services.tasks.service import task_service
 from tests.test_app_builder import _app_tool
 from tests.test_app_platform import build
 from tests.test_builtin_apps import needs_browser
+from app_packages import staging_path
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +29,7 @@ def research_enabled(monkeypatch):
 
 def cookbook(edit=None, *, name: str = "cookbook") -> Path:
     """A Recipes-like app whose workflow takes a text request, and a function and button that start it."""
-    target = settings.app_builds_path / name
+    target = staging_path() / name
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(builtin_root() / "recipes", target)
     workflows = target / "workflows"

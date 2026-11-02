@@ -13,7 +13,7 @@ import { useConversationList } from "./conversations/use-list";
 import type { ConversationKindFilter } from "./conversations/use-list";
 import { useConversationPolling } from "./conversations/use-polling";
 
-export type { AgentStatus, ChatActionError, ChatMessage } from "./conversations/state-types";
+export type { ChatActionError, ChatMessage } from "./conversations/state-types";
 
 // ─── useAuth ──────────────────────────────────────────────────────────────────
 
@@ -59,13 +59,11 @@ export function useChat() {
     artifacts,
     events,
     messages,
-    agentStatus,
     loadingConversation,
     loadConversation,
     resetConversationDetail,
     setEvents,
     setMessages,
-    setAgentStatus,
   } = useConversationDetail({
     activeConversationId,
     activeBranchKey,
@@ -111,7 +109,6 @@ export function useChat() {
     setActiveBranchKey,
     setEvents,
     setMessages,
-    setAgentStatus,
     setLoading,
     setCanStop,
   });
@@ -119,7 +116,6 @@ export function useChat() {
   return {
     messages,
     actionError,
-    agentStatus,
     conversations,
     activeConversationId,
     activeBranchKey,

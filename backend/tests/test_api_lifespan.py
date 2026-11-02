@@ -53,7 +53,6 @@ def _install(monkeypatch, *, fail_start: str | None = None, fail_stop: str | Non
 
     monkeypatch.setattr(main_module, "close_engine", close_engine)
     monkeypatch.setattr(main_module, "close_apps_engine", close_apps_engine)
-    monkeypatch.setattr(main_module, "ensure_database_ready", noop)
     monkeypatch.setattr(main_module, "run_migrations", lambda: None)
     monkeypatch.setattr(main_module, "initialize_engine", lambda _url: None)
     monkeypatch.setattr(main_module.settings, "task_orchestration_enabled", False)

@@ -199,11 +199,10 @@ class BrowserVoiceSession extends BaseVoiceSession implements JarvisVoiceSession
           activation_id: handoff.activationId ?? createUuid(),
           gate_mode: resolveJarvisWakeGateMode(gate.developerMode, gate.selected),
         } as const;
-        const candidateAudio = handoff.candidateAudio && "observeEndpoint" in handoff.candidateAudio ? handoff.candidateAudio : undefined;
         void this.live.startWithOptions({
           stream: handoff.localStream,
           activationContext,
-          candidateAudio,
+          candidateAudio: handoff.candidateAudio,
           wakeDetectedMonotonicMs: handoff.wakeDetectedMonotonicMs,
         })
           .then((snapshot) => { if (!this.disposed && snapshot.status === "connected") this.lifecycle.connected(); })

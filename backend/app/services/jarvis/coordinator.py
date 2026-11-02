@@ -15,6 +15,7 @@ from app.config import settings
 from app.services.tasks.workflows import workflow_catalog_revision
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.jarvis import JarvisDomainRepository
+from app.services.conversations.store import record_message_timeline_item
 from app.db.session import session_scope
 from app.db.tables import (
     Conversation,
@@ -45,6 +46,7 @@ from app.services.jarvis.voice_session_adapter import (
     fake_voice_session_adapter,
     get_voice_session_adapter,
 )
+from app.timestamps import utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -66,10 +68,6 @@ FLOOR_EVENT_TYPES = {
     "disconnected": "text_fallback",
     "provider_error": "text_fallback",
 }
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _safe_connection_failure(exc: Exception) -> str:
@@ -169,13 +167,11 @@ class _WakeActivation:
     primary_input_item_id: str | None = None
     candidate_item_ids: set[str] = field(default_factory=set)
     response_requested_for: set[str] = field(default_factory=set)
-    speech_stopped: bool = False
     response_requested: bool = False
     gate_started_monotonic: float = field(default_factory=time.monotonic)
     gate_timeout_started_monotonic: float | None = None
     benchmark_run_id: str | None = None
     benchmark_fixture: str | None = None
-    legacy_compat: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,14 +421,13 @@ class JarvisCoordinator:
             source = getattr(value, "source", None)
             raw_score = getattr(value, "wake_score", None)
             raw_activation_id = getattr(value, "activation_id", None)
-        if source != "wake_word" or raw_score is None:
+        if source != "wake_word" or raw_score is None or not raw_activation_id:
             return None
         try:
             wake_score = max(0.0, min(1.0, float(raw_score)))
         except (TypeError, ValueError):
             return None
-        legacy_compat = not bool(raw_activation_id)
-        activation_id = str(raw_activation_id).strip() if raw_activation_id else str(uuid4())
+        activation_id = str(raw_activation_id).strip()
         gate_mode = str(
             value.get("gate_mode", "transcript_rules")
             if isinstance(value, dict)
@@ -455,7 +450,6 @@ class JarvisCoordinator:
             verification_state="accepted" if gate_mode == "immediate" else "pending",
             benchmark_run_id=(str(benchmark_run_id).strip() or None) if benchmark_run_id else None,
             benchmark_fixture=(str(benchmark_fixture).strip() or None) if benchmark_fixture else None,
-            legacy_compat=legacy_compat,
         )
 
     def _schedule_wake_verification(self, session_id: str, generation: int) -> None:
@@ -471,10 +465,7 @@ class JarvisCoordinator:
                 if (
                     activation is None
                     or activation.verification_state != "pending"
-                    or (
-                        activation.primary_input_item_id is None
-                        and not (activation.legacy_compat and activation.speech_stopped)
-                    )
+                    or activation.primary_input_item_id is None
                 ):
                     return
                 activation.verification_state = "timed_out"
@@ -922,10 +913,7 @@ class JarvisCoordinator:
                     if floor in {"connecting", "text_fallback"} or (floor == "assistant_speaking" and not quiet_terminal_delivery) or (
                         floor == "user_speaking"
                         and not quiet_terminal_delivery
-                        and (
-                            selected_reason != "user_turn"
-                            or (activation is not None and activation.legacy_compat)
-                        )
+                        and selected_reason != "user_turn"
                     ):
                         self._trace_response_gate(
                             "response.arbiter.deferred",
@@ -1737,9 +1725,7 @@ class JarvisCoordinator:
         elif kind == "user_input_committed":
             await self._input_committed_transition(repo, session_id, generation, activation, event, effects)
         elif kind == "user_stopped":
-            if activation is not None:
-                self._wake_speech_stopped(activation, effects)
-            else:
+            if activation is None:
                 # A stop may release a task-update reservation that was
                 # queued while the user owned the floor. It never creates
                 # a conversational response by itself.
@@ -1829,33 +1815,14 @@ class JarvisCoordinator:
     @staticmethod
     def _wake_speech_started(activation: _WakeActivation, event: VoiceProviderEvent, effects: _EventEffects) -> None:
         item_id = str(event.payload.get("item_id") or "")
-        if activation.legacy_compat:
-            # Keep the pre-correlation alias runnable while old clients roll
-            # forward. Phase-2 normalized commits do not use this speech-stop
-            # compatibility gate.
-            activation.speech_stopped = False
         if (
             activation.verification_state == "accepted"
             and activation.response_requested
-            and (
-                (activation.legacy_compat and not item_id)
-                or (item_id and item_id != activation.primary_input_item_id)
-            )
+            and item_id
+            and item_id != activation.primary_input_item_id
         ):
             # New speech after the wake turn's response ends the activation.
             effects.clear_wake_activation = True
-
-    @staticmethod
-    def _wake_speech_stopped(activation: _WakeActivation, effects: _EventEffects) -> None:
-        activation.speech_stopped = True
-        if not activation.legacy_compat:
-            return
-        if activation.verification_state == "pending":
-            effects.schedule_wake_verification = True
-        elif activation.verification_state == "accepted" and activation.response_requested:
-            effects.user_response = "retry"
-        elif activation.verification_state in {"rejected", "timed_out"}:
-            effects.discard_activation = activation
 
     async def _user_transcript_transition(
         self,
@@ -1903,12 +1870,6 @@ class JarvisCoordinator:
             return
         if activation.primary_input_item_id == item_id and not activation.response_requested:
             effects.wake_response = activation
-        elif activation.legacy_compat and activation.speech_stopped:
-            if activation.response_requested:
-                effects.user_response = "retry"
-            else:
-                activation.response_requested = True
-                effects.user_response = "queue"
 
     async def _input_committed_transition(
         self,
@@ -2693,6 +2654,7 @@ class JarvisCoordinator:
                 source_task_id=delivery.source_task_id,
                 source_task_event_id=delivery.source_task_event_id,
             )
+            await record_message_timeline_item(repo, message)
             delivery.assistant_turn_id = message.id
             conversation_event.payload_json = {
                 **(conversation_event.payload_json or {}),
@@ -2733,8 +2695,9 @@ class JarvisCoordinator:
         existing_turn_id = str((conversation_event.payload_json or {}).get("turn_id") or "")
         if existing_turn_id:
             existing_message = await session.get(ConversationMessage, existing_turn_id)
-            if existing_message is not None:
+            if existing_message is not None and existing_message.content != transcript:
                 existing_message.content = transcript
+                await record_message_timeline_item(repo, existing_message)
             conversation_event.payload_json = {
                 **(conversation_event.payload_json or {}),
                 "content": transcript,
@@ -2756,6 +2719,7 @@ class JarvisCoordinator:
             execution_mode="jarvis_shell",
             communication_state="completed",
         )
+        await record_message_timeline_item(repo, message)
         conversation_event.payload_json = {
             **(conversation_event.payload_json or {}),
             "turn_id": message.id,
@@ -2797,8 +2761,9 @@ class JarvisCoordinator:
         existing_turn_id = str((conversation_event.payload_json or {}).get("turn_id") or "")
         if existing_turn_id:
             existing_message = await session.get(ConversationMessage, existing_turn_id)
-            if existing_message is not None:
+            if existing_message is not None and existing_message.content != transcript:
                 existing_message.content = transcript
+                await record_message_timeline_item(repo, existing_message)
             conversation_event.payload_json = {
                 **(conversation_event.payload_json or {}),
                 "content": transcript,
@@ -2816,6 +2781,7 @@ class JarvisCoordinator:
             execution_mode="jarvis_shell",
             communication_state="generated",
         )
+        await record_message_timeline_item(repo, message)
         conversation_event.payload_json = {
             **(conversation_event.payload_json or {}),
             "turn_id": message.id,

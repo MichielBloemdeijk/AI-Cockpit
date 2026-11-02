@@ -14,7 +14,6 @@ export function isPendingLocalMessage(message: ChatMessage): boolean {
 
 export function areEquivalentMessages(left: ChatMessage, right: ChatMessage): boolean {
   return left.runId === right.runId
-    && left.step === right.step
     && left.role === right.role
     && left.kind === right.kind
     && left.title === right.title

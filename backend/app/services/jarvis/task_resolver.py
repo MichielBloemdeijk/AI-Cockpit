@@ -1,6 +1,8 @@
 """Deterministic, user-facing task references without exposed task IDs."""
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from dataclasses import dataclass
 import re
 
@@ -157,7 +159,7 @@ class NaturalTaskResolver:
         return task
 
     @staticmethod
-    async def _first_recent(session, recent: list[str], *, statuses: set[str] | None) -> Task | None:
+    async def _first_recent(session, recent: list[str], *, statuses: Collection[str] | None) -> Task | None:
         for task_id in recent:
             task = await NaturalTaskResolver._by_id(session, task_id)
             if task is not None and (statuses is None or task.status in statuses):

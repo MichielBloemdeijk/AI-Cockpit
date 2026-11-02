@@ -247,10 +247,12 @@ only from `app.app_platform`.
 - **Records:** JSON Schema (2020-12) validation on write, revisions with
   `expected_revision` (0 means "must not exist"), equality filters and ordering
   on top-level fields, 256 KiB per record.
-- **Lifecycle:** install from a folder under `app_builds_dir`, through
-  `POST /api/app-platform/apps/install` (owner only). Versions must increase and
-  stay compatible with the active version's schemas. Every version is kept;
-  `POST /apps/{slug}/rollback` moves the active pointer back.
+- **Lifecycle:** `app_platform.install_package` installs a checked package
+  folder; the build workflow calls it when it publishes its `app-build.v1` result.
+  Versions must increase and stay compatible with the active version's schemas.
+  Every version is kept; `rollback` moves the active pointer back. Install,
+  rollback, status and reset have no HTTP routes: Jarvis's tools call the
+  platform in-process.
 - **UI hosting:** `/api/app-host/<slug>/<version>/<path>` serves `ui/` with
   `CSP: sandbox allow-scripts …; connect-src 'none'; frame-ancestors 'self'`, so
   an app's frame has an opaque origin and no network access. The Cockpit page
@@ -309,10 +311,10 @@ Deliberate simplifications to revisit:
   (at most 20 per page load). The bridge posts them with the app token to
   `POST /apps/{slug}/errors`. They are stored deduplicated per version and
   message in `app_errors` (the latest 50 per app).
-- **Management:** `GET /apps/{slug}/status`, `POST /apps/{slug}/reset`
-  (all records or one collection) and `DELETE /apps/{slug}` (versions,
-  records, errors, indexes and files). The last two are owner-only; app tokens
-  never reach management.
+- **Management:** status and reset (all records or one collection) go
+  through Jarvis's tools. `DELETE /apps/{slug}` (versions, records, errors,
+  indexes and files) is the owner-only route behind the apps page's uninstall;
+  app tokens never reach it.
 - **Jarvis tools:**
   - `build_app` starts the workflow for a new app, or for a change when `app`
     is given.
@@ -582,8 +584,8 @@ Deliberate simplifications to revisit:
   description now names the app. The new `write_app_data` tool adds, updates
   (merging fields, fenced by the revision it read) or deletes one record, as
   the app's own screen would.
-- **App data next to the core database.** `APPS_DATABASE_URL`, `APPS_DIR`,
-  `APP_FILES_DIR` and `APP_BUILDS_DIR` default to the core SQLite database's
+- **App data next to the core database.** `APPS_DATABASE_URL`, `APPS_DIR` and
+  `APP_FILES_DIR` default to the core SQLite database's
   folder. A backend started with its own database (tests, emulator and
   self-test harnesses) therefore never reads or writes the live `apps.db`;
   before this, the emulator harnesses would have used it.

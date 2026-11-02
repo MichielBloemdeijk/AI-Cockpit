@@ -8,7 +8,6 @@ import sqlite3
 from collections.abc import AsyncIterator
 import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 import time
 
 from anyio import CancelScope
@@ -250,14 +249,6 @@ async def close_engine() -> None:
     _session_factory = None
 
 
-async def ensure_database_ready() -> None:
-    db_path = settings.database_path
-    if db_path is None:
-        return
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    await asyncio.to_thread(_prepare_sqlite_journal, settings.database_url, Path(db_path))
-
-
 def _prepare_sqlite_journal(database_url: str, database_path: Path) -> None:
     with _sqlite_migration_lock(database_url):
         with closing(sqlite3.connect(database_path, timeout=30)) as connection:
@@ -320,27 +311,17 @@ def _sqlite_migration_lock(database_url: str, *, timeout_seconds: float = 60.0):
 
 
 def run_migrations() -> None:
-    alembic_config_path = settings.alembic_config_path
-    config = Config(str(alembic_config_path))
+    """Bring the database to the current schema; the one start-up entry point."""
+    database_path = settings.database_path
+    if database_path is not None:
+        Path(database_path).parent.mkdir(parents=True, exist_ok=True)
+        # Before Alembic connects, so a fresh database is created in WAL mode.
+        _prepare_sqlite_journal(settings.database_url, Path(database_path))
+    # alembic/env.py sets the database URL from the same settings.
+    config = Config(str(settings.alembic_config_path))
     config.set_main_option("script_location", str(settings.backend_root / "alembic"))
-    config.set_main_option("sqlalchemy.url", settings.resolved_database_url.replace("+aiosqlite", ""))
-
-    # Alembic warns if the config lacks path_separator. Inject a temporary one at runtime.
-    with alembic_config_path.open("r", encoding="utf-8") as handle:
-        config_text = handle.read()
-    if "path_separator" not in config_text:
-        config_text = config_text.replace("[alembic]\n", "[alembic]\npath_separator = os\n", 1)
-        with NamedTemporaryFile("w", encoding="utf-8", suffix=".ini", delete=False) as temp_file:
-            temp_file.write(config_text)
-            temp_config_path = temp_file.name
-        config = Config(temp_config_path)
-        config.set_main_option("script_location", str(settings.backend_root / "alembic"))
-        config.set_main_option("sqlalchemy.url", settings.resolved_database_url.replace("+aiosqlite", ""))
-
     with _sqlite_migration_lock(settings.database_url):
         # In-process startup already configured logging. Alembic's CLI config
         # must not replace API/worker handlers or their application log levels.
         config.attributes["configure_logger"] = False
         command.upgrade(config, "head")
-    if settings.database_path is not None:
-        _prepare_sqlite_journal(settings.database_url, settings.database_path)

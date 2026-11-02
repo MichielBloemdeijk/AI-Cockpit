@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from app.config import settings
-from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
+from app.db.session import close_engine, initialize_engine, run_migrations
 from app.services.tasks.pool_supervisor import SupervisorLeaseBusy, task_pool_supervisor
 from app.services.tasks.worker import TaskWorker
 
@@ -58,7 +58,6 @@ async def worker_main(
         if parent_pid is None:
             raise RuntimeError("A supervised task child requires its parent's process identity")
         exit_when_parent_exits(parent_pid)
-    await ensure_database_ready()
     run_migrations()
     initialize_engine(settings.database_url)
     try:

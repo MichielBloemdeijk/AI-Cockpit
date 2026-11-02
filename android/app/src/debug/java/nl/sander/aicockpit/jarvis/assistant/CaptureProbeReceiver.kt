@@ -29,17 +29,17 @@ class CaptureProbeReceiver : BroadcastReceiver() {
                 when (intent.getStringExtra("command")) {
                     "consent" -> withContext(Dispatchers.Main) {
                         CredentialStore(context).assistStructureOptIn = intent.getBooleanExtra("enabled", false)
-                        JarvisVoiceInteractionService.restoreFixtureContextPolicy()
+                        JarvisVoiceInteractionService.refreshContextPolicy()
                     }
                     "wake" -> {
                         val locked = context.getSystemService(KeyguardManager::class.java).isDeviceLocked
                         CockpitApi(CredentialStore(context)).updateDevice(if (locked) "locked" else "unlocked")
                         withContext(Dispatchers.Main) {
-                            check(JarvisVoiceInteractionService.invokeWakeFixture(activationId, id, sessionId, generation))
+                            check(DebugAssistantFixtures.invokeWakeFixture(context, activationId, id, sessionId, generation))
                         }
                     }
                     "refresh" -> withContext(Dispatchers.Main) {
-                        check(JarvisVoiceInteractionSession.refreshFixture(activationId, id))
+                        check(DebugAssistantFixtures.refreshFixture(activationId, id))
                     }
                     "submit" -> {
                         val arguments = JSONObject().put("goal", "Describe the visible screen marker")

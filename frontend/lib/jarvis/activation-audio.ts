@@ -33,9 +33,6 @@ export interface JarvisCandidateAudio {
   observeEndpoint(): Promise<JarvisLocalEndpoint>;
   promoteToConversation(): void;
   close(reason: JarvisCandidateCloseReason): void;
-  /** Compatibility-only fields used by the pre-phase-3 handoff adapter. */
-  preRoll?: Float32Array;
-  endpoint?: Promise<{ sampleRate: number; totalSamples: number; trailingSilenceMs: number }>;
 }
 
 export interface JarvisActivationAudioDiagnostics {

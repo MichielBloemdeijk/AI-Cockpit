@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import hashlib
 import secrets
 from uuid import uuid4
@@ -14,10 +14,7 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import JarvisDevice, JarvisLiveEvent, JarvisPairingCode
 from app.services.auth import SESSION_COOKIE_NAME, verify_session_token, authorization_scheme, device_session_id
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.timestamps import utc_now
 
 
 def _hash(value: str) -> str:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,10 +19,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import NullPool
 
 from app.config import settings
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.timestamps import utc_now
 
 
 class AppsBase(DeclarativeBase):

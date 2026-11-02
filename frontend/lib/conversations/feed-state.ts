@@ -70,7 +70,6 @@ export function appendCommittedTimelineMessage(currentMessages: ChatMessage[], m
 export function mergeConversationFeed(
   currentMessages: ChatMessage[],
   committedMessages: ChatMessage[],
-  loadedLiveMessage: ChatMessage | null,
   activeRunId: string | null,
 ): ChatMessage[] {
   const preservedCommittedMessages = activeRunId
@@ -98,13 +97,5 @@ export function mergeConversationFeed(
       nextMessages.push(liveMessage);
     }
   }
-  if (loadedLiveMessage && !nextMessages.some((message) => (
-    loadedLiveMessage.activityId
-      ? message.activityId === loadedLiveMessage.activityId
-      : message.id === loadedLiveMessage.id
-  ))) {
-    nextMessages.push(loadedLiveMessage);
-  }
-
   return nextMessages;
 }

@@ -102,8 +102,9 @@ include = [
     "app/services/agent_execution.py",
     "app/services/codex_native.py",
     "app/services/codex_task_runtime.py",
-    "app/services/jarvis/coordinator.py",
+    "app/services/jarvis",
     "app/services/llm.py",
+    "app/services/orchestration",
     "app/services/results",
     "app/services/updates",
 ]

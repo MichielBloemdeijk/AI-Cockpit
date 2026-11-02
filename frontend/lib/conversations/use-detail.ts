@@ -3,16 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 
 import { type ConversationArtifactView, type ConversationDetail, type ConversationEventView, getConversation, getConversationEvents } from "../api/conversations";
-import {
-  buildCommittedConversationMessages,
-  buildLiveConversationMessage,
-} from "./feed";
+import { buildCommittedConversationMessages } from "./feed";
 import { mergeConversationFeed } from "./feed-state";
-import {
-  buildFallbackAgentStatus,
-  findLatestAgentStatus,
-} from "./agent-stream-state";
-import type { AgentStatus, ChatMessage } from "./state-types";
+import type { ChatMessage } from "./state-types";
 import { isSelected, type ConversationSelectionRef } from "./selection";
 
 interface UseConversationDetailOptions {
@@ -20,13 +13,6 @@ interface UseConversationDetailOptions {
   activeBranchKey: string;
   activeStreamRunIdRef: MutableRefObject<string | null>;
   selectionRef: ConversationSelectionRef;
-}
-
-function isLegacyActiveRunTransientMessage(message: ChatMessage, activeRunId: string): boolean {
-  if (message.runId !== activeRunId) {
-    return false;
-  }
-  return message.id.startsWith("event:") || message.id.startsWith("toolrow:");
 }
 
 export function useConversationDetail({
@@ -39,7 +25,6 @@ export function useConversationDetail({
   const [events, setEvents] = useState<ConversationEventView[]>([]);
   const [artifacts, setArtifacts] = useState<ConversationArtifactView[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const loadGenerationRef = useRef(0);
   const foregroundLoadRef = useRef(0);
@@ -52,7 +37,6 @@ export function useConversationDetail({
     setEvents([]);
     setArtifacts([]);
     setMessages([]);
-    setAgentStatus(null);
   }, []);
 
   const loadConversation = useCallback(async (conversationId: string, branchKey: string, options?: { background?: boolean }) => {
@@ -79,29 +63,11 @@ export function useConversationDetail({
       setActiveConversation(detail);
       setEvents(eventData.events);
       setArtifacts(eventData.artifacts);
-      const runStatus = String(detail.latest_run_status ?? "").toLowerCase();
       const activeRunId = activeStreamRunIdRef.current ?? eventData.active_run?.run_id ?? detail.active_run?.run_id ?? null;
-      const hasActiveStreamRun = Boolean(activeRunId);
-      const committedMessages = buildCommittedConversationMessages(
-        detail,
-        eventData.artifacts,
-        eventData.events,
-        eventData.timeline_items ?? [],
-      );
-      const stableCommittedMessages = runStatus === "running" && activeRunId && !(eventData.timeline_items?.length)
-        ? committedMessages.filter((message) => !isLegacyActiveRunTransientMessage(message, activeRunId))
-        : committedMessages;
-      const loadedLiveMessage = buildLiveConversationMessage(eventData.active_run ?? detail.active_run ?? null);
+      const committedMessages = buildCommittedConversationMessages(eventData.timeline_items ?? []);
       setMessages((current) => (
-        mergeConversationFeed(current, stableCommittedMessages, loadedLiveMessage, activeRunId)
+        mergeConversationFeed(current, committedMessages, activeRunId)
       ));
-      if (runStatus === "running") {
-        setAgentStatus(findLatestAgentStatus(eventData.events) ?? buildFallbackAgentStatus(conversationId, activeRunId));
-      } else if (runStatus === "paused" || runStatus === "failed") {
-        setAgentStatus(findLatestAgentStatus(eventData.events));
-      } else if (!hasActiveStreamRun) {
-        setAgentStatus(null);
-      }
     } catch (error) {
       if (current()) {
         throw error;
@@ -127,7 +93,6 @@ export function useConversationDetail({
     artifacts,
     events,
     messages,
-    agentStatus,
     loadingConversation,
     loadConversation,
     resetConversationDetail,
@@ -135,6 +100,5 @@ export function useConversationDetail({
     setArtifacts,
     setEvents,
     setMessages,
-    setAgentStatus,
   };
 }

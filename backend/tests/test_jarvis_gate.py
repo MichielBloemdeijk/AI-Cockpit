@@ -22,14 +22,14 @@ async def test_pending_wake_gate_blocks_response_until_direct_transcript() -> No
         conversation_id=accepted.conversation.id,
         controller_id="gate-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.99},
+        activation_context={"source": "wake_word", "wake_score": 0.99, "activation_id": "jarvis_gate-wake-1"},
     )
     session = bootstrap.session
 
     await jarvis_coordinator.handle_provider_event(
         session.id,
         session.generation,
-        VoiceProviderEvent(event_id="gate-stop", kind="user_stopped"),
+        VoiceProviderEvent(event_id="gate-commit", kind="user_input_committed", payload={"item_id": "gate-item"}),
     )
     await jarvis_coordinator._queue_controlled_response(
         session.id,
@@ -63,7 +63,7 @@ async def test_strong_score_gate_acceptance_emits_privacy_safe_diagnostics() -> 
         conversation_id=accepted.conversation.id,
         controller_id="strong-score-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.928},
+        activation_context={"source": "wake_word", "wake_score": 0.928, "activation_id": "jarvis_gate-wake-2"},
     )
     session = bootstrap.session
     await jarvis_coordinator.handle_provider_event(
@@ -103,7 +103,7 @@ async def test_wake_gate_timeout_rejects_and_discards_candidate(
         conversation_id=accepted.conversation.id,
         controller_id="timeout-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.99},
+        activation_context={"source": "wake_word", "wake_score": 0.99, "activation_id": "jarvis_gate-wake-3"},
     )
     session = bootstrap.session
     await jarvis_coordinator.handle_provider_event(
@@ -141,7 +141,7 @@ async def test_rejected_candidate_transcript_is_redacted_and_not_in_conversation
         conversation_id=accepted.conversation.id,
         controller_id="reject-browser",
         adapter_name="fake",
-        activation_context={"source": "wake_word", "wake_score": 0.99},
+        activation_context={"source": "wake_word", "wake_score": 0.99, "activation_id": "jarvis_gate-wake-4"},
     )
     session = bootstrap.session
     await jarvis_coordinator.handle_provider_event(

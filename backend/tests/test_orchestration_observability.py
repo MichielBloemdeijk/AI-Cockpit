@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import OrchestrationDecision, OrchestrationMetric, TaskExecutionRun
+from app.db.tables import OrchestrationDecision, OrchestrationMetric
 from app.services.orchestration.telemetry import record, snapshot, timestamp, token_usage
 from app.services.orchestration.service import DecisionTools, TaskOrchestrationService
 from app.services.tasks.service import task_service

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from typing import Any, cast
 from uuid import uuid4
 
@@ -27,6 +27,7 @@ from app.db.tables import (
     TaskResult,
 )
 from app.services.tasks.error_messages import public_failure_summary
+from app.timestamps import utc_now
 TERMINAL_TASK_EVENTS = frozenset(
     {"task.completed", "task.failed", "task.interrupted", "task.cancelled"}
 )
@@ -38,10 +39,6 @@ NOTIFIABLE_TASK_EVENTS = TERMINAL_TASK_EVENTS | {
 _MAX_RETRY_DELAY_SECONDS = 30.0
 _outbox_tasks: set[asyncio.Task[None]] = set()
 _scheduled_outbox_ids: set[str] = set()
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def sanitize_summary(value: str, limit: int = 120) -> str:

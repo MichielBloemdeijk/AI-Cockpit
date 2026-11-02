@@ -134,8 +134,6 @@ export interface JarvisPresentation {
   created_at: string;
   handled_at: string | null;
   handled_by: string | null;
-  /** @deprecated Use handled_at. */
-  presented_at: string | null;
 }
 
 export interface JarvisSessionEvent {

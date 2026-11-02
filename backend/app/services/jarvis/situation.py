@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, overload
 
 from sqlalchemy import func, select, update
 
@@ -33,13 +33,10 @@ from app.services.tasks.vocabulary import (
     UNSUCCESSFUL_TASK_STATUSES,
     TaskStatus,
 )
+from app.timestamps import utc_now
 
 
 OPEN_RESULT_WINDOW = timedelta(minutes=30)
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def result_value(result: TaskResult) -> dict[str, Any]:
@@ -55,8 +52,9 @@ async def last_opened_record(session, timestamp: datetime) -> dict[str, Any] | N
         return None
     result = (await session.execute(select(TaskResult).where(TaskResult.app_slug == view["app"],
         TaskResult.collection == view["collection"], TaskResult.record_key == view["key"]))).scalar_one_or_none()
+    viewed_at: datetime = view["viewed_at"]
     opened = {"app": view["app"], "app_title": view["app_title"], "collection": view["collection"],
-              "opened_seconds_ago": max(0, int((timestamp - _aware(view["viewed_at"])).total_seconds()))}
+              "opened_seconds_ago": max(0, int((timestamp - _aware(viewed_at)).total_seconds()))}
     if result is not None:
         return {"task_id": result.task_id, **opened, "title": result.title}
     try:
@@ -68,6 +66,10 @@ async def last_opened_record(session, timestamp: datetime) -> dict[str, Any] | N
             "note": "Not made by a task; change it in the app or start a new task."}
 
 
+@overload
+def _aware(value: datetime) -> datetime: ...
+@overload
+def _aware(value: datetime | None) -> datetime | None: ...
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -171,7 +173,7 @@ class JarvisSituationProjector:
         ]
 
         active_ids = [task.id for task in active_tasks]
-        questions = []
+        questions: list[TaskQuestion] = []
         if active_ids:
             questions = list((await session.execute(
                 select(TaskQuestion)
@@ -222,7 +224,7 @@ class JarvisSituationProjector:
         if summary_lines and advance_revision:
             state.conversation_summary = "\n".join(summary_lines)[-4_000:]
 
-        worker = (await session.execute(
+        worker: WorkerInstance | None = (await session.execute(
             select(WorkerInstance)
             .where(
                 WorkerInstance.stopped_at.is_(None),
@@ -231,17 +233,17 @@ class JarvisSituationProjector:
             .order_by(WorkerInstance.heartbeat_at.desc())
             .limit(1)
         )).scalar_one_or_none()
-        worker_online = bool(
-            worker is not None
-            and _aware(worker.heartbeat_at) is not None
-            and _aware(worker.heartbeat_at) >= timestamp - timedelta(seconds=settings.worker_stale_after_seconds)
+        heartbeat = None if worker is None else worker.heartbeat_at
+        worker_online = (
+            heartbeat is not None
+            and _aware(heartbeat) >= timestamp - timedelta(seconds=settings.worker_stale_after_seconds)
         )
         component_health = await runtime_health_service.snapshot_in_session(session, now=timestamp)
         component_health["worker"] = {
             "status": "healthy" if worker_online else "offline",
             "detail": None if worker_online else "No live task worker is available.",
             "worker_id": None if worker is None else worker.id,
-            "heartbeat_at": None if worker is None else _aware(worker.heartbeat_at).isoformat(),
+            "heartbeat_at": None if heartbeat is None else _aware(heartbeat).isoformat(),
         }
 
         conversation_cursor = int((await session.execute(

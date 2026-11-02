@@ -55,8 +55,6 @@ class JarvisPresentationView(BaseModel):
     created_at: datetime
     handled_at: datetime | None = None
     handled_by: str | None = None
-    # Deprecated compatibility alias; new clients should use handled_at.
-    presented_at: datetime | None = None
 
 
 class JarvisSessionEventView(BaseModel):

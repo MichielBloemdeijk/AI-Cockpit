@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from uuid import uuid4
 
 from app.db.repositories.conversations import ConversationRepository
@@ -13,6 +13,7 @@ from app.services.conversations.titles import conversation_title_service
 from app.services.conversations.timeline import (
     TIMELINE_ITEM_EVENT_TYPE,
     build_assistant_message_timeline_item,
+    build_message_timeline_item,
     build_user_message_timeline_item,
 )
 from app.services.conversations.workspace import (
@@ -21,12 +22,9 @@ from app.services.conversations.workspace import (
     list_workspace_files,
     workspace_relative_path,
 )
+from app.timestamps import utc_now
 
 logger = logging.getLogger(__name__)
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass(slots=True)
@@ -264,6 +262,29 @@ def _chat_defaults_record(model) -> ChatDefaultsRecord:
         chat_defaults_json=model.chat_defaults_json,
         created_at=model.created_at,
         updated_at=model.updated_at,
+    )
+
+
+async def record_message_timeline_item(repo: ConversationRepository, message) -> None:
+    """Every durable message is also a timeline item, so clients render one contract.
+
+    Re-recording a message whose content changed appends a newer item with the
+    same item id; the read model keeps the newest payload in the original slot.
+    """
+    await repo.append_event(
+        conversation_id=message.conversation_id,
+        run_id=message.run_id,
+        actor_kind=message.role,
+        event_type=TIMELINE_ITEM_EVENT_TYPE,
+        payload_json=build_message_timeline_item(
+            message_id=message.id,
+            role=message.role,
+            content=message.content,
+            label=message.author_label,
+            source_task_id=message.source_task_id,
+        ),
+        branch_key=MAIN_BRANCH_KEY,
+        parent_event_id=message.source_event_id,
     )
 
 
@@ -720,26 +741,6 @@ class ConversationStore:
             )
             await repo.touch_conversation(conversation_id)
             return _event_record(event)
-
-    async def append_timeline_item(
-        self,
-        conversation_id: str,
-        *,
-        run_id: str | None,
-        item_payload: dict,
-        actor_kind: str = ActorKind.assistant.value,
-        branch_key: str | None = None,
-        parent_event_id: str | None = None,
-    ) -> EventRecord:
-        return await self.append_event(
-            conversation_id,
-            run_id=run_id,
-            actor_kind=actor_kind,
-            event_type=TIMELINE_ITEM_EVENT_TYPE,
-            payload_json=item_payload,
-            branch_key=branch_key,
-            parent_event_id=parent_event_id,
-        )
 
     async def complete_message(
         self,

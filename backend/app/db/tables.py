@@ -1,9 +1,17 @@
-"""SQLAlchemy tables for durable conversation persistence."""
+"""All ORM tables, grouped by domain; the indexes follow at the end."""
+
+
 from __future__ import annotations
 
+
 from datetime import date, datetime
+
+
 from enum import Enum, StrEnum
+
+
 from uuid import uuid4
+
 
 from sqlalchemy import (
     Boolean,
@@ -20,10 +28,17 @@ from sqlalchemy import (
     func,
     text,
 )
+
+
 from sqlalchemy.dialects.sqlite import JSON
+
+
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+
 from app.db.base import Base
+
+
 from app.services.tasks.vocabulary import RunStatus as TaskRunStatus, TaskStatus
 
 
@@ -97,6 +112,9 @@ class ConversationKind(str, Enum):
 class ConversationLifecycle(str, Enum):
     open = "open"
     closed = "closed"
+
+
+# --- Conversations -----------------------------------------------------------
 
 
 class Conversation(Base):
@@ -304,6 +322,108 @@ class ConversationArtifact(Base):
     run: Mapped[ConversationRun | None] = relationship(back_populates="artifacts")
 
 
+class ConversationObservation(Base):
+    """Durable bounded observer work and its evidence; never a second inbox."""
+
+    __tablename__ = "conversation_observations"
+    __table_args__ = (UniqueConstraint("session_id", "evidence_hash", name="uq_conversation_observation_evidence"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    input_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AssistantPromise(Base):
+    """Something Jarvis said it would do in conversation, tracked until kept or dropped."""
+
+    __tablename__ = "assistant_promises"
+    __table_args__ = (UniqueConstraint("session_id", "source_key", name="uq_assistant_promise_source"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(String(500), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    source_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fragment_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    resolution: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- Memory, recall and settings ---------------------------------------------
+
+
+class MemoryItem(Base):
+    __tablename__ = "memory_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=MemoryStatus.proposed.value)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    source_event_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("conversation_events.id", ondelete="SET NULL"), nullable=True
+    )
+    knowledge_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RecallDocument(Base):
+    """User-visible text projected into the local FTS recall indexes."""
+
+    __tablename__ = "recall_documents"
+    __table_args__ = (
+        UniqueConstraint("id", name="uq_recall_documents_id"),
+        UniqueConstraint("virtual_path", name="uq_recall_documents_virtual_path"),
+    )
+
+    document_order: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid_str)
+    virtual_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    chat_defaults_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# --- Jarvis and live voice ---------------------------------------------------
+
+
 class JarvisState(Base):
     """Singleton pointer to the current open Jarvis daily log."""
 
@@ -334,6 +454,26 @@ class JarvisState(Base):
     live_event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class JarvisPreference(Base):
+    """Single-user Jarvis preferences kept server-side for device handoff."""
+
+    __tablename__ = "jarvis_preferences"
+    __table_args__ = (CheckConstraint("id = 'current'", name="ck_jarvis_preferences_singleton_id"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="current")
+    voice: Mapped[str] = mapped_column(String(32), nullable=False, default="marin", server_default="marin")
+    concision: Mapped[str] = mapped_column(String(32), nullable=False, default="concise", server_default="concise")
+    wake_behavior: Mapped[str] = mapped_column(String(32), nullable=False, default="follow_up", server_default="follow_up")
+    developer_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    android_privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    time_zone: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="Europe/Amsterdam", server_default="Europe/Amsterdam"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
@@ -396,43 +536,6 @@ class LiveSessionEvent(Base):
     )
 
 
-class ConversationObservation(Base):
-    """Durable bounded observer work and its evidence; never a second inbox."""
-
-    __tablename__ = "conversation_observations"
-    __table_args__ = (UniqueConstraint("session_id", "evidence_hash", name="uq_conversation_observation_evidence"),)
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
-    generation: Mapped[int] = mapped_column(Integer, nullable=False)
-    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    input_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    error: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class AssistantPromise(Base):
-    """Something Jarvis said it would do in conversation, tracked until kept or dropped."""
-
-    __tablename__ = "assistant_promises"
-    __table_args__ = (UniqueConstraint("session_id", "source_key", name="uq_assistant_promise_source"),)
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
-    generation: Mapped[int] = mapped_column(Integer, nullable=False)
-    text: Mapped[str] = mapped_column(String(500), nullable=False)
-    task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
-    source_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_fragment_ids: Mapped[list] = mapped_column(JSON, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
-    resolution: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class JarvisLiveTraceEvent(Base):
     """Short-lived, metadata-only timing events for Live diagnosis."""
 
@@ -457,6 +560,29 @@ class JarvisLiveTraceEvent(Base):
     monotonic_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class JarvisLiveEvent(Base):
+    """Unified, resumable event stream consumed by browser and Android clients."""
+
+    __tablename__ = "jarvis_live_events"
+    __table_args__ = (
+        UniqueConstraint("id", name="uq_jarvis_live_events_id"),
+        UniqueConstraint("idempotency_key", name="uq_jarvis_live_events_idempotency"),
+    )
+
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid_str)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_domain: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_device_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -509,41 +635,51 @@ class SpeechDelivery(Base):
     )
 
 
-class MemoryItem(Base):
-    __tablename__ = "memory_items"
+class LiveAdmissionIntent(Base):
+    """One durable outcome identity across all voice admission routes."""
+    __tablename__ = "live_admission_intents"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    turn_scope: Mapped[str] = mapped_column(String(255), nullable=False)
+    intent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+# --- Paired devices ----------------------------------------------------------
+
+
+class JarvisDevice(Base):
+    __tablename__ = "jarvis_devices"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    scope: Mapped[str] = mapped_column(String(32), nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default=MemoryStatus.proposed.value)
-    confidence: Mapped[float | None] = mapped_column(nullable=True)
-    source_conversation_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
-    source_event_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("conversation_events.id", ondelete="SET NULL"), nullable=True
-    )
-    knowledge_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    credential_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="android")
+    lock_state: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", server_default="unknown")
+    privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class AppSettings(Base):
-    __tablename__ = "app_settings"
+class JarvisPairingCode(Base):
+    __tablename__ = "jarvis_pairing_codes"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    chat_defaults_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    code_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- Tasks -------------------------------------------------------------------
 
 
 class Task(Base):
@@ -672,298 +808,6 @@ class TaskExecutionRun(Base):
     )
 
 
-class RuntimeCredentialLease(Base):
-    """A single subscription credential owner; heartbeat expiry never releases it."""
-    __tablename__ = "runtime_credential_leases"
-    profile_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    owner_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    host: Mapped[str] = mapped_column(String(255), nullable=False)
-    pid: Mapped[int] = mapped_column(Integer, nullable=False)
-    creation_stamp: Mapped[str] = mapped_column(String(64), nullable=False)
-    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class LiveAdmissionIntent(Base):
-    """One durable outcome identity across all voice admission routes."""
-    __tablename__ = "live_admission_intents"
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    session_id: Mapped[str] = mapped_column(String(36), ForeignKey("live_sessions.id", ondelete="CASCADE"), nullable=False)
-    generation: Mapped[int] = mapped_column(Integer, nullable=False)
-    turn_scope: Mapped[str] = mapped_column(String(255), nullable=False)
-    intent_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    target_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class TaskContextBundle(Base):
-    """Immutable compact context pinned once per execution run."""
-
-    __tablename__ = "task_context_bundles"
-    __table_args__ = (
-        UniqueConstraint("execution_run_id", name="uq_task_context_bundles_run"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    task_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
-    )
-    execution_run_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False
-    )
-    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    content_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class TaskControlCommand(Base):
-    """Idempotent, auditable control requested against a particular run."""
-
-    __tablename__ = "task_control_commands"
-    __table_args__ = (
-        UniqueConstraint("task_id", "idempotency_key", name="uq_task_control_commands_task_key"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    task_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
-    )
-    execution_run_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("task_execution_runs.id", ondelete="SET NULL"), nullable=True
-    )
-    attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    action: Mapped[str] = mapped_column(String(64), nullable=False)
-    parameters_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    requester: Mapped[str] = mapped_column(String(64), nullable=False)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    provider_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="requested", server_default="requested")
-    requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
-class TaskNativeBinding(Base):
-    __tablename__ = "task_native_bindings"
-    __table_args__ = (
-        UniqueConstraint("execution_run_id", "generation", name="uq_task_native_bindings_run_generation"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    task_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
-    )
-    execution_run_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False
-    )
-    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
-    native_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    profile_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    runtime_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    compatibility_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    storage_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    replacement_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class TaskOperation(Base):
-    """Durable operation journal; uncertain outcomes are never replayable."""
-
-    __tablename__ = "task_operations"
-    __table_args__ = (
-        UniqueConstraint("task_id", "operation_key", name="uq_task_operations_task_key"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    task_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
-    )
-    execution_run_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False
-    )
-    attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    operation_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    operation_type: Mapped[str] = mapped_column(String(128), nullable=False)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="started", server_default="started")
-    input_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    intent_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    result_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
-class TaskSupervisorLease(Base):
-    __tablename__ = "task_supervisor_leases"
-
-    lease_key: Mapped[str] = mapped_column(String(64), primary_key=True, default="task-pool")
-    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
-    owner_identity: Mapped[str] = mapped_column(String(255), nullable=False)
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class TaskPoolCommand(Base):
-    """Idempotent, audited administrative pool mutation."""
-
-    __tablename__ = "task_pool_commands"
-    __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_task_pool_commands_idempotency"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    action: Mapped[str] = mapped_column(String(32), nullable=False)
-    target_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    affected_worker_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    requester: Mapped[str] = mapped_column(String(64), nullable=False)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="requested")
-    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class JarvisPreference(Base):
-    """Single-user Jarvis preferences kept server-side for device handoff."""
-
-    __tablename__ = "jarvis_preferences"
-    __table_args__ = (CheckConstraint("id = 'current'", name="ck_jarvis_preferences_singleton_id"),)
-
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default="current")
-    voice: Mapped[str] = mapped_column(String(32), nullable=False, default="marin", server_default="marin")
-    concision: Mapped[str] = mapped_column(String(32), nullable=False, default="concise", server_default="concise")
-    wake_behavior: Mapped[str] = mapped_column(String(32), nullable=False, default="follow_up", server_default="follow_up")
-    developer_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
-    android_privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    time_zone: Mapped[str] = mapped_column(
-        String(255), nullable=False, default="Europe/Amsterdam", server_default="Europe/Amsterdam"
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
-class JarvisLiveEvent(Base):
-    """Unified, resumable event stream consumed by browser and Android clients."""
-
-    __tablename__ = "jarvis_live_events"
-    __table_args__ = (
-        UniqueConstraint("id", name="uq_jarvis_live_events_id"),
-        UniqueConstraint("idempotency_key", name="uq_jarvis_live_events_idempotency"),
-    )
-
-    sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid_str)
-    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
-    source_domain: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    source_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    target_device_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class RecallDocument(Base):
-    """User-visible text projected into the local FTS recall indexes."""
-
-    __tablename__ = "recall_documents"
-    __table_args__ = (
-        UniqueConstraint("id", name="uq_recall_documents_id"),
-        UniqueConstraint("virtual_path", name="uq_recall_documents_virtual_path"),
-    )
-
-    document_order: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    id: Mapped[str] = mapped_column(String(36), nullable=False, default=_uuid_str)
-    virtual_path: Mapped[str] = mapped_column(String(1024), nullable=False)
-    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
-class JarvisDevice(Base):
-    __tablename__ = "jarvis_devices"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    label: Mapped[str] = mapped_column(String(255), nullable=False)
-    credential_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="android")
-    lock_state: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", server_default="unknown")
-    privacy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class JarvisPairingCode(Base):
-    __tablename__ = "jarvis_pairing_codes"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    code_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class WorkerInstance(Base):
-    __tablename__ = "worker_instances"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
-    process_identity: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    supervisor_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
-    assignment_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    heartbeat_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class RuntimeComponentHealth(Base):
-    """Durable liveness and failure state for Jarvis runtime components."""
-
-    __tablename__ = "runtime_component_health"
-
-    component: Mapped[str] = mapped_column(String(64), primary_key=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-
 class TaskAttempt(Base):
     __tablename__ = "task_attempts"
     __table_args__ = (
@@ -1055,86 +899,89 @@ class TaskProjectionCheckpoint(Base):
     )
 
 
-class OrchestrationDecision(Base):
-    """Durable issue-specific work; never a second copy of task status."""
+class TaskControlCommand(Base):
+    """Idempotent, auditable control requested against a particular run."""
 
-    __tablename__ = "orchestration_decisions"
-    __table_args__ = (Index("ix_orchestration_due", "status", "due_at", "source_sequence"),)
+    __tablename__ = "task_control_commands"
+    __table_args__ = (
+        UniqueConstraint("task_id", "idempotency_key", name="uq_task_control_commands_task_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    issue_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
-    execution_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    question_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_event_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
-    source_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    observed_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
-    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    claim_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    claim_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    context_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    model: Mapped[str] = mapped_column(String(128), nullable=False)
-    effort: Mapped[str] = mapped_column(String(16), nullable=False)
-    auth_profile: Mapped[str] = mapped_column(String(255), nullable=False)
-    native_binding_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    outcome_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("task_execution_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    parameters_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    requester: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="requested", server_default="requested")
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TaskNativeBinding(Base):
+    __tablename__ = "task_native_bindings"
+    __table_args__ = (
+        UniqueConstraint("execution_run_id", "generation", name="uq_task_native_bindings_run_generation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    native_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    profile_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    runtime_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    compatibility_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    storage_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    replacement_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class TaskOperation(Base):
+    """Durable operation journal; uncertain outcomes are never replayable."""
+
+    __tablename__ = "task_operations"
+    __table_args__ = (
+        UniqueConstraint("task_id", "operation_key", name="uq_task_operations_task_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    operation_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="started", server_default="started")
+    input_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    intent_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class OrchestrationMetric(Base):
-    """Metadata-only timings/usage. Inserting a metric cannot wake model work."""
-
-    __tablename__ = "orchestration_metrics"
-    __table_args__ = (Index("ix_orchestration_metric_kind_created", "kind", "created_at"),)
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    metric_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    decision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("orchestration_decisions.id", ondelete="CASCADE"))
-    claim_generation: Mapped[int | None] = mapped_column(Integer)
-    task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"))
-    source_sequence: Mapped[int | None] = mapped_column(Integer)
-    duration_ms: Mapped[float | None] = mapped_column(Float)
-    values_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class OrchestrationAction(Base):
-    """An action and its task mutation commit in the same transaction."""
-
-    __tablename__ = "orchestration_actions"
-    __table_args__ = (UniqueConstraint("decision_id", "operation_key", name="uq_orchestration_action_operation"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    decision_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_decisions.id", ondelete="CASCADE"), nullable=False)
-    operation_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    action: Mapped[str] = mapped_column(String(32), nullable=False)
-    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    outcome_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class WorkerToolPolicy(Base):
-    __tablename__ = "worker_tool_policy"
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    configuration_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-
-
-class ConnectorToolPermission(Base):
-    __tablename__ = "connector_tool_permissions"
-    identity: Mapped[str] = mapped_column(String(255), primary_key=True)
-    connector: Mapped[str] = mapped_column(String(100), nullable=False)
-    account: Mapped[str] = mapped_column(String(100), nullable=False)
-    tool: Mapped[str] = mapped_column(String(100), nullable=False)
-    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="disabled")
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class TaskQuestion(Base):
@@ -1218,24 +1065,27 @@ class TaskCaptureReport(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-class WorkflowRun(Base):
-    """Pinned workflow-specific state for one task execution run."""
+class TaskContextBundle(Base):
+    """Immutable compact context pinned once per execution run."""
 
-    __tablename__ = "workflow_runs"
-    __table_args__ = (UniqueConstraint("execution_run_id", name="uq_workflow_runs_execution_run"),)
+    __tablename__ = "task_context_bundles"
+    __table_args__ = (
+        UniqueConstraint("execution_run_id", name="uq_task_context_bundles_run"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
-    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
-    execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False)
-    workflow_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    workflow_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    workflow_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    normalized_inputs_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    stage: Mapped[str] = mapped_column(String(64), nullable=False, default="admitted")
-    context_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    result_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class TaskContextBlob(Base):
@@ -1349,6 +1199,195 @@ class ResourceLease(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class WorkflowRun(Base):
+    """Pinned workflow-specific state for one task execution run."""
+
+    __tablename__ = "workflow_runs"
+    __table_args__ = (UniqueConstraint("execution_run_id", name="uq_workflow_runs_execution_run"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    execution_run_id: Mapped[str] = mapped_column(String(36), ForeignKey("task_execution_runs.id", ondelete="CASCADE"), nullable=False)
+    workflow_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    workflow_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    workflow_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_inputs_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    stage: Mapped[str] = mapped_column(String(64), nullable=False, default="admitted")
+    context_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    result_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+# --- Workers and runtime -----------------------------------------------------
+
+
+class WorkerInstance(Base):
+    __tablename__ = "worker_instances"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
+    process_identity: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    supervisor_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    assignment_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TaskSupervisorLease(Base):
+    __tablename__ = "task_supervisor_leases"
+
+    lease_key: Mapped[str] = mapped_column(String(64), primary_key=True, default="task-pool")
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    owner_identity: Mapped[str] = mapped_column(String(255), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskPoolCommand(Base):
+    """Idempotent, audited administrative pool mutation."""
+
+    __tablename__ = "task_pool_commands"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_task_pool_commands_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    affected_worker_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    requester: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="requested")
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RuntimeComponentHealth(Base):
+    """Durable liveness and failure state for Jarvis runtime components."""
+
+    __tablename__ = "runtime_component_health"
+
+    component: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="starting")
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RuntimeCredentialLease(Base):
+    """A single subscription credential owner; heartbeat expiry never releases it."""
+    __tablename__ = "runtime_credential_leases"
+    profile_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    creation_stamp: Mapped[str] = mapped_column(String(64), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class WorkerToolPolicy(Base):
+    __tablename__ = "worker_tool_policy"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    configuration_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ConnectorToolPermission(Base):
+    __tablename__ = "connector_tool_permissions"
+    identity: Mapped[str] = mapped_column(String(255), primary_key=True)
+    connector: Mapped[str] = mapped_column(String(100), nullable=False)
+    account: Mapped[str] = mapped_column(String(100), nullable=False)
+    tool: Mapped[str] = mapped_column(String(100), nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="disabled")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# --- Orchestration -----------------------------------------------------------
+
+
+class OrchestrationDecision(Base):
+    """Durable issue-specific work; never a second copy of task status."""
+
+    __tablename__ = "orchestration_decisions"
+    __table_args__ = (Index("ix_orchestration_due", "status", "due_at", "source_sequence"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    issue_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    execution_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    question_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_event_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    source_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claim_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    context_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    effort: Mapped[str] = mapped_column(String(16), nullable=False)
+    auth_profile: Mapped[str] = mapped_column(String(255), nullable=False)
+    native_binding_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    outcome_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OrchestrationMetric(Base):
+    """Metadata-only timings/usage. Inserting a metric cannot wake model work."""
+
+    __tablename__ = "orchestration_metrics"
+    __table_args__ = (Index("ix_orchestration_metric_kind_created", "kind", "created_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    metric_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("orchestration_decisions.id", ondelete="CASCADE"))
+    claim_generation: Mapped[int | None] = mapped_column(Integer)
+    task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id", ondelete="CASCADE"))
+    source_sequence: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[float | None] = mapped_column(Float)
+    values_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class OrchestrationAction(Base):
+    """An action and its task mutation commit in the same transaction."""
+
+    __tablename__ = "orchestration_actions"
+    __table_args__ = (UniqueConstraint("decision_id", "operation_key", name="uq_orchestration_action_operation"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_str)
+    decision_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_decisions.id", ondelete="CASCADE"), nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    outcome_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+# --- Task updates and notifications ------------------------------------------
+
+
 class TaskPresentation(Base):
     __tablename__ = "task_presentations"
     __table_args__ = (
@@ -1447,6 +1486,9 @@ class PushSubscription(Base):
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+# --- Indexes -----------------------------------------------------------------
 
 
 Index("ix_conversations_updated_at", Conversation.updated_at)

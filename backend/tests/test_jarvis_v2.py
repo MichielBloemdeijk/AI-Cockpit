@@ -210,7 +210,7 @@ async def test_reminders_deliver_once() -> None:
     now = datetime.now(timezone.utc)
     reminder = await reminder_scheduler.create(
         text="water the basil",
-        due_at=now + timedelta(minutes=1),
+        timing={"kind": "instant", "due_at": now + timedelta(minutes=1)},
         idempotency_key="v2-reminder-once",
     )
 

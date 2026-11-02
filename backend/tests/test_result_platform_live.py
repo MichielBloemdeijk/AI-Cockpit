@@ -5,10 +5,8 @@ import os
 import pytest
 
 pytestmark = pytest.mark.provider
-from sqlalchemy import select
 
 from app.config import settings
-from app.db.session import session_scope
 from app.services.codex_task_runtime import codex_task_runtime
 from app.services.tasks.service import task_service
 from app.services.tasks.worker import TaskWorker

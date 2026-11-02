@@ -19,6 +19,7 @@ from app.services.tasks.workflows import load_workflow
 from app.services.tasks.worker_coordinator import worker_coordinator
 from app.services.conversations.store import conversation_store
 from tests.test_app_platform import SAMPLE, build
+from app_packages import staging_path
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -63,7 +64,7 @@ async def test_reinstall_is_a_no_op_and_reset_status_uninstall_manage_data() -> 
     assert await app_platform.reset("notes") == {"records": 2, "files": 0}
     assert (await app_platform.status("notes"))["records"] == {"note": 0}
 
-    checkout = settings.app_builds_path / "checkout"
+    checkout = staging_path() / "checkout"
     assert (await app_platform.checkout("notes", checkout)).version == 1
     assert (checkout / "tests" / "ui.json").is_file()
     with pytest.raises(app_platform.ManifestError, match="not empty"):
@@ -80,26 +81,23 @@ async def test_reinstall_is_a_no_op_and_reset_status_uninstall_manage_data() -> 
 
 
 @pytest.mark.asyncio
-async def test_http_management_and_scoped_error_reports() -> None:
-    build()
+async def test_http_uninstall_and_scoped_error_reports() -> None:
+    await app_platform.install_package(build())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         await client.post("/api/auth/login", json={"password": ""})
-        assert (await client.post("/api/app-platform/apps/install", json={"source": "notes"})).status_code == 200
         token = (await client.post("/api/app-platform/apps/notes/session")).json()["token"]
         scoped = {"Authorization": f"AppPlatform {token}"}
         reported = await client.post("/api/app-platform/apps/notes/errors", headers=scoped,
                                      json={"message": "boom", "detail": "stack"})
         assert reported.status_code == 204
-        status = (await client.get("/api/app-platform/apps/notes/status")).json()
-        assert status["recent_errors"][0]["message"] == "boom"
-        await app_platform.put_record("notes", "note", "a", {"text": "x"})
-        assert (await client.post("/api/app-platform/apps/notes/reset", json={})).json() == {"records": 1, "files": 0}
+        assert (await app_platform.status("notes"))["recent_errors"][0]["message"] == "boom"
+        # The app's own token reaches its data and error reports, never management.
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver",
+                               headers=scoped) as app_client:
+            assert (await app_client.delete("/api/app-platform/apps/notes")).status_code == 401
         assert (await client.delete("/api/app-platform/apps/notes")).json() == {"uninstalled": True}
-        assert (await client.get("/api/app-platform/apps/notes/status")).status_code == 404
-    # The app's own token reaches its data and error reports, never management.
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver", headers=scoped) as app_client:
-        assert (await app_client.post("/api/app-platform/apps/notes/reset", json={})).status_code == 401
-        assert (await app_client.delete("/api/app-platform/apps/notes")).status_code == 401
+    with pytest.raises(app_platform.AppNotFound):
+        await app_platform.status("notes")
 
 
 @needs_browser

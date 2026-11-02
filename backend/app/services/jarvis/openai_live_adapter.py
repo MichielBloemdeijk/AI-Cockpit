@@ -215,7 +215,7 @@ class OpenAILiveAdapter:
         api_key = settings.openai_api_key.strip()
         if not api_key:
             raise OpenAILiveConfigurationError("OPENAI_API_KEY is not configured on the backend")
-        if not (sdp_offer or "").strip():
+        if sdp_offer is None or not sdp_offer.strip():
             raise OpenAILiveConfigurationError("An SDP offer is required for GPT-Live")
         connect_started = time.monotonic()
         provider_call_started = time.monotonic()
@@ -431,11 +431,9 @@ class OpenAILiveAdapter:
         provider_session = self._require_session(session_id, generation)
         if response_kind != "task_update":
             return
-        attention_context = (
-            context.get("attention_context")
-            if isinstance(context.get("attention_context"), dict)
-            else {"items": [], "total_pending": 0, "next_cursor": None, "deltas": []}
-        )
+        attention_context = context.get("attention_context")
+        if not isinstance(attention_context, dict):
+            attention_context = {"items": [], "total_pending": 0, "next_cursor": None, "deltas": []}
         # Keep the delegated Responses model's checklist view authoritative
         # without replacing its fixed routing instructions.
         await self._send(
@@ -656,11 +654,7 @@ class OpenAILiveAdapter:
             await self._emit(provider_session, "provider_error", {"error": outer.get("error")})
             return
         if event_type == "session.delegation.created":
-            delegation = (
-                outer.get("delegation")
-                if isinstance(outer.get("delegation"), dict)
-                else {}
-            )
+            delegation = _mapping(outer.get("delegation"))
             delegation_id = str(delegation.get("id") or "")
             if not delegation_id:
                 await self._emit(
@@ -708,7 +702,7 @@ class OpenAILiveAdapter:
         inner_type = str(inner.get("type") or "")
         if inner_type:
             self._mark_meaningful_activity(provider_session)
-        response = inner.get("response") if isinstance(inner.get("response"), dict) else {}
+        response = _mapping(inner.get("response"))
         response_id = str(response.get("id") or inner.get("response_id") or "")
         if not response_id:
             response_id = self._response_id_for_delegation(provider_session, delegation_id)
@@ -725,7 +719,7 @@ class OpenAILiveAdapter:
             await self._emit(provider_session, "assistant_generating", {"delegation_id": delegation_id, "response_id": response_id})
             return
         if inner_type == "response.output_item.done":
-            item = inner.get("item") if isinstance(inner.get("item"), dict) else {}
+            item = _mapping(inner.get("item"))
             if item.get("type") == "function_call" and response_id:
                 self._observe_delegation(
                     provider_session, delegation_id, response_id
@@ -1291,8 +1285,8 @@ class OpenAILiveAdapter:
 
     @staticmethod
     def _parse_creation_response(created: dict[str, Any]) -> tuple[str, str]:
-        session = created.get("session") if isinstance(created.get("session"), dict) else {}
-        transport = created.get("transport") if isinstance(created.get("transport"), dict) else {}
+        session = _mapping(created.get("session"))
+        transport = _mapping(created.get("transport"))
         provider_session_id = str(session.get("id") or "")
         sdp_answer = str(transport.get("sdp") or "")
         if not provider_session_id or not sdp_answer:
@@ -1305,7 +1299,7 @@ class OpenAILiveAdapter:
 
     @staticmethod
     def _session_config(context: dict[str, Any]) -> dict[str, Any]:
-        preferences = context.get("preferences") if isinstance(context.get("preferences"), dict) else {}
+        preferences = _mapping(context.get("preferences"))
         voice = str(preferences.get("voice") or settings.openai_live_voice)
         if voice not in {"marin", "cedar"}:
             voice = settings.openai_live_voice
@@ -1538,6 +1532,11 @@ def _group_transcript_fragments(
         else:
             groups[-1].append(fragment)
     return groups
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    """A provider payload field that should be an object; anything else reads as empty."""
+    return value if isinstance(value, dict) else {}
 
 
 def _optional_int(value: Any) -> int | None:

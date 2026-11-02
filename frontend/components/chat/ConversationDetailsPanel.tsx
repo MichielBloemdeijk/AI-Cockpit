@@ -4,7 +4,6 @@ import { Clock3, FileStack, FolderOpen, GitBranch, Layers3 } from "lucide-react"
 import clsx from "clsx";
 
 import type { ConversationArtifactView, ConversationDetail, ConversationEventView } from "../../lib/api/conversations";
-import { summarizeAgentEvent } from "../../lib/conversations/agent-event-presenter";
 import { formatTokenCount, formatUsageCost, summarizeConversationUsage } from "../../lib/usage";
 
 import { formatConversationLabel, formatTraceLabel } from "./formatters";
@@ -145,11 +144,6 @@ function TraceSection({ events }: { events: ConversationEventView[] }) {
               <div className="text-xs text-zinc-200">{formatTraceLabel(event.event_type)}</div>
               <div className="text-[11px] text-zinc-500">{formatConversationLabel(event.created_at)}</div>
             </div>
-            {summarizeAgentEvent(event.event_type, event.payload_json) && (
-              <div className="mt-1 line-clamp-2 text-xs text-zinc-500">
-                {summarizeAgentEvent(event.event_type, event.payload_json)}
-              </div>
-            )}
           </div>
         ))}
       </div>

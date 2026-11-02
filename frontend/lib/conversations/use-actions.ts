@@ -5,187 +5,17 @@ import { useCallback, useRef, useState, type Dispatch, type MutableRefObject, ty
 import { archiveConversation, createConversation, createConversationMessage, resendConversationBranch, streamChat, unarchiveConversation, type ConversationDetail, type ConversationEventView, type ConversationSessionMetadata } from "../api/conversations";
 import { buildTimelineMessageFromEvent } from "./feed";
 import {
-  buildAgentStatusFromEvent,
-  buildAgentStatusFromStreamUpdate,
-  buildFallbackAgentStatus,
-  mergeAgentStatus,
-} from "./agent-stream-state";
-import {
   isLocalLiveMessage,
 } from "./message-lifecycle";
 import {
   appendCommittedTimelineMessage as appendCommittedTimelineMessageToFeed,
   upsertLocalLiveMessage as upsertLocalLiveMessageInFeed,
 } from "./feed-state";
-import { humanizeToolName } from "./agent-event-presenter";
-import type { AgentStatus, ChatActionError, ChatMessage } from "./state-types";
+import type { ChatActionError, ChatMessage } from "./state-types";
 import { isSelected, type ConversationSelectionRef } from "./selection";
 
-type LiveAssistantContentSource = "none" | "agent_stream" | "chunk";
-
-interface LiveAssistantUpdateDescriptor {
-  mode: "append" | "replace";
-  content: string;
-  streaming: boolean;
-  messagePatch: Partial<ChatMessage>;
-}
-
-function isLowSignalToolIntentSummary(content: string): boolean {
-  return /^\s*use tool\s+[a-z0-9_:-]+\s*[.!]?\s*$/i.test(content);
-}
-
-function extractDisplayableAgentStreamContent(update: { kind: string; delta?: string; content?: string; tool?: string; ok?: boolean }): LiveAssistantUpdateDescriptor | null {
-  switch (update.kind) {
-    case "thought_delta": {
-      const content = update.delta ?? "";
-      return content
-        ? {
-          mode: "append",
-          content,
-          streaming: true,
-          messagePatch: {
-            kind: "thought",
-            title: "Thinking…",
-            label: "Thinking",
-            tone: undefined,
-          },
-        }
-        : null;
-    }
-    case "text_delta": {
-      const content = update.delta ?? "";
-      return content
-        ? {
-          mode: "append",
-          content,
-          streaming: true,
-          messagePatch: {
-            kind: "message",
-            title: undefined,
-            label: undefined,
-            tone: undefined,
-          },
-        }
-        : null;
-    }
-    case "summary_delta": {
-      const content = update.delta ?? "";
-      return content
-        ? {
-          mode: "append",
-          content,
-          streaming: true,
-          messagePatch: {
-            kind: "message",
-            title: undefined,
-            label: undefined,
-            tone: undefined,
-          },
-        }
-        : null;
-    }
-    case "thought_done": {
-      const content = (update.content ?? "").trim();
-      return content
-        ? {
-          mode: "replace",
-          content,
-          streaming: false,
-          messagePatch: {
-            kind: "thought",
-            title: "Thought",
-            label: "Thinking",
-            tone: undefined,
-          },
-        }
-        : null;
-    }
-    case "text_done":
-    {
-      const content = (update.content ?? "").trim();
-      if (!content || isLowSignalToolIntentSummary(content)) {
-        return null;
-      }
-      return {
-        mode: "replace",
-        content,
-        streaming: false,
-        messagePatch: {
-          kind: "message",
-          title: undefined,
-          label: undefined,
-          tone: undefined,
-        },
-      };
-    }
-    case "summary_done":
-    case "progress": {
-      const content = (update.content ?? "").trim();
-      if (!content || isLowSignalToolIntentSummary(content)) {
-        return null;
-      }
-      return {
-        mode: "replace",
-        content,
-        streaming: update.kind === "progress",
-        messagePatch: {
-          kind: "status",
-          title: undefined,
-          label: undefined,
-          tone: undefined,
-        },
-      };
-    }
-    case "tool_started":
-    case "tool_progress":
-    case "tool_done": {
-      const content = (update.content ?? "").trim();
-      if (!content || isLowSignalToolIntentSummary(content)) {
-        return null;
-      }
-      const toolTitle = humanizeToolName(update.tool ?? "tool");
-      const isDone = update.kind === "tool_done";
-      return {
-        mode: "replace",
-        content,
-        streaming: !isDone,
-        messagePatch: {
-          kind: isDone ? "tool_result" : "tool_call",
-          title: toolTitle,
-          label: isDone ? (update.ok === false ? "Tool failure" : "Tool result") : "Tool call",
-          tone: update.ok === false ? "error" : "info",
-        },
-      };
-    }
-    default:
-      return null;
-  }
-}
-
-function buildAgentStreamMessageKey(update: { kind: string; run_id: string; step: number; tool?: string; activity_id?: string }): string | null {
-  if (update.activity_id) {
-    return update.activity_id;
-  }
-  switch (update.kind) {
-    case "thought_delta":
-    case "thought_done":
-      return `thought:${update.run_id}:${update.step}`;
-    case "text_delta":
-    case "text_done":
-      return `assistant:${update.run_id}:${update.step}:text`;
-    case "summary_delta":
-    case "summary_done":
-      return `status:${update.run_id}:${update.step}`;
-    case "tool_started":
-    case "tool_progress":
-    case "tool_done":
-      return `tool:${update.run_id}:${update.step}:${update.tool ?? "tool"}`;
-    case "progress":
-      return `status:${update.run_id}:${update.step}`;
-    default:
-      return null;
-  }
-}
+/** Whether the live assistant row has received streamed text yet. */
+type LiveAssistantContentSource = "none" | "chunk";
 
 interface UseConversationActionsOptions {
   loading: boolean;
@@ -201,7 +31,6 @@ interface UseConversationActionsOptions {
   setActiveBranchKey: (branchKey: string) => void;
   setEvents: Dispatch<SetStateAction<ConversationEventView[]>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  setAgentStatus: Dispatch<SetStateAction<AgentStatus | null>>;
   setLoading: Dispatch<SetStateAction<boolean>>;
   setCanStop: Dispatch<SetStateAction<boolean>>;
 }
@@ -220,7 +49,6 @@ export function useConversationActions({
   setActiveBranchKey,
   setEvents,
   setMessages,
-  setAgentStatus,
   setLoading,
   setCanStop,
 }: UseConversationActionsOptions) {
@@ -274,14 +102,12 @@ export function useConversationActions({
     clearActionError();
     setLoading(true);
     setCanStop(false);
-    setAgentStatus(buildFallbackAgentStatus(activeConversationId));
     resetLiveAssistantState();
     clearLocalLiveMessage();
     const optimisticMessageId = appendOptimisticUserMessage(content);
 
     const effectiveSessionMetadata = activeConversation?.session_metadata ?? sessionMetadata;
     let streamedConversationId: string | null = activeConversationId;
-    let resolvedFinalStatus = false;
     // The send writes the shared view only while the view still shows the
     // conversation and branch it was sent from (or, for a new conversation,
     // the one the stream created). Switching away leaves the stream running
@@ -309,7 +135,6 @@ export function useConversationActions({
               streamedConversationId = data.conversation_id;
               if (!owned) return;
               activeStreamRunIdRef.current = data.run_id;
-              setAgentStatus(buildFallbackAgentStatus(data.conversation_id, data.run_id));
               setActiveConversationId(data.conversation_id);
             },
             onEvent: (event) => {
@@ -325,11 +150,6 @@ export function useConversationActions({
                 activeStreamRunIdRef.current = event.run_id;
               }
 
-              const nextStatus = buildAgentStatusFromEvent(event);
-              if (nextStatus) {
-                setAgentStatus((current) => mergeAgentStatus(current, nextStatus));
-              }
-
               const timelineMessage = buildTimelineMessageFromEvent(event);
               if (timelineMessage) {
                 appendCommittedTimelineMessage(timelineMessage);
@@ -337,38 +157,6 @@ export function useConversationActions({
                   resetLiveAssistantState();
                 }
               }
-            },
-            onAgentStream: (update) => {
-              if (!ownsView()) return;
-              const nextStatus = buildAgentStatusFromStreamUpdate(update);
-              if (nextStatus) {
-                setAgentStatus((current) => mergeAgentStatus(current, nextStatus));
-              }
-              if (!activeStreamRunIdRef.current || liveAssistantContentSourceRef.current === "chunk") {
-                return;
-              }
-              const nextContent = extractDisplayableAgentStreamContent(update);
-              const nextKey = buildAgentStreamMessageKey(update);
-              if (!nextContent || !nextKey) {
-                return;
-              }
-              const priorContent = liveAssistantMessageContentRef.current.get(nextKey) ?? "";
-              const content = nextContent.mode === "append"
-                ? `${priorContent}${nextContent.content}`
-                : nextContent.content;
-              liveAssistantMessageContentRef.current.set(nextKey, content);
-              const nextLiveMessage: ChatMessage = {
-                id: `live-local:${nextKey}`,
-                activityId: nextKey,
-                runId: activeStreamRunIdRef.current,
-                step: update.step,
-                role: "assistant",
-                content,
-                streaming: nextContent.streaming,
-                ...nextContent.messagePatch,
-              };
-              upsertLocalLiveMessage(nextLiveMessage);
-              liveAssistantContentSourceRef.current = "agent_stream";
             },
             onChunk: (chunk) => {
               if (ownsView() && activeStreamRunIdRef.current) {
@@ -398,7 +186,6 @@ export function useConversationActions({
           activeStreamRunIdRef.current = null;
           await refreshConversations(ownsView() ? streamedConversationId : selectionRef.current.conversationId);
           await loadConversation(streamedConversationId, activeBranchKey, { background: true });
-          resolvedFinalStatus = true;
         }
         return;
       }
@@ -427,20 +214,11 @@ export function useConversationActions({
         activeStreamRunIdRef.current = null;
         clearLocalLiveMessage();
         await refreshConversations(streamedConversationId).catch(() => {});
-        await loadConversation(streamedConversationId, activeBranchKey, { background: true }).then(() => {
-          resolvedFinalStatus = true;
-        }).catch(() => {});
+        await loadConversation(streamedConversationId, activeBranchKey, { background: true }).catch(() => {});
       } else {
         removeOptimisticMessage(optimisticMessageId);
         clearLocalLiveMessage();
       }
-      if (ownsView()) setAgentStatus({
-        title: "Run failed",
-        content: errorMessage,
-        tone: "error",
-        active: false,
-        runId: activeStreamRunIdRef.current,
-      });
       setActionError({ scope: "send", message: errorMessage });
     } finally {
       abortRef.current = null;
@@ -448,16 +226,12 @@ export function useConversationActions({
       setCanStop(false);
       setLoading(false);
       activeStreamRunIdRef.current = null;
-      if (!resolvedFinalStatus && ownsView()) {
-        setAgentStatus(null);
-      }
     }
   }, [
     loading,
     clearActionError,
     setLoading,
     setCanStop,
-    setAgentStatus,
     activeConversationId,
     appendOptimisticUserMessage,
     activeConversation,
@@ -528,10 +302,9 @@ export function useConversationActions({
     abortRef.current?.abort();
     setCanStop(false);
     setLoading(false);
-    setAgentStatus(null);
     resetLiveAssistantState();
     clearLocalLiveMessage();
-  }, [clearLocalLiveMessage, resetLiveAssistantState, setAgentStatus, setCanStop, setLoading]);
+  }, [clearLocalLiveMessage, resetLiveAssistantState, setCanStop, setLoading]);
 
   const clearMessages = useCallback(() => {
     abortRef.current?.abort();

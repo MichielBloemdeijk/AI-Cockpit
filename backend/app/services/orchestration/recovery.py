@@ -41,14 +41,19 @@ async def recover(service, decision_id: str, *, resume: bool = False,
         if result.rowcount != 1:
             raise StaleDecision("Background recovery supervisor is stale")
 
+    async def replayed_outcome(session) -> dict | None:
+        previous = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == audit_key))).scalar_one_or_none()
+        if previous is None:
+            return None
+        payload = previous.payload_json or {}
+        if payload.get("input_digest") != fingerprint:
+            raise ValueError("Resumption operation key conflicts with changed arguments")
+        return dict(payload["outcome"])
+
     async with session_scope() as session:
         await lock(session)
-        if resume:
-            previous = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == audit_key))).scalar_one_or_none()
-            if previous:
-                if previous.payload_json.get("input_digest") != fingerprint:
-                    raise ValueError("Resumption operation key conflicts with changed arguments")
-                return dict(previous.payload_json["outcome"])
+        if resume and (replayed := await replayed_outcome(session)) is not None:
+            return replayed
         row = await session.get(OrchestrationDecision, decision_id)
         if row is None:
             raise ValueError("Decision does not exist")
@@ -93,14 +98,10 @@ async def recover(service, decision_id: str, *, resume: bool = False,
 
     async with session_scope() as session:
         await lock(session)
-        if resume:
-            previous = (await session.execute(select(TaskEvent).where(TaskEvent.idempotency_key == audit_key))).scalar_one_or_none()
-            if previous:
-                if previous.payload_json.get("input_digest") != fingerprint:
-                    raise ValueError("Resumption operation key conflicts with changed arguments")
-                return dict(previous.payload_json["outcome"])
+        if resume and (replayed := await replayed_outcome(session)) is not None:
+            return replayed
         row = await session.get(OrchestrationDecision, decision_id)
-        if row.status != "deferred" or version != (
+        if row is None or row.status != "deferred" or version != (
             row.claim_generation, row.claim_owner, digest(row.native_binding_json or {}), row.context_digest,
         ):
             raise StaleDecision("Decision changed during native inspection")
@@ -108,10 +109,11 @@ async def recover(service, decision_id: str, *, resume: bool = False,
         receipt_ids = list((await session.execute(select(OrchestrationAction.id).where(
             OrchestrationAction.decision_id == row.id,
         ))).scalars().all())
-        row.outcome_json = {**(row.outcome_json or {}), "recovery": inspection}
+        outcome_json = {**(row.outcome_json or {}), "recovery": inspection}
+        row.outcome_json = outcome_json
         if receipt_ids:
             row.status, row.completed_at, row.due_at = "completed", now(), None
-            row.outcome_json = {**row.outcome_json, "reconciled_actions": receipt_ids}
+            row.outcome_json = {**outcome_json, "reconciled_actions": receipt_ids}
         else:
             task = (await session.execute(select(Task).where(Task.id == row.task_id))).scalar_one_or_none()
             if task is not None:

@@ -1,14 +1,12 @@
-from copy import deepcopy
 from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
 
-from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import ConversationObservation, LiveSession, TaskPresentation
 from app.db.repositories.jarvis import JarvisDomainRepository
-from app.services.jarvis.observer import (conversation_observer, playback_support, validate_finding, now)
+from app.services.jarvis.observer import (conversation_observer, validate_finding, now)
 from app.services.jarvis.coordinator import jarvis_coordinator
 from app.services.tasks.service import task_service
 from app.services.updates.presentations import task_presentation_service
@@ -37,7 +35,6 @@ def test_explicit_subscription_required_in_voice_tools(monkeypatch):
 @pytest.mark.asyncio
 async def test_admission_receipt_exposes_later_speech_without_repairing_preference(monkeypatch):
     from app.services.jarvis.voice_session_adapter import fake_voice_session_adapter
-    from app.services.updates.notification_preferences import current
     from app.db.tables import Task
     await jarvis_coordinator.accept_text_turn("Begin",idempotency_key="late-start")
     live=await jarvis_coordinator.get_active_session()

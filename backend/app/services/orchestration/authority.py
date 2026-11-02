@@ -51,7 +51,7 @@ async def observed_state(session, task: Task, question: TaskQuestion | None = No
     }
 
 
-async def assert_current(session, decision: OrchestrationDecision, task: Task) -> None:
+async def assert_current(session, decision: OrchestrationDecision, task: Task | None) -> None:
     if task is None:
         raise StaleDecision("Decision task no longer exists")
     question = await session.get(TaskQuestion, decision.question_id) if decision.question_id else None

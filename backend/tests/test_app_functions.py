@@ -20,6 +20,7 @@ from app.app_platform.store import AppEvent, AppSchedule, apps_session
 from app.config import settings
 from app.main import app
 from tests.test_builtin_apps import needs_browser
+from app_packages import staging_path
 
 CLIPPINGS = Path(app_platform.__file__).parent / "samples" / "clippings"
 
@@ -31,7 +32,7 @@ async def without_builtin_apps():
 
 
 def clippings(edit=None, *, name: str = "clippings") -> Path:
-    target = settings.app_builds_path / name
+    target = staging_path() / name
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(CLIPPINGS, target)
     if edit is not None:

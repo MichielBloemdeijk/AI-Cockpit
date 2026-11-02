@@ -150,7 +150,6 @@ async def get_jarvis_state() -> JarvisStateResponse:
                 created_at=item.created_at,
                 handled_at=item.handled_at,
                 handled_by=item.handled_by,
-                presented_at=item.handled_at,
             )
             for item in presentations
         ],

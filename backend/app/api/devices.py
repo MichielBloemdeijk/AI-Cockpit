@@ -117,7 +117,7 @@ async def patch_device(device_id: str, request: DeviceStatePatch, http_request: 
 
 @router.delete("/{device_id}", dependencies=[Depends(require_auth)])
 async def revoke_device(device_id: str) -> dict[str, bool]:
-    from app.services.jarvis.devices import utc_now
+    from app.timestamps import utc_now
 
     async with session_scope() as session:
         device = await session.get(JarvisDevice, device_id)

@@ -6,14 +6,11 @@ from datetime import date, datetime, time, timedelta, timezone, tzinfo
 import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from app.timestamps import utc_now
 
 
 DEFAULT_TIME_ZONE = "Europe/Amsterdam"
 _FIXED_OFFSET = re.compile(r"^(?:UTC|GMT)?(?P<sign>[+-])(?P<hours>\d{1,2}):(?P<minutes>\d{2})$", re.I)
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,58 +92,49 @@ def temporal_frame(*, time_zone: str, now: datetime | None = None) -> dict[str, 
 
 def resolve_reminder_time(
     *,
-    timing: Any | None = None,
-    due_at: datetime | str | None = None,
+    timing: Any,
     active_time_zone: str = DEFAULT_TIME_ZONE,
     now: datetime | None = None,
 ) -> ResolvedReminderTime:
     timestamp = (now or utc_now()).astimezone(timezone.utc)
     active_name, active_zone = _time_zone(active_time_zone)
     if timing is None:
-        if due_at is None:
-            raise ValueError("Reminder timing is required")
-        instant = _datetime(due_at)
-        if instant.tzinfo is None:
-            instant = _resolve_local(instant.date(), instant.time(), active_zone)
-        resolved = instant.astimezone(timezone.utc)
-        timing_payload = {"kind": "instant", "due_at": resolved.isoformat(), "legacy_due_at": True}
+        raise ValueError("Reminder timing is required")
+    values = timing.model_dump(mode="json") if hasattr(timing, "model_dump") else dict(timing)
+    kind = str(values.get("kind") or "")
+    if kind == "after":
+        seconds = int(values.get("seconds") or 0)
+        if seconds < 1 or seconds > 31_536_000:
+            raise ValueError("Reminder delay must be between one second and one year")
+        resolved = timestamp + timedelta(seconds=seconds)
+        timing_payload = {"kind": "after", "seconds": seconds}
         zone_name = active_name
+    elif kind == "instant":
+        instant = _datetime(values.get("due_at"))
+        if instant.tzinfo is None:
+            raise ValueError("An instant reminder time must include a UTC offset")
+        resolved = instant.astimezone(timezone.utc)
+        timing_payload = {"kind": "instant", "due_at": resolved.isoformat()}
+        zone_name = active_name
+    elif kind == "local":
+        zone_name, zone = _time_zone(str(values.get("time_zone") or active_name))
+        local_time = _clock_time(values.get("time"))
+        local_date = _calendar_date(values.get("date"))
+        if local_date is None:
+            current_local = timestamp.astimezone(zone)
+            local_date = current_local.date()
+            candidate = _resolve_local(local_date, local_time, zone)
+            if candidate.astimezone(timezone.utc) <= timestamp:
+                local_date += timedelta(days=1)
+        resolved = _resolve_local(local_date, local_time, zone).astimezone(timezone.utc)
+        timing_payload = {
+            "kind": "local",
+            "date": local_date.isoformat(),
+            "time": local_time.isoformat(),
+            "time_zone": zone_name,
+        }
     else:
-        values = timing.model_dump(mode="json") if hasattr(timing, "model_dump") else dict(timing)
-        kind = str(values.get("kind") or "")
-        if kind == "after":
-            seconds = int(values.get("seconds") or 0)
-            if seconds < 1 or seconds > 31_536_000:
-                raise ValueError("Reminder delay must be between one second and one year")
-            resolved = timestamp + timedelta(seconds=seconds)
-            timing_payload = {"kind": "after", "seconds": seconds}
-            zone_name = active_name
-        elif kind == "instant":
-            instant = _datetime(values.get("due_at"))
-            if instant.tzinfo is None:
-                raise ValueError("An instant reminder time must include a UTC offset")
-            resolved = instant.astimezone(timezone.utc)
-            timing_payload = {"kind": "instant", "due_at": resolved.isoformat()}
-            zone_name = active_name
-        elif kind == "local":
-            zone_name, zone = _time_zone(str(values.get("time_zone") or active_name))
-            local_time = _clock_time(values.get("time"))
-            local_date = _calendar_date(values.get("date"))
-            if local_date is None:
-                current_local = timestamp.astimezone(zone)
-                local_date = current_local.date()
-                candidate = _resolve_local(local_date, local_time, zone)
-                if candidate.astimezone(timezone.utc) <= timestamp:
-                    local_date += timedelta(days=1)
-            resolved = _resolve_local(local_date, local_time, zone).astimezone(timezone.utc)
-            timing_payload = {
-                "kind": "local",
-                "date": local_date.isoformat(),
-                "time": local_time.isoformat(),
-                "time_zone": zone_name,
-            }
-        else:
-            raise ValueError("Reminder timing kind must be after, local, or instant")
+        raise ValueError("Reminder timing kind must be after, local, or instant")
     if resolved <= timestamp:
         raise ValueError("Reminder time must be in the future")
     return ResolvedReminderTime(resolved, timing_payload, zone_name)

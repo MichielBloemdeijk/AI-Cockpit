@@ -11,9 +11,9 @@ import pytest
 from app import app_platform
 from app.app_platform import runtime
 from app.app_platform.check import check_package
-from app.config import settings
 from app.main import app
 from tests.test_builtin_apps import needs_browser
+from app_packages import staging_path
 
 PLANNER = Path(app_platform.__file__).parent / "samples" / "meal-planner"
 NOTES = Path(app_platform.__file__).parent / "samples" / "notes"
@@ -22,7 +22,7 @@ SOUP = {"title": "Tomato soup", "ingredients": ["tomatoes"], "instructions": ["S
 
 
 def package(source: Path, name: str, edit=None) -> Path:
-    target = settings.app_builds_path / name
+    target = staging_path() / name
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(source, target)
     if edit is not None:

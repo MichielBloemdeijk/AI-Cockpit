@@ -42,13 +42,10 @@ from app.services.tasks.vocabulary import (
     RunStatus,
     TaskStatus,
 )
+from app.timestamps import utc_now
 
 NO_WORKER_REASON = "No live worker is available; this task has not started."
 CANCELLED_SUMMARY = "Task cancelled by user."
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True)

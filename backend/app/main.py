@@ -17,7 +17,7 @@ from app.api import app_platform, auth, chat, devices, jarvis, notifications, or
 from app.api.private import PRIVATE_HEADERS
 from app.api import conversations, knowledge, worker_tools
 from app.app_platform import app_runtime, close_apps_engine, ensure_apps_database, install_builtin_apps
-from app.db.session import close_engine, ensure_database_ready, initialize_engine, run_migrations
+from app.db.session import close_engine, initialize_engine, run_migrations
 from app.services.conversations.store import conversation_store
 from app.services.conversations.run_supervisor import run_supervisor
 from app.services.updates.notifications import recover_pending_task_notifications
@@ -70,7 +70,6 @@ async def lifespan(application: FastAPI):
     # reverse order.
     async with AsyncExitStack() as stack:
         stack.callback(setattr, application.state, "acceptance_runtime", None)
-        await ensure_database_ready()
         run_migrations()
         initialize_engine(settings.database_url)
         stack.push_async_callback(close_engine)

@@ -95,7 +95,7 @@ class CaptureFixtureActivity : Activity() {
                 return@launch
             }
             repeat(20) {
-                if (JarvisVoiceInteractionService.invokeFixture(activationId, captureId)) {
+                if (DebugAssistantFixtures.invokeFixture(this@CaptureFixtureActivity, activationId, captureId)) {
                     val live = startFakeSession(serverUrl, pairing.credential,
                         pairing.deviceId, activationId)
                     (application as JarvisApplication).screenCapture.bindSession(

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 import logging
 from typing import Any
 
@@ -10,10 +10,7 @@ from sqlalchemy import delete, insert, select
 
 from app.db.session import session_scope
 from app.db.tables import JarvisLiveTraceEvent
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.timestamps import utc_now
 
 
 logger = logging.getLogger(__name__)

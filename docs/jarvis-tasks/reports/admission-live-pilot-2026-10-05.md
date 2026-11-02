@@ -27,7 +27,7 @@ investigations, not a controlled route comparison or a p95 estimate.
   immediately after this sample exceeded four seconds; the remaining selected
   cases were not run. Functional sample status is passed; latency acceptance is open.
 - Derived intervals: `data/admission-live-pilot-summary-2026-10-05.json`, generated
-  by `scripts/summarize-admission-live-pilot.py` from the reports and read-only DBs.
+  by `scripts/summarize-admission-live-pilot.py` from the reports and read-only DBs. (The script was removed on 2026-11-02; it remains in git history.)
   Candidate identities, failures and source artifacts remain retained.
 
 ## Timings

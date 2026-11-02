@@ -28,10 +28,6 @@ vi.mock("../api/jarvis", () => apiMocks);
 vi.mock("../api/knowledge", () => apiMocks);
 vi.mock("../api/push", () => apiMocks);
 vi.mock("../api/tasks", () => apiMocks);
-vi.mock("./history", () => ({
-  mapConversationMessages: vi.fn(() => []),
-  mapConversationEventMessages: vi.fn(() => []),
-}));
 
 import { useChat } from "../hooks";
 

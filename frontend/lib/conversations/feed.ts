@@ -1,84 +1,44 @@
-import type { ActiveRunView, ConversationArtifactView, ConversationDetail, ConversationEventView, TimelineItemView } from "../api/conversations";
-import { mapConversationMessages } from "./history";
+import type { ConversationEventView, TimelineItemView } from "../api/conversations";
 import type { ChatMessage } from "./state-types";
 import { readUsageStats } from "../usage";
 
-function mapTimelineItemToChatMessage(item: TimelineItemView, id: string, streaming: boolean): ChatMessage {
-  const isLegacyProgressRow = item.kind === "status"
-    && (item.title === "Progress" || item.label === "Progress");
+function mapTimelineItemToChatMessage(item: TimelineItemView, id: string): ChatMessage {
+  const sourceTaskId = item.metadata?.source_task_id;
   return {
     id,
     activityId: item.item_id,
     runId: item.run_id,
-    step: item.step ?? undefined,
     role: item.role,
-    kind: item.kind,
-    label: isLegacyProgressRow ? undefined : (item.label ?? undefined),
-    title: isLegacyProgressRow ? undefined : (item.title ?? undefined),
     content: item.content,
     createdAt: item.created_at,
-    tone: item.tone ?? undefined,
-    badges: item.badges,
-    code: item.code ?? undefined,
-    sections: item.sections,
-    streaming,
-    status: item.status,
+    streaming: false,
     usage: readUsageStats(item.usage),
     councilData: item.council ?? undefined,
+    taskId: typeof sourceTaskId === "string" ? sourceTaskId : undefined,
   };
 }
 
-export function buildCommittedConversationMessages(
-  detail: ConversationDetail,
-  artifacts: ConversationArtifactView[],
-  events: ConversationEventView[],
-  timelineItems: TimelineItemView[],
-): ChatMessage[] {
-  if (!timelineItems.length) {
-    return mapConversationMessages(detail, artifacts, events);
-  }
-
-  return timelineItems.map((item) => mapTimelineItemToChatMessage(item, item.item_id, false));
-}
-
-export function buildLiveConversationMessage(activeRun: ActiveRunView | null | undefined): ChatMessage | null {
-  if (!activeRun?.live_item) {
-    return null;
-  }
-  return mapTimelineItemToChatMessage(activeRun.live_item, `live:${activeRun.live_item.item_id}`, true);
+/** Committed messages come from the server's timeline: every message, chat or Jarvis, is an item. */
+export function buildCommittedConversationMessages(timelineItems: TimelineItemView[]): ChatMessage[] {
+  return timelineItems.map((item) => mapTimelineItemToChatMessage(item, item.item_id));
 }
 
 export function buildTimelineMessageFromEvent(event: ConversationEventView): ChatMessage | null {
   if (event.event_type !== "chat.timeline.item.committed" || !event.payload_json) {
     return null;
   }
-
+  const payload = event.payload_json;
   return mapTimelineItemToChatMessage({
-    item_id: String(event.payload_json.item_id ?? ""),
+    item_id: String(payload.item_id ?? ""),
     run_id: event.run_id,
     sequence: event.sequence,
-    role: (event.payload_json.role as TimelineItemView["role"]) ?? "assistant",
-    kind: (event.payload_json.kind as TimelineItemView["kind"]) ?? "message",
-    content: String(event.payload_json.content ?? ""),
-    title: typeof event.payload_json.title === "string" ? event.payload_json.title : null,
-    label: typeof event.payload_json.label === "string" ? event.payload_json.label : null,
-    tone: (event.payload_json.tone as TimelineItemView["tone"]) ?? null,
-    status: typeof event.payload_json.status === "string" ? event.payload_json.status : null,
-    step: typeof event.payload_json.step === "number" ? event.payload_json.step : null,
-    tool_name: typeof event.payload_json.tool_name === "string" ? event.payload_json.tool_name : null,
-    badges: Array.isArray(event.payload_json.badges) ? event.payload_json.badges.filter((value): value is string => typeof value === "string") : [],
-    code: typeof event.payload_json.code === "string" ? event.payload_json.code : null,
-    sections: Array.isArray(event.payload_json.sections)
-      ? event.payload_json.sections.filter((section): section is { title: string; items: string[] } => (
-        Boolean(section)
-        && typeof section === "object"
-        && typeof (section as { title?: unknown }).title === "string"
-        && Array.isArray((section as { items?: unknown }).items)
-      ))
-      : [],
-    metadata: (event.payload_json.metadata as Record<string, unknown> | null | undefined) ?? null,
-    usage: readUsageStats(event.payload_json.usage) ?? null,
-    council: (event.payload_json.council as TimelineItemView["council"] | undefined) ?? null,
+    role: (payload.role as TimelineItemView["role"]) ?? "assistant",
+    kind: "message",
+    content: String(payload.content ?? ""),
+    label: typeof payload.label === "string" ? payload.label : null,
+    metadata: (payload.metadata as Record<string, unknown> | null | undefined) ?? null,
+    usage: readUsageStats(payload.usage) ?? null,
+    council: (payload.council as TimelineItemView["council"] | undefined) ?? null,
     created_at: event.created_at,
-  }, String(event.payload_json.item_id ?? event.id), false);
+  }, String(payload.item_id ?? event.id));
 }

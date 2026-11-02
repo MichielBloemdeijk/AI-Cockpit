@@ -5,7 +5,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AgentStatusCard } from "./AgentStatusCard";
 import { ChatInput } from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
 
@@ -59,71 +58,6 @@ describe("chat UI components", () => {
     expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps live reasoning collapsed until the user expands it", async () => {
-    await act(async () => {
-      root.render(
-        <ChatMessage
-          message={{
-            id: "thought-1",
-            role: "assistant",
-            kind: "thought",
-            title: "Thinking…",
-            content: "Inspecting the existing timeline projector.",
-            streaming: true,
-          }}
-        />
-      );
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain("Thinking…");
-    expect(container.textContent).not.toContain("Inspecting the existing timeline projector.");
-    const toggle = container.querySelector("button");
-
-    await act(async () => {
-      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain("Inspecting the existing timeline projector.");
-  });
-
-  it("renders one expandable running background task card", async () => {
-    await act(async () => {
-      root.render(
-        <ChatMessage
-          message={{
-            id: "task:run-1",
-            activityId: "task:run-1",
-            role: "assistant",
-            kind: "task",
-            title: "Repository review",
-            content: "Reading documentation",
-            status: "running",
-            sections: [
-              { title: "Goal", items: ["Review the repository"] },
-              { title: "Updates", items: ["Reading documentation"] },
-            ],
-          }}
-        />
-      );
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain("Repository review");
-    expect(container.textContent).toContain("running");
-    expect(container.textContent).not.toContain("Review the repository");
-    expect(container.querySelector(".animate-spin")).toBeTruthy();
-
-    await act(async () => {
-      container.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain("Review the repository");
-    expect(container.textContent).toContain("Reading documentation");
-  });
-
   it("renders assistant Markdown without a progress label", async () => {
     await act(async () => {
       root.render(
@@ -171,24 +105,5 @@ describe("chat UI components", () => {
     });
 
     expect(onSend).toHaveBeenCalledWith("hello council");
-  });
-
-  it("renders agent status cards with the provided content", async () => {
-    await act(async () => {
-      root.render(
-        <AgentStatusCard
-          status={{
-            title: "Run failed",
-            content: "The sandbox rejected the last tool call.",
-            tone: "error",
-            active: false,
-          }}
-        />
-      );
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain("Run failed");
-    expect(container.textContent).toContain("The sandbox rejected the last tool call.");
   });
 });

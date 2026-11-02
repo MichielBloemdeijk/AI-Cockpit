@@ -4,10 +4,7 @@
  */
 import * as ort from "onnxruntime-web";
 
-import type {
-  JarvisWakeInference,
-  JarvisWakeInferenceResult,
-} from "./wake-engine";
+import type { JarvisWakeInference } from "./wake-engine";
 import type { JarvisWakeModelConfiguration } from "./wake-protocol";
 
 const EMBEDDING_DIMENSION = 96;
@@ -133,16 +130,6 @@ export class HeyBuddyOnnxInference implements JarvisWakeInference {
   resetWakeState(): void {
     this.embeddingHistory.fill(0);
     this.embeddingHistory = new Float32Array(0);
-  }
-
-  async analyze(audio: Float32Array): Promise<JarvisWakeInferenceResult> {
-    const vadInput = audio.subarray(Math.max(0, audio.length - VAD_INTERVAL_SAMPLES));
-    const speech = await this.observeSpeech(
-      vadInput,
-      { startSample: Math.max(0, audio.length - vadInput.length), endSample: audio.length },
-    );
-    const wake = await this.classifyWake(audio);
-    return { speechProbability: speech.speechProbability, wakeProbability: wake.wakeProbability };
   }
 
   async destroy(): Promise<void> {

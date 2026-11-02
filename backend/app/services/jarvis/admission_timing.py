@@ -12,7 +12,7 @@ import json
 import logging
 
 
-_trace = ContextVar("admission_timing", default=None)
+_trace: ContextVar[dict | None] = ContextVar("admission_timing", default=None)
 logger = logging.getLogger(__name__)
 
 

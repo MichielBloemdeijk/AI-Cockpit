@@ -10,7 +10,7 @@ from app.config import settings
 from app.db.session import session_scope
 from app.db.tables import JarvisPairingCode
 from app.main import app
-from app.services.auth import SESSION_COOKIE_NAME, create_device_session, create_session_token, require_auth, verify_session_token
+from app.services.auth import SESSION_COOKIE_NAME, create_session_token, verify_session_token
 from app.services.jarvis.devices import jarvis_device_service, require_paired_device, require_unlocked_device, utc_now
 from starlette.requests import Request
 from fastapi import HTTPException

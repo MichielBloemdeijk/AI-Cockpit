@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import re
 from time import perf_counter as monotonic
 from typing import Any
-from sqlalchemy import select
+from sqlalchemy import false, select
 
 from app.db.session import read_session_scope
 from app.db.tables import ConversationMessage, LiveSession, Task, TaskContextRequest, TaskExecutionRun, TaskTurn
@@ -369,7 +369,7 @@ class RestrictedBrainGateway:
                     run = await session.get(TaskExecutionRun, turn.execution_run_id) if turn else None
                     request = (await session.execute(select(TaskContextRequest).where(
                         TaskContextRequest.task_id == existing.id,
-                        TaskContextRequest.execution_run_id == run.id if run else False,
+                        TaskContextRequest.execution_run_id == run.id if run else false(),
                     ).order_by(TaskContextRequest.capture_mode).limit(1))).scalar_one_or_none()
                     if (turn is None or turn.content != goal or run is None or run.execution_kind != "workflow"
                             or (run.configuration_json or {}).get("workflow", {}).get("digest") != config["workflow"]["digest"]
@@ -561,6 +561,7 @@ class RestrictedBrainGateway:
                         TaskTurn.request_identity == f"jarvis-shell:{call_id}:continue"))).scalar_one_or_none()
                     if prior_turn is not None:
                         prior_run = await session.get(TaskExecutionRun, prior_turn.execution_run_id)
+                        assert prior_run is not None  # a committed turn always has its run
                         url = await admission_result_url(session, task.id, f"jarvis-shell:{call_id}:continue", turn=prior_turn)
                         return BrainResult(output={"accepted": True, "title": task_title(task),
                             "task_id": task.id, "internal_task_id": task.id, "turn_id": prior_turn.id,
@@ -658,7 +659,6 @@ class RestrictedBrainGateway:
             snapshot = await reminder_scheduler.create(
                 text=str(arguments.get("text") or ""),
                 timing=arguments.get("timing"),
-                due_at=arguments.get("due_at"),
                 active_time_zone=active_time_zone,
                 now=now,
                 idempotency_key=f"jarvis-shell:{call_id}:reminder",

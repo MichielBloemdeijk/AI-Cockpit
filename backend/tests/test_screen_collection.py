@@ -1,6 +1,5 @@
 """Real device-authenticated collection admission, delivery and worker restoration."""
 import asyncio
-import base64
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO

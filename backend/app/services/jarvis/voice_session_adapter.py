@@ -411,7 +411,9 @@ class FakeVoiceSessionAdapter:
     def _tool_confirmation(output: dict[str, Any]) -> str:
         if not bool(output.get("ok")):
             return "That didn't work."
-        result = output.get("result") if isinstance(output.get("result"), dict) else {}
+        result = output.get("result")
+        if not isinstance(result, dict):
+            result = {}
         status = str(result.get("status") or "")
         if status == "waiting_for_worker":
             return "It hasn't started; the worker is offline."

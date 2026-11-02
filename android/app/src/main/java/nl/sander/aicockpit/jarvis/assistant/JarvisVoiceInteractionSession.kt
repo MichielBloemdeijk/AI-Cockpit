@@ -89,13 +89,13 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     private var pendingWakeScore: Float? = null
     private var pendingActivationId: String? = null
     private var captureOverlay: ComposeView? = null
-    private var mode: ShowMode = ShowMode.Conversation(wakeScore = null, fixture = null)
+    private var mode: ShowMode = ShowMode.Conversation(wakeScore = null, fixture = false)
     private var initialCaptureStaged = false
     private var showEpoch = 0L
     // Derived from the current show mode; never set independently.
     private val phoneCaptureId: String? get() = (mode as? ShowMode.PhoneCapture)?.captureId
     private val activationCaptureOnly: Boolean get() = mode is ShowMode.SharedLive
-    private val fixtureSession: Boolean get() = (mode as? ShowMode.Conversation)?.fixture != null
+    private val fixtureSession: Boolean get() = (mode as? ShowMode.Conversation)?.fixture == true
 
     /** What one `onShow` is for, chosen once from its arguments. */
     private sealed interface ShowMode {
@@ -105,12 +105,9 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         data class PhoneCapture(val captureId: String?, val activationId: String?) : ShowMode
         /** Screen capture for a Live call the audio service already runs; the sheet stays hidden. */
         data class SharedLive(val activationId: String?) : ShowMode
-        /** A visible assistant session from wake, the assist gesture or a debug fixture. */
-        data class Conversation(val wakeScore: Float?, val fixture: Fixture?) : ShowMode
+        /** A visible assistant session from wake, the assist gesture or a debug capture fixture. */
+        data class Conversation(val wakeScore: Float?, val fixture: Boolean) : ShowMode
     }
-
-    /** Debug capture fixtures only (`consumeFixtureArguments` refuses outside debuggable builds). */
-    private data class Fixture(val captureId: String?, val sessionId: String?, val generation: Int)
 
     private fun showModeFor(args: Bundle?): ShowMode = when {
         args?.getBoolean("context_refresh") == true -> ShowMode.ContextRefresh
@@ -119,9 +116,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         args?.getString("source") == "shared_live" -> ShowMode.SharedLive(args.getString("activation_id"))
         else -> ShowMode.Conversation(
             wakeScore = args?.takeIf { it.getString("source") == "local_wake" }?.getFloat("wake_score"),
-            fixture = args?.takeIf { it.getBoolean("fixture_skip_live") &&
-                (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
-                ?.let { Fixture(it.getString("capture_id"), it.getString("fixture_session_id"), it.getInt("fixture_generation")) },
+            fixture = AssistantFixtures.hooks.isFixtureShow(args),
         )
     }
 
@@ -184,7 +179,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         nl.sander.aicockpit.jarvis.live.Acceptance.hooks.diagnostic("session_show", JSONObject()
             .put("instance", System.identityHashCode(this)).put("refresh", args?.getBoolean("context_refresh") == true)
             .put("show_flags", showFlags))
-        val activationArgs = JarvisVoiceInteractionService.consumeFixtureArguments(args)
+        val activationArgs = AssistantFixtures.hooks.activationArguments(args)
         val next = showModeFor(activationArgs)
         captureOverlay?.alpha = 0f
         when (next) {
@@ -222,9 +217,9 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     /** A wake, gesture or fixture conversation, or a hidden capture for an already running Live call. */
     private fun showActivation(next: ShowMode, activationArgs: Bundle?, showFlags: Int) {
         showEpoch++
-        val fixture = (next as? ShowMode.Conversation)?.fixture
+        val fixture = (next as? ShowMode.Conversation)?.fixture == true
         application.voiceSessionHandlesCapture = next !is ShowMode.SharedLive
-        if (fixture != null) {
+        if (fixture) {
             Log.i("JarvisCaptureFixture", "show_flags=$showFlags user_disabled_context=$userDisabledShowContext")
         }
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
@@ -237,7 +232,8 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         pendingActivationId = activationId
         initialCaptureStaged = false
         if (!application.screenCapture.matchesActivation(activationId)) application.screenCapture.startActivation(
-            activationId, fixture?.captureId ?: UUID.randomUUID().toString(),
+            activationId,
+            (if (fixture) AssistantFixtures.hooks.fixtureCaptureId(activationArgs) else null) ?: UUID.randomUUID().toString(),
         )
         if (isLocked()) application.screenCapture.unavailable("locked")
         else if (!STAGES_INITIAL_CAPTURE && showFlags and SHOW_WITH_SCREENSHOT == 0)
@@ -254,8 +250,8 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         }
         if (STAGES_INITIAL_CAPTURE) stageInitialCaptureWhenVisible()
         status = if (isLocked()) "Listening while locked (read-only)" else "Connecting…"
-        if (fixture != null) {
-            fixture.sessionId?.let { application.screenCapture.bindSession(activationId, it, fixture.generation) }
+        if (fixture) {
+            AssistantFixtures.hooks.fixtureStarted(context, activationId, activationArgs)
             status = "Fixture capture active"
             return
         }
@@ -272,7 +268,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         nl.sander.aicockpit.jarvis.live.Acceptance.hooks.diagnostic("session_hide", JSONObject()
             .put("instance", System.identityHashCode(this)))
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        if (fixtureSession) JarvisVoiceInteractionService.restoreFixtureContextPolicy()
+        if (fixtureSession) AssistantFixtures.hooks.fixtureEnded()
         if (active.get() === this) { application.voiceSessionVisible = false; application.voiceSessionHandlesCapture = false }
         application.eventStream.removeListener(eventListener)
         super.onHide()
@@ -282,7 +278,7 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
         nl.sander.aicockpit.jarvis.live.Acceptance.hooks.stopObservingWindow(window?.window)
         nl.sander.aicockpit.jarvis.live.Acceptance.hooks.diagnostic("session_destroy", JSONObject()
             .put("instance", System.identityHashCode(this)))
-        if (fixtureSession) JarvisVoiceInteractionService.restoreFixtureContextPolicy()
+        if (fixtureSession) AssistantFixtures.hooks.fixtureEnded()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         sessionViewModelStore.clear()
         if (active.get() === this) { application.voiceSessionVisible = false; application.voiceSessionHandlesCapture = false }
@@ -470,10 +466,8 @@ class JarvisVoiceInteractionSession(context: Context) : VoiceInteractionSession(
             nl.sander.aicockpit.jarvis.live.Acceptance.hooks.observeWindow(session.window?.window)
             return JarvisAudioControls.continueAcceptanceAudio()
         }
-        fun refreshFixture(activationId: String, captureId: String): Boolean {
-            val session = active.get() ?: return false
-            if ((session.context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return false
-            return session.requestFreshCapture(activationId, captureId)
-        }
+        /** A fresh screenshot through the visible session's own token (debug capture fixtures). */
+        internal fun requestFreshCapture(activationId: String, captureId: String): Boolean =
+            active.get()?.requestFreshCapture(activationId, captureId) ?: false
     }
 }

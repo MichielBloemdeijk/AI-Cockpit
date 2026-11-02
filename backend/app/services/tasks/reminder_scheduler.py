@@ -16,10 +16,7 @@ from app.services.tasks import lifecycle
 from app.services.tasks.vocabulary import TaskStatus
 from app.services.jarvis.clock import DEFAULT_TIME_ZONE, resolve_reminder_time
 from app.services.runtime_health import runtime_health_service
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.timestamps import utc_now
 
 
 class ReminderScheduler:
@@ -144,8 +141,7 @@ class ReminderScheduler:
         self,
         *,
         text: str | None,
-        due_at: datetime | str | None = None,
-        timing: object | None = None,
+        timing: object,
         active_time_zone: str = DEFAULT_TIME_ZONE,
         now: datetime | None = None,
         idempotency_key: str,
@@ -154,7 +150,6 @@ class ReminderScheduler:
     ) -> TaskSnapshot:
         resolved = resolve_reminder_time(
             timing=timing,
-            due_at=due_at,
             active_time_zone=active_time_zone,
             now=now,
         )

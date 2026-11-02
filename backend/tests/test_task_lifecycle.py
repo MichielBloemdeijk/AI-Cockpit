@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from app.db.repositories.conversations import utc_now
+from app.timestamps import utc_now
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, TaskEvent
 from app.services.tasks.reminder_scheduler import reminder_scheduler

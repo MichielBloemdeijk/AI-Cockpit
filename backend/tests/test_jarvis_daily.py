@@ -270,3 +270,31 @@ async def test_history_filters_and_closed_log_mutation_guards() -> None:
             params={"kind": "jarvis", "include_archived": True},
         )
         assert [item["id"] for item in hidden_history.json()] == [original.conversation.id]
+
+
+@pytest.mark.asyncio
+async def test_jarvis_turns_are_timeline_items_like_any_chat_message() -> None:
+    from app.services.conversations.read_model import conversation_read_model
+
+    first = await jarvis_daily_service.accept_text_turn(
+        "Jarvis, status check",
+        accepted_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        idempotency_key="timeline-turn",
+    )
+    # A replayed request adds no second item.
+    await jarvis_daily_service.accept_text_turn(
+        "Jarvis, status check",
+        accepted_at=datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc),
+        idempotency_key="timeline-turn",
+    )
+    await jarvis_daily_service.start_fresh_log(
+        requested_at=datetime(2026, 8, 27, 12, 5, tzinfo=timezone.utc),
+        idempotency_key="timeline-fresh",
+    )
+
+    events = await conversation_read_model.get_conversation_events(first.conversation.id)
+    items = [(item.role, item.content, item.label) for item in events.timeline_items]
+    assert items == [
+        ("user", "Jarvis, status check", "You"),
+        ("assistant", "Starting a fresh Jarvis log.", "Jarvis"),
+    ]

@@ -110,7 +110,7 @@ def test_review_pack_reads_both_recordings_and_state(tmp_path):
 async def test_doctor_reports_undelivered_requests_and_failed_bookkeeping(monkeypatch):
     from datetime import datetime, timedelta, timezone
     from app.db.session import session_scope
-    from app.db.tables import ConversationObservation, LiveSession, TaskPresentation
+    from app.db.tables import ConversationObservation
     from app.services.diagnostics import diagnose
     from app.services.jarvis.coordinator import jarvis_coordinator
     from app.services.updates.presentations import task_presentation_service

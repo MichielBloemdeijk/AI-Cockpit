@@ -7,14 +7,16 @@ import os
 from pathlib import Path
 import socket
 import sys
+from typing import cast
 
-from sqlalchemy import update
+from sqlalchemy import CursorResult, update
 
 from app.config import settings
 from app.db.repositories.tasks import TaskRepository
 from app.db.session import session_scope
 from app.db.tables import OrchestrationDecision
 from app.services.codex_native import CODEX_RUNTIME_PIN
+from app.services.orchestration.authority import StaleDecision
 from app.services.orchestration.service import DecisionClaim, DecisionTools, RuntimeUnavailable
 from app.services.windows_job import process_creation_stamp
 from app.services.orchestration.telemetry import record, token_usage
@@ -34,6 +36,8 @@ class CodexOrchestrationRuntime:
             raise RuntimeError("An orchestration host is already running")
         async with session_scope() as session:
             row = await session.get(OrchestrationDecision, claim.id)
+            if row is None:
+                raise StaleDecision("Decision no longer exists")
             model, effort, profile = row.model, row.effort, row.auth_profile
         flags = getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
         process = await asyncio.create_subprocess_exec(
@@ -42,6 +46,7 @@ class CodexOrchestrationRuntime:
             stderr=asyncio.subprocess.DEVNULL, creationflags=flags,
             limit=1024 * 1024,
         )
+        assert process.stdin is not None and process.stdout is not None  # both piped above
         self.process = process
         self.native_started.clear()
         binding = {"host_pid": process.pid, "host_creation_stamp": process_creation_stamp(process.pid),
@@ -70,11 +75,11 @@ class CodexOrchestrationRuntime:
             # Persist host identity before it can start a native turn. Even a
             # crash before thread/turn acknowledgment must remain uncertain.
             async with session_scope() as session:
-                result = await session.execute(update(OrchestrationDecision).where(
+                result = cast(CursorResult, await session.execute(update(OrchestrationDecision).where(
                     OrchestrationDecision.id == claim.id, OrchestrationDecision.status == "running",
                     OrchestrationDecision.claim_generation == claim.generation,
                     OrchestrationDecision.claim_owner == claim.owner,
-                ).values(native_binding_json=dict(binding)))
+                ).values(native_binding_json=dict(binding))))
                 if result.rowcount != 1:
                     raise RuntimeError("Native host lost its decision generation")
             process.stdin.write((json.dumps(payload, ensure_ascii=True) + "\n").encode())
@@ -110,11 +115,11 @@ class CodexOrchestrationRuntime:
                     connected = True
                     binding.update({key: message[key] for key in ("thread_id", "turn_id", "tools") if key in message})
                     async with session_scope() as session:
-                        result = await session.execute(update(OrchestrationDecision).where(
+                        result = cast(CursorResult, await session.execute(update(OrchestrationDecision).where(
                             OrchestrationDecision.id == claim.id, OrchestrationDecision.status == "running",
                             OrchestrationDecision.claim_generation == claim.generation,
                             OrchestrationDecision.claim_owner == claim.owner,
-                        ).values(native_binding_json=dict(binding)))
+                        ).values(native_binding_json=dict(binding))))
                         if result.rowcount != 1:
                             raise RuntimeError("Native host lost its decision generation")
                         if kind == "binding":

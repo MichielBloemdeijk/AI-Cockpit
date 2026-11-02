@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import session_scope
-from app.db.tables import AssistantPromise, ConversationObservation, LiveSession, LiveSessionEvent, TaskPresentation
+from app.db.tables import AssistantPromise, ConversationObservation, LiveSession, TaskPresentation
 from app.db.repositories.jarvis import JarvisDomainRepository
 from app.services.jarvis import notes as assistant_notes
 from app.services.jarvis.observer import conversation_observer

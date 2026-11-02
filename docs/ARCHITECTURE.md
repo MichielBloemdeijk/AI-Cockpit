@@ -69,14 +69,14 @@ behavior and transactions.
 | Area | Owners (in `app/services/` unless noted) |
 |---|---|
 | Configuration | `app/config.py`: settings from the root `.env` (or `AI_COCKPIT_ENV_FILE`); every relative path resolves against `backend/` via `backend_path` |
-| Persistence | `app/db/`: ORM tables (`tables.py`), sessions and migration lock (`session.py`), Alembic baseline in `alembic/` |
+| Persistence | `app/db/`: ORM tables (`tables.py`, grouped by domain), sessions, `run_migrations` (the one start-up entry point) and the migration lock (`session.py`), Alembic baseline in `alembic/`. `app/timestamps.py` has the one `utc_now` |
 | Auth and devices | `auth`, `api/auth.py`, `api/devices.py`, `jarvis/devices`: owner and device sessions, phone pairing |
-| Chat and council | The `services/conversations/` package: `chat_orchestrator` (single-model streaming completion, council fan-out and synthesis, one run owner per turn), `store` (the durable conversation record; `end_run` is the only way a conversation run ends, guarded on `running`), `run_supervisor`, `timeline`, `read_model`, `compaction`, `titles`, `workspace`, `chat_settings`. Outside it: `llm` (OpenRouter and local transport: one retry/error policy for both transports, provider profiles for prompt caching) |
+| Chat and council | The `services/conversations/` package: `chat_orchestrator` (single-model streaming completion, council fan-out and synthesis, one run owner per turn), `store` (the durable conversation record; `end_run` is the only way a conversation run ends, guarded on `running`), `run_supervisor`, `timeline` (every committed message, chat or Jarvis, is a `message` timeline item; clients render only those), `read_model`, `compaction`, `titles`, `workspace`, `chat_settings`. Outside it: `llm` (OpenRouter and local transport: one retry/error policy for both transports, provider profiles for prompt caching) |
 | Reviewed memory | `memory_review_store` (approve/reject/delete together with publication), `knowledge_memory` (notes under `knowledge/notes/`), `knowledge_extractor`, `brain_retrieval`, `history_retrieval` |
 | Jarvis voice | The `services/jarvis/` package: `coordinator` (one controller generation per session, response gate; each provider event is one transaction that records named after-commit effects, then those effects run in a fixed order), `openai_live_adapter` behind `voice_session_adapter`, `brain` (restricted tool gateway), `tool_catalog`, `observer` (records what the user actually heard), `daily`, `situation`, `wake`, `clock`, `notes`, `task_resolver`, `screen_look`, `phone_display` and the live helpers (`admission_intents`, `request_context`, `task_updates`, `traffic`, `live_telemetry`, `heard_prefix`) |
 | Tasks | The `services/tasks/` package: `vocabulary` (task, run and control vocabularies) and `lifecycle` (every task/run/attempt transition, the task lock and the worker fence; nothing else writes a task or run status); `service` (creation, control, questions, completion and result publication, calling the lifecycle), `worker_coordinator` (claims, leases, worker exits), `reminder_scheduler`, `pool_supervisor`, `context`, `context_upload`, `capture`, `update_policy` and the other task-domain modules. Outside it: `updates/` (below); worker side `tasks/worker`, `agent_execution` (the `TaskRuntime` protocol with its context and sink), `codex_task_runtime`, `codex_native` (the only code that knows the pinned Codex SDK: version pin, client config, raw App Server calls, the fail-closed sandbox gate; runtimes and probes all use it), `app/jarvis_tasks/task_mcp.py` (the MCP server a worker uses) |
 | Workflows | `tasks/workflows` (versioned definitions in `backend/workflows/` and app packages), `tasks/capture`, `tasks/context` |
-| Results and apps | `app/app_platform/` (packages, records, files, functions, hosting, lifecycle), the `services/results/` package (`records`, `types`, `contract`: run-owned output intent); built-in apps in `backend/apps/` |
+| Results and apps | `app/app_platform/` (packages, records, files, functions, hosting, lifecycle; install, rollback, status and reset go through Jarvis's tools, not HTTP), the `services/results/` package (`records`, `types`, `contract`: run-owned output intent); built-in apps in `backend/apps/` |
 | Background orchestration | The `services/orchestration/` package: `service` (feedback intake and single-flight decisions), `runtime` (the restricted Codex host), `attention`, `authority`, `context`, `recovery`, `telemetry`, `visibility` (off unless `TASK_ORCHESTRATION_ENABLED`) |
 | Worker tools | `tasks/worker_tool_policy`, `tasks/project_tools`, `connector_permissions`, `native_research` |
 | Task updates | The `services/updates/` package: `presentations` (task facts coalesced and presented once per live generation), `notifications` (Web Push outbox), `notification_preferences`, `push_subscriptions`. Outside it: `commit_signals` (after-commit hints; durable rescans are the authority) |
@@ -125,7 +125,7 @@ companion (`result-export/`) renders the same screens with its own adapters
   browser's wake and Live transport, or Android, which the page only observes),
   `use-jarvis.ts` composing both for the route, and the browser Live, wake and
   transcript modules.
-- `conversations/`: chat feed, history, hooks and selection.
+- `conversations/`: chat feed (committed messages from the server timeline plus the one locally streamed reply), hooks and selection.
 - `app-platform.ts` (the app host bridge), `task-status.ts`, `navigation.ts`.
 
 ## Android
@@ -139,8 +139,9 @@ commands), `wake/` (local ONNX wake inference),
 `live/`, `data/` (API client and live event stream), `notifications/`,
 `web/` (the WebView phone UI), `update/` (self-update) and `appfunctions/`.
 Acceptance harness code (test audio input, playback recording, relay, evidence
-logs) lives in `src/debug` behind `live/AcceptanceHooks`; release builds keep
-the no-op hooks. See [android/README.md](../android/README.md).
+logs) lives in `src/debug` behind `live/AcceptanceHooks`, and the capture
+fixtures (armed invocations bound to a harness's fake session) behind
+`assistant/AssistantFixtures`; release builds keep the no-op hooks. See [android/README.md](../android/README.md).
 
 ## Invariants worth knowing before a change
 

@@ -5,7 +5,7 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import hashlib
 import json
 from typing import Any, cast
@@ -35,6 +35,7 @@ from app.services.runtime_health import runtime_health_service
 from app.services.tasks.update_policy import FOLLOW_PROGRESS, SILENT, normalize_task_update_policy
 from app.services.orchestration.visibility import visible_attention, live_context_visible
 from app.services.updates.notification_preferences import current as current_notification
+from app.timestamps import utc_now
 
 
 PRESENTABLE_EVENT_TYPES = {
@@ -56,10 +57,6 @@ MAX_APPEND_TOKENS = 500
 # Reserve room for the short routing sentence wrapped around the JSON by each
 # provider adapter, so the complete append remains under 500 UTF-8 bytes.
 MAX_APPEND_UTF8_BYTES = 400
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -673,21 +670,17 @@ class TaskPresentationService:
             if cursor:
                 decoded = self._decode_checklist_cursor(str(cursor))
                 if decoded is None:
-                    # Accept the pre-opaque id cursor during the compatibility
-                    # release, while all newly issued cursors are stable
-                    # created-at/id pairs.
-                    query = query.where(TaskPresentation.id > str(cursor))
-                else:
-                    created_at, presentation_id = decoded
-                    query = query.where(
-                        or_(
-                            TaskPresentation.created_at > created_at,
-                            and_(
-                                TaskPresentation.created_at == created_at,
-                                TaskPresentation.id > presentation_id,
-                            ),
-                        )
+                    raise ValueError("Invalid attention checklist cursor")
+                created_at, presentation_id = decoded
+                query = query.where(
+                    or_(
+                        TaskPresentation.created_at > created_at,
+                        and_(
+                            TaskPresentation.created_at == created_at,
+                            TaskPresentation.id > presentation_id,
+                        ),
                     )
+                )
             rows = list((await session.execute(query.limit(bounded_limit + 1))).scalars().all())
             has_more = len(rows) > bounded_limit
             rows = rows[:bounded_limit]

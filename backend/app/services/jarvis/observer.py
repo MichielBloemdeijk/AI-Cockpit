@@ -10,11 +10,12 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import logging
+from typing import cast
 from uuid import uuid4
 
 import httpx
 from jsonschema import ValidationError, validate
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 
 from app.config import settings
 from app.db.session import session_scope
@@ -140,15 +141,16 @@ def playback_support(fragments, reports):
     # Merge on one track and one clock origin. Never bridge replacement or gaps.
     for track in {r[2]["track_id"] for r in usable}:
         values = sorted(((a, b, r) for a, b, r in usable if r["track_id"] == track), key=lambda x:x[0])
-        block_start, cursor, refs, lower, upper, position = None, None, [], None, None, None
+        started, block_start, cursor, refs, lower, upper, position = False, 0, 0, [], 0, 0, 0
         for a, b, r in values:
             # A short telemetry hole is bridged only when the player position advanced
             # through it consistently (the audio kept playing between reports).
-            gap = None if cursor is None else a - cursor
-            bridged = (gap is not None and 25 < gap <= MAX_BRIDGED_GAP_MS
+            gap = a - cursor
+            bridged = (started and 25 < gap <= MAX_BRIDGED_GAP_MS
                 and abs((r["playback_start_ms"] - position) - gap) <= max(15, gap * .25))
-            if (cursor is None or (gap > 25 and not bridged) or r["origin_lower_ms"] != lower
+            if (not started or (gap > 25 and not bridged) or r["origin_lower_ms"] != lower
                     or r["origin_upper_ms"] != upper or r["playback_start_ms"] < position - 25):
+                started = True
                 block_start, cursor, refs = a, b, []
                 lower, upper = r["origin_lower_ms"], r["origin_upper_ms"]
             cursor = max(cursor, b)
@@ -204,7 +206,7 @@ def utterances(fragments, cited):
     """Split cited assistant fragments into utterances separated by user speech."""
     order = {f["id"]: index for index, f in enumerate(fragments)}
     user_positions = [order[f["id"]] for f in fragments if f["speaker"] == "user"]
-    groups, current, previous = [], [], None
+    groups, current, previous = [], [], -1
     for fragment in sorted(cited, key=lambda f: order[f["id"]]):
         position = order[fragment["id"]]
         if current and any(previous < u < position for u in user_positions):
@@ -289,7 +291,7 @@ def resolve_handles(result, handles):
 class ConversationObserver:
     def __init__(self):
         self.task = None
-        self.stop_event = None
+        self.stop_event = asyncio.Event()
         self.failure = None
         self._versions = {}
 
@@ -452,9 +454,10 @@ class ConversationObserver:
                 (ConversationObservation.lease_until < now()))).order_by(ConversationObservation.created_at).limit(1))).scalar_one_or_none()
             if job is None:
                 return False
-            claimed = await db.execute(update(ConversationObservation).where(ConversationObservation.id == job.id,
-                ConversationObservation.status == job.status,
-                ConversationObservation.lease_until == job.lease_until).values(status="running", lease_until=now()+timedelta(seconds=60)))
+            claimed = cast(CursorResult, await db.execute(update(ConversationObservation).where(
+                ConversationObservation.id == job.id, ConversationObservation.status == job.status,
+                ConversationObservation.lease_until == job.lease_until,
+            ).values(status="running", lease_until=now()+timedelta(seconds=60))))
             if claimed.rowcount != 1:
                 return False
             attempts = list((job.usage_json or {}).get("attempts", []))
@@ -468,24 +471,27 @@ class ConversationObserver:
         except (ValueError, ValidationError) as exc:
             # A malformed model answer fails only this assessment. Attention stays
             # pending and newer dialogue creates a fresh assessment; no paid retry.
-            async with session_scope() as db:
-                job = await db.get(ConversationObservation, job_id)
-                job.status, job.error = "failed", type(exc).__name__ + ": " + str(exc)[:300]
+            await self._fail(job_id, exc)
             log.warning("Conversation observer skipped an invalid assessment: %s", exc)
         except Exception as exc:
-            async with session_scope() as db:
-                job = await db.get(ConversationObservation, job_id)
-                job.status, job.error = "failed", type(exc).__name__ + ": " + str(exc)[:300]
+            await self._fail(job_id, exc)
             self.failure = type(exc).__name__
             log.exception("Conversation observer stopped; attention remains pending")
             raise
         return True
 
+    @staticmethod
+    async def _fail(job_id, exc: Exception) -> None:
+        async with session_scope() as db:
+            job = await db.get(ConversationObservation, job_id)
+            if job is not None:
+                job.status, job.error = "failed", type(exc).__name__ + ": " + str(exc)[:300]
+
     async def apply(self, job_id, result, usage):
         validate(result, SCHEMA)
         async with session_scope() as db:
             job = await db.get(ConversationObservation, job_id)
-            if job.status == "completed":
+            if job is None or job.status == "completed":
                 return
             evidence = job.input_json
             source = {p["presentation_id"]: p for p in evidence["presentations"]}
@@ -531,10 +537,10 @@ class ConversationObserver:
                 if candidate.source_task_event_id != source[pid]["source_task_event_id"]:
                     validations[pid] = {"supported": False, "reason": "result_version_changed"}
                     continue
-                updated = await db.execute(update(TaskPresentation).where(TaskPresentation.id == pid,
+                updated = cast(CursorResult, await db.execute(update(TaskPresentation).where(TaskPresentation.id == pid,
                     TaskPresentation.state == "pending", TaskPresentation.source_task_event_id == candidate.source_task_event_id)
                     .values(state="handled", handled_at=now(), handled_by="conversation_observer", lease_token=None,
-                        reserved_session_id=None, reserved_generation=None, reserved_at=None))
+                        reserved_session_id=None, reserved_generation=None, reserved_at=None)))
                 if updated.rowcount != 1:
                     continue
                 from app.services.updates.presentations import task_presentation_service

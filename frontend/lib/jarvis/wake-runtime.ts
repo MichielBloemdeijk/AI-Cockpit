@@ -4,7 +4,6 @@ import {
   type JarvisWakeWorkerCommand,
   type JarvisWakeWorkerEvent,
 } from "./wake-protocol";
-import type { JarvisWakeCandidateEndpoint } from "./wake-engine";
 import {
   createJarvisActivationAudio,
   type JarvisActivationAudio,
@@ -25,20 +24,12 @@ export interface JarvisWakeRuntimeSnapshot {
 
 export interface JarvisWakeHandoff {
   localStream: MediaStream;
-  utterance: Promise<Float32Array>;
   sampleRate: number;
   wakeProbability: number | null;
   wakeDetectedMonotonicMs?: number;
   activationId?: string;
-  /** Candidate audio starts with `preRoll`, then arrives through `subscribe`. */
-  candidateAudio?: JarvisWakeCandidateStream | JarvisCandidateAudio;
-}
-
-export interface JarvisWakeCandidateStream {
-  sampleRate: number;
-  preRoll: Float32Array;
-  endpoint: Promise<JarvisWakeCandidateEndpoint>;
-  subscribe: (listener: (samples: Float32Array) => void) => () => void;
+  /** The wake turn's audio, pre-roll first, as ordered chunks; absent for a manual Arm. */
+  candidateAudio?: JarvisCandidateAudio;
 }
 
 interface JarvisWakeWorker {
@@ -86,9 +77,6 @@ export class JarvisWakeRuntime {
   private capture: JarvisWakeAudioCapture | null = null;
   private stream: MediaStream | null = null;
   private operation = 0;
-  private utteranceResolve: ((samples: Float32Array) => void) | null = null;
-  private utteranceReject: ((cause: unknown) => void) | null = null;
-  private candidateController: CandidateStreamController | null = null;
   private activationAudio: JarvisActivationAudio | null = null;
   private activationId: string | null = null;
   private snapshot: JarvisWakeRuntimeSnapshot = { status: "idle", error: null };
@@ -163,7 +151,6 @@ export class JarvisWakeRuntime {
     if (!this.worker || !this.capture || !this.stream) {
       throw new Error("Wake runtime is not available to re-arm");
     }
-    this.rejectPendingUtterance(new Error("Wake utterance was reset"));
     this.activationAudio?.close("rearmed");
     this.activationAudio = null;
     this.activationId = null;
@@ -184,7 +171,6 @@ export class JarvisWakeRuntime {
     this.publish({ status: "triggered", error: null });
     return {
       localStream: this.stream,
-      utterance: Promise.resolve(new Float32Array(0)),
       sampleRate: JARVIS_WAKE_SAMPLE_RATE,
       wakeProbability: null,
       wakeDetectedMonotonicMs: typeof performance !== "undefined" ? performance.now() : Date.now(),
@@ -217,70 +203,30 @@ export class JarvisWakeRuntime {
     }
     if (event.type === "detected") {
       const wakeDetectedMonotonicMs = typeof performance !== "undefined" ? performance.now() : Date.now();
-      const splitActivationId = event.activationId;
-      if (
-        this.snapshot.status !== "ready"
-        || !this.stream
-        || (splitActivationId ? this.activationAudio : this.utteranceResolve)
-      ) {
-        event.preRoll?.fill(0);
-        return;
-      }
-      if (splitActivationId) {
-        event.preRoll?.fill(0);
-        const activationAudio = createJarvisActivationAudio(splitActivationId, {
-          onDiagnostic: (diagnostic) => {
-            this.options.onTrace?.(`wake_${diagnostic.kind}`, {
-              activation_id: diagnostic.activationId,
-              retained_ms: diagnostic.retainedMs,
-            });
-          },
-        });
-        this.activationAudio = activationAudio;
-        this.activationId = splitActivationId;
-        this.options.onTrace?.("wake_detected", {
-          probability: event.probability,
-          activation_id: splitActivationId,
-        });
-        this.publish({ status: "triggered", error: null });
-        this.options.onWake({
-          localStream: this.stream,
-          utterance: Promise.resolve(new Float32Array(0)),
-          sampleRate: JARVIS_WAKE_SAMPLE_RATE,
-          wakeProbability: event.probability,
-          wakeDetectedMonotonicMs,
-          activationId: splitActivationId,
-          candidateAudio: activationAudio,
-        });
-        return;
-      }
-      let resolve!: (samples: Float32Array) => void;
-      let reject!: (cause: unknown) => void;
-      const utterance = new Promise<Float32Array>((promiseResolve, promiseReject) => {
-        resolve = promiseResolve;
-        reject = promiseReject;
+      if (this.snapshot.status !== "ready" || !this.stream || this.activationAudio) return;
+      const activationAudio = createJarvisActivationAudio(event.activationId, {
+        onDiagnostic: (diagnostic) => {
+          this.options.onTrace?.(`wake_${diagnostic.kind}`, {
+            activation_id: diagnostic.activationId,
+            retained_ms: diagnostic.retainedMs,
+          });
+        },
       });
-      this.utteranceResolve = resolve;
-      this.utteranceReject = reject;
-      const candidate = createCandidateStream(
-        event.preRoll ?? new Float32Array(0),
-        event.sampleRate ?? JARVIS_WAKE_SAMPLE_RATE,
-      );
-      this.candidateController = candidate.controller;
-      this.options.onTrace?.("wake_detected", { probability: event.probability });
+      this.activationAudio = activationAudio;
+      this.activationId = event.activationId;
+      this.options.onTrace?.("wake_detected", {
+        probability: event.probability,
+        activation_id: event.activationId,
+      });
       this.publish({ status: "triggered", error: null });
       this.options.onWake({
         localStream: this.stream,
-        utterance,
         sampleRate: JARVIS_WAKE_SAMPLE_RATE,
         wakeProbability: event.probability,
         wakeDetectedMonotonicMs,
-        candidateAudio: candidate.stream,
+        activationId: event.activationId,
+        candidateAudio: activationAudio,
       });
-      return;
-    }
-    if (event.type === "candidate_audio") {
-      this.candidateController?.push(event.samples);
       return;
     }
     if (event.type === "candidate_chunk") {
@@ -305,18 +251,14 @@ export class JarvisWakeRuntime {
         samples: event.totalSamples,
         silence_ms: event.trailingSilenceMs,
       });
-      if (this.activationAudio) {
-        this.activationAudio.resolveEndpoint({
-          sampleRate: 16_000,
-          speechEndSample: event.speechEndSample ?? event.totalSamples,
-          observedAtSample: event.observedAtSample ?? event.totalSamples,
-          trailingSilenceSamples: event.trailingSilenceSamples
-            ?? Math.round(event.trailingSilenceMs / 1_000 * 16_000),
-          processingLagMs: event.processingLagMs ?? 0,
-        });
-      } else {
-        this.candidateController?.end(event);
-      }
+      this.activationAudio?.resolveEndpoint({
+        sampleRate: 16_000,
+        speechEndSample: event.speechEndSample ?? event.totalSamples,
+        observedAtSample: event.observedAtSample ?? event.totalSamples,
+        trailingSilenceSamples: event.trailingSilenceSamples
+          ?? Math.round(event.trailingSilenceMs / 1_000 * 16_000),
+        processingLagMs: event.processingLagMs ?? 0,
+      });
       return;
     }
     if (event.type === "candidate_close") {
@@ -324,19 +266,6 @@ export class JarvisWakeRuntime {
         activation_id: this.activationAudio?.activationId ?? null,
       });
       this.activationAudio?.close(event.reason);
-      return;
-    }
-    if (event.type === "utterance") {
-      this.capture?.pause();
-      this.options.onTrace?.("wake_utterance_ready", {
-        samples: event.samples.length,
-        duration_ms: Math.round(event.samples.length / event.sampleRate * 1_000),
-      });
-      const resolve = this.utteranceResolve;
-      this.utteranceResolve = null;
-      this.utteranceReject = null;
-      resolve?.(event.samples);
-      this.candidateController = null;
       return;
     }
     void this.fail(new Error(event.message), operation);
@@ -354,7 +283,6 @@ export class JarvisWakeRuntime {
   }
 
   private async releaseResources(stopStream: boolean): Promise<void> {
-    this.rejectPendingUtterance(new Error("Wake runtime stopped"));
     this.activationAudio?.close(stopStream ? "sleep" : "disconnected");
     this.activationAudio = null;
     this.activationId = null;
@@ -376,80 +304,10 @@ export class JarvisWakeRuntime {
     }
   }
 
-  private rejectPendingUtterance(cause: unknown): void {
-    const reject = this.utteranceReject;
-    this.utteranceResolve = null;
-    this.utteranceReject = null;
-    reject?.(cause);
-    this.candidateController?.fail(cause);
-    this.candidateController = null;
-  }
-
   private publish(snapshot: JarvisWakeRuntimeSnapshot): void {
     this.snapshot = snapshot;
     this.options.onSnapshot?.(snapshot);
   }
-}
-
-interface CandidateStreamController {
-  push: (samples: Float32Array) => void;
-  end: (endpoint: JarvisWakeCandidateEndpoint) => void;
-  fail: (cause: unknown) => void;
-}
-
-function createCandidateStream(
-  preRoll: Float32Array,
-  sampleRate: number,
-): { stream: JarvisWakeCandidateStream; controller: CandidateStreamController } {
-  let listener: ((samples: Float32Array) => void) | null = null;
-  let pending: Float32Array[] = [];
-  let endpointResolve!: (endpoint: JarvisWakeCandidateEndpoint) => void;
-  let endpointReject!: (cause: unknown) => void;
-  const endpoint = new Promise<JarvisWakeCandidateEndpoint>((resolve, reject) => {
-    endpointResolve = resolve;
-    endpointReject = reject;
-  });
-  const stream: JarvisWakeCandidateStream = {
-    sampleRate,
-    preRoll,
-    endpoint,
-    subscribe: (next) => {
-      listener = next;
-      const queued = pending;
-      pending = [];
-      for (const samples of queued) next(samples);
-      return () => {
-        if (listener === next) listener = null;
-      };
-    },
-  };
-  let closed = false;
-  const controller: CandidateStreamController = {
-    push: (samples) => {
-      if (closed || !samples.length) {
-        samples.fill(0);
-        return;
-      }
-      if (listener) listener(samples);
-      else pending.push(samples);
-    },
-    end: (value) => {
-      if (closed) return;
-      closed = true;
-      // Keep queued chunks until the consumer subscribes. The controller may
-      // still be registering the activation when local endpointing fires.
-      endpointResolve(value);
-    },
-    fail: (cause) => {
-      if (closed) return;
-      closed = true;
-      preRoll.fill(0);
-      for (const samples of pending) samples.fill(0);
-      pending = [];
-      endpointReject(cause);
-    },
-  };
-  return { stream, controller };
 }
 
 async function createBrowserAudioCapture(

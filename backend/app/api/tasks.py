@@ -224,7 +224,6 @@ def _presentation(presentation: TaskPresentation) -> TaskPresentationView:
         created_at=presentation.created_at,
         handled_at=presentation.handled_at,
         handled_by=presentation.handled_by,
-        presented_at=presentation.handled_at,
     )
 
 

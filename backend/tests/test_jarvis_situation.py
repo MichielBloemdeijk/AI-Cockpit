@@ -47,7 +47,7 @@ async def test_situation_snapshot_exposes_overdue_then_recently_completed_remind
     now = datetime.now(timezone.utc)
     reminder = await reminder_scheduler.create(
         text="Check the oven",
-        due_at=now + timedelta(seconds=1),
+        timing={"kind": "instant", "due_at": now + timedelta(seconds=1)},
         idempotency_key="situation-reminder",
         origin_conversation_id=accepted.conversation.id,
     )
@@ -133,7 +133,7 @@ async def test_scheduler_startup_immediately_processes_overdue_reminders() -> No
     now = datetime.now(timezone.utc)
     reminder = await reminder_scheduler.create(
         text="Restart catch-up",
-        due_at=now + timedelta(minutes=1),
+        timing={"kind": "instant", "due_at": now + timedelta(minutes=1)},
         idempotency_key="startup-overdue",
     )
     async with session_scope() as session:

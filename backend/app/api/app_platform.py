@@ -1,4 +1,7 @@
-"""HTTP surface of the app platform: management, app data and UI hosting."""
+"""HTTP surface of the app platform: listing, uninstall, app data and UI hosting.
+
+Install, rollback, status and reset belong to Jarvis's tools, which call the
+platform in-process."""
 from __future__ import annotations
 
 import json
@@ -10,7 +13,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app import app_platform
-from app.config import settings
 from app.services.auth import authorization_scheme, require_auth
 from app.services.jarvis.devices import require_jarvis_auth
 
@@ -22,15 +24,6 @@ HOST_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "Cache-Control": "private, max-age=3600",
 }
-
-
-class InstallRequest(BaseModel):
-    source: str = Field(min_length=1, max_length=255, description="Package folder name inside app_builds_dir")
-
-
-class ResetRequest(BaseModel):
-    collection: str | None = Field(default=None, max_length=48)
-    files: bool = Field(default=False, description="Also delete the app's stored files")
 
 
 class ErrorReport(BaseModel):
@@ -68,46 +61,6 @@ async def app_data_access(slug: str, request: Request) -> None:
 @router.get("/apps", dependencies=[Depends(require_jarvis_auth)])
 async def list_installed_apps() -> list[dict[str, Any]]:
     return [app.summary() for app in await app_platform.list_apps()]
-
-
-@router.post("/apps/install", dependencies=[Depends(require_auth)])
-async def install_app(body: InstallRequest) -> dict[str, Any]:
-    builds = settings.app_builds_path.resolve()
-    source = (builds / body.source).resolve()
-    if not source.is_relative_to(builds) or source == builds or not source.is_dir():
-        raise HTTPException(404, "Package folder not found in the app builds folder")
-    try:
-        return (await app_platform.install_package(source)).summary()
-    except app_platform.ManifestError as exc:
-        raise HTTPException(422, str(exc)) from exc
-
-
-@router.post("/apps/{slug}/rollback", dependencies=[Depends(require_auth)])
-async def rollback_app(slug: str) -> dict[str, Any]:
-    try:
-        return (await app_platform.rollback(slug)).summary()
-    except app_platform.AppNotFound as exc:
-        raise _not_found(exc) from exc
-    except app_platform.ManifestError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-
-@router.get("/apps/{slug}/status", dependencies=[Depends(require_jarvis_auth)])
-async def app_status(slug: str) -> dict[str, Any]:
-    try:
-        return await app_platform.status(slug)
-    except app_platform.AppNotFound as exc:
-        raise _not_found(exc) from exc
-
-
-@router.post("/apps/{slug}/reset", dependencies=[Depends(require_auth)])
-async def reset_app(slug: str, body: ResetRequest) -> dict[str, int]:
-    try:
-        return await app_platform.reset(slug, body.collection, files=body.files)
-    except app_platform.AppNotFound as exc:
-        raise _not_found(exc) from exc
-    except app_platform.ManifestError as exc:
-        raise HTTPException(422, str(exc)) from exc
 
 
 @router.delete("/apps/{slug}", dependencies=[Depends(require_auth)])

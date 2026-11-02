@@ -6,101 +6,36 @@ from app.db.session import initialize_engine
 from app.services.conversations import store as conversation_store_module
 from app.services.conversations.read_model import conversation_read_model
 from app.services.conversations.store import conversation_store
-from app.services.conversations.timeline import build_tool_result_timeline_item
-from app.services.tasks.delegation import delegate_background_task
-
-
-def test_app_initialize_activity_lists_scaffolded_files():
-    item = build_tool_result_timeline_item(
-        run_id="run-1",
-        step=1,
-        tool_name="app_initialize",
-        arguments={"title": "Hello World"},
-        ok=True,
-        output="Created generated app 'Hello World' at /apps/hello-world.",
-        result_metadata={
-            "app": {
-                "title": "Hello World",
-                "scaffolded_files": [
-                    "frontend/generated-apps/hello-world/page.tsx",
-                    "frontend/generated-apps/hello-world/styles.css",
-                ],
-            }
-        },
-    )
-
-    assert item["content"] == "Initialized Hello World"
-    assert item["code"] == (
-        "Created files:\n"
-        "frontend/generated-apps/hello-world/page.tsx\n"
-        "frontend/generated-apps/hello-world/styles.css"
-    )
+from app.services.conversations.timeline import TIMELINE_ITEM_EVENT_TYPE, build_message_timeline_item
 
 
 @pytest.mark.asyncio
-async def test_timeline_projection_replaces_activity_in_place():
+async def test_timeline_projection_replaces_an_item_in_place():
     initialize_engine()
 
     conversation = await conversation_store.create_conversation(mode_hint="single")
     run = await conversation_store.start_run(conversation.id, kind="assistant")
-    activity_id = f"tool:{run.id}:1:file_read"
-    first_event = await conversation_store.append_timeline_item(
-        conversation.id,
-        run_id=run.id,
-        item_payload={
-            "item_id": activity_id,
-            "role": "assistant",
-            "kind": "tool_call",
-            "content": "Reading lib/hooks.ts",
-        },
-    )
-    await conversation_store.append_timeline_item(
-        conversation.id,
-        run_id=run.id,
-        item_payload={
-            "item_id": activity_id,
-            "role": "assistant",
-            "kind": "tool_result",
-            "content": "Read lib/hooks.ts",
-        },
-    )
+
+    async def record(content: str):
+        return await conversation_store.append_event(
+            conversation.id,
+            run_id=run.id,
+            actor_kind="assistant",
+            event_type=TIMELINE_ITEM_EVENT_TYPE,
+            payload_json=build_message_timeline_item(message_id="m1", role="assistant", content=content),
+        )
+
+    first_event = await record("I heard: tomorow")
+    # A corrected transcript re-records the same message.
+    await record("I heard: tomorrow")
 
     events = await conversation_store.list_events_for_run(conversation.id, run.id)
     timeline_items = conversation_read_model._build_timeline_items(events)
 
     assert len(timeline_items) == 1
-    assert timeline_items[0]["kind"] == "tool_result"
-    assert timeline_items[0]["content"] == "Read lib/hooks.ts"
+    assert timeline_items[0]["item_id"] == "assistant:m1"
+    assert timeline_items[0]["content"] == "I heard: tomorrow"
     assert timeline_items[0]["sequence"] == first_event.sequence
-
-
-@pytest.mark.asyncio
-async def test_delegated_task_projects_as_one_task_card_without_a_child_run():
-    initialize_engine()
-
-    conversation = await conversation_store.create_conversation(mode_hint="single")
-    parent = await conversation_store.start_run(
-        conversation.id,
-        kind="assistant",
-        metadata_json={"branch_key": "main"},
-    )
-    task, _ = await delegate_background_task(
-        parent_run_id=parent.id,
-        goal="Review the repository",
-        idempotency_key="conversation-task-card",
-    )
-
-    events = await conversation_store.list_events(conversation.id, limit=5000)
-    runs = await conversation_store.list_runs(conversation.id)
-    timeline_items = conversation_read_model._build_timeline_items(events, runs)
-    task_items = [item for item in timeline_items if item["kind"] == "task"]
-
-    assert len(task_items) == 1
-    assert task_items[0]["item_id"] == f"task:{task.task.id}"
-    assert task_items[0]["metadata"]["task_id"] == task.task.id
-    assert task_items[0]["metadata"]["task_run_id"] == task.task.id
-    assert task_items[0]["status"] == "waiting_for_worker"
-    assert [run.id for run in runs] == [parent.id]
 
 
 @pytest.mark.asyncio

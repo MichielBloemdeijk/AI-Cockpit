@@ -12,10 +12,10 @@ import logging
 import os
 import socket
 from time import monotonic
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Protocol, cast
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
@@ -193,11 +193,13 @@ class DecisionTools:
             async with session_scope() as session:
                 receipt = await begin_action(session, authority, action="retain",
                                              arguments={"reason": reason}, task_id=task_id)
+                assert receipt is not None  # authority is set, so an action receipt exists
                 decision = await session.get(OrchestrationDecision, self.claim.id)
                 retained = await retain_attention(session, decision, authority.idempotency_key)
-                receipt.outcome_json = {**receipt.outcome_json, "task_id": task_id, "retained": retained}
+                outcome = {**(receipt.outcome_json or {}), "task_id": task_id, "retained": retained}
+                receipt.outcome_json = outcome
                 await self._audit(session, task_id, operation, name, reason)
-                return dict(receipt.outcome_json)
+                return dict(outcome)
         # The receipt already committed atomically with the shared mutation.
         # This extra explanation is an idempotent audit, not action authority.
         async with session_scope() as session:
@@ -242,6 +244,7 @@ class TaskOrchestrationService:
                 TaskProjectionCheckpoint.projection_key == CURSOR_KEY,
             ).values(last_sequence=TaskProjectionCheckpoint.last_sequence))
             checkpoint = await session.get(TaskProjectionCheckpoint, CURSOR_KEY)
+            assert checkpoint is not None  # upserted above
             live = list((await session.execute(select(JarvisLiveEvent).where(
                 JarvisLiveEvent.sequence > checkpoint.last_sequence,
             ).order_by(JarvisLiveEvent.sequence).limit(BATCH_SIZE))).scalars().all())
@@ -262,10 +265,9 @@ class TaskOrchestrationService:
             ))).scalars() if sources else []
             events_by_id = {event.id: event for event in events}
             for candidate in candidates:
-                if (candidate.id not in before_ids and candidate.state == "pending"
-                        and events_by_id[candidate.source_task_event_id].event_type not in
-                        {"task.requires_input", "task.failed", "task.interrupted"}):
-                    source = events_by_id[candidate.source_task_event_id]
+                source = events_by_id.get(candidate.source_task_event_id or "")
+                if (source is not None and candidate.id not in before_ids and candidate.state == "pending"
+                        and source.event_type not in {"task.requires_input", "task.failed", "task.interrupted"}):
                     await record(session, key=f"forward:{candidate.id}", kind="factual_forwarding",
                         task_id=source.task_id, source_sequence=sources[source.id].sequence,
                         duration_ms=age_ms(source.created_at),
@@ -396,6 +398,7 @@ class TaskOrchestrationService:
             await session.execute(update(TaskSupervisorLease).where(TaskSupervisorLease.lease_key == LEASE_KEY)
                                   .values(heartbeat_at=TaskSupervisorLease.heartbeat_at))
             lease = await session.get(TaskSupervisorLease, LEASE_KEY)
+            assert lease is not None  # upserted above
             if lease.owner_identity not in {"released", self.owner} and not self.owner_has_exited(lease.owner_identity):
                 return False
             if lease.owner_identity != self.owner:
@@ -442,10 +445,10 @@ class TaskOrchestrationService:
         if self.generation is None:
             return None
         async with session_scope() as session:
-            lock = await session.execute(update(TaskSupervisorLease).where(
+            lock = cast(CursorResult, await session.execute(update(TaskSupervisorLease).where(
                 TaskSupervisorLease.lease_key == LEASE_KEY, TaskSupervisorLease.owner_identity == self.owner,
                 TaskSupervisorLease.generation == self.generation,
-            ).values(heartbeat_at=now(), expires_at=now() + timedelta(seconds=30)))
+            ).values(heartbeat_at=now(), expires_at=now() + timedelta(seconds=30))))
             if lock.rowcount != 1:
                 raise StaleDecision("Background service generation is stale")
             if (await session.execute(select(OrchestrationDecision.id).where(
@@ -491,8 +494,9 @@ class TaskOrchestrationService:
             ).order_by(TaskEvent.sequence).limit(1))).scalar_one()
             repair_id = (row.context_json or {}).get("repair_result", {}).get("event_id") if (row.context_json or {}).get("repair_result") else None
             repair_event = (await session.execute(select(TaskEvent).where(TaskEvent.id == repair_id))).scalar_one_or_none() if repair_id else None
-            row.context_json = await self._context(session, task, question, source, row.observed_json, repair_event)
-            row.context_digest = digest(row.context_json)
+            context = await self._context(session, task, question, source, row.observed_json, repair_event)
+            row.context_json = context
+            row.context_digest = digest(context)
             if row.outcome_json and "recovery" in row.outcome_json:
                 # Its prior inspection belongs to the audited old binding,
                 # not the new host that this fresh claim will start.
@@ -506,7 +510,7 @@ class TaskOrchestrationService:
                 decision_id=row.id, task_id=row.task_id, generation=row.claim_generation,
                 source_sequence=row.source_sequence, duration_ms=age_ms(row.created_at),
                 values={"wait_clock": "decision_created_wall_clock", "model": row.model, "effort": row.effort})
-            return DecisionClaim(row.id, row.claim_generation, self.owner, dict(row.context_json))
+            return DecisionClaim(row.id, row.claim_generation, self.owner, dict(context))
 
     async def run_one(self) -> bool:
         claim = await self.claim()
@@ -541,14 +545,14 @@ class TaskOrchestrationService:
                 delay = None
             logger.warning("Decision %s stopped: %s", claim.id, error)
         async with session_scope() as session:
-            result = await session.execute(update(OrchestrationDecision).where(
+            result = cast(CursorResult, await session.execute(update(OrchestrationDecision).where(
                 OrchestrationDecision.id == claim.id, OrchestrationDecision.status == "running",
                 OrchestrationDecision.claim_owner == claim.owner,
                 OrchestrationDecision.claim_generation == claim.generation,
             ).values(status=status, last_error=error, outcome_json=outcome,
                      decision_reason=str((outcome or {}).get("reason") or "")[:2000] or None,
                      due_at=now() + timedelta(seconds=delay) if delay else None,
-                     completed_at=now() if status in {"completed", "obsolete"} else None))
+                     completed_at=now() if status in {"completed", "obsolete"} else None)))
             if result.rowcount == 1:
                 from app.services.orchestration.telemetry import record
                 await record(session, key=f"runtime:{claim.id}:{claim.generation}", kind="runtime_invocation",
@@ -560,8 +564,8 @@ class TaskOrchestrationService:
                 row = await session.get(OrchestrationDecision, claim.id)
                 source = (await session.execute(select(TaskEvent).where(
                     TaskEvent.id.in_(row.source_event_ids_json), TaskEvent.task_id == row.task_id,
-                ).order_by(TaskEvent.sequence).limit(1))).scalar_one_or_none()
-                if source:
+                ).order_by(TaskEvent.sequence).limit(1))).scalar_one_or_none() if row is not None else None
+                if row is not None and source:
                     await self._queue_issue(session, source, row.source_sequence)
         return True
 

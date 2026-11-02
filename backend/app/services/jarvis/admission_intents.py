@@ -29,6 +29,7 @@ async def reserve_intent(*, session_id, generation, turn_scope, intent_id, tool_
         if live is None or live.generation != generation or live.lifecycle_state not in {"connecting", "ready"}:
             raise ValueError("Live admission authority is stale")
         receipt = await session.get(LiveAdmissionIntent, identity)
+        assert receipt is not None  # inserted above
         if receipt.tool_name != tool_name or receipt.input_digest != digest:
             raise ValueError("Intent idempotency conflict: another route or different arguments")
         return receipt
@@ -47,4 +48,5 @@ async def pin_target(identity, task_id):
         await session.execute(update(LiveAdmissionIntent).where(LiveAdmissionIntent.id == identity,
             LiveAdmissionIntent.target_task_id.is_(None)).values(target_task_id=task_id))
         receipt = await session.get(LiveAdmissionIntent, identity)
+        assert receipt is not None  # reserved before any pinning
         return receipt.target_task_id

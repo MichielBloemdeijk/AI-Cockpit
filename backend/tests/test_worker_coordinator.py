@@ -12,7 +12,6 @@ from sqlalchemy import delete, select
 from app.db.session import session_scope
 from app.db.tables import ResourceLease, Task, TaskAttempt, WorkerInstance
 from app.services.conversations.store import conversation_store
-from app.services.tasks.delegation import delegate_background_task
 from app.services.tasks.service import task_service
 from app.services.tasks.worker_coordinator import worker_coordinator
 
@@ -345,9 +344,10 @@ async def test_stale_takeover_interrupts_but_retains_leases_until_observed_exit(
 async def test_api_restart_does_not_change_worker_owned_task() -> None:
     conversation = await conversation_store.create_conversation(title="Origin")
     parent = await conversation_store.start_run(conversation.id, kind="assistant")
-    delegated, _ = await delegate_background_task(
-        parent_run_id=parent.id,
+    delegated = await task_service.dispatch(
         goal="survive API",
+        origin_surface="test",
+        origin_conversation_id=conversation.id,
         idempotency_key="api-restart",
     )
     await conversation_store.end_run(parent.id, "completed")

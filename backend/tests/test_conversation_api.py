@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -100,26 +99,9 @@ async def test_single_model_stream_returns_done_and_persists_assistant_message(m
 
 
 @pytest.mark.asyncio
-async def test_conversation_events_expose_active_run_live_item_snapshot():
+async def test_conversation_events_expose_the_active_run():
     conversation = await conversation_store.create_conversation(mode_hint="single")
-    run = await conversation_store.start_run(
-        conversation.id,
-        kind="assistant",
-        metadata_json={
-            "branch_key": "main",
-            "live_item": {
-                "item_id": "tool:run-1:1:file_read",
-                "role": "assistant",
-                "kind": "tool_call",
-                "title": "file read",
-                "label": "Tool call",
-                "content": "Preparing to read hooks.ts",
-                "status": "streaming",
-                "sequence": 1,
-                "created_at": "2026-05-19T00:00:00Z",
-            },
-        },
-    )
+    run = await conversation_store.start_run(conversation.id, kind="assistant", metadata_json={"branch_key": "main"})
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -127,11 +109,7 @@ async def test_conversation_events_expose_active_run_live_item_snapshot():
         response = await client.get(f"/api/conversations/{conversation.id}/events")
 
     assert response.status_code == 200
-    active_run = response.json()["active_run"]
-    assert active_run["run_id"] == run.id
-    assert active_run["status"] == "running"
-    assert active_run["live_item"]["item_id"] == "tool:run-1:1:file_read"
-    assert active_run["live_item"]["content"] == "Preparing to read hooks.ts"
+    assert response.json()["active_run"] == {"run_id": run.id, "status": "running", "latest_sequence": 0}
 
 
 @pytest.mark.asyncio

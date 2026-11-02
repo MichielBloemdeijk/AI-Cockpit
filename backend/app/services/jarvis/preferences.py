@@ -43,8 +43,8 @@ class JarvisPreferencesService:
                     setattr(row, key, values[key])
             if values.get("time_zone") is not None:
                 row.time_zone = canonical_time_zone(str(values["time_zone"]))
-            if values.get("android_privacy") is not None:
-                row.android_privacy_json = dict(values["android_privacy"] or {})
+            if isinstance(privacy := values.get("android_privacy"), dict):
+                row.android_privacy_json = dict(privacy)
             await session.flush()
             await session.refresh(row)
             return self._view(row), old_voice != row.voice

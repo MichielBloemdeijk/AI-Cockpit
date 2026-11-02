@@ -340,12 +340,9 @@ export default function JarvisPage() {
                   message={{
                     id: message.id,
                     role: message.role,
-                    kind: "message",
-                    label: message.author_label || undefined,
                     content: message.content,
                     createdAt: message.created_at,
                     branchable: false,
-                    badges: message.communication_state && message.communication_state !== "completed" ? [message.communication_state] : undefined,
                   }}
                 />
               ))}
@@ -355,12 +352,9 @@ export default function JarvisPage() {
                   message={{
                     id: `provisional-user-${provisionalUser.id}`,
                     role: "user",
-                    kind: "message",
-                    label: "You",
                     content: provisionalUser.text,
                     createdAt: new Date().toISOString(),
                     branchable: false,
-                    badges: ["speaking"],
                   }}
                 />
               )}
@@ -370,12 +364,9 @@ export default function JarvisPage() {
                   message={{
                     id: `provisional-${provisionalAssistant.id}`,
                     role: "assistant",
-                    kind: "message",
-                    label: "Jarvis",
                     content: provisionalAssistant.text,
                     createdAt: new Date().toISOString(),
                     branchable: false,
-                    badges: ["speaking"],
                   }}
                 />
               )}

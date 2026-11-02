@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,10 +20,7 @@ from app.db.tables import (
     LiveSession,
     ConversationRunStatus,
 )
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.timestamps import utc_now
 
 
 class ConversationRepository:
