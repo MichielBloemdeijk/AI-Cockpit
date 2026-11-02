@@ -93,7 +93,7 @@ Do not extract every query into a repository, require an interface per class, ge
 | Generated apps → app platform, steps 1–6 (see below; closes C05, removes the old generated-app subsystem and part of I05) | Done | `e597ac8` … `fa7066f` |
 | Phase 3 (X02, part): frontend lint scope excludes build outputs of test and audit runs; the source lint errors fixed | Done | `f089bdb` |
 | App platform gaps: app workflows from functions/UI, `write_app_data`, Recipes-from-README acceptance, Android scripts on app records (model-free emulator runs pass) | Done | `8abb796` … |
-| Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Not started | — |
+| Phase 1: B01, B02 (rest), B03, T03, C01, C10, C12, C14, X01, A01, P01 drift test | Done, one regression test per finding (see below) | uncommitted |
 | Phase 3: docs/setup (ONB, E01, E02), A03, E03 static checking, P02, P01 squash | Not started | — |
 | Phase 4: task lifecycle, conversation runs, execution contracts, live transitions, provider transport | Not started | — |
 | Phase 5: client feature ownership (C02, C03, C04, C06, C07, C09, A02) | Not started | — |
@@ -112,6 +112,19 @@ I04 needs no mitigation step: decision 1 removes the code.
 ## Phase 1 — Repair demonstrated defects, one focused change each
 
 B01, B02, B03, T03, C01 (loads and stream callbacks), C10, C12, C14, X01 (withdrawal plus ID-based note names), A01, and a P01 drift test (`compare_metadata` on a fresh DB) that is expected to fail until the squash. Each change turns the saved probe's scenario into a real regression test of the desired behavior. Do not keep defect-asserting probes as gates. None of these depend on the structural phases. Where a fix would naturally land in a phase-4 module (T03 in the task lifecycle owner), make the minimal locked fix now and move it later.
+
+**Done (2026-11-02).** Each test below fails on the previous code where the defect was reproducible in-process.
+
+- **B01:** revocation sends an immediate `suspend` (`suspend_for_policy_revocation`); `test_policy_revocation_during_a_turn_stops_the_writer_and_pauses` drives a worker through it to `paused`.
+- **B02:** chat, council and turn preparation share one run owner (`_owned_run` in `chat_orchestrator`), so any failure or cancellation after the run starts ends it. The supervisor already logged failures (phase 2).
+- **B03:** the API lifespan registers each release on an `AsyncExitStack` as it acquires it; `test_api_lifespan.py` covers a failing start and a failing stop.
+- **T03:** the reminder scheduler takes `task_service._lock_task` before reading (minimal fix; moves into the phase-4 lifecycle owner). `test_reminder_scheduler_race.py` commits a cancel from a second SQLite connection inside the read-to-write window, like the probe, and asserts it now waits for the lock.
+- **X01:** `memory_review_store` owns approve/reject/delete and the knowledge file; withdrawing an approved item unpublishes it, and a failed approval commit removes the fresh file. Notes are named `{kind}-{slug}-{id}.md`, and listings take the title from the front matter. The memory PATCH route and conversation-scoped approve/reject were already removed in phase 2.
+- **P01:** `test_schema_drift.py` (metadata comparison and orphan insert) is `xfail(strict=True)`; remove the markers with the phase-3 squash.
+- **C01:** `useChat` owns a selection ref; loads carry a generation and commit only while newest and still selected, and stream callbacks write only while the view shows the conversation and branch they were sent from (a branch send no longer jumps to `main`). Task-page polling, the second case under C01, is not changed.
+- **C10, C12:** the wake runtime re-checks its operation after cleanup; ONNX creation releases loaded sessions when one fails.
+- **C14:** committed assistant timeline items carry `usage` and, for council answers, `council` (the model responses), written by the server and mapped by the feed. Task links and branch locks need no timeline field today: no writer gives timeline conversations a source task (`task_delegation` has no caller), and the mutating chat tools behind branch locks were removed in phase 2. The legacy reconstruction stays until phase 6 (I05).
+- **A01:** one shared `OkHttpClient` for all `CockpitApi` instances; the live stream uses a derived client with a 45 s read timeout (three heartbeats), and backoff resets on open. JVM-tested against a local SSE server; not run on a device or emulator.
 
 ## Phase 2 — Apply decisions 1–3
 

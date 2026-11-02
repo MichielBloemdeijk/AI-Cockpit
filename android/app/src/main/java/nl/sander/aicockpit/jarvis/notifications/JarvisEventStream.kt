@@ -57,6 +57,7 @@ class JarvisEventStream(private val context: Context, private val onConnected: (
                     },
                     onOpen = {
                         Log.i("JarvisEventStream", "Live event stream connected")
+                        backoff = 1_000L
                         onConnected()
                     },
                 )

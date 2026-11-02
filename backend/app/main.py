@@ -1,7 +1,7 @@
 """FastAPI application entry point."""
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 import asyncio
 import logging
 from pathlib import Path
@@ -52,6 +52,11 @@ async def _expire_context_requests(stop: asyncio.Event) -> None:
             pass
 
 
+async def _stop_context_expiry(stop: asyncio.Event, task: asyncio.Task[None]) -> None:
+    stop.set()
+    await task
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     from app.jarvis_tasks.acceptance import candidate_identity, database_identity
@@ -60,50 +65,49 @@ async def lifespan(application: FastAPI):
         "database_identity": database_identity(settings.database_path),
         "instance_id": uuid4().hex,
     }
-    await ensure_database_ready()
-    run_migrations()
-    initialize_engine(settings.database_url)
-    await conversation_store.mark_running_runs_interrupted()
-    await task_service.repair_invalid_reminder_tasks()
-    await worker_coordinator.reconcile_availability()
-    await recover_pending_task_notifications()
-    await ensure_apps_database()
-    if settings.app_builtin_install:
-        await install_builtin_apps()
-    if settings.app_runtime_enabled:
-        from app.services.app_repair import start_app_repair
-        await app_runtime.start(repair=start_app_repair)
-    await jarvis_live_telemetry.start()
-    await reminder_scheduler.start()
-    await jarvis_coordinator.start()
-    await conversation_observer.start()
-    await runtime_health_service.start()
-    if settings.task_orchestration_enabled:
-        await task_orchestration_service.start()
-    if settings.task_pool_enabled:
-        await task_pool_manager.start()
-    context_expiry_stop = asyncio.Event()
-    context_expiry_task = asyncio.create_task(_expire_context_requests(context_expiry_stop))
-    try:
-        yield
-    finally:
-        application.state.acceptance_runtime = None
-        context_expiry_stop.set()
-        await context_expiry_task
+    # Each component registers its release as soon as it is acquired, so a
+    # failure part-way through startup still stops what already started, in
+    # reverse order.
+    async with AsyncExitStack() as stack:
+        stack.callback(setattr, application.state, "acceptance_runtime", None)
+        await ensure_database_ready()
+        run_migrations()
+        initialize_engine(settings.database_url)
+        stack.push_async_callback(close_engine)
+        await conversation_store.mark_running_runs_interrupted()
+        await task_service.repair_invalid_reminder_tasks()
+        await worker_coordinator.reconcile_availability()
+        await recover_pending_task_notifications()
+        stack.push_async_callback(close_apps_engine)
+        await ensure_apps_database()
+        if settings.app_builtin_install:
+            await install_builtin_apps()
+        stack.push_async_callback(app_runtime.stop)
+        if settings.app_runtime_enabled:
+            from app.services.app_repair import start_app_repair
+            await app_runtime.start(repair=start_app_repair)
+        stack.push_async_callback(run_supervisor.stop)
+        await jarvis_live_telemetry.start()
+        stack.push_async_callback(jarvis_live_telemetry.stop)
+        stack.push_async_callback(openai_live_adapter.shutdown)
+        await reminder_scheduler.start()
+        stack.push_async_callback(reminder_scheduler.stop)
+        await jarvis_coordinator.start()
+        stack.push_async_callback(jarvis_coordinator.stop)
+        await conversation_observer.start()
+        stack.push_async_callback(conversation_observer.stop)
+        await runtime_health_service.start()
+        stack.push_async_callback(runtime_health_service.stop)
         if settings.task_orchestration_enabled:
-            await task_orchestration_service.stop()
+            await task_orchestration_service.start()
+            stack.push_async_callback(task_orchestration_service.stop)
         if settings.task_pool_enabled:
-            await task_pool_manager.stop()
-        await runtime_health_service.stop()
-        await conversation_observer.stop()
-        await jarvis_coordinator.stop()
-        await openai_live_adapter.shutdown()
-        await jarvis_live_telemetry.stop()
-        await reminder_scheduler.stop()
-        await run_supervisor.stop()
-        await app_runtime.stop()
-        await close_apps_engine()
-        await close_engine()
+            await task_pool_manager.start()
+            stack.push_async_callback(task_pool_manager.stop)
+        context_expiry_stop = asyncio.Event()
+        context_expiry_task = asyncio.create_task(_expire_context_requests(context_expiry_stop))
+        stack.push_async_callback(_stop_context_expiry, context_expiry_stop, context_expiry_task)
+        yield
 
 app = FastAPI(
     title="AI Cockpit",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 
 import {
   type ConversationArtifactView,
@@ -19,11 +19,13 @@ import {
   findLatestAgentStatus,
 } from "./agent-stream-state";
 import type { AgentStatus, ChatMessage } from "./chat-state-types";
+import { isSelected, type ConversationSelectionRef } from "./conversation-selection";
 
 interface UseConversationDetailOptions {
   activeConversationId: string | null;
   activeBranchKey: string;
   activeStreamRunIdRef: MutableRefObject<string | null>;
+  selectionRef: ConversationSelectionRef;
 }
 
 function isLegacyActiveRunTransientMessage(message: ChatMessage, activeRunId: string): boolean {
@@ -37,6 +39,7 @@ export function useConversationDetail({
   activeConversationId,
   activeBranchKey,
   activeStreamRunIdRef,
+  selectionRef,
 }: UseConversationDetailOptions) {
   const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null);
   const [events, setEvents] = useState<ConversationEventView[]>([]);
@@ -44,8 +47,13 @@ export function useConversationDetail({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null);
   const [loadingConversation, setLoadingConversation] = useState(false);
+  const loadGenerationRef = useRef(0);
+  const foregroundLoadRef = useRef(0);
 
   const resetConversationDetail = useCallback(() => {
+    loadGenerationRef.current += 1;
+    foregroundLoadRef.current = 0;
+    setLoadingConversation(false);
     setActiveConversation(null);
     setEvents([]);
     setArtifacts([]);
@@ -55,7 +63,15 @@ export function useConversationDetail({
 
   const loadConversation = useCallback(async (conversationId: string, branchKey: string, options?: { background?: boolean }) => {
     const shouldBackgroundLoad = Boolean(options?.background || activeStreamRunIdRef.current);
+    // Only the newest load for the selected conversation and branch may write
+    // the view; an older or redirected load finishes without effect.
+    const generation = ++loadGenerationRef.current;
+    const current = () => generation === loadGenerationRef.current && isSelected(selectionRef, conversationId, branchKey);
+    if (!current()) {
+      return;
+    }
     if (!shouldBackgroundLoad) {
+      foregroundLoadRef.current = generation;
       setLoadingConversation(true);
     }
     try {
@@ -63,6 +79,9 @@ export function useConversationDetail({
         getConversation(conversationId, branchKey),
         getConversationEvents(conversationId, branchKey),
       ]);
+      if (!current()) {
+        return;
+      }
       setActiveConversation(detail);
       setEvents(eventData.events);
       setArtifacts(eventData.artifacts);
@@ -89,12 +108,17 @@ export function useConversationDetail({
       } else if (!hasActiveStreamRun) {
         setAgentStatus(null);
       }
+    } catch (error) {
+      if (current()) {
+        throw error;
+      }
     } finally {
-      if (!shouldBackgroundLoad) {
+      if (foregroundLoadRef.current === generation) {
+        foregroundLoadRef.current = 0;
         setLoadingConversation(false);
       }
     }
-  }, [activeStreamRunIdRef]);
+  }, [activeStreamRunIdRef, selectionRef]);
 
   useEffect(() => {
     if (!activeConversationId) {

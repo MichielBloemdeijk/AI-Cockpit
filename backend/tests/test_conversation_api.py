@@ -286,3 +286,78 @@ async def test_conversation_archive_and_branch_resend(monkeypatch):
         archived_listing = await client.get("/api/conversations?archived_only=true")
         assert conversation_id not in {item["id"] for item in active_listing.json()}
         assert {item["id"] for item in archived_listing.json()} == {conversation_id}
+
+
+@pytest.mark.asyncio
+async def test_council_failure_after_run_start_fails_the_run(monkeypatch):
+    async def _raising_completion(messages, model, *args, **kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(orchestrator_module, "chat_completion", _raising_completion)
+    conversation = await conversation_store.create_conversation(mode_hint="council")
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        await orchestrator_module.chat_orchestrator.run_council_response(
+            messages=[orchestrator_module.Message(role="user", content="Council question")],
+            conversation_id=conversation.id,
+            session_metadata=None,
+            temperature=0.5,
+            max_tokens=64,
+            models=["openai/gpt-4o"],
+            synthesizer_model="openai/gpt-4o",
+        )
+    runs = await conversation_store.list_runs(conversation.id)
+    assert [(run.kind, run.status, run.error) for run in runs] == [("council", "failed", "provider exploded")]
+
+
+@pytest.mark.asyncio
+async def test_turn_preparation_failure_does_not_strand_a_running_run(monkeypatch):
+    async def _failing_append(*args, **kwargs):
+        raise RuntimeError("append failed")
+
+    monkeypatch.setattr(conversation_store, "append_user_message", _failing_append)
+    conversation = await conversation_store.create_conversation(mode_hint="single")
+    with pytest.raises(RuntimeError, match="append failed"):
+        await orchestrator_module.chat_orchestrator.run_single_response(
+            messages=[orchestrator_module.Message(role="user", content="Hello")],
+            conversation_id=conversation.id,
+            session_metadata=None,
+            model=None,
+            temperature=0.5,
+            max_tokens=64,
+        )
+    runs = await conversation_store.list_runs(conversation.id)
+    assert [(run.status, run.error) for run in runs] == [("failed", "append failed")]
+
+
+@pytest.mark.asyncio
+async def test_reloaded_council_timeline_carries_model_answers_and_usage(monkeypatch):
+    async def _fake_completion(messages, model, *args, **kwargs):
+        return ModelResponse(model=model, content=f"answer from {model}",
+                             usage={"total_tokens": 10, "cost": 0.01}, error=None)
+
+    monkeypatch.setattr(orchestrator_module, "chat_completion", _fake_completion)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post("/api/auth/login", json={"password": ""})
+        created = await client.post("/api/conversations/", json={
+            "initial_message": "Council question",
+            "session_metadata": {
+                "mode": "council",
+                "single_model": "openai/gpt-4o",
+                "council_models": ["model/a", "model/b"],
+                "synthesizer_model": "model/synth",
+            },
+        })
+        assert created.status_code == 201
+        conversation_id = created.json()["conversation"]["id"]
+        events = await client.get(f"/api/conversations/{conversation_id}/events")
+
+    answer = events.json()["timeline_items"][-1]
+    assert answer["role"] == "assistant" and answer["content"] == "answer from model/synth"
+    council = answer["council"]
+    assert [(response["model"], response["content"]) for response in council["model_responses"]] == [
+        ("model/a", "answer from model/a"), ("model/b", "answer from model/b"),
+    ]
+    assert council["synthesizer_model"] == "model/synth"
+    assert answer["usage"] == council["total_usage"]
+    assert answer["usage"]["total_tokens"] == 30

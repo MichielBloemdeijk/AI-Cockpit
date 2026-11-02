@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.models.chat import CouncilResponse
 from app.models.settings import ConversationSessionMetadata
 
 
@@ -121,6 +122,10 @@ class TimelineItemView(BaseModel):
     code: str | None = None
     sections: list[TimelineSectionView] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
+    # Committed assistant messages: the reply's token/cost usage and, for a
+    # council answer, the per-model responses it was synthesized from.
+    usage: dict[str, Any] | None = None
+    council: CouncilResponse | None = None
     created_at: datetime
 
 

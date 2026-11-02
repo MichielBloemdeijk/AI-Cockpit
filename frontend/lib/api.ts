@@ -229,6 +229,9 @@ export interface TimelineItemView {
   code?: string | null;
   sections?: TimelineSectionView[];
   metadata?: Record<string, unknown> | null;
+  /** Committed assistant messages: the reply's usage and, for a council answer, its model responses. */
+  usage?: UsageStats | null;
+  council?: CouncilResponse | null;
   created_at: string;
 }
 

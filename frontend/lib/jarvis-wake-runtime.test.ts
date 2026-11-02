@@ -231,4 +231,20 @@ describe("JarvisWakeRuntime", () => {
     expect(value.worker.terminated).toBe(true);
     expect(value.stream.track.stopped).toBe(true);
   });
+  it("keeps a restarted runtime ready when the superseded failure finishes cleanup", async () => {
+    const value = harness();
+    let finishOldCleanup!: () => void;
+    value.capture.destroy.mockReturnValueOnce(new Promise<void>((resolve) => { finishOldCleanup = resolve; }));
+    await value.runtime.start(configuration);
+    value.worker.emit({ type: "ready" });
+    const oldFailure = value.worker.onerror?.({ message: "old worker failed" } as ErrorEvent) as unknown as Promise<void>;
+
+    await value.runtime.start(configuration);
+    value.worker.emit({ type: "ready" });
+    expect(value.runtime.current().status).toBe("ready");
+    finishOldCleanup();
+    await oldFailure;
+
+    expect(value.runtime.current()).toEqual({ status: "ready", error: null });
+  });
 });

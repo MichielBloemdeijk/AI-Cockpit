@@ -81,10 +81,13 @@ class ReminderScheduler:
 
     async def _resume_one(self, task_id: str, *, timestamp: datetime) -> bool:
         async with session_scope() as session:
-            task = (await session.execute(
-                select(Task).where(Task.id == task_id).limit(1)
-            )).scalar_one_or_none()
-            if task is None or task.status != "waiting_until" or task.resume_at is None:
+            # Take the task write lock before reading, like every task_service
+            # writer, so a concurrent cancel or suspend is never overwritten.
+            try:
+                task = await task_service._lock_task(session, task_id)
+            except ValueError:
+                return False
+            if task.status != "waiting_until" or task.resume_at is None:
                 return False
             due = task.resume_at if task.resume_at.tzinfo is not None else task.resume_at.replace(tzinfo=timezone.utc)
             if due > timestamp:

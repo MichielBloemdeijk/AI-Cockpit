@@ -102,6 +102,8 @@ def build_timeline_item(
     code: str | None = None,
     sections: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
+    usage: dict[str, Any] | None = None,
+    council: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "item_id": item_id,
@@ -128,6 +130,10 @@ def build_timeline_item(
         payload["sections"] = sections
     if metadata:
         payload["metadata"] = metadata
+    if usage:
+        payload["usage"] = usage
+    if council:
+        payload["council"] = council
     return payload
 
 
@@ -145,12 +151,16 @@ def build_assistant_message_timeline_item(
     message_id: str,
     content: str,
     item_id: str | None = None,
+    usage: dict[str, Any] | None = None,
+    council: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return build_timeline_item(
         item_id=item_id or f"assistant:{message_id}",
         role="assistant",
         kind="message",
         content=content,
+        usage=usage,
+        council=council,
     )
 
 

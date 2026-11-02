@@ -29,6 +29,7 @@ import {
 } from "./conversation-feed-state";
 import { humanizeToolName } from "./agent-event-presenter";
 import type { AgentStatus, ChatActionError, ChatMessage } from "./chat-state-types";
+import { isSelected, type ConversationSelectionRef } from "./conversation-selection";
 
 type LiveAssistantContentSource = "none" | "agent_stream" | "chunk";
 
@@ -202,6 +203,7 @@ interface UseConversationActionsOptions {
   activeConversationId: string | null;
   activeBranchKey: string;
   activeStreamRunIdRef: MutableRefObject<string | null>;
+  selectionRef: ConversationSelectionRef;
   loadConversation: (conversationId: string, branchKey: string, options?: { background?: boolean }) => Promise<void>;
   refreshConversations: (preferredConversationId?: string | null) => Promise<void>;
   resetConversationDetail: () => void;
@@ -220,6 +222,7 @@ export function useConversationActions({
   activeConversationId,
   activeBranchKey,
   activeStreamRunIdRef,
+  selectionRef,
   loadConversation,
   refreshConversations,
   resetConversationDetail,
@@ -289,6 +292,12 @@ export function useConversationActions({
     const effectiveSessionMetadata = activeConversation?.session_metadata ?? sessionMetadata;
     let streamedConversationId: string | null = activeConversationId;
     let resolvedFinalStatus = false;
+    // The send writes the shared view only while the view still shows the
+    // conversation and branch it was sent from (or, for a new conversation,
+    // the one the stream created). Switching away leaves the stream running
+    // in the background without touching the newly selected conversation.
+    const sentBranchKey = activeBranchKey;
+    const ownsView = () => isSelected(selectionRef, streamedConversationId, sentBranchKey);
     try {
       if (effectiveSessionMetadata.mode === "single") {
         activeStreamRunIdRef.current = null;
@@ -306,13 +315,15 @@ export function useConversationActions({
             model: effectiveSessionMetadata.single_model,
             signal: controller.signal,
             onMetadata: (data) => {
+              const owned = ownsView();
               streamedConversationId = data.conversation_id;
+              if (!owned) return;
               activeStreamRunIdRef.current = data.run_id;
               setAgentStatus(buildFallbackAgentStatus(data.conversation_id, data.run_id));
               setActiveConversationId(data.conversation_id);
-              setActiveBranchKey("main");
             },
             onEvent: (event) => {
+              if (!ownsView()) return;
               setEvents((currentEvents) => {
                 if (currentEvents.some((currentEvent) => currentEvent.id === event.id)) {
                   return currentEvents;
@@ -338,6 +349,7 @@ export function useConversationActions({
               }
             },
             onAgentStream: (update) => {
+              if (!ownsView()) return;
               const nextStatus = buildAgentStatusFromStreamUpdate(update);
               if (nextStatus) {
                 setAgentStatus((current) => mergeAgentStatus(current, nextStatus));
@@ -369,7 +381,7 @@ export function useConversationActions({
               liveAssistantContentSourceRef.current = "agent_stream";
             },
             onChunk: (chunk) => {
-              if (activeStreamRunIdRef.current) {
+              if (ownsView() && activeStreamRunIdRef.current) {
                 const priorChunkContent = liveAssistantMessageContentRef.current.get("chunk") ?? "";
                 const content = liveAssistantContentSourceRef.current === "chunk"
                   ? `${priorChunkContent}${chunk}`
@@ -394,7 +406,7 @@ export function useConversationActions({
 
         if (streamedConversationId) {
           activeStreamRunIdRef.current = null;
-          await refreshConversations(streamedConversationId);
+          await refreshConversations(ownsView() ? streamedConversationId : selectionRef.current.conversationId);
           await loadConversation(streamedConversationId, activeBranchKey, { background: true });
           resolvedFinalStatus = true;
         }
@@ -419,7 +431,9 @@ export function useConversationActions({
       await loadConversation(activeConversationId, activeBranchKey);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (streamedConversationId) {
+      if (streamedConversationId && !ownsView()) {
+        await refreshConversations(selectionRef.current.conversationId).catch(() => {});
+      } else if (streamedConversationId) {
         activeStreamRunIdRef.current = null;
         clearLocalLiveMessage();
         await refreshConversations(streamedConversationId).catch(() => {});
@@ -430,7 +444,7 @@ export function useConversationActions({
         removeOptimisticMessage(optimisticMessageId);
         clearLocalLiveMessage();
       }
-      setAgentStatus({
+      if (ownsView()) setAgentStatus({
         title: "Run failed",
         content: errorMessage,
         tone: "error",
@@ -444,7 +458,7 @@ export function useConversationActions({
       setCanStop(false);
       setLoading(false);
       activeStreamRunIdRef.current = null;
-      if (!resolvedFinalStatus) {
+      if (!resolvedFinalStatus && ownsView()) {
         setAgentStatus(null);
       }
     }
@@ -459,6 +473,7 @@ export function useConversationActions({
     activeConversation,
     activeStreamRunIdRef,
     activeBranchKey,
+    selectionRef,
     setActiveConversationId,
     setActiveBranchKey,
     setEvents,

@@ -3,9 +3,10 @@
  */
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { checkAuth } from "./api";
+import type { ConversationSelection } from "./conversation-selection";
 import { useConversationActions } from "./use-conversation-actions";
 import { useConversationDetail } from "./use-conversation-detail";
 import { useConversationList } from "./use-conversation-list";
@@ -27,7 +28,7 @@ export function useAuth() {
 }
 
 export function useChat() {
-  const [activeBranchKey, setActiveBranchKey] = useState("main");
+  const [activeBranchKey, setActiveBranchState] = useState("main");
   const [conversationKindFilter, setConversationKindFilter] = useState<ConversationKindFilter>("all");
   const [loading, setLoading] = useState(false);
   const [canStop, setCanStop] = useState(false);
@@ -35,9 +36,24 @@ export function useChat() {
   const {
     conversations,
     activeConversationId,
-    setActiveConversationId,
+    setActiveConversationId: setActiveConversationState,
     refreshConversations,
   } = useConversationList(conversationKindFilter);
+  // Mirrors the committed selection (before the load effects run), and moves
+  // ahead of it the moment this hook changes the selection, so in-flight loads
+  // and streams can tell they were superseded.
+  const selectionRef = useRef<ConversationSelection>({ conversationId: activeConversationId, branchKey: activeBranchKey });
+  useLayoutEffect(() => {
+    selectionRef.current = { conversationId: activeConversationId, branchKey: activeBranchKey };
+  }, [activeBranchKey, activeConversationId]);
+  const setActiveConversationId = useCallback((conversationId: string | null) => {
+    selectionRef.current = { ...selectionRef.current, conversationId };
+    setActiveConversationState(conversationId);
+  }, [setActiveConversationState]);
+  const setActiveBranchKey = useCallback((branchKey: string) => {
+    selectionRef.current = { ...selectionRef.current, branchKey };
+    setActiveBranchState(branchKey);
+  }, []);
   const {
     activeConversation,
     artifacts,
@@ -54,6 +70,7 @@ export function useChat() {
     activeConversationId,
     activeBranchKey,
     activeStreamRunIdRef,
+    selectionRef,
   });
 
   const activeConversationSummary = conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
@@ -86,6 +103,7 @@ export function useChat() {
     activeConversationId,
     activeBranchKey,
     activeStreamRunIdRef,
+    selectionRef,
     loadConversation,
     refreshConversations,
     resetConversationDetail,

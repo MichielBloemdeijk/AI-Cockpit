@@ -344,10 +344,12 @@ export class JarvisWakeRuntime {
 
   private async fail(cause: unknown, operation: number): Promise<void> {
     if (operation !== this.operation) return;
-    ++this.operation;
+    const failed = ++this.operation;
     const error = cause instanceof Error ? cause.message : "Wake detection failed";
     this.options.onTrace?.("wake_runtime_failed", { error });
     await this.releaseResources(true);
+    // A restart during cleanup owns the state now.
+    if (failed !== this.operation) return;
     this.publish({ status: "failed", error });
   }
 

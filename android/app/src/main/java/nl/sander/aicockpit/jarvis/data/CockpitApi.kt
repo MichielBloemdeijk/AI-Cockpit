@@ -18,6 +18,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -84,8 +85,24 @@ internal fun parseJarvisAssistantStatus(
     )
 }
 
-class CockpitApi(private val store: CredentialStore, private val client: OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()) {
+/** One client (connection pool and dispatcher) for every CockpitApi in the process. */
+internal val sharedCockpitHttpClient: OkHttpClient by lazy {
+    OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()
+}
+
+/**
+ * The server sends a heartbeat every 15 s on an otherwise quiet live stream.
+ * The default 10 s read timeout dropped the stream before each one; three
+ * heartbeats keep it open while a dead connection is still noticed.
+ */
+internal const val LIVE_EVENT_READ_TIMEOUT_SECONDS = 45L
+
+internal fun liveEventStreamClient(base: OkHttpClient): OkHttpClient =
+    base.newBuilder().readTimeout(LIVE_EVENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS).build()
+
+class CockpitApi(private val store: CredentialStore, private val client: OkHttpClient = sharedCockpitHttpClient) {
     private val json = "application/json; charset=utf-8".toMediaType()
+    private val streamClient by lazy { liveEventStreamClient(client) }
 
     suspend fun pair(serverUrl: String, code: String, label: String): PairingResult {
         val origin = PairingLink.serverOrigin(serverUrl)
@@ -265,7 +282,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
     suspend fun liveEvents(cursor: Long, listener: (JSONObject) -> Unit, onFailure: (Throwable) -> Unit,
                    onOpen: () -> Unit = {}): EventSource {
         val request = authenticated("/api/jarvis/live?cursor=$cursor").get().build()
-        return EventSources.createFactory(client).newEventSource(request, object : EventSourceListener() {
+        return EventSources.createFactory(streamClient).newEventSource(request, object : EventSourceListener() {
             override fun onOpen(source: EventSource, response: Response) { onOpen() }
             override fun onEvent(source: EventSource, id: String?, type: String?, data: String) {
                 if (type == "jarvis") runCatching { JSONObject(data) }.onSuccess(listener)

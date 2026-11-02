@@ -9,7 +9,6 @@ from app.services.brain_retrieval import search_conversations, search_wiki
 from app.services.conversation_store import conversation_store
 from app.services.jarvis_brain import ALLOWED_SHELL_TOOLS, restricted_brain_gateway
 from app.services.jarvis_daily import jarvis_daily_service
-from app.services.knowledge_memory import write_approved_memory
 from app.services.memory_review_store import memory_review_store
 
 
@@ -32,8 +31,7 @@ async def test_wiki_search_reads_only_approved_file_backed_knowledge() -> None:
         source_conversation_id=conversation.id,
         confidence=0.5,
     )
-    path = write_approved_memory(approved)
-    await memory_review_store.approve_memory_item(approved.id, knowledge_path=str(path))
+    await memory_review_store.approve(approved.id)
 
     results = search_wiki("blue deployment", limit=5)
 

@@ -25,8 +25,16 @@ def _preferences_path() -> Path:
 
 
 def _approved_note_path(memory_item: MemoryItemRecord) -> Path:
-    date_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return _knowledge_root() / f"{date_prefix}-{memory_item.kind}-{_slugify(memory_item.title)}.md"
+    # The memory ID keeps two items with the same kind and title apart.
+    return _knowledge_root() / f"{memory_item.kind}-{_slugify(memory_item.title)}-{memory_item.id}.md"
+
+
+def _note_title(note_path: Path, content: str) -> str:
+    if content.startswith("---\n"):
+        for line in content.split("\n---", 1)[0].splitlines():
+            if line.startswith("title: "):
+                return line.removeprefix("title: ").strip() or note_path.stem
+    return note_path.stem
 
 
 def _append_preference(memory_item: MemoryItemRecord) -> Path:
@@ -125,12 +133,13 @@ def list_knowledge_documents() -> list[dict[str, str | None]]:
     notes_root = _knowledge_root()
     if notes_root.exists():
         for note_path in sorted(notes_root.rglob("*.md")):
+            content = note_path.read_text(encoding="utf-8")
             documents.append(
                 {
                     "path": note_path.as_posix(),
-                    "title": note_path.stem,
+                    "title": _note_title(note_path, content),
                     "kind": "note",
-                    "content": note_path.read_text(encoding="utf-8"),
+                    "content": content,
                     "updated_at": datetime.fromtimestamp(note_path.stat().st_mtime, tz=timezone.utc).isoformat(),
                 }
             )

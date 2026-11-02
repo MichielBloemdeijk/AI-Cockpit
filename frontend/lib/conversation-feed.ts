@@ -1,6 +1,7 @@
 import type { ActiveRunView, ConversationArtifactView, ConversationDetail, ConversationEventView, TimelineItemView } from "./api";
 import { mapConversationMessages } from "./chat-history";
 import type { ChatMessage } from "./chat-state-types";
+import { readUsageStats } from "./usage";
 
 function mapTimelineItemToChatMessage(item: TimelineItemView, id: string, streaming: boolean): ChatMessage {
   const isLegacyProgressRow = item.kind === "status"
@@ -22,6 +23,8 @@ function mapTimelineItemToChatMessage(item: TimelineItemView, id: string, stream
     sections: item.sections,
     streaming,
     status: item.status,
+    usage: readUsageStats(item.usage),
+    councilData: item.council ?? undefined,
   };
 }
 
@@ -74,6 +77,8 @@ export function buildTimelineMessageFromEvent(event: ConversationEventView): Cha
       ))
       : [],
     metadata: (event.payload_json.metadata as Record<string, unknown> | null | undefined) ?? null,
+    usage: readUsageStats(event.payload_json.usage) ?? null,
+    council: (event.payload_json.council as TimelineItemView["council"] | undefined) ?? null,
     created_at: event.created_at,
   }, String(event.payload_json.item_id ?? event.id), false);
 }

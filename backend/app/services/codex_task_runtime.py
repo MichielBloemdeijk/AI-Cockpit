@@ -26,6 +26,13 @@ from app.services.task_capabilities import workflow_tools
 CODEX_RUNTIME_PIN = "0.155.1"
 
 
+async def suspend_for_policy_revocation(context: AgentExecutionContext, revision: int) -> None:
+    """Stop the active turn and pause the task when its frozen tools are revoked."""
+    await task_service.control(context.task_id, action="suspend", requester="worker_policy",
+        reason="Worker tool policy revoked a tool this run uses.", parameters={"immediate": True},
+        idempotency_key=f"tool-policy-revoked:{context.execution_run_id}:{revision}")
+
+
 def _json_value(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json", by_alias=True)
@@ -487,8 +494,7 @@ class CodexTaskRuntime:
                     revoked_network = resolved["command_network"] and not current_policy["command_network"]
                     revoked_skills = set(resolved["approved_skills"]) - set(current_policy["approved_skills"])
                     if revoked or revoked_network or revoked_skills:
-                        await task_service.control(context.task_id, action="pause", requester="worker_policy",
-                            idempotency_key=f"tool-policy-revoked:{context.execution_run_id}:{revision}")
+                        await suspend_for_policy_revocation(context, revision)
                 if await cancellation_requested() and not interrupted:
                     interrupted = True
                     await asyncio.to_thread(handle.interrupt)

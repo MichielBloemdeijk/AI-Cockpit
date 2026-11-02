@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -31,6 +32,25 @@ logger = logging.getLogger(__name__)
 # Durable events forwarded on a single-chat stream; content deltas travel as chunk frames.
 STREAMED_CHAT_EVENT_TYPES = {TIMELINE_ITEM_EVENT_TYPE}
 StreamCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+@asynccontextmanager
+async def _owned_run(run_id: str, label: str) -> AsyncIterator[None]:
+    """Own a started run: any failure or cancellation ends it instead of stranding it as running."""
+    try:
+        yield
+    except asyncio.CancelledError:
+        await asyncio.shield(conversation_store.transition_run_status(
+            run_id, expected_statuses={"running"}, status="cancelled", error=None, finished_at=utc_now(),
+        ))
+        raise
+    except Exception as exc:
+        logger.exception("%s run %s failed", label, run_id)
+        await conversation_store.transition_run_status(
+            run_id, expected_statuses={"running"}, status="failed",
+            error=str(exc) or f"The {label.lower()} reply failed.", finished_at=utc_now(),
+        )
+        raise
 
 
 def _latest_user_message(messages: list[Message]) -> Message:
@@ -356,14 +376,15 @@ class ChatOrchestrator:
             status=status,
             metadata_json={**(metadata_json or {}), "branch_key": branch_key},
         )
-        user_message = _latest_user_message(messages)
-        await conversation_store.append_user_message(
-            conversation.id,
-            run_id=run.id,
-            content=user_message.content,
-            branch_key=branch_key,
-            parent_event_id=parent_event_id,
-        )
+        async with _owned_run(run.id, "Turn preparation"):
+            user_message = _latest_user_message(messages)
+            await conversation_store.append_user_message(
+                conversation.id,
+                run_id=run.id,
+                content=user_message.content,
+                branch_key=branch_key,
+                parent_event_id=parent_event_id,
+            )
         return PreparedTurn(
             conversation_id=conversation.id,
             run=run,
@@ -379,7 +400,7 @@ class ChatOrchestrator:
         metadata = dict(run.metadata_json or {})
         branch_key = str(metadata.get("branch_key") or MAIN_BRANCH_KEY)
         model = str(metadata.get("model") or settings.task_agent_model)
-        try:
+        async with _owned_run(run_id, "Chat"):
             prompt = await self._build_model_prompt(
                 conversation_id=run.conversation_id,
                 branch_key=branch_key,
@@ -425,18 +446,6 @@ class ChatOrchestrator:
             await conversation_store.transition_run_status(
                 run_id, expected_statuses={"running"}, status="completed", error=None, finished_at=utc_now(),
             )
-        except asyncio.CancelledError:
-            await asyncio.shield(conversation_store.transition_run_status(
-                run_id, expected_statuses={"running"}, status="cancelled", error=None, finished_at=utc_now(),
-            ))
-            raise
-        except Exception as exc:
-            logger.exception("Single chat run %s failed", run_id)
-            await conversation_store.transition_run_status(
-                run_id, expected_statuses={"running"}, status="failed",
-                error=str(exc) or "The chat reply failed.", finished_at=utc_now(),
-            )
-            raise
 
     async def _resolve_session_metadata(
         self,
@@ -646,6 +655,28 @@ class ChatOrchestrator:
             branch_key=branch_key,
             parent_event_id=parent_event_id,
         )
+        async with _owned_run(prepared.run.id, "Council"):
+            return await self._council_turn(
+                prepared,
+                messages=messages,
+                council_models=council_models,
+                synth_model=synth_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                branch_key=branch_key,
+            )
+
+    async def _council_turn(
+        self,
+        prepared: PreparedTurn,
+        *,
+        messages: list[Message],
+        council_models: list[str],
+        synth_model: str,
+        temperature: float,
+        max_tokens: int,
+        branch_key: str,
+    ) -> dict:
         prompt_result = await self._build_model_prompt(
             conversation_id=prepared.conversation_id,
             branch_key=branch_key,
@@ -784,6 +815,16 @@ class ChatOrchestrator:
                 "usage": synthesized.usage,
             },
             branch_key=branch_key,
+            council={
+                "run_id": prepared.run.id,
+                "model_responses": [
+                    response.model_dump(include={"model", "content", "usage", "error"}) for response in responses
+                ],
+                "synthesized": synthesized.content,
+                "synthesizer_model": synth_model,
+                "synthesizer_usage": synthesized.usage,
+                "total_usage": total_usage,
+            },
         )
         await conversation_store.attach_artifact(
             prepared.conversation_id,

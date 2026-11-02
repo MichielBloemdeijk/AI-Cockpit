@@ -207,6 +207,38 @@ async def test_workflow_fixture_executes_through_the_worker(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_policy_revocation_during_a_turn_stops_the_writer_and_pauses(monkeypatch) -> None:
+    from app.services.codex_task_runtime import suspend_for_policy_revocation
+
+    monkeypatch.setattr(settings, "worker_heartbeat_interval_seconds", 0.05)
+    writer_stopped = asyncio.Event()
+
+    class RevokedRuntime:
+        async def execute(self, context, sink, *, cancellation_requested):
+            await suspend_for_policy_revocation(context, revision=7)
+            await suspend_for_policy_revocation(context, revision=7)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                writer_stopped.set()
+
+    created = await task_service.dispatch(
+        goal="Policy revocation", origin_surface="test", idempotency_key="policy-revocation",
+    )
+    worker = TaskWorker(runtime=RevokedRuntime())
+    assert await worker.activate(process_identity="policy-revocation-worker")
+    result = await asyncio.wait_for(worker.run_once(), timeout=10)
+    assert writer_stopped.is_set()
+    assert result.status == "paused"
+    detail = await task_service.get_task(created.task.id)
+    assert detail is not None and detail.task.status == "paused"
+    commands = [event for event in detail.events if event.event_type == "task.control.requested"]
+    assert [(event.payload_json["action"], event.payload_json["requester"]) for event in commands] == [
+        ("suspend", "worker_policy"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_workflow_admission_fails_closed_without_a_pinned_definition() -> None:
     assert task_service.workflow_fixture_enabled is False
     with pytest.raises(ValueError, match="Workflow definition is required"):

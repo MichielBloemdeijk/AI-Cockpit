@@ -759,6 +759,7 @@ class ConversationStore:
         payload_json: dict | None = None,
         branch_key: str | None = None,
         timeline_item_id: str | None = None,
+        council: dict | None = None,
     ) -> tuple[EventRecord, MessageRecord]:
         async with session_scope() as session:
             repo = ConversationRepository(session)
@@ -782,10 +783,13 @@ class ConversationStore:
             )
             timeline_payload = None
             if role == MessageRole.assistant.value:
+                usage = (council or {}).get("total_usage") or (payload_json or {}).get("usage")
                 timeline_payload = build_assistant_message_timeline_item(
                     message_id=message.id,
                     content=content,
                     item_id=timeline_item_id,
+                    usage=usage if isinstance(usage, dict) else None,
+                    council=council,
                 )
             elif role == MessageRole.user.value:
                 timeline_payload = build_user_message_timeline_item(message_id=message.id, content=content)

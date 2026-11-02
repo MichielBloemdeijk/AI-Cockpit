@@ -37,12 +37,21 @@ export class HeyBuddyOnnxInference implements JarvisWakeInference {
     ort.env.wasm.wasmPaths = configuration.wasmBaseUrl;
     ort.env.wasm.numThreads = 1;
     const options: ort.InferenceSession.SessionOptions = { executionProviders: ["wasm"] };
-    const [vad, spectrogram, embedding, wake] = await Promise.all([
+    const settled = await Promise.allSettled([
       ort.InferenceSession.create(configuration.vadModelUrl, options),
       ort.InferenceSession.create(configuration.spectrogramModelUrl, options),
       ort.InferenceSession.create(configuration.embeddingModelUrl, options),
       ort.InferenceSession.create(configuration.wakeModelUrl, options),
     ]);
+    const failure = settled.find((result) => result.status === "rejected");
+    if (failure) {
+      // Release the sessions that did load so a retry does not leak WASM memory.
+      await Promise.allSettled(settled.map((result) =>
+        result.status === "fulfilled" ? result.value.release() : undefined));
+      throw failure.reason;
+    }
+    const [vad, spectrogram, embedding, wake] = settled.map((result) =>
+      (result as PromiseFulfilledResult<ort.InferenceSession>).value);
     return new HeyBuddyOnnxInference(vad, spectrogram, embedding, wake);
   }
 
