@@ -140,7 +140,7 @@ class JarvisEventStream(private val context: Context, private val onConnected: (
     private fun unlinked() {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             nl.sander.aicockpit.jarvis.audio.JarvisAudioControls.unlink(context)
-            store.clear(); stop()
+            store.unlink(); stop()
         }
     }
 

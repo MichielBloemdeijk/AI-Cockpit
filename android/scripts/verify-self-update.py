@@ -5,7 +5,9 @@ Builds three release APKs signed with a disposable key, installs v1 over ADB,
 pairs through the real link, then publishes v2 and v3 to a disposable backend.
 The app must install each from the push event, keep its pairing and resume
 wake listening. v2 may need Android's one-time confirmation (ADB was the
-installer); v3 must install without any prompt. No models or paid calls.
+installer); v3 must install without any prompt. Then the phone is unlinked and
+must still update itself to v4 from the server address it kept, so a phone the
+server forgot is never stuck. No models or paid calls.
 Updates are spaced past Android's 30-second silent-update throttle.
 """
 from __future__ import annotations
@@ -56,7 +58,7 @@ def main() -> None:
         os.environ["JARVIS_SIGNING_PROPERTIES"] = str(evidence / "signing/android-signing.properties")
         signing.create(Path(os.environ["JARVIS_SIGNING_PROPERTIES"]))
         apks = {}
-        for offset in range(3):
+        for offset in range(4):
             code = BASE_CODE + offset
             built = publisher.build(code, f"selftest-{code}")
             apks[code] = shutil.copyfile(built, evidence / f"jarvis-{code}.apk")
@@ -156,6 +158,25 @@ def main() -> None:
         screen.adb(serial, "shell", "am", "start", "-W", "-n", f"{screen.PACKAGE}/.MainActivity")
         screen.wait_for("pairing survived updates", lambda: results.visible(serial, evidence, "This phone is linked", "after"), seconds=30)
         screen.wait_for("version shown", lambda: results.visible(serial, evidence, f"App version selftest-{BASE_CODE + 2}", "version"), seconds=30)
+
+        # An unlinked phone keeps the server address and must still be able to update itself.
+        results.tap_text(serial, evidence, "Advanced settings")
+        def scrolled_to_unlink():
+            node = results.text_node(serial, evidence, "Unlink this phone")
+            if node is None:
+                screen.adb(serial, "shell", "input", "swipe", "540", "1900", "540", "700", "300")
+            return node
+        screen.tap_node(serial, screen.wait_for("Unlink this phone", scrolled_to_unlink, seconds=60))
+        screen.wait_for("phone unlinked", lambda: results.visible(serial, evidence, "Pairing code", "unlinked"), seconds=30)
+        assert results.visible(serial, evidence, f"10.0.2.2:{port}", "server-kept"), "Unlinking forgot the server address"
+        time.sleep(35)  # past Android's silent-update throttle
+        publish(BASE_CODE + 3)
+        results.tap_text(serial, evidence, "Check for updates")
+        screen.wait_for(f"unlinked self-update to {BASE_CODE + 3}", lambda: installed() == BASE_CODE + 3, seconds=240)
+        screen.adb(serial, "shell", "am", "start", "-W", "-n", f"{screen.PACKAGE}/.MainActivity")
+        screen.wait_for("still unlinked on v4", lambda: results.visible(
+            serial, evidence, f"App version selftest-{BASE_CODE + 3}", "unlinked-version"), seconds=30)
+        report["checks"]["update_while_unlinked"] = {"version_code": BASE_CODE + 3}
         report["status"] = "passed"
     finally:
         (evidence / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

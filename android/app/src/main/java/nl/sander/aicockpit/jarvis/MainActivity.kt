@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import nl.sander.aicockpit.jarvis.data.CockpitApi
 import nl.sander.aicockpit.jarvis.data.CredentialStore
 import nl.sander.aicockpit.jarvis.data.PairingLink
+import nl.sander.aicockpit.jarvis.data.serverForgotThisPhone
 import nl.sander.aicockpit.jarvis.data.JarvisAssistantStatus
 import nl.sander.aicockpit.jarvis.notifications.JarvisEventStream
 import nl.sander.aicockpit.jarvis.notifications.JarvisNotifications
@@ -188,6 +189,8 @@ class MainActivity : ComponentActivity() {
                     it.componentIssues.forEach { issue -> Text("${issue.name.replace('_', ' ')}: ${issue.detail ?: issue.status}") }
                 }
                 AppUpdate()
+            } else if (store.serverUrl.isNotBlank()) {
+                AppUpdate()
             }
             if (message.isNotBlank()) Text(message)
             if (!paired) {
@@ -230,11 +233,11 @@ class MainActivity : ComponentActivity() {
         Text("App version ${AppUpdater.installedVersionName(this)}", style = MaterialTheme.typography.bodySmall)
         val status = when (update.phase) {
             UpdateState.Phase.IDLE -> ""
-            UpdateState.Phase.CHECKING -> "Checking for updates…"
+            UpdateState.Phase.CHECKING -> "Checking for updatesâ€¦"
             UpdateState.Phase.UP_TO_DATE -> "Jarvis is up to date."
             UpdateState.Phase.AVAILABLE -> "Update $name is available. ${update.detail}"
             UpdateState.Phase.NEEDS_PERMISSION -> "Update $name is ready. Allow Jarvis to install app updates."
-            UpdateState.Phase.DOWNLOADING -> "Downloading $name · ${update.detail}"
+            UpdateState.Phase.DOWNLOADING -> "Downloading $name Â· ${update.detail}"
             UpdateState.Phase.WAITING -> "Update $name downloaded. ${update.detail}"
             UpdateState.Phase.INSTALLING -> "Installing $name. Jarvis closes and restarts listening by itself."
             UpdateState.Phase.NEEDS_CONFIRMATION -> "Confirm the update in Android's prompt."
@@ -328,10 +331,10 @@ class MainActivity : ComponentActivity() {
     private fun unlink() {
         busy = true
         lifecycleScope.launch {
-            runCatching { api.unlink() }.onSuccess {
+            runCatching { api.unlink() }.recoverCatching { if (serverForgotThisPhone(it)) Unit else throw it }.onSuccess {
                 nl.sander.aicockpit.jarvis.audio.JarvisAudioControls.unlink(this@MainActivity)
                 (application as JarvisApplication).eventStream.stop()
-                store.clear(); android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                store.unlink(); android.webkit.CookieManager.getInstance().removeAllCookies(null)
                 paired = false; connected = false; setupComplete = false; health = null
                 message = "Unlinked. Create a new link from Jarvis on your computer."
             }.onFailure { message = "Unable to unlink. Reconnect Tailscale and try again." }

@@ -63,8 +63,14 @@ class CredentialStore(context: Context) {
         }.getOrNull()
     }
 
-    fun clear() {
-        preferences.edit().clear().apply()
+    /**
+     * Forget this phone's link. The server address and the update preference stay, so a phone
+     * the server no longer knows can still update itself and be linked again.
+     */
+    fun unlink() {
+        val server = serverUrl
+        val automatic = automaticUpdates
+        preferences.edit().clear().putString("server_url", server).putBoolean("automatic_updates", automatic).apply()
     }
 
     private fun key(): SecretKey {

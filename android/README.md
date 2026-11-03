@@ -49,9 +49,17 @@ every 15 minutes), every 6 hours and when a release is published. **Check for
 updates** always proceeds. Automatic downloads (about 150 MB) wait for an
 unmetered network, and installs wait until no Live conversation or assistant
 overlay is active. **Advanced settings** can turn automatic updates off; the app
-then only notifies. Downloads use the device credential and are verified against
-the manifest's SHA-256. Android additionally rejects any APK whose signature
-doesn't match the installed app.
+then only notifies. The update channel needs no device credential, only the
+server address: downloads are verified against the manifest's SHA-256 and
+Android rejects any APK whose signature doesn't match the installed app. So a
+phone the server no longer knows (a reset database, a revoked device) can still
+update itself.
+
+**If the phone says "Phone link is unavailable":** open Jarvis on the phone, then
+Advanced settings, **Unlink this phone**, and open a new link from Jarvis
+Settings, Link phone on your computer. Unlinking works even when the server has
+forgotten the phone, and keeps the server address and the update preference, so
+**Check for updates** also works while unlinked. Reinstalling is never needed.
 
 On Android 12+ a self-update normally installs without a prompt, including the
 first one over an ADB install (verified on API 37). Android shows its

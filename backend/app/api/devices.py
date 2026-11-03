@@ -50,8 +50,12 @@ async def android_build():
     return FileResponse(settings.android_releases_path / release.file_name, media_type=APK_MEDIA_TYPE, filename="Jarvis.apk")
 
 
+# The update channel needs no device credential, like the first-install link above:
+# the APK is the same one served publicly, the client verifies its SHA-256 and Android
+# installs it only over an app signed with the same key. A phone whose link was lost
+# (a database reset, a revoked device) can therefore still update to fix itself.
 @router.get("/android/update")
-async def android_update(device: JarvisDevice = Depends(require_paired_device)) -> dict[str, object]:
+async def android_update() -> dict[str, object]:
     release = android_updates.latest_release()
     if release is None:
         return {"release": None}
@@ -61,7 +65,7 @@ async def android_update(device: JarvisDevice = Depends(require_paired_device)) 
 
 
 @router.get("/android/releases/{version_code}.apk", include_in_schema=False)
-async def android_release(version_code: int, device: JarvisDevice = Depends(require_paired_device)):
+async def android_release(version_code: int):
     from fastapi.responses import FileResponse
     path = android_updates.release_file(version_code)
     if path is None:

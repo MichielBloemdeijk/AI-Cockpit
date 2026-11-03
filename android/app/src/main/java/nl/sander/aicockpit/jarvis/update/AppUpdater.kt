@@ -35,7 +35,8 @@ data class UpdateState(val phase: Phase = Phase.IDLE, val release: AppRelease? =
 }
 
 /**
- * Installs newer APKs from the paired AI Cockpit over the running app.
+ * Installs newer APKs from the AI Cockpit this phone knows over the running app. It needs
+ * only the server address, not a valid link, so a phone the server forgot can still update.
  * Android only accepts an APK signed with the installed app's key. Once Jarvis
  * installed itself, Android 12+ lets later self-updates skip the confirmation.
  */
@@ -93,7 +94,7 @@ object AppUpdater {
 
     private suspend fun check(userInitiated: Boolean) {
         val store = CredentialStore(app)
-        if (store.credential() == null) return
+        if (store.serverUrl.isBlank()) return
         mutableState.value = UpdateState(UpdateState.Phase.CHECKING)
         val release = CockpitApi(store).androidUpdate()
         val decision = decideUpdate(release, installedVersionCode(app), userInitiated, store.automaticUpdates,

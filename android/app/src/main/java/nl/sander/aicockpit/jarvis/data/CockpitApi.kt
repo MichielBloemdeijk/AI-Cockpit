@@ -24,6 +24,9 @@ import kotlin.coroutines.resumeWithException
 
 data class PairingResult(val deviceId: String, val credential: String, val eventCursor: Long)
 class CockpitRequestException(val status: Int, message: String) : IllegalStateException(message)
+
+/** A 401 means the server no longer knows this phone, so there is nothing left to revoke there. */
+internal fun serverForgotThisPhone(error: Throwable): Boolean = error is CockpitRequestException && error.status == 401
 data class LiveCall(val sessionId: String, val generation: Int, val sdpAnswer: String, val playbackEvidence: Boolean = false)
 data class LiveSessionState(val sessionId: String, val generation: Int, val lifecycleState: String,
     val controllerId: String? = null, val activationId: String? = null)
@@ -250,13 +253,13 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
     }
 
     suspend fun androidUpdate(): nl.sander.aicockpit.jarvis.update.AppRelease? {
-        val response = execute(authenticated("/api/jarvis/devices/android/update").get().build())
+        val response = execute(unauthenticated("/api/jarvis/devices/android/update").get().build())
         return nl.sander.aicockpit.jarvis.update.AppRelease.parse(JSONObject(response.body?.string().orEmpty()))
     }
 
     /** Streams to [target] (releases are too large to buffer) and returns the SHA-256 hex digest. */
     suspend fun downloadRelease(path: String, target: java.io.File, onProgress: (Long) -> Unit): String {
-        val request = authenticated(path).get().build()
+        val request = unauthenticated(path).get().build()
         return withContext(Dispatchers.IO) {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw CockpitRequestException(response.code, "Update download failed (HTTP ${response.code}).")
@@ -294,6 +297,12 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
         })
     }
 
+    /** The update channel needs no device credential: updates are signed and checksummed, and a phone that lost its link must still be able to update. */
+    private fun unauthenticated(path: String): Request.Builder {
+        check(store.serverUrl.isNotBlank()) { "Jarvis server is not set" }
+        return Request.Builder().url("${store.serverUrl}$path")
+    }
+
     private suspend fun authenticated(path: String): Request.Builder = withContext(Dispatchers.IO) {
         // AndroidKeyStore decryption can block on Binder. Callers include the
         // visible assistant on Main; move authentication as well as HTTP off it.
@@ -318,7 +327,7 @@ class CockpitApi(private val store: CredentialStore, private val client: OkHttpC
                         val status = response.code
                         val detail = response.body?.string().orEmpty()
                         response.close()
-                        val message = if (status == 401) "Phone link is unavailable. In Jarvis Settings, choose Link phone and open a new link."
+                        val message = if (status == 401) "Phone link is unavailable. Choose Advanced settings, then Unlink this phone, and open a new link from Jarvis Settings, Link phone."
                         else runCatching { JSONObject(detail).optString("detail") }.getOrNull()
                             ?.takeIf { it.isNotBlank() && !it.startsWith("[") }
                             ?: "Jarvis could not complete the request. Check the host status and try again."

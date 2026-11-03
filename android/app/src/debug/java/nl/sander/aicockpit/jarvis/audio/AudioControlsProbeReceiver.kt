@@ -23,7 +23,7 @@ class AudioControlsProbeReceiver : BroadcastReceiver() {
                 ?.firstOrNull { it.title.toString() == "Stop Live" }?.actionIntent
             "replay_stop" -> stop?.send()
             "hide_panel" -> JarvisVoiceInteractionSession.stopActive()
-            "unlink" -> { JarvisAudioControls.unlink(context); CredentialStore(context).clear() }
+            "unlink" -> { JarvisAudioControls.unlink(context); CredentialStore(context).unlink() }
         }
         val notifications = context.getSystemService(NotificationManager::class.java).activeNotifications
         val notification = notifications.firstOrNull { it.id == JarvisNotifications.CONTROL_NOTIFICATION_ID }

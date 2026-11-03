@@ -35,7 +35,7 @@ def apk(directory: Path, content: bytes) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_published_release_is_offered_to_paired_devices_only(releases: Path) -> None:
+async def test_published_release_is_offered_without_a_device_link(releases: Path) -> None:
     transport = ASGITransport(app=app)
     async with (AsyncClient(transport=transport, base_url="http://testserver") as device,
                 AsyncClient(transport=transport, base_url="http://testserver") as anonymous):
@@ -50,8 +50,11 @@ async def test_published_release_is_offered_to_paired_devices_only(releases: Pat
         assert download.content == b"v10"
         assert download.headers["content-type"] == "application/vnd.android.package-archive"
 
-        assert (await anonymous.get("/api/jarvis/devices/android/update")).status_code == 401
-        assert (await anonymous.get(offered["download_path"])).status_code == 401
+        # A phone that lost its link (reset database, revoked device) can still update itself.
+        stale = {"Authorization": "Bearer not-a-linked-device"}
+        for headers in ({}, stale):
+            assert (await anonymous.get("/api/jarvis/devices/android/update", headers=headers)).json()["release"] == offered
+            assert (await anonymous.get(offered["download_path"], headers=headers)).content == b"v10"
         # The first-install link stays public and always serves the current release.
         assert (await anonymous.get("/api/jarvis/devices/android.apk")).content == b"v10"
 
