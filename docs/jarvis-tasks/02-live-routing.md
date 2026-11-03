@@ -1,8 +1,14 @@
 # Phase 2 — GPT Live Task Routing
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
+
+## Owners
+
+- Code: `backend/app/services/jarvis/` (`coordinator`, `brain`, `tool_catalog`, `admission_intents`, `request_context`, `openai_live_adapter`), `backend/app/api/jarvis.py`
+- Tests (`backend/tests/`): `test_jarvis_coordinator.py`, `test_openai_live_adapter.py`, `test_live_admission_intents.py`, `test_admission_timing.py`
+- Emulator (paid): `android/scripts/verify-managed-admission.py`
 
 ## Completion
 
@@ -238,6 +244,6 @@ Continue using managed Responses delegation initially, following OpenAI's delega
 - Screenshot-dependent admission waits at most two additional seconds for pending capture and requires captured/ready-to-upload status. Upload starts only after admission, and capture/upload errors are not automatically retried.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

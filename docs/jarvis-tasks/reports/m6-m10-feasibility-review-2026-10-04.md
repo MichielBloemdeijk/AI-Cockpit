@@ -6,7 +6,7 @@ This is an assessment, not an approved roadmap revision or implementation-comple
 
 ## Evidence and scope
 
-Reviewed the recent implementation thread, [roadmap](../00-implementation-roadmap.md), [progress report](m6-m10-progress.md), current routing/runtime/acceptance code and retained local diagnostics. Re-ran `test_task_acceptance.py`, `test_m6_m9_closure.py`, `test_android_audio_harness.py` and `test_live_client_delegation.py`: **35 passed in 48.80 seconds**. Small isolated probes additionally reproduced the candidate-hash and cutoff-validation defects below. No new paid provider run, emulator acceptance or account check was performed.
+Reviewed the recent implementation thread, [roadmap](../../history/00-implementation-roadmap.md), [progress report](m6-m10-progress.md), current routing/runtime/acceptance code and retained local diagnostics. Re-ran `test_task_acceptance.py`, `test_m6_m9_closure.py`, `test_android_audio_harness.py` and `test_live_client_delegation.py`: **35 passed in 48.80 seconds**. Small isolated probes additionally reproduced the candidate-hash and cutoff-validation defects below. No new paid provider run, emulator acceptance or account check was performed.
 
 The prior aggregate's 567 backend passes, 191 frontend passes and 27 Android passes are historical evidence; twelve provider checks were skipped and later changes superseded that source. They establish substantial implemented functionality, not current M10 acceptance.
 

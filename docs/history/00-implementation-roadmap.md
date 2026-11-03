@@ -4,7 +4,7 @@
 that tasks work in the current Jarvis version, including creating a recipe from
 a screenshot, and explicitly accepted all work as complete. M11D is closed by
 that decision; there are no remaining milestones in this implementation plan.
-See the [final acceptance record](reports/personal-use-accepted-2026-10-11.md).
+See the [final acceptance record](../jarvis-tasks/reports/personal-use-accepted-2026-10-11.md).
 
 ## Completed milestones
 
@@ -17,15 +17,15 @@ See the [final acceptance record](reports/personal-use-accepted-2026-10-11.md).
 - [x] **M6:** supervisor assignments, project coding, restart and cancellation.
 - [x] **M7:** managed intent routing, execution preferences and serving tier.
 - [x] **M8:** wake/capture/audio integration and admission, with the
-  [user-accepted caveats](reports/m8-accepted-with-caveats-2026-10-07.md).
+  [user-accepted caveats](../jarvis-tasks/reports/m8-accepted-with-caveats-2026-10-07.md).
 - [x] **M9:** dedicated subscription execution, ownership and real API handoff.
 - [x] **M10:** combined implementation acceptance under the accepted M8 policy.
-  [Frozen worker-tools evidence](reports/worker-tools-closure-2026-10-08.md)
+  [Frozen worker-tools evidence](../jarvis-tasks/reports/worker-tools-closure-2026-10-08.md)
   records fifteen required passing assertions and four accepted exceptions.
 - [x] **M11A:** optional-password personal access and one-action startup.
 - [x] **M11B:** one-time QR/link pairing and unified phone access.
 - [x] **M11C:** automated personal-setup verification; the
-  [setup report](reports/personal-setup-2026-10-09.md) records fifteen required
+  [setup report](../jarvis-tasks/reports/personal-setup-2026-10-09.md) records fifteen required
   passing assertions and final ready admission of 3676.2937 ms.
 - [x] **M11D:** user acceptance of current phone/task use on 2026-10-11,
   including screenshot-based recipe creation.
@@ -33,19 +33,19 @@ See the [final acceptance record](reports/personal-use-accepted-2026-10-11.md).
 ## Maintained references
 
 The [task architecture](../JARVIS_TASK_ARCHITECTURE.md), phase contracts 01–08,
-[worker tool policy](09-worker-tool-policy.md),
+[worker tool policy](../jarvis-tasks/09-worker-tool-policy.md),
 [completed personal setup](10-personal-setup-and-phone-acceptance.md),
-[Android audio controls](11-android-audio-controls.md) and
-[operational runbook](rollout-runbook.md) remain references for maintenance.
-The [phone guide](phone-test-checklist.md) is available for setup and future
+[Android audio controls](../jarvis-tasks/11-android-audio-controls.md) and
+[operational runbook](../jarvis-tasks/rollout-runbook.md) remain references for maintenance.
+The [phone guide](../jarvis-tasks/phone-test-checklist.md) is available for setup and future
 troubleshooting; it is no longer an outstanding acceptance assignment.
 
 Latest targeted repairs and evidence:
 
-- [Phone setup](reports/phone-setup-fix-2026-10-10.md).
-- [Browser voice/native screenshot binding](reports/phone-screen-fix-2026-10-11.md).
-- [Worker database paths and recipe publication](reports/phone-database-fix-2026-10-11.md).
-- [Persistent native audio controls](reports/android-audio-controls-2026-10-11.md).
+- [Phone setup](../jarvis-tasks/reports/phone-setup-fix-2026-10-10.md).
+- [Browser voice/native screenshot binding](../jarvis-tasks/reports/phone-screen-fix-2026-10-11.md).
+- [Worker database paths and recipe publication](../jarvis-tasks/reports/phone-database-fix-2026-10-11.md).
+- [Persistent native audio controls](../jarvis-tasks/reports/android-audio-controls-2026-10-11.md).
 
 ## Implementation defaults and limits
 
@@ -72,7 +72,7 @@ all-day battery evidence. Public/multi-user deployment, additional connectors
 and browser automation remain separate future scope.
 
 Historical failures, sample counts, candidate identities and usage stay in the
-[reports index](reports/README.md). The
-[archived roadmap](reports/implementation-roadmap-history-2026-10-11.md)
+[reports index](../jarvis-tasks/reports/README.md). The
+[archived roadmap](../jarvis-tasks/reports/implementation-roadmap-history-2026-10-11.md)
 preserves the former delivery plan and decision history. No paid provider rerun,
 device reset, account change or runtime reconfiguration accompanies this closure.

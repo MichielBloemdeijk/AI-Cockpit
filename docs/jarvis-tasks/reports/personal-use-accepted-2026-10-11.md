@@ -35,7 +35,7 @@ Historical automated reports retain their original source identity, failures,
 counts and scope. This acceptance decision does not turn those reports into
 full combined evidence for a later executable candidate.
 
-The [completion ledger](../00-implementation-roadmap.md) is authoritative.
+The [completion ledger](../../history/00-implementation-roadmap.md) is authoritative.
 Closure documentation and repository cleanup add no paid provider requests,
 device opt-ins, data resets or runtime configuration changes.
 

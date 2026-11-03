@@ -2,7 +2,7 @@
 
 Jarvis targets Android 17/API 37. The native companion owns system-assistant invocation, local wake detection, GPT-Live audio, task/reminder notifications, and the phone WebView. AI Cockpit remains the durable source of truth.
 
-Personal phone use is **accepted as of 2026-10-11**, including working tasks and screenshot-based recipe creation. See the [completion ledger](../docs/jarvis-tasks/00-implementation-roadmap.md). The tests below are maintenance tools; the accepted Android-gate and OEM/battery limits retain their recorded scope. [docs/VERIFICATION.md](../docs/VERIFICATION.md#android-emulator-harnesses) lists every harness and its cost. Each harness starts its own backend that never reads the personal `.env` ([harness_support.py](scripts/harness_support.py)); paid harnesses read only the `OPENAI_API_KEY` they use.
+Personal phone use is **accepted as of 2026-10-11**, including working tasks and screenshot-based recipe creation. See the [completion ledger](../docs/history/00-implementation-roadmap.md). The tests below are maintenance tools; the accepted Android-gate and OEM/battery limits retain their recorded scope. [docs/VERIFICATION.md](../docs/VERIFICATION.md#android-emulator-harnesses) lists every harness and its cost. Each harness starts its own backend that never reads the personal `.env` ([harness_support.py](scripts/harness_support.py)); paid harnesses read only the `OPENAI_API_KEY` they use.
 
 ## Agent-run capture feasibility
 
@@ -209,7 +209,7 @@ historical scenario, performance and account/provider observations.
 See [audio controls](../docs/jarvis-tasks/11-android-audio-controls.md) and
 [verification report](../docs/jarvis-tasks/reports/android-audio-controls-2026-10-11.md).
 Build with `gradlew.bat :app:testDebugUnitTest :app:assembleDebug :screen-fixture:assembleDebug`.
-From `backend`, run `.venv/Scripts/python.exe ../android/scripts/verify-audio-controls.py --report ../data/audio-controls-unique`.
+From `backend`, run `uv run python ../android/scripts/verify-audio-controls.py --report ../data/audio-controls-unique`.
 This uses actual native WebRTC capture/playback with a local peer and simulated
 backend provider, with zero paid calls. It tests notification actions in Chrome,
 shared WebView ownership, plural screenshots, independent worker completion,

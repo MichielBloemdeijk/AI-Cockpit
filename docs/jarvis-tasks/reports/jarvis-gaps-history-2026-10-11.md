@@ -1,7 +1,7 @@
 # Jarvis Product Gaps
 
 Archived on 2026-10-11. Status statements below are historical; the
-[current completion ledger](../00-implementation-roadmap.md) supersedes them.
+[current completion ledger](../../history/00-implementation-roadmap.md) supersedes them.
 
 Status: Active recovery backlog
 Last updated: 2026-09-05

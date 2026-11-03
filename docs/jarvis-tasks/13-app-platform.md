@@ -5,6 +5,13 @@ Status: **approved** 2026-10-30; all six build steps implemented (see
 [vision](../VISION.md) principles "modular add-ons that Jarvis builds and
 maintains" and "simple first, migrate when needed".
 
+## Owners
+
+- Code: `backend/app/app_platform/` (packages, records, files, functions, hosting), `backend/app/services/results/`, `backend/app/api/app_platform.py`, built-in apps in `backend/apps/`
+- UI: `frontend/app/apps/[slug]/page.tsx`, `frontend/lib/app-platform.ts`, `frontend/components/screens/AppsScreen.tsx`
+- Tests (`backend/tests/`): `test_app_platform.py`, `test_app_builder.py`, `test_builtin_apps.py`, `test_task_result_contract.py`, `test_app_workflows.py`, `test_app_functions.py`
+- Emulator: `android/scripts/verify-result-platform.py`, `verify-show-on-phone.py`
+
 ## Goal
 
 I ask for an app, Jarvis builds it, and I or Jarvis can use it. Jarvis can
@@ -159,8 +166,8 @@ tools.
 Recipes and Documents move onto the platform as the first packages:
 
 - `recipe.v1` and `document.v1` become JSON Schemas of collections that are
-  marked `result_type`. Workflow results publish into them, replacing the
-  Python result classes in `task_result_types.py`.
+  marked `result_type`. Workflow results publish into them (the old Python
+  result classes are gone; see `services/results/types.py`).
 - **Results are app records** (decided by the owner on 2026-10-31). A published
   recipe is a record in the Recipes app, and the app shows it. The separate
   result page with its live progress stream, revisions table and "Saved" toggle
@@ -168,8 +175,8 @@ Recipes and Documents move onto the platform as the first packages:
   notification opens the app on the record. A follow-up ("use grams instead")
   revises the same record. Everything published stays; the owner deletes what
   they don't want in the app.
-- Their renderers move into each app's `ui/` bundle, replacing
-  `result-renderers.tsx` and the per-collection Next pages and static exports.
+- Their renderers live in each app's `ui/` bundle (the old
+  `result-renderers.tsx` and per-collection Next pages are gone).
 - Their workflows move into the packages: `recipe_from_screen` into Recipes, and
   `screen_document` and `research_screen` into Documents. `text_report` has no
   app (`text-report.v1` publishes no collection) and stays a core workflow. The
@@ -404,9 +411,6 @@ Deliberate simplifications to revisit:
   not in the app.
 - An app can't yet ask Jarvis to revise a record the owner created in the app;
   Jarvis can only change records a task made.
-- The old Android emulator acceptance scripts under `android/scripts/`
-  (`verify-*.py`) still use `/results/` links and need updating before the next
-  emulator acceptance run.
 
 ### Step 4 (2026-11-01)
 

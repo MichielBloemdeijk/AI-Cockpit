@@ -1,8 +1,13 @@
 # Phase 4 — Guided Agent Workflow Runtime
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
+
+## Owners
+
+- Code: `backend/app/services/tasks/workflows.py`; definitions in `backend/workflows/` and in app packages; CLI `uv run python -m app.jarvis_tasks validate <id@version>`
+- Tests (`backend/tests/`): `test_task_workflows.py`, `test_reference_workflows.py`, `test_app_workflows.py`
 
 ## Completion
 
@@ -228,7 +233,7 @@ quota/availability fixture that does not exhaust the real account. Actual
 authentication, quota and billing errors remain classified and durable. Missing account authorization/evidence blocks M9's live
 exit, while implementation and deterministic fixtures continue.
 
-Use the [roadmap defaults](00-implementation-roadmap.md#implementation-defaults-and-limits) for bounded transport/read retries and timeouts. Connection recovery inspects the existing native turn before considering a replacement. Capture/upload retains its explicit no-retry exception. Provider budget exhaustion is a durable blocker, not a transient retry loop. Pin actual installed/tested SDK/runtime versions during M0; do not select a version number by assumption in this design.
+Use the [roadmap defaults](../history/00-implementation-roadmap.md#implementation-defaults-and-limits) for bounded transport/read retries and timeouts. Connection recovery inspects the existing native turn before considering a replacement. Capture/upload retains its explicit no-retry exception. Provider budget exhaustion is a durable blocker, not a transient retry loop. Pin actual installed/tested SDK/runtime versions during M0; do not select a version number by assumption in this design.
 
 ## Early Codex Integration Milestone
 
@@ -282,6 +287,6 @@ These sources motivate the selected pattern; their benchmark gains are not Jarvi
 - [Phase 8](08-background-orchestration.md) defines background feedback handling, independent direct voice dispatch, and shared attention. Workers emit durable facts/questions; they do not choose competing voice/background recovery owners. Background decisions do not occupy a worker slot, and long repairs are ordinary worker tasks.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

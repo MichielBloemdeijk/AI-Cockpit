@@ -1,7 +1,7 @@
 # Autonomous Testing and Observability
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
 For which checks exist today and when to run them, use
 [VERIFICATION.md](../VERIFICATION.md).
@@ -283,6 +283,6 @@ For background management, correlate source event, decision, relevant task/run/q
 No emulator can prove physical microphone acoustics, wake-word performance, OEM assistant capture, lock-screen behavior, or battery characteristics. M11 is accepted for the selected personal phone; broader physical guarantees remain unproven and are not dependencies in everyday development.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

@@ -52,7 +52,7 @@ async def diagnose(db, *, now: datetime | None = None, observer=None, live: bool
     if failed_jobs:
         findings.append(_finding("medium", "conversation_observer", f"{len(failed_jobs)} bookkeeping assessment(s) failed in the last day",
             {"errors": [j.error for j in failed_jobs]},
-            "Invalid model answers point at the observer prompt/schema (conversation_observer.py); HTTP errors at "
+            "Invalid model answers point at the observer prompt/schema (services/jarvis/observer.py); HTTP errors at "
             "provider access. Re-check with the L1 replay (python -m app.selftest replay)."))
 
     pending = (await db.execute(select(TaskPresentation).where(TaskPresentation.state == "pending",
@@ -90,5 +90,5 @@ async def diagnose(db, *, now: datetime | None = None, observer=None, live: bool
         findings.append(_finding("low", "natural_updates", f"Jarvis did not keep {dropped} promise(s) this week",
             {"dropped_promises": dropped},
             "Review the promise texts and their conversations; if Jarvis keeps over-promising, tighten the Live update "
-            "policy (live_task_updates.py) and add an adaptive scenario reproducing it."))
+            "policy (services/jarvis/task_updates.py) and add an adaptive scenario reproducing it."))
     return findings

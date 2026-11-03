@@ -2,15 +2,15 @@
 
 Status: **completed and accepted for personal use on 2026-10-11.** The user
 confirmed working tasks, including a recipe created from a screenshot, and
-accepted all work as complete. The [completion ledger](jarvis-tasks/00-implementation-roadmap.md)
+accepted all work as complete. The [completion ledger](history/00-implementation-roadmap.md)
 and [acceptance record](jarvis-tasks/reports/personal-use-accepted-2026-10-11.md)
 own current status. Native Windows coding remains gated; explicitly selected
 trusted commands and the accepted M8 caveats remain the supported personal mode.
 
 This document replaces the former workflow plans and defines the implemented
 modular task architecture and its contracts. Focused references live under
-[`docs/jarvis-tasks/`](jarvis-tasks/). The completed
-[personal setup](jarvis-tasks/10-personal-setup-and-phone-acceptance.md) uses the
+[`docs/jarvis-tasks/`](jarvis-tasks). The completed
+[personal setup](history/10-personal-setup-and-phone-acceptance.md) uses the
 existing Windows/Tailscale host, optional password, one-action startup and
 one-time QR/link pairing. Device/privacy and durable task guarantees continue
 to apply; a full backup is optional for disposable development data.
@@ -296,13 +296,13 @@ Computer/browser-control tools are diagnostic fallbacks and final visual checks,
 
 ## 10. Completed implementation map
 
-The [implementation roadmap](jarvis-tasks/00-implementation-roadmap.md) orders the work, migrations, operational defaults and acceptance gates. The focused plans own the detailed contracts:
+The [implementation roadmap](history/00-implementation-roadmap.md) orders the work, migrations, operational defaults and acceptance gates. The focused plans own the detailed contracts:
 
 1. [Task control plane and admission](jarvis-tasks/01-control-plane.md)
 2. [GPT-Live routing and acknowledgment](jarvis-tasks/02-live-routing.md)
 3. [Android activation context](jarvis-tasks/03-android-context.md)
 4. [Guided agent workflow runtime](jarvis-tasks/04-workflow-runtime.md)
-5. [Result pages, revisions, and delivery](jarvis-tasks/05-result-pages.md)
+5. [Result pages, revisions, and delivery](history/05-result-pages.md)
 6. [Recipe-from-screen reference workflow](jarvis-tasks/06-recipe-workflow.md)
 7. [Autonomous testing and observability](jarvis-tasks/07-testing-observability.md)
 8. [Background orchestration and shared attention](jarvis-tasks/08-background-orchestration.md)
@@ -330,7 +330,7 @@ host using the guarded API-authenticated route. The live probe passed all 18
 gating assertions. Subscription execution was outside that historical enabled
 route; M9 subsequently proved the dedicated subscription profile and API handoff.
 See the [M0 evidence and safeguards](jarvis-tasks/reports/README.md) and the
-[implementation roadmap](jarvis-tasks/00-implementation-roadmap.md).
+[implementation roadmap](history/00-implementation-roadmap.md).
 
 Begin with a narrow native contract probe before committing to broad adapter-dependent work. The integrated slice then uses a deterministic fixture executor to prove invocation, capture-status preflight, screenshot correlation, admission/upload failure handling, shared-pool scheduling, directory exclusion, interruption/recovery, minimal result rendering, and notification navigation. Repeat the relevant tests through real Codex, including durable continuation, mobile history replay and confirmed writer termination before lease transfer. A fixture alone cannot prove native cancellation or checkpoint behavior. Broader Phase 5 collections/storage follow these gates and need not delay the first recipe. Phase 7's tests/telemetry begin with M0.
 

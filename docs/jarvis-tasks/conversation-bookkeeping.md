@@ -17,6 +17,12 @@ Jarvis keeps two kinds of memory about task updates:
   notification. Uncertain communication stays pending. It is shown to Live as a
   fact, not as an order to repeat.
 
+## Owners
+
+- Code: `backend/app/services/jarvis/observer.py` (what the user heard), `notes.py` and `task_updates.py` (what Live is told), `backend/app/services/updates/presentations.py` (task facts and their state)
+- Tests (`backend/tests/`): `test_conversation_observer.py`, `test_assistant_notes.py`, `test_task_attention.py`, `test_notification_context_floors.py`
+- Free diagnosis first: `uv run python -m app.selftest doctor` ([self-testing](self-testing.md))
+
 ## Jarvis notes
 
 With the observer enabled, Live gets one readable notes view instead of JSON

@@ -15,7 +15,7 @@ Run these before committing a change in the matching area.
 
 | Command (from) | Covers | Cost |
 |---|---|---|
-| `uv run pytest` (`backend/`) | The whole backend suite, in parallel. Tests marked `provider` are billed and skip unless their own opt-in flag is set; every other test fails if it reaches the network. | free |
+| `uv run pytest` (`backend/`) | The whole backend suite, in parallel. Tests marked `provider` are billed and skip unless their own opt-in flag is set; every other test fails if it reaches the network. Includes `test_docs_references.py`, which fails when a maintained doc links to or names a file that does not exist. | free |
 | `uv run ruff check app` (`backend/`) | Python correctness lint (undefined names, unused imports and variables). | free |
 | `uv run pyright` (`backend/`) | Type check of the refactored seams listed under `[tool.pyright]` in `pyproject.toml` (basic mode; currently the `tasks`, `conversations`, `jarvis`, `orchestration`, `results` and `updates` packages, the execution seam and `llm`). | free |
 | `npm test` (`frontend/`) | All frontend unit and hook tests (Vitest). | free |
@@ -27,6 +27,24 @@ Run these before committing a change in the matching area.
 
 For a quick backend loop, pass test paths (`uv run pytest tests/test_x.py`) or
 `-n 0` to run serially while debugging.
+
+## Focused checks by area
+
+Run the matching rows while working, then the routine checks above. Backend
+test files are in `backend/tests/`; the owner code for each area is listed at the
+top of its design doc.
+
+| Area | Focused checks |
+|---|---|
+| Task lifecycle, control and retry | `test_task_lifecycle.py`, `test_task_service.py`, `test_task_control_prerequisites.py`, `test_worker_coordinator.py`; `frontend/app/(app)/tasks/[taskId]/page.test.tsx` |
+| Results, apps and workflows | `test_task_result_contract.py`, `test_builtin_apps.py`, `test_app_platform.py`, `test_task_workflows.py`; `android/scripts/verify-result-platform.py` |
+| Voice routing and admission | `test_jarvis_coordinator.py`, `test_openai_live_adapter.py`, `test_live_admission_intents.py` |
+| What the user heard, updates, notifications | `test_conversation_observer.py`, `test_assistant_notes.py`, `test_task_attention.py`, `test_notifications.py` |
+| Background orchestration | `test_task_orchestration.py`, `test_orchestration_recovery.py` |
+| Chat, council and knowledge | `test_conversation_api.py`, `test_conversation_store.py`, `test_phase2_chat_settings.py`, `test_knowledge_review_api.py`; `frontend/lib/hooks.test.tsx` |
+| Browser wake | `frontend/lib/jarvis/wake-engine.test.ts`, `wake-runtime.test.ts`; paid `npm run test:live-smoke` |
+| Android audio (Stop, notification) | JVM `AudioControlStateTest`; `android/scripts/verify-audio-controls.py` |
+| Android capture and assistant session | JVM `ScreenCaptureLeaseTest`; `verify-capture-feasibility.py`, `verify-phone-browser-capture.py` |
 
 ## Diagnosis
 
@@ -86,6 +104,8 @@ the one credential they use. See [android/README.md](../android/README.md).
 | `verify-managed-admission.py` | Managed GPT-Live task admission (`--mobile-result` adds the spoken research flow). | paid, emulator |
 | `verify-audio-corpus.py` | Recorded audio through real wake inference and Live WebRTC against a prepared backend. | paid, emulator |
 | `verify-announcements.py` | Driver for the L4 self-test (started by `app.selftest run --android`). | paid, emulator |
+| `verify-mobile-result.py` | Spoken research admission → worker → native result → UI follow-up; called by `verify-managed-admission.py --mobile-result`. | paid, emulator |
+| `verify-task-history-reconnect.ps1` | A running task's history and reconnect on the phone (PowerShell, run by hand against a started backend). | emulator |
 
 ## Not covered autonomously
 

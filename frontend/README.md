@@ -30,21 +30,27 @@ lint, typecheck and Git ignore all of them.
   shows the same page)
 - `app/(app)/settings`: model defaults, phone linking, worker tools, wake
   calibration
-- `app/(app)/workspace/apps` and `apps/[slug]`: installed apps, each in a
-  sandboxed frame with the SDK bridge in `lib/app-platform.ts`
+- `app/(app)/workspace/apps`: the list of installed apps
+- `app/apps/[slug]`: one installed app in a sandboxed frame, with the SDK bridge
+  in `lib/app-platform.ts`. It sits outside the `(app)` group so it has its own
+  layout; `?collection=&key=` opens a record
 - `app/login`, `app/link-phone`: sign-in and phone pairing
 - `background` and `voice` only redirect (to `/tasks` and `/jarvis`)
 
 ## Key modules
 
-- `lib/api.ts`: typed client for the backend APIs
-- `lib/hooks.ts`, `lib/use-conversation-*.ts`, `lib/conversation-feed.ts`:
-  conversation list, detail, streaming and the committed timeline
-- `lib/jarvis-live*.ts`, `lib/jarvis-voice-client.ts`: the Live session and its
-  replayable state
-- `lib/jarvis-wake-*.ts`, `lib/jarvis-hey-buddy-inference.ts`: browser wake
-  detection
-- `components/`: shared UI
+- `lib/api/`: the typed backend client by domain (`auth`, `conversations`,
+  `jarvis`, `tasks`, `knowledge`, `push`) over the one request transport in
+  `http.ts`
+- `lib/conversations/` and `lib/hooks.ts`: chat list, detail, streaming and the
+  committed timeline (`feed.ts`, `use-detail.ts`, `use-actions.ts`)
+- `lib/jarvis/`: the Live session (`live.ts`, `voice-session.ts`,
+  `use-jarvis.ts`), its replayable state (`feed.ts`, `live-state.ts`) and browser
+  wake detection (`wake-*.ts`, `hey-buddy-inference.ts`)
+- `lib/task-status.ts`, `lib/task-trace.ts`, `lib/app-platform.ts`: shared task
+  and app logic
+- `components/screens/`: screens shared with the static `result-export` build;
+  `components/`: other shared UI
 
-When backend responses change, update the types in `lib/api.ts` and the focused
-tests next to the module (`lib/*.test.ts`).
+When backend responses change, update the types in the matching `lib/api/*.ts`
+file and the focused tests next to the module (`*.test.ts`).

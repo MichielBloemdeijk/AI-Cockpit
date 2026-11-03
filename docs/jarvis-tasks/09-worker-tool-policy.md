@@ -4,6 +4,12 @@ This revision supersedes the former all-broker tool profile. GPT-Live's managed
 admission route, durable tasks, scheduling, result platform and dedicated
 subscription ownership remain the same.
 
+## Owners
+
+- Code: `backend/app/services/tasks/worker_tool_policy.py`, `backend/app/services/tasks/project_tools.py`, `backend/app/services/connector_permissions.py`, `backend/app/services/native_research.py`, `backend/app/api/worker_tools.py`
+- UI: `frontend/components/WorkerToolSettings.tsx`, `frontend/components/TaskToolOverrides.tsx`
+- Tests: `backend/tests/test_worker_tool_policy.py`
+
 ## Tool choices and authority
 
 The worker uses Codex's hosted web research. Jarvis no longer runs a separate

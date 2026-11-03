@@ -4,6 +4,12 @@ The Android audio service owns wake recording, native WebRTC capture/playback an
 one quiet notification. Assistant panels and the Jarvis WebView observe this
 owner; closing them does not stop audio. Ordinary browsers keep browser voice.
 
+## Owners
+
+- Android (`android/app/src/main/java/nl/sander/aicockpit/jarvis/`): `audio/AudioControlState.kt` (pure policy), `audio/JarvisAudioService.kt` (side effects), `audio/JarvisAudioControls.kt` (state and commands), `notifications/JarvisNotifications.kt` (action intents)
+- Backend close: `DELETE /api/jarvis/live/sessions/{id}` in `backend/app/api/jarvis.py`
+- Tests: JVM `AudioControlStateTest.kt`; emulator `android/scripts/verify-audio-controls.py`
+
 ## Controls
 
 - Paused: **Microphone off** — Listen now / Hey Jarvis.
@@ -43,7 +49,7 @@ Callback timeouts are explicit unavailable observations, never successful images
 Run from `backend`, with installed frontend dependencies and the API37 test AVD:
 
 ```powershell
-.venv/Scripts/python.exe ../android/scripts/verify-audio-controls.py --report ../data/audio-controls-unique
+uv run python ../android/scripts/verify-audio-controls.py --report ../data/audio-controls-unique
 ```
 
 Use a fresh project-owned report folder. This clears only disposable emulator

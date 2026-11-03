@@ -2,7 +2,7 @@
 
 **M11 personal use is accepted as of 2026-10-11.** The user confirmed working
 tasks, including screenshot-based recipe creation, and accepted all work as
-completed. See the [completion ledger](00-implementation-roadmap.md) and
+completed. See the [completion ledger](../history/00-implementation-roadmap.md) and
 [final acceptance record](reports/personal-use-accepted-2026-10-11.md).
 
 Use `Jarvis.cmd` for startup/status/stop and the [phone guide](phone-test-checklist.md)
@@ -97,8 +97,7 @@ bounded queued batches; `close_engine()` drains them before database disposal in
 API, worker, MCP and test entry points. Metrics are eventually visible; explicit
 test drains belong outside measured admission intervals. Process-local queue health
 and loss counts are exposed in result observability, with no content in loss logs.
-Run `tests/test_observation_queue.py` and `tests/test_result_observability.py` for
-overflow, failure, cancellation, draining and delayed run/revision coverage. The
+The
 [telemetry report](reports/admission-telemetry-2026-10-05.md) retains the controlled
 interleaved comparison and complete local delivery samples.
 
@@ -210,7 +209,7 @@ the isolated migration/result fixtures provide the representative-data evidence.
 
 ## Completed M11 setup procedure (reference)
 
-The [M11A–D checklist](10-personal-setup-and-phone-acceptance.md) owns the sequence
+The [M11A–D checklist](../history/10-personal-setup-and-phone-acceptance.md) owns the sequence
 and exit criteria; these are its operational steps:
 
 1. **Prepare personal access and startup.** Reuse the current Windows host and
@@ -275,7 +274,7 @@ writers stopped, reconciling credentials/external effects that changed afterward
   battery, protected/locked policy and actual phone notification delivery.
 
 Refer to [M5 progress](reports/m5-progress.md) for historical platform/browser/API37
-evidence and the [roadmap](00-implementation-roadmap.md) for the current M6–M11
+evidence and the [roadmap](../history/00-implementation-roadmap.md) for the current M6–M11
 completion ledger. A historical report is not a current-candidate acceptance run.
 
 

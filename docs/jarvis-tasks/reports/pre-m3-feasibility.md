@@ -2,7 +2,7 @@
 
 Historical outcome: the selected architecture remained viable for proceeding
 with M3's background implementation. No phone or user interaction was required.
-The later [closure roadmap](../00-implementation-roadmap.md) assigns production
+The later [closure roadmap](../../history/00-implementation-roadmap.md) assigns production
 capture/audio integration to M8 and deferred physical acceptance to M11; older
 M5 references below describe the schedule at this feasibility checkpoint.
 

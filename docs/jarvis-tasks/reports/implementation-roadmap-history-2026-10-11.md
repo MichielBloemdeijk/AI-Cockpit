@@ -1,11 +1,11 @@
 <!-- Current gate policy: user revisions through personal-use setup 2026-10-09 -->
 
 Archived on 2026-10-11. Status statements below are historical; the
-[current completion ledger](../00-implementation-roadmap.md) supersedes them.
+[current completion ledger](../../history/00-implementation-roadmap.md) supersedes them.
 
 # Jarvis task implementation roadmap
 
-Status: updated 2026-10-10. The [worker tool revision](../09-worker-tool-policy.md) replaces custom research with native Codex research and adds persisted tool selection, approved skills, subagent history and exact human connector approvals. Native Windows coding remains gated by Python tempfile failure; the selected trusted command broker remains explicit. M10 passed on source c8a0aec7: fifteen required assertions passed and four M8 exceptions remain accepted. Final ready admission: 3689.1404 ms. M11A-C are complete with final admission 3676.2937 ms and 15 required assertions passed on source 4f58a725. The user's physical M11D test remains. M11 follows the [personal setup plan](../10-personal-setup-and-phone-acceptance.md), with user phone tests last. Historical reports below retain their original observations.
+Status: updated 2026-10-10. The [worker tool revision](../09-worker-tool-policy.md) replaces custom research with native Codex research and adds persisted tool selection, approved skills, subagent history and exact human connector approvals. Native Windows coding remains gated by Python tempfile failure; the selected trusted command broker remains explicit. M10 passed on source c8a0aec7: fifteen required assertions passed and four M8 exceptions remain accepted. Final ready admission: 3689.1404 ms. M11A-C are complete with final admission 3676.2937 ms and 15 required assertions passed on source 4f58a725. The user's physical M11D test remains. M11 follows the [personal setup plan](../../history/10-personal-setup-and-phone-acceptance.md), with user phone tests last. Historical reports below retain their original observations.
 
 The [main architecture](../../JARVIS_TASK_ARCHITECTURE.md) explains the target. Phases 1–8 own their detailed contracts; this roadmap owns delivery order and cross-phase gates. Later agreed decisions take precedence over historical design discussion. No harness comparison or additional product questionnaire is required before starting.
 
@@ -69,7 +69,7 @@ is soft. Existing development data is disposable under [AGENTS.md](../../../AGEN
   personal access and simple startup (A), one-time QR/link pairing and unified
   phone access (B), agent verification (C), then the user's physical checks and
   normal-use confirmation (D). No mandatory full backup for disposable data.
-  See the [remaining completion plan](../10-personal-setup-and-phone-acceptance.md).
+  See the [remaining completion plan](../../history/10-personal-setup-and-phone-acceptance.md).
 
 **Implementation complete** means M10 passes under the revised policy, including
 real M9 subscription evidence and explicit M8 accepted exceptions.
@@ -611,7 +611,7 @@ declaration. Optional scaffolding/report convenience commands do not block it.
 
 **Owners:** Phases 3/5/7/8 and [runbook](../rollout-runbook.md).
 **Dependency:** M10 baseline passed. **Status:** A-C complete on
-2026-10-10; D user phone testing and normal-use confirmation remain. The [detailed plan](../10-personal-setup-and-phone-acceptance.md)
+2026-10-10; D user phone testing and normal-use confirmation remain. The [detailed plan](../../history/10-personal-setup-and-phone-acceptance.md)
 owns the checklist and supersedes former mandatory password/full-backup gates
 for this personal Tailscale setup.
 
@@ -657,7 +657,7 @@ These are initial configurable operational values, not new product restrictions 
 
 ## Next action
 
-M11A-C from the [personal setup plan](../10-personal-setup-and-phone-acceptance.md) are complete. The remaining action is the user's M11D phone test and normal-use confirmation. Reuse the Windows/Tailscale setup, make a password optional and remove mandatory full-backup setup for disposable development data. Keep trusted execution and M8 caveats explicit. A-C are complete; follow the ready [phone checklist](../phone-test-checklist.md) for D. M10 c8a0aec7 remains historical baseline evidence. Current executable changes need candidate-matched verification, starting offline and conserving paid tests.
+M11A-C from the [personal setup plan](../../history/10-personal-setup-and-phone-acceptance.md) are complete. The remaining action is the user's M11D phone test and normal-use confirmation. Reuse the Windows/Tailscale setup, make a password optional and remove mandatory full-backup setup for disposable development data. Keep trusted execution and M8 caveats explicit. A-C are complete; follow the ready [phone checklist](../phone-test-checklist.md) for D. M10 c8a0aec7 remains historical baseline evidence. Current executable changes need candidate-matched verification, starting offline and conserving paid tests.
 
 ## Admission/execution closure revision — 2026-10-04
 

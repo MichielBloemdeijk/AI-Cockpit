@@ -1,8 +1,15 @@
 # Phase 3 — Android Screen Context Capture
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
+
+## Owners
+
+- Android (`android/app/src/main/java/nl/sander/aicockpit/jarvis/assistant/`): `JarvisVoiceInteractionSession`, `ScreenCaptureManager`, `PhoneCaptureCoordinator`
+- Backend: `backend/app/services/tasks/capture.py`, `backend/app/api/task_context.py`
+- Tests: `backend/tests/test_task_capture.py`, `test_phone_browser_capture.py`, `test_screen_collection.py`; JVM `ScreenCaptureLeaseTest.kt`, `PhoneCaptureRequestTest.kt`
+- Emulator: `android/scripts/verify-capture-feasibility.py`, `verify-phone-browser-capture.py`
 
 ## Completion
 
@@ -270,6 +277,6 @@ M2's public Live workflow gateway still accepts only activation captures.
 - The control-plane admission and Phase 2 routing contracts are prerequisites for enabling the production workflow path.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

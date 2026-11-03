@@ -6,7 +6,7 @@
 The user confirmed working tasks, including screenshot-based recipe creation,
 and accepted all work as completed. See the
 [final acceptance record](personal-use-accepted-2026-10-11.md) and
-[completion ledger](../00-implementation-roadmap.md).
+[completion ledger](../../history/00-implementation-roadmap.md).
 
 M8's [accepted caveats](m8-accepted-with-caveats-2026-10-07.md) remain explicit.
 M11A–C have [recorded combined verification](personal-setup-2026-10-09.md);
@@ -100,7 +100,7 @@ Seven passing assertions belong to that preceding checkpoint, not the latest sou
 
 [M6/M7 closure](m6-m7-closure-2026-10-06.md): both gates passed at the recorded source checkpoint; the final 4.168-second admission passed the revised under-4.5-second latency assertion. M8 repairs have since changed executable source; M8 is accepted with caveats. The final M9/M10 checklist above records subsequent current-source validation; M9 passed and M10 retains one research-source failure.
 
-The [roadmap](../00-implementation-roadmap.md) owns completion status. M0–M4
+The [roadmap](../../history/00-implementation-roadmap.md) owns completion status. M0–M4
 remain historical guarded-route passes; M5 is the verified presentation/platform
 checkpoint. Its former broad rollout obligations are now explicit M6–M11 gates.
 General coding, subscription-first execution and one final admission below 4.5 seconds (two-second target)

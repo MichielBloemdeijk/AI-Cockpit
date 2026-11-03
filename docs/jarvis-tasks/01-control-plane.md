@@ -1,8 +1,14 @@
 # Jarvis Task Control Plane
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
+
+## Owners
+
+- Code: `backend/app/services/tasks/` (`lifecycle` writes every task, run and attempt status, `service`, `worker_coordinator`, `vocabulary`), `backend/app/api/tasks.py`, `backend/app/presenters/tasks.py`
+- UI: `frontend/components/screens/TaskDetailScreen.tsx`, `frontend/lib/api/tasks.ts`
+- Tests (`backend/tests/`): `test_task_lifecycle.py`, `test_task_service.py`, `test_task_control_plane.py`, `test_task_control_prerequisites.py`, `test_worker_coordinator.py`
 
 ## Completion
 
@@ -255,6 +261,6 @@ Requested stop invalidates new mutations promptly. Confirmed stop requires desce
 - Phase 8 consumes the same task events and control APIs rather than becoming part of worker supervision. Its one background decision slot is independent of direct voice dispatch, deterministic updates, and the Codex worker pool.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

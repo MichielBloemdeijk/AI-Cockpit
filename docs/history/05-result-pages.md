@@ -1,7 +1,7 @@
 # Phase 5 — Result Pages, App Collections, and Delivery
 
 > **Superseded on 2026-10-31:** results are now records in installed apps (Recipes,
-> Documents), not result pages. See [app platform step 3](13-app-platform.md#step-3-2026-10-31).
+> Documents), not result pages. See [app platform step 3](../jarvis-tasks/13-app-platform.md#step-3-2026-10-31).
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
 [completion ledger](00-implementation-roadmap.md) owns status and accepted
@@ -9,8 +9,8 @@ limits; this document retains the phase contract and historical evidence.
 
 ## Completion
 
-This phase is complete under the [final personal-use acceptance](reports/personal-use-accepted-2026-10-11.md).
-The [reports index](reports/README.md) retains candidate-scoped verification,
+This phase is complete under the [final personal-use acceptance](../jarvis-tasks/reports/personal-use-accepted-2026-10-11.md).
+The [reports index](../jarvis-tasks/reports/README.md) retains candidate-scoped verification,
 failed observations and the accepted M8 caveats. Historical implementation
 notes below do not assign new work or override the completion ledger.
 
@@ -481,7 +481,7 @@ Update completion delivery so a successful result-producing task enqueues `/resu
 - Same-origin result navigation stays in the WebView; external source links open in the system browser.
 - Notification delivery and open acknowledgement remain observable through the existing delivery path.
 
-Apply [Phase 8](08-background-orchestration.md)'s shared attention contract: factual completion queueing does not wait for a model, and voice-active delivery projects the same durable attention item rather than duplicating it. Raw worker questions reach background judgment before promotion as unresolved user questions. Task state and history remain immediately inspectable. Opening/communicating a question update does not answer the underlying question.
+Apply [Phase 8](../jarvis-tasks/08-background-orchestration.md)'s shared attention contract: factual completion queueing does not wait for a model, and voice-active delivery projects the same durable attention item rather than duplicating it. Raw worker questions reach background judgment before promotion as unresolved user questions. Task state and history remain immediately inspectable. Opening/communicating a question update does not answer the underlying question.
 
 No new Android authentication token is introduced in this phase.
 
@@ -538,7 +538,7 @@ verified client delivery. Notification transport and open acknowledgements do
 not verify Android display, and retain their original run/revision correlation
 even when an old notification is opened after a newer update. No prompt, body,
 claim token or raw exception text belongs in metric records or structured logs.
-See the [current measurements and restart proof](reports/m5-progress.md).
+See the [current measurements and restart proof](../jarvis-tasks/reports/m5-progress.md).
 
 ## 14. Autonomous Test Strategy
 
@@ -676,5 +676,5 @@ Phase 5 supplies the generic publication, delivery, catalog, collection, action 
 ## Completion evidence
 
 See the [completion ledger](00-implementation-roadmap.md) and
-[reports index](reports/README.md). Earlier progress reports are historical;
+[reports index](../jarvis-tasks/reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

@@ -21,6 +21,11 @@ Deviations from the original plan, decided during implementation:
   GPT-Live delegation. The emulator variant needs assistant-session capture
   inside the audio harness and is left for later.
 
+## Owners
+
+- Code: `backend/app/services/jarvis/screen_look.py`, `brain.py` and `openai_live_adapter.py` (the image in the router's context), `backend/app/services/tasks/capture.py`
+- Tests: `backend/tests/test_openai_live_adapter.py`, `test_task_capture.py`
+
 ## Why
 
 A spoken screen question took about 10.4 s from final transcript to first
@@ -234,7 +239,7 @@ calls, router `delegation_usage` (input/image/cached tokens, latency).
 Run it once. Stop on auth/quota errors. If turn 1 fails because the image item
 is rejected, stop and repair offline. Don't rerun it unchanged. Report the
 request count and the available usage in the pilot report
-(`docs/jarvis-tasks/reports/2026-10-xx-screen-in-router-context.md`).
+(`docs/jarvis-tasks/reports/2026-10-28-screen-in-router-context.md`).
 
 ### Decision gate after the pilot
 

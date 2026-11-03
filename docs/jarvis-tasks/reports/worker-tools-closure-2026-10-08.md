@@ -5,7 +5,7 @@ required assertions passed on frozen source c8a0aec7, with four explicitly
 accepted M8 exceptions. Final ready admission: 3689.1404 ms. Physical deployment
 remains deferred to M11; native coding remains gated and trusted mode is explicit.
 
-Subsequent setup decision (2026-10-09): the [personal-use plan](../10-personal-setup-and-phone-acceptance.md)
+Subsequent setup decision (2026-10-09): the [personal-use plan](../../history/10-personal-setup-and-phone-acceptance.md)
 makes the password and full development-data backup optional, simplifies linking
 and startup, and puts the user's phone test last. Password-block observations
 below describe the validator at this M10 checkpoint; the planned M11A update has

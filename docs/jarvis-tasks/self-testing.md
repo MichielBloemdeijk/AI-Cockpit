@@ -14,6 +14,11 @@ uv run python -m app.selftest run --suite core --name <run> --live      # L2 bro
 uv run python -m app.selftest run --suite core --name <run> --live --android   # L4 emulator
 ```
 
+## Owners
+
+- Code: `backend/app/selftest/` (`__main__` is the CLI, `host`, `doctor`, `replay`, `scenarios/`); production code never imports it
+- Tests: `backend/tests/test_selftest.py`
+
 ## Layers
 
 | Layer | What runs | Cost |
@@ -65,7 +70,7 @@ Scenarios are YAML under `backend/app/selftest/scenarios/<suite>.yaml`.
   assistant would do. The reviewing agent judges against it; it is not an exact
   transcript.
 - Scripted scenarios also have `expectation` (`required`, `forbidden`, `optional`
-  or `query`) and `steps`. Step types are listed in `scenarios/__init__.py`.
+  or `query`) and `steps`. Step types are listed in `app/selftest/scenarios/__init__.py`.
 
 Add a scenario by appending to a suite. The L0 tests validate every suite.
 

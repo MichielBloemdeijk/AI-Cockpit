@@ -1,8 +1,13 @@
 # Phase 8 — Background Orchestration and Shared Attention
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
+
+## Owners
+
+- Code: `backend/app/services/orchestration/` (`service`, `runtime`, `attention`, `authority`, `context`, `recovery`, `telemetry`), `backend/app/api/orchestration.py`
+- Tests (`backend/tests/`): `test_task_orchestration.py`, `test_orchestration_recovery.py`, `test_orchestration_observability.py`, `test_orchestration_preflight.py`, `test_orchestration_rollout.py`, `test_codex_orchestration_runtime.py`
 
 ## Completion
 
@@ -182,7 +187,7 @@ Use the roadmap's bounded transport recovery and no-progress timeout; inspect an
 
 ## 12. Readiness and Future Scope
 
-The implementation sequence and acceptance gates are in the [roadmap](00-implementation-roadmap.md). The remaining unknowns are empirical: pinned-runtime tool enforcement, native writer termination/action persistence, supported subscription concurrency, and measured latency/quality. They are not unresolved choices between orchestration architectures.
+The implementation sequence and acceptance gates are in the [roadmap](../history/00-implementation-roadmap.md). The remaining unknowns are empirical: pinned-runtime tool enforcement, native writer termination/action persistence, supported subscription concurrency, and measured latency/quality. They are not unresolved choices between orchestration architectures.
 
 The [pre-M3 feasibility pass](reports/pre-m3-feasibility.md) verifies the pinned
 restricted API runtime with eight occupied worker slots and tests deliberately
@@ -454,6 +459,6 @@ personal phone rollout. The earlier M3 checkpoint does not pass these later gate
 account setup does not block independent guarded API implementation.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

@@ -2,7 +2,7 @@
 
 Status: **M11A–D completed and personal use accepted on 2026-10-11.**
 The user confirmed working tasks, including a recipe created from a screenshot,
-and accepted all work as complete. See the [final acceptance record](reports/personal-use-accepted-2026-10-11.md).
+and accepted all work as complete. See the [final acceptance record](../jarvis-tasks/reports/personal-use-accepted-2026-10-11.md).
 This completed plan retains setup contracts and recorded A–C checks; the
 [completion ledger](00-implementation-roadmap.md) owns current status.
 
@@ -102,9 +102,9 @@ voice, notifications and result pages without another Jarvis login.
   correlated diagnostics. Mark **ready for the user's phone test** only when
   required automated checks pass, listing known caveats.
 
-Automated proof: [personal setup completion report](reports/personal-setup-2026-10-09.md).
+Automated proof: [personal setup completion report](../jarvis-tasks/reports/personal-setup-2026-10-09.md).
 Final admission 3676.2937 ms; all 15 required assertions pass with four accepted M8 caveats.
-The [phone guide](phone-test-checklist.md) remains available for setup and troubleshooting.
+The [phone guide](../jarvis-tasks/phone-test-checklist.md) remains available for setup and troubleshooting.
 
 No phone testing is needed from the user during A–C. No new subscription login is
 needed unless the supported runtime reports an actual authentication failure.
@@ -116,11 +116,11 @@ Report live request purposes/counts and usage; unavailable cost remains unknown.
 - [x] Screenshot-based recipe creation works in the user's phone experience.
 - [x] The user explicitly considers all work completed and accepts personal use.
 
-The [acceptance record](reports/personal-use-accepted-2026-10-11.md) closes the
+The [acceptance record](../jarvis-tasks/reports/personal-use-accepted-2026-10-11.md) closes the
 phase as a whole. The user did not provide individual observations for every
 former checklist item; do not manufacture physical pass counts, hardware
 identity or battery measurements. The checklist now serves as an optional
-[phone guide](phone-test-checklist.md).
+[phone guide](../jarvis-tasks/phone-test-checklist.md).
 
 Accepted M8 caveats and trusted Windows command mode carry forward. Public or
 multi-user deployment and additional integrations remain separate future scope.

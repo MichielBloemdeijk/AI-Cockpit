@@ -47,7 +47,7 @@ are retained and final assembly reuses validated same-candidate evidence.
 
 ### Remaining path simplified — 2026-10-09
 
-The [personal setup and phone plan](../10-personal-setup-and-phone-acceptance.md)
+The [personal setup and phone plan](../../history/10-personal-setup-and-phone-acceptance.md)
 now owns remaining work: A optional-password access and one-action startup,
 B one-time QR/link pairing and no separate phone WebView login, C agent-run
 verification, then D the user's final phone checks. Reuse Windows/Tailscale;

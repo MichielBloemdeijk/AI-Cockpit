@@ -3,7 +3,7 @@
 Historical checkpoint: M4 is complete for the guarded API-authenticated
 Windows/API37 emulator route. At this checkpoint the M5 platform was still
 pending; it has since passed. Remaining implementation is now M6–M10 and physical
-rollout is deferred M11 under the [roadmap](../00-implementation-roadmap.md).
+rollout is deferred M11 under the [roadmap](../../history/00-implementation-roadmap.md).
 Research/workflow production enablement was off; these original results do not
 establish custom-wake, subscription, account cutoff or physical acceptance.
 

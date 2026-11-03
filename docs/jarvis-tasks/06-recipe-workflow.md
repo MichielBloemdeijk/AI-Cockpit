@@ -1,7 +1,7 @@
 # Recipe-from-Screen Reference Workflow
 
 Status: completed for the accepted personal-use scope on 2026-10-11. The
-[completion ledger](00-implementation-roadmap.md) owns status and accepted
+[completion ledger](../history/00-implementation-roadmap.md) owns status and accepted
 limits; this document retains the phase contract and historical evidence.
 
 ## Completion
@@ -104,9 +104,9 @@ Adding that task must require only its definition, instructions, fixtures and en
 
 M5 has verified the generic catalog, collection search/pagination, registered actions and namespaced app storage. Recipes uses the common collection infrastructure with its type, renderer and catalog metadata. The shared per-result saved flag demonstrates actions/storage; recipe edits remain ordinary task follow-ups. M10 revalidates this reuse. No specialised recipe collection behavior is required.
 
-Keep candidate-scoped account/provider and personal-device evidence in the [completion ledger](00-implementation-roadmap.md). A useful reference task does not itself establish production rollout readiness.
+Keep candidate-scoped account/provider and personal-device evidence in the [completion ledger](../history/00-implementation-roadmap.md). A useful reference task does not itself establish production rollout readiness.
 ## Completion evidence
 
-See the [completion ledger](00-implementation-roadmap.md) and
+See the [completion ledger](../history/00-implementation-roadmap.md) and
 [reports index](reports/README.md). Earlier progress reports are historical;
 M0–M11 are closed under the user's accepted scope and caveats.

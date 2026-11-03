@@ -1,6 +1,6 @@
 # M5 result-platform progress — 2026-10-02
 
-Historical checkpoint note: the later [closure roadmap](../00-implementation-roadmap.md)
+Historical checkpoint note: the later [closure roadmap](../../history/00-implementation-roadmap.md)
 narrows M5 to its verified presentation/platform scope and explicitly assigns
 unfinished contracts to M6–M10, with physical rollout in M11. Subscription is now
 required by M9. The original results and deferred-gate discussion below are

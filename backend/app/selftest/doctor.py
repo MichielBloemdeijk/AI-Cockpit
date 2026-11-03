@@ -46,14 +46,14 @@ def run_findings(folder: Path) -> list[dict]:
             "evidence": {"issues": review["issues"], "independent_agrees": review.get("agreed"),
                 "pack": str(folder / "review-pack.md")},
             "proposed_fix": "Reproduce with this scenario; decide whether the cause is the Live update policy "
-                "(live_task_updates.py), the notes (assistant_notes.py) or bookkeeping (conversation_observer.py). "
+                "(services/jarvis/task_updates.py), the notes (services/jarvis/notes.py) or bookkeeping (services/jarvis/observer.py). "
                 "If bookkeeping, add the recording to replay_labels.yaml before changing it."})
     if review and not review.get("bookkeeping_correct", True):
         findings.append({"severity": "high", "component": "conversation_observer",
             "symptom": "The communication record does not match what reached the user",
             "evidence": {"pack": str(folder / "review-pack.md")},
             "proposed_fix": "Add this recording to app/selftest/replay_labels.yaml with the agreed truth and iterate "
-                "on conversation_observer.py with the L1 replay."})
+                "on services/jarvis/observer.py with the L1 replay."})
     return findings
 
 
