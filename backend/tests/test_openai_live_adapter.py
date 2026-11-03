@@ -1074,3 +1074,28 @@ async def test_traffic_observer_sees_connects_configuration_and_both_directions(
     assert seen[:4] == [("connect", "s", 1), ("failed", "s", "OPENAI_API_KEY is not configured on the backend"),
                         ("connect", "s", 2), ("configured", True)]
     assert ("received", "session.started") in seen and any(entry[0] == "sent" for entry in seen)
+
+
+@pytest.mark.asyncio
+async def test_default_sideband_connector_verifies_against_certifi(monkeypatch) -> None:
+    import certifi
+    import ssl
+    import websockets.asyncio.client
+
+    from app.services.jarvis.openai_live_adapter import provider_tls_context
+
+    seen: dict[str, Any] = {}
+
+    async def connect(url: str, **kwargs: Any):
+        seen.update(kwargs, url=url)
+        return object()
+
+    monkeypatch.setattr(websockets.asyncio.client, "connect", connect)
+    await OpenAILiveAdapter._default_websocket_connector("wss://example.test/attach", open_timeout=5)
+
+    context = seen["ssl"]
+    assert context is provider_tls_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    expected = ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
+    assert context.get_ca_certs() == expected
+    assert seen["open_timeout"] == 5

@@ -5,14 +5,17 @@ import asyncio
 from copy import deepcopy
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import cache
 import hashlib
 import json
 import logging
+import ssl
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote
 from uuid import uuid4
 
+import certifi
 import httpx
 
 from app.config import settings
@@ -321,6 +324,8 @@ class OpenAILiveAdapter:
                 await pending.socket.close(code=1000, reason="connection_cancelled")
             raise
         except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Live sideband setup failed for session %s generation %s: %s: %s", *key, type(exc).__name__, exc)
             self._pending_connections.pop(key, None)
             self._sessions.pop(key, None)
             if provider_session is not None:
@@ -1488,7 +1493,17 @@ class OpenAILiveAdapter:
     @staticmethod
     async def _default_websocket_connector(url: str, **kwargs: Any) -> LiveSocket:
         from websockets.asyncio.client import connect
-        return await connect(url, **kwargs)
+        return await connect(url, ssl=provider_tls_context(), **kwargs)
+
+
+@cache
+def provider_tls_context() -> ssl.SSLContext:
+    """TLS for provider WebSockets, verified against certifi's CA bundle like httpx.
+
+    The Windows certificate store Python's default context reads can hold an
+    expired root for api.openai.com while certifi is current (2026-11-03).
+    """
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _parse_arguments(value: Any) -> dict[str, Any]:

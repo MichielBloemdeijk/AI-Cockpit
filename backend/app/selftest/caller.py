@@ -14,6 +14,7 @@ from pathlib import Path
 
 import websockets
 from app.config import settings
+from app.services.jarvis.openai_live_adapter import provider_tls_context
 
 
 async def main():
@@ -30,7 +31,8 @@ async def main():
         print(json.dumps(event), flush=True)
 
     async with websockets.connect("wss://api.openai.com/v1/live/sessions",
-        additional_headers={"Authorization": "Bearer " + settings.openai_api_key}, max_size=16 * 1024 * 1024) as socket:
+        additional_headers={"Authorization": "Bearer " + settings.openai_api_key}, max_size=16 * 1024 * 1024,
+        ssl=provider_tls_context()) as socket:
         await socket.send(json.dumps({"type": "session.start", "session": {
             "model": "gpt-live-1", "instructions": instructions,
             "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": "marin"}},

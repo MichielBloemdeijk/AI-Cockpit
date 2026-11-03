@@ -51,6 +51,9 @@ const executable = resolve(
   ".bin",
   process.platform === "win32" ? "playwright.cmd" : "playwright",
 );
+// Start from a clean dev build. Turbopack's persistent cache can otherwise serve
+// a stale compiled wake worker for an unchanged importing module.
+rmSync(resolve(process.cwd(), ".next-live-smoke"), { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
 const runDirectory = mkdtempSync(join(tmpdir(), "ai-cockpit-live-smoke-"));
 env.JARVIS_SMOKE_RUN_DIR = runDirectory;
 let status = 1;
